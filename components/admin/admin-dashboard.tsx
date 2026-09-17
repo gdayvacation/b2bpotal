@@ -7,7 +7,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { PageHeader, Segment, SegmentedControl, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
 import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
-import { totalPassengers, type Booking, type Program } from '@/lib/types'
+import { totalPassengers, isActiveBooking, type Booking, type Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const TODAY = '2026-09-17'
@@ -66,6 +66,7 @@ export function AdminDashboard() {
   const totalPax = sumPax(visible)
   const ppPax = sumPax(visible.filter((booking) => booking.program === 'PP'))
   const jbPax = sumPax(visible.filter((booking) => booking.program === 'James Bond'))
+  const activeCount = visible.filter(isActiveBooking).length
   const monthLabel = month.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
   const isCurrentMonth =
     month.getFullYear() === TODAY_MONTH.getFullYear() && month.getMonth() === TODAY_MONTH.getMonth()
@@ -81,7 +82,7 @@ export function AdminDashboard() {
   const cards = [
     {
       label: range === 'today' ? "Today's Bookings" : 'Bookings',
-      value: String(visible.length),
+      value: String(activeCount),
       detail: periodLabel,
     },
     {
@@ -205,45 +206,62 @@ export function AdminDashboard() {
       >
         {cards.map((card, index) => {
           const highlighted = index === 0
-          const body = (
-            <>
-              <p
-                className={cn(
-                  'text-[11px] font-semibold tracking-tight',
-                  highlighted ? 'text-white/75' : 'text-teal-800/50',
-                )}
-              >
-                {card.label}
-              </p>
-              <p
-                className={cn(
-                  'mt-3 font-display text-3xl font-semibold tracking-tight',
-                  highlighted ? 'text-white' : 'text-teal-950',
-                )}
-              >
-                {card.value}
-              </p>
-              <p className={cn('mt-2 text-sm', highlighted ? 'text-white/70' : 'text-teal-900/50')}>
-                {card.detail}
-              </p>
-            </>
-          )
+          const accents = [
+            null,
+            {
+              wrap: 'bg-gradient-to-br from-sky-50/90 via-white to-white ring-1 ring-sky-200/50',
+              label: 'text-sky-700/70',
+              value: 'text-sky-950',
+              detail: 'text-sky-800/55',
+              bar: 'from-sky-400 to-cyan-500',
+            },
+            {
+              wrap: 'bg-gradient-to-br from-teal-50/90 via-white to-white ring-1 ring-teal-200/50',
+              label: 'text-teal-700/70',
+              value: 'text-teal-950',
+              detail: 'text-teal-800/55',
+              bar: 'from-teal-400 to-emerald-500',
+            },
+            {
+              wrap: 'bg-gradient-to-br from-amber-50/90 via-white to-white ring-1 ring-amber-200/50',
+              label: 'text-amber-700/70',
+              value: 'text-amber-950',
+              detail: 'text-amber-800/55',
+              bar: 'from-amber-400 to-orange-500',
+            },
+          ] as const
+          const accent = accents[index] ?? accents[1]
 
           if (highlighted) {
             return (
               <div
                 key={card.label}
-                className="rounded-[1.35rem] bg-gradient-to-br from-teal-700 to-cyan-800 p-5 text-white shadow-[0_18px_40px_-28px_rgba(15,118,110,0.65)]"
+                className="relative overflow-hidden rounded-[1.35rem] bg-gradient-to-br from-teal-600 via-teal-700 to-cyan-800 p-5 text-white shadow-[0_18px_40px_-28px_rgba(15,118,110,0.65)]"
               >
-                {body}
+                <div className="pointer-events-none absolute -right-6 -top-6 size-28 rounded-full bg-sky-300/20 blur-2xl" />
+                <div className="pointer-events-none absolute -bottom-8 left-8 size-24 rounded-full bg-emerald-300/15 blur-2xl" />
+                <p className="relative text-[11px] font-semibold tracking-tight text-white/75">
+                  {card.label}
+                </p>
+                <p className="relative mt-3 font-display text-3xl font-semibold tracking-tight text-white">
+                  {card.value}
+                </p>
+                <p className="relative mt-2 text-sm text-white/70">{card.detail}</p>
               </div>
             )
           }
 
           return (
-            <Surface key={card.label} className="p-5">
-              {body}
-            </Surface>
+            <div key={card.label} className={cn('rounded-[1.35rem] p-5 shadow-[0_12px_36px_-28px_rgba(11,36,34,0.28)]', accent!.wrap)}>
+              <div className={cn('mb-3 h-1 w-8 rounded-full bg-gradient-to-r', accent!.bar)} />
+              <p className={cn('text-[11px] font-semibold tracking-tight', accent!.label)}>
+                {card.label}
+              </p>
+              <p className={cn('mt-3 font-display text-3xl font-semibold tracking-tight', accent!.value)}>
+                {card.value}
+              </p>
+              <p className={cn('mt-2 text-sm', accent!.detail)}>{card.detail}</p>
+            </div>
           )
         })}
       </div>
@@ -362,24 +380,54 @@ export function AdminDashboard() {
 }
 
 function BookingRow({ booking }: { booking: Booking }) {
+  const cancelled = booking.status === 'Cancelled'
   return (
-    <div className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-5">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium text-teal-950">{booking.leadGuest}</span>
-          <ProgramChip program={booking.program} />
-        </div>
-        <div className="mt-1 text-sm text-teal-900/50">
-          {booking.code} · {booking.agentName}
-        </div>
+    <div
+      className={cn(
+        'grid items-center gap-x-3 px-4 py-2.5 sm:gap-x-4 sm:px-5',
+        // guest | program | code·agent | pax | pickup | status
+        'grid-cols-[minmax(0,1fr)_5.75rem_minmax(0,1.2fr)_3.75rem_auto] sm:grid-cols-[minmax(7rem,1fr)_5.75rem_minmax(0,1.5fr)_4.25rem_minmax(8rem,1fr)_7.75rem]',
+        cancelled && 'bg-rose-50/60',
+      )}
+    >
+      <span
+        className={cn(
+          'truncate text-sm font-medium',
+          cancelled ? 'text-rose-800 line-through decoration-rose-300' : 'text-teal-950',
+        )}
+      >
+        {booking.leadGuest}
+      </span>
+
+      <ProgramChip program={booking.program} />
+
+      <div className="min-w-0 truncate text-sm text-teal-900/45">
+        <span
+          className={cn(
+            'font-mono text-[13px]',
+            cancelled ? 'text-rose-700/80' : 'text-teal-900/65',
+          )}
+        >
+          {booking.code}
+        </span>
+        <span className="mx-1.5 text-teal-900/25">·</span>
+        {booking.agentName}
       </div>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-teal-900/50 sm:justify-end sm:text-right">
-        <div>
-          <div className="font-medium text-teal-950">{totalPassengers(booking)} pax</div>
-          <div>
-            {booking.pickupZone} · {booking.pickupTime}
-          </div>
-        </div>
+
+      <span
+        className={cn(
+          'text-sm font-medium tabular-nums',
+          cancelled ? 'text-rose-800/70' : 'text-teal-950',
+        )}
+      >
+        {totalPassengers(booking)} pax
+      </span>
+
+      <span className="hidden truncate text-sm tabular-nums text-teal-900/50 sm:block">
+        {booking.pickupZone} · {booking.pickupTime}
+      </span>
+
+      <div className="justify-self-end">
         <StatusBadge status={booking.status} />
       </div>
     </div>
@@ -390,7 +438,7 @@ function ProgramChip({ program }: { program: Program }) {
   return (
     <span
       className={cn(
-        'rounded-full px-2.5 py-0.5 text-[11px] font-semibold',
+        'inline-flex w-[5.75rem] justify-center rounded-full px-2 py-0.5 text-[11px] font-semibold',
         program === 'PP' ? 'bg-sky-50 text-sky-800' : 'bg-amber-50 text-amber-800',
       )}
     >
@@ -417,7 +465,10 @@ function buildMonth(month: Date) {
 }
 
 function sumPax(bookings: Booking[]) {
-  return bookings.reduce((sum, booking) => sum + totalPassengers(booking), 0)
+  return bookings.reduce(
+    (sum, booking) => (isActiveBooking(booking) ? sum + totalPassengers(booking) : sum),
+    0,
+  )
 }
 
 function indexByDate(bookings: Booking[]) {

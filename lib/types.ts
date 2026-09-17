@@ -1,13 +1,21 @@
 export type Program = 'PP' | 'James Bond'
 export type IncludeOption = 'Included' | 'Not Included'
 export type PickupZoneName = string
-export type BookingStatus = 'Confirmed' | 'Pending Pickup Time'
+export type BookingStatus = 'Confirmed' | 'Pending Pickup Time' | 'Cancelled'
 export type AgentStatus = 'Active' | 'Inactive'
 
 export const CORE_PICKUP_ZONE_NAMES = ['Patong', 'Kata', 'Karon', 'Other'] as const
 
+/** Special pickup choice — guest does not need hotel transfer. */
+export const NO_TRANSFER_ZONE = 'No Transfer' as const
+export const NO_TRANSFER_TIME = 'No transfer' as const
+
 export function isCorePickupZone(name: string) {
   return CORE_PICKUP_ZONE_NAMES.some((core) => core.toLowerCase() === name.trim().toLowerCase())
+}
+
+export function isNoTransfer(zone: string | null | undefined) {
+  return (zone ?? '').trim().toLowerCase() === NO_TRANSFER_ZONE.toLowerCase()
 }
 
 export type Agent = {
@@ -21,6 +29,19 @@ export type PickupZone = {
   name: PickupZoneName
   time: string
   pending: boolean
+}
+
+/** Catalog hotel for agent typeahead; zone null = admin still needs to assign. */
+export type Hotel = {
+  id: string
+  name: string
+  zoneName: PickupZoneName | null
+  active: boolean
+  /**
+   * Ops note for hotels with Extra Charge Transfer — shown on agent vouchers
+   * when this hotel is used (optional; leave blank if none).
+   */
+  extraChargeTransfer: string
 }
 
 export type Booking = {
@@ -44,6 +65,11 @@ export type Booking = {
   roomNumber: string
   /** Free-text note for ops / pickup (optional). */
   note: string
+  /**
+   * Snapshot of hotel Extra Charge Transfer note at booking time
+   * (typically for Other-zone hotels). Shown on voucher.
+   */
+  transferExtraCharge: string
   pickupTime: string
   status: BookingStatus
 }
@@ -149,6 +175,11 @@ export type NewBookingDraft = {
 
 export function totalPassengers(booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>) {
   return booking.adults + booking.children + booking.infants + booking.tourLeaders
+}
+
+/** Active bookings occupy seats / boats / vans. Cancelled ones free capacity. */
+export function isActiveBooking(booking: Pick<Booking, 'status'>) {
+  return booking.status !== 'Cancelled'
 }
 
 /** Compact pax readout: adults+children+infants+tourLeadersT → e.g. 3+2+1+1T */

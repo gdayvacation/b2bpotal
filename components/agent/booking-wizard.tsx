@@ -17,6 +17,7 @@ import {
   Users,
 } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
+import { HotelCombobox } from '@/components/hotel-combobox'
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
 import {
@@ -33,13 +34,12 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Textarea } from '@/components/ui/textarea'
 import { formatLongDate, slugifyAgentName, toISODate } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { formatPaxBreakdown, type Agent, type Booking, type IncludeOption, type PickupZoneName, type Program } from '@/lib/types'
+import { formatPaxBreakdown, isNoTransfer, NO_TRANSFER_ZONE, type Agent, type Booking, type Hotel, type IncludeOption, type PickupZoneName, type Program } from '@/lib/types'
 
 const CORE_STEPS = [
   'Select Program',
   'Tour Date',
   'Guests',
-  'Guest Information',
   'Pickup',
   'Review',
 ] as const
@@ -66,7 +66,8 @@ export function BookingWizard({
   onSuccess?: (booking: Booking) => void
 }) {
   const router = useRouter()
-  const { addBooking, agents, getZoneTime, zones } = usePortal()
+  const { addBooking, agents, bookedPaxFor, getCapacity, getZoneTime, hotels, isBookingOpen, zones } =
+    usePortal()
 
   const steps = useMemo(
     () => (selectAgent ? (['Agent', ...CORE_STEPS] as string[]) : [...CORE_STEPS]),
@@ -75,9 +76,8 @@ export function BookingWizard({
   const programStep = selectAgent ? 1 : 0
   const dateStep = programStep + 1
   const guestsStep = programStep + 2
-  const guestInfoStep = programStep + 3
-  const pickupStep = programStep + 4
-  const reviewStep = programStep + 5
+  const pickupStep = programStep + 3
+  const reviewStep = programStep + 4
 
   const [step, setStep] = useState(0)
   const [selectedAgentSlug, setSelectedAgentSlug] = useState<string | null>(agent?.slug ?? null)
@@ -140,22 +140,56 @@ export function BookingWizard({
 
   const total = adults + children + infants + tourLeaders
   const isoDate = date ? toISODate(date) : ''
-  const pickupTime = pickupZone ? getZoneTime(pickupZone) : ''
+  const bookingOpen = !isoDate || selectAgent || isBookingOpen(isoDate)
+  const capacityInfo = useMemo(() => {
+    if (!program || !isoDate) return null
+    const caps = getCapacity(isoDate)
+    const capacity = program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
+    const booked = bookedPaxFor(isoDate, program)
+    const seatsLeft = Math.max(0, capacity - booked)
+    return { capacity, booked, seatsLeft }
+  }, [program, isoDate, getCapacity, bookedPaxFor])
+  const seatsLeft = capacityInfo?.seatsLeft ?? null
+  const pickupTime = pickupZone && !isNoTransfer(pickupZone) ? getZoneTime(pickupZone) : ''
   const selectedZone = zones.find((zone) => zone.name === pickupZone)
-  const pendingPickup = selectedZone?.pending ?? false
+  const pendingPickup = !isNoTransfer(pickupZone) && (selectedZone?.pending ?? false)
+  const noTransfer = isNoTransfer(pickupZone)
+  const matchedHotel = useMemo(() => {
+    const name = pickupHotel.trim().toLowerCase()
+    if (!name) return null
+    return hotels.find((hotel) => hotel.name.toLowerCase() === name) ?? null
+  }, [hotels, pickupHotel])
+  const transferExtraChargePreview = matchedHotel?.extraChargeTransfer.trim() ?? ''
+
+  function applyHotelSelection(hotel: Hotel) {
+    setPickupHotel(hotel.name)
+    if (hotel.zoneName && zones.some((zone) => zone.name === hotel.zoneName)) {
+      setPickupZone(hotel.zoneName)
+    } else if (zones.some((zone) => zone.name === 'Other')) {
+      setPickupZone('Other')
+    }
+    setError('')
+  }
 
   const canContinue = useMemo(() => {
     if (selectAgent && step === 0) return resolvedAgent !== null
     if (step === programStep) return program !== null
-    if (step === dateStep) return Boolean(date)
-    if (step === guestsStep) return adults + children + infants + tourLeaders > 0
-    if (step === guestInfoStep) return leadGuest.trim().length > 1
-    if (step === pickupStep)
+    if (step === dateStep) return Boolean(date) && bookingOpen && (seatsLeft === null || seatsLeft > 0)
+    if (step === guestsStep)
+      return (
+        adults + children + infants + tourLeaders > 0 &&
+        leadGuest.trim().length > 1 &&
+        (seatsLeft === null || total <= seatsLeft)
+      )
+    if (step === pickupStep) {
+      if (noTransfer) return true
       return (
         pickupZone !== null &&
         zones.some((zone) => zone.name === pickupZone) &&
         pickupHotel.trim().length > 1
       )
+    }
+    if (step === reviewStep) return seatsLeft === null || total <= seatsLeft
     return true
   }, [
     selectAgent,
@@ -165,17 +199,21 @@ export function BookingWizard({
     program,
     dateStep,
     date,
+    bookingOpen,
+    seatsLeft,
     guestsStep,
     adults,
     children,
     infants,
     tourLeaders,
-    guestInfoStep,
     leadGuest,
+    total,
     pickupStep,
     pickupZone,
     pickupHotel,
     zones,
+    noTransfer,
+    reviewStep,
   ])
 
   function next() {
@@ -188,12 +226,18 @@ export function BookingWizard({
           : step === programStep
             ? 'Please select a program.'
             : step === dateStep
-              ? 'Please choose a tour date.'
+              ? !bookingOpen
+                ? 'Booking is closed for this travel date.'
+                : seatsLeft === 0
+                  ? 'This date is sold out for the selected program.'
+                  : 'Please choose a tour date.'
               : step === guestsStep
-                ? 'Add at least one passenger.'
-                : step === guestInfoStep
-                  ? 'Enter the lead guest name.'
-                  : 'Select a pickup zone and hotel.',
+                ? adults + children + infants + tourLeaders <= 0
+                  ? 'Add at least one passenger.'
+                  : seatsLeft !== null && total > seatsLeft
+                    ? `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left on this date.`
+                    : 'Enter the lead guest name.'
+                : 'Select a pickup zone and hotel, or choose No Transfer.',
       )
       return
     }
@@ -203,29 +247,40 @@ export function BookingWizard({
 
   function confirm() {
     if (!program || !date || !pickupZone || !resolvedAgent) return
-    const booking = addBooking({
-      agentSlug: resolvedAgent.slug,
-      agentName: resolvedAgent.name,
-      agentRef: agentRef.trim(),
-      program,
-      date: isoDate,
-      parkFee,
-      canoe: program === 'James Bond' ? canoe : null,
-      adults,
-      children,
-      infants,
-      tourLeaders,
-      leadGuest: leadGuest.trim(),
-      pickupZone,
-      pickupHotel: pickupHotel.trim(),
-      roomNumber: roomNumber.trim(),
-      note: note.trim(),
-    })
-    if (onSuccess) {
-      onSuccess(booking)
+    if (seatsLeft !== null && total > seatsLeft) {
+      setError(`Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left on this date.`)
       return
     }
-    router.push(`/agent/${resolvedAgent.slug}/confirmed/${booking.code}`)
+    const result = addBooking(
+      {
+        agentSlug: resolvedAgent.slug,
+        agentName: resolvedAgent.name,
+        agentRef: agentRef.trim(),
+        program,
+        date: isoDate,
+        parkFee,
+        canoe: program === 'James Bond' ? canoe : null,
+        adults,
+        children,
+        infants,
+        tourLeaders,
+        leadGuest: leadGuest.trim(),
+        pickupZone,
+        pickupHotel: pickupHotel.trim(),
+        roomNumber: roomNumber.trim(),
+        note: note.trim(),
+      },
+      { bypassCutoff: selectAgent },
+    )
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    if (onSuccess) {
+      onSuccess(result.booking)
+      return
+    }
+    router.push(`/agent/${resolvedAgent.slug}/confirmed/${result.booking.code}`)
   }
 
   const headerEyebrow = eyebrow ?? (!selectAgent ? agent?.name : undefined)
@@ -243,7 +298,7 @@ export function BookingWizard({
       <ol
         className={cn(
           'mb-5 hidden gap-2 sm:grid',
-          steps.length > 7 ? 'sm:grid-cols-4 lg:grid-cols-8' : 'sm:grid-cols-7',
+          steps.length >= 6 ? 'sm:grid-cols-3 lg:grid-cols-6' : 'sm:grid-cols-5',
         )}
       >
         {steps.map((label, index) => {
@@ -282,13 +337,44 @@ export function BookingWizard({
       </div>
 
       <div className="gday-sheet rounded-[1.5rem] p-5 sm:p-8">
-        <div className="mb-6">
-          <p className="gday-soft-label">
-            Step {step + 1} of {steps.length}
-          </p>
-          <h2 className="font-display mt-1 text-xl font-semibold tracking-tight text-teal-950">
-            {steps[step]}
-          </h2>
+        <div className="mb-6 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="gday-soft-label">
+              Step {step + 1} of {steps.length}
+            </p>
+            <h2 className="font-display mt-1 text-xl font-semibold tracking-tight text-teal-950">
+              {steps[step]}
+            </h2>
+          </div>
+          {step === pickupStep ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (noTransfer) {
+                  setPickupZone(null)
+                } else {
+                  setPickupZone(NO_TRANSFER_ZONE)
+                  setPickupHotel('')
+                  setRoomNumber('')
+                }
+                setError('')
+              }}
+              className={cn(
+                'shrink-0 rounded-xl border px-3 py-2 text-left transition-all sm:px-3.5',
+                noTransfer
+                  ? 'border-teal-700 bg-teal-50/90 ring-1 ring-teal-700 shadow-sm shadow-teal-700/10'
+                  : 'border-teal-900/10 bg-white/80 text-teal-900/70 hover:border-teal-700/30',
+              )}
+            >
+              <span className="flex items-center gap-1.5 text-sm font-semibold text-teal-950">
+                {noTransfer ? <Check className="size-3.5 shrink-0 text-teal-800" /> : null}
+                No Transfer
+              </span>
+              <span className="mt-0.5 block text-[11px] leading-tight text-teal-900/45">
+                Guest needs no pickup
+              </span>
+            </button>
+          ) : null}
         </div>
 
         {selectAgent && step === 0 && (
@@ -423,7 +509,7 @@ export function BookingWizard({
         )}
 
         {step === dateStep && (
-          <div className="max-w-sm">
+          <div className="max-w-sm space-y-3">
             <Label className="mb-2">Tour date</Label>
             <Popover>
               <PopoverTrigger
@@ -439,114 +525,196 @@ export function BookingWizard({
                   mode="single"
                   selected={date}
                   onSelect={setDate}
-                  disabled={{ before: TODAY }}
+                  disabled={(day) => {
+                    if (toISODate(day) < toISODate(TODAY)) return true
+                    if (selectAgent) return false
+                    return !isBookingOpen(toISODate(day))
+                  }}
                   defaultMonth={date ?? TODAY}
                 />
               </PopoverContent>
             </Popover>
+            {program && capacityInfo ? (
+              !bookingOpen ? (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                  Booking closed for this travel date — choose another day.
+                </div>
+              ) : seatsLeft === 0 ? (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                  Sold out — {program} has no seats left on this date (capacity{' '}
+                  {capacityInfo.capacity}).
+                </div>
+              ) : (
+                <div className="rounded-xl border border-teal-200 bg-teal-50/80 px-4 py-3 text-sm text-teal-900/75">
+                  <span className="font-semibold text-teal-950">{seatsLeft}</span> of{' '}
+                  {capacityInfo.capacity} seats left for {program}
+                  <span className="text-teal-900/40"> · {capacityInfo.booked} booked</span>
+                </div>
+              )
+            ) : null}
           </div>
         )}
 
         {step === guestsStep && (
-          <div className="space-y-1">
-            <GuestRow label="Adults" hint="12 years and above" value={adults} onChange={setAdults} />
-            <GuestRow label="Children" hint="2–11 years" value={children} onChange={setChildren} />
-            <GuestRow label="Infants" hint="Under 2 years" value={infants} onChange={setInfants} />
-            <GuestRow label="Tour Leaders" hint="Accompanying guides" value={tourLeaders} onChange={setTourLeaders} />
-            <div className="mt-4 flex items-center justify-between rounded-2xl bg-teal-950/[0.04] px-4 py-3.5">
-              <span className="text-sm font-medium text-teal-900/55">Total Passengers</span>
-              <span className="text-right">
-                <span className="font-mono text-lg font-semibold tracking-tight text-teal-950 tabular-nums">
-                  {formatPaxBreakdown({ adults, children, infants, tourLeaders })}
-                </span>
-                <span className="ml-2 text-sm text-teal-900/40">({total})</span>
-              </span>
-            </div>
-          </div>
-        )}
-
-        {step === guestInfoStep && (
-          <div className="max-w-md space-y-5">
-            <div className="space-y-2">
-              <Label htmlFor="lead-guest">Lead Guest Name</Label>
-              <Input
-                id="lead-guest"
-                value={leadGuest}
-                onChange={(event) => setLeadGuest(event.target.value)}
-                className="h-11"
+          <div className="space-y-5">
+            {seatsLeft !== null ? (
+              seatsLeft === 0 ? (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                  Sold out — go back and choose another date.
+                </div>
+              ) : (
+                <div
+                  className={cn(
+                    'rounded-xl border px-4 py-3 text-sm',
+                    total > seatsLeft
+                      ? 'border-rose-200 bg-rose-50 text-rose-800'
+                      : 'border-teal-200 bg-teal-50/80 text-teal-900/75',
+                  )}
+                >
+                  {total > seatsLeft
+                    ? `Too many guests — only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left.`
+                    : `${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for this departure.`}
+                </div>
+              )
+            ) : null}
+            <div className="space-y-1">
+              <GuestRow
+                label="Adults"
+                hint="12 years and above"
+                value={adults}
+                max={seatsLeft === null ? undefined : Math.max(0, seatsLeft - children - infants - tourLeaders)}
+                onChange={setAdults}
               />
+              <GuestRow
+                label="Children"
+                hint="2–11 years"
+                value={children}
+                max={seatsLeft === null ? undefined : Math.max(0, seatsLeft - adults - infants - tourLeaders)}
+                onChange={setChildren}
+              />
+              <GuestRow
+                label="Infants"
+                hint="Under 2 years"
+                value={infants}
+                max={seatsLeft === null ? undefined : Math.max(0, seatsLeft - adults - children - tourLeaders)}
+                onChange={setInfants}
+              />
+              <GuestRow
+                label="Tour Leaders"
+                hint="Accompanying guides"
+                value={tourLeaders}
+                max={seatsLeft === null ? undefined : Math.max(0, seatsLeft - adults - children - infants)}
+                onChange={setTourLeaders}
+              />
+              <div className="mt-4 flex items-center justify-between rounded-2xl bg-teal-950/[0.04] px-4 py-3.5">
+                <span className="text-sm font-medium text-teal-900/55">Total Passengers</span>
+                <span className="text-right">
+                  <span className="font-mono text-lg font-semibold tracking-tight text-teal-950 tabular-nums">
+                    {formatPaxBreakdown({ adults, children, infants, tourLeaders })}
+                  </span>
+                  <span className="ml-2 text-sm text-teal-900/40">({total})</span>
+                </span>
+              </div>
             </div>
-            {!selectAgent ? (
+
+            <div className="max-w-md space-y-5 border-t border-teal-900/8 pt-5">
               <div className="space-y-2">
-                <Label htmlFor="agent-ref-guest">Agent Ref / Agent Voucher Number</Label>
+                <Label htmlFor="lead-guest">Lead Guest Name</Label>
                 <Input
-                  id="agent-ref-guest"
-                  value={agentRef}
-                  onChange={(event) => setAgentRef(event.target.value)}
+                  id="lead-guest"
+                  value={leadGuest}
+                  onChange={(event) => setLeadGuest(event.target.value)}
                   className="h-11"
                 />
-                <p className="text-xs text-neutral-500">
-                  Optional — your own reference or voucher number for this booking.
-                </p>
               </div>
-            ) : null}
+              {!selectAgent ? (
+                <div className="space-y-2">
+                  <Label htmlFor="agent-ref-guest">Agent Ref / Agent Voucher Number</Label>
+                  <Input
+                    id="agent-ref-guest"
+                    value={agentRef}
+                    onChange={(event) => setAgentRef(event.target.value)}
+                    className="h-11"
+                  />
+                  <p className="text-xs text-neutral-500">
+                    Optional — your own reference or voucher number for this booking.
+                  </p>
+                </div>
+              ) : null}
+            </div>
           </div>
         )}
 
         {step === pickupStep && (
           <div className="space-y-5">
-            <div>
-              <Label className="mb-3">Pickup Zone</Label>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {zones.map((zone) => {
-                  const time = getZoneTime(zone.name)
-                  return (
-                    <button
-                      key={zone.name}
-                      type="button"
-                      onClick={() => setPickupZone(zone.name)}
-                      className={cn(
-                        'flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-left transition-all',
-                        pickupZone === zone.name
-                          ? 'border-teal-700 bg-teal-50/90 ring-1 ring-teal-700 shadow-sm shadow-teal-700/10'
-                          : 'border-teal-900/10 bg-white/70 hover:border-teal-700/30',
-                      )}
-                    >
-                      <span className="min-w-0 truncate font-semibold text-teal-950">
-                        {zone.name}
-                      </span>
-                      <span className="flex shrink-0 items-center gap-1.5 text-sm text-teal-900/50">
-                        <Clock3 className="size-3.5" />
-                        {zone.pending ? 'Awaiting time' : time}
-                        {pickupZone === zone.name ? (
-                          <Check className="size-3.5 text-teal-800" />
-                        ) : null}
-                      </span>
-                    </button>
-                  )
-                })}
+            {noTransfer ? (
+              <div className="rounded-xl border border-teal-200 bg-teal-50/80 px-4 py-3 text-sm text-teal-900/75">
+                This booking has <span className="font-semibold text-teal-950">No Transfer</span> —
+                the guest will arrange their own transport. Hotel and room are not required.
               </div>
-            </div>
-            <div className="flex max-w-md gap-3">
-              <div className="min-w-0 flex-1 space-y-2">
-                <Label htmlFor="hotel">Pickup Hotel</Label>
-                <Input
-                  id="hotel"
-                  value={pickupHotel}
-                  onChange={(event) => setPickupHotel(event.target.value)}
-                  className="h-11"
-                />
-              </div>
-              <div className="w-[7.5rem] shrink-0 space-y-2 sm:w-32">
-                <Label htmlFor="room-number">Room</Label>
-                <Input
-                  id="room-number"
-                  value={roomNumber}
-                  onChange={(event) => setRoomNumber(event.target.value)}
-                  className="h-11"
-                />
-              </div>
-            </div>
+            ) : (
+              <>
+                <div className="flex max-w-md gap-3">
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <Label htmlFor="hotel">Pickup Hotel</Label>
+                    <HotelCombobox
+                      id="hotel"
+                      hotels={hotels}
+                      value={pickupHotel}
+                      onChange={(next) => {
+                        setPickupHotel(next)
+                        setError('')
+                      }}
+                      onSelectHotel={applyHotelSelection}
+                    />
+                    <p className="text-xs text-neutral-500">
+                      Type a few letters and pick from the list — zone fills in automatically when known.
+                    </p>
+                  </div>
+                  <div className="w-[7.5rem] shrink-0 space-y-2 sm:w-32">
+                    <Label htmlFor="room-number">Room</Label>
+                    <Input
+                      id="room-number"
+                      value={roomNumber}
+                      onChange={(event) => setRoomNumber(event.target.value)}
+                      className="h-11"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Label className="mb-3">Pickup Zone</Label>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {zones.map((zone) => {
+                      const time = getZoneTime(zone.name)
+                      return (
+                        <button
+                          key={zone.name}
+                          type="button"
+                          onClick={() => setPickupZone(zone.name)}
+                          className={cn(
+                            'flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-left transition-all',
+                            pickupZone === zone.name
+                              ? 'border-teal-700 bg-teal-50/90 ring-1 ring-teal-700 shadow-sm shadow-teal-700/10'
+                              : 'border-teal-900/10 bg-white/70 hover:border-teal-700/30',
+                          )}
+                        >
+                          <span className="min-w-0 truncate font-semibold text-teal-950">
+                            {zone.name}
+                          </span>
+                          <span className="flex shrink-0 items-center gap-1.5 text-sm text-teal-900/50">
+                            <Clock3 className="size-3.5" />
+                            {zone.pending ? 'Awaiting time' : time}
+                            {pickupZone === zone.name ? (
+                              <Check className="size-3.5 text-teal-800" />
+                            ) : null}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
             <div className="max-w-md space-y-2">
               <Label htmlFor="pickup-note">Note</Label>
               <Textarea
@@ -556,13 +724,24 @@ export function BookingWizard({
                 className="min-h-24"
               />
             </div>
-            {pendingPickup ? (
+            {noTransfer ? null : pendingPickup ? (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                 Pickup time: awaiting admin to set
               </div>
             ) : pickupZone ? (
               <div className="rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-600">
-                Pickup time for {pickupZone}: <span className="font-semibold text-neutral-900">{pickupTime}</span>
+                Pickup time for {pickupZone}:{' '}
+                <span className="font-semibold text-neutral-900">{pickupTime}</span>
+              </div>
+            ) : null}
+            {transferExtraChargePreview ? (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                <p className="text-[10px] font-semibold tracking-wide text-amber-800/70 uppercase">
+                  Extra Charge Transfer
+                </p>
+                <p className="mt-0.5 whitespace-pre-wrap break-words font-medium">
+                  {transferExtraChargePreview}
+                </p>
               </div>
             ) : null}
           </div>
@@ -635,22 +814,45 @@ export function BookingWizard({
             </ReviewSection>
 
             <ReviewSection title="Pickup" icon={<MapPin className="size-3.5" />}>
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">
-                <DetailCell label="Zone" value={pickupZone ?? '—'} />
-                <DetailCell
-                  label="Time"
-                  value={pendingPickup ? 'Awaiting time' : pickupTime || '—'}
-                  emphasize
-                />
-                <DetailCell label="Hotel" value={pickupHotel || '—'} className="sm:col-span-2" />
-                <DetailCell label="Room" value={roomNumber.trim() || '—'} />
-                <DetailCell
-                  label="Note"
-                  value={note.trim() || '—'}
-                  className="col-span-2 sm:col-span-3"
-                  wrap
-                />
-              </dl>
+              {noTransfer ? (
+                <p className="text-sm font-medium text-teal-950">
+                  No Transfer — guest arranges own transport
+                  {note.trim() ? (
+                    <span className="mt-1 block text-teal-900/55 whitespace-pre-wrap break-words">
+                      Note: {note.trim()}
+                    </span>
+                  ) : null}
+                </p>
+              ) : (
+                <>
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">
+                    <DetailCell label="Zone" value={pickupZone ?? '—'} />
+                    <DetailCell
+                      label="Time"
+                      value={pendingPickup ? 'Awaiting time' : pickupTime || '—'}
+                      emphasize
+                    />
+                    <DetailCell label="Hotel" value={pickupHotel || '—'} className="sm:col-span-2" />
+                    <DetailCell label="Room" value={roomNumber.trim() || '—'} />
+                    <DetailCell
+                      label="Note"
+                      value={note.trim() || '—'}
+                      className="col-span-2 sm:col-span-3"
+                      wrap
+                    />
+                  </dl>
+                  {transferExtraChargePreview ? (
+                    <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                      <p className="text-[10px] font-semibold tracking-wide text-amber-800/70 uppercase">
+                        Extra Charge Transfer
+                      </p>
+                      <p className="mt-0.5 whitespace-pre-wrap break-words font-medium">
+                        {transferExtraChargePreview}
+                      </p>
+                    </div>
+                  ) : null}
+                </>
+              )}
             </ReviewSection>
 
             <ReviewSection title="Tour options" icon={<Ship className="size-3.5" />}>
@@ -825,13 +1027,16 @@ function GuestRow({
   label,
   hint,
   value,
+  max,
   onChange,
 }: {
   label: string
   hint: string
   value: number
+  max?: number
   onChange: (value: number) => void
 }) {
+  const atMax = max !== undefined && value >= max
   return (
     <div className="flex items-center justify-between border-b border-teal-900/6 py-4 last:border-0">
       <div>
@@ -854,7 +1059,8 @@ function GuestRow({
           variant="outline"
           size="icon"
           className="size-10 rounded-full"
-          onClick={() => onChange(value + 1)}
+          disabled={atMax}
+          onClick={() => onChange(max !== undefined ? Math.min(max, value + 1) : value + 1)}
         >
           <Plus />
         </Button>

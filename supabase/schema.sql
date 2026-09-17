@@ -54,6 +54,36 @@ before update on public.pickup_zones
 for each row execute function public.set_updated_at();
 
 -- -----------------------------------------------------------------------------
+-- Hotels (agent typeahead; zone nullable until admin assigns)
+-- -----------------------------------------------------------------------------
+create table if not exists public.hotels (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  zone_name text null references public.pickup_zones (name)
+    on update cascade on delete set null,
+  active boolean not null default true,
+  extra_charge_transfer text not null default '',
+  sort_order int not null default 100,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now()),
+  constraint hotels_name_nonempty check (length(trim(name)) > 0)
+);
+
+create unique index if not exists hotels_name_lower_uidx
+  on public.hotels (lower(trim(name)));
+
+create index if not exists hotels_zone_name_idx
+  on public.hotels (zone_name);
+
+create index if not exists hotels_active_name_idx
+  on public.hotels (active, name);
+
+drop trigger if exists hotels_set_updated_at on public.hotels;
+create trigger hotels_set_updated_at
+before update on public.hotels
+for each row execute function public.set_updated_at();
+
+-- -----------------------------------------------------------------------------
 -- Bookings
 -- -----------------------------------------------------------------------------
 create table if not exists public.bookings (
@@ -76,9 +106,10 @@ create table if not exists public.bookings (
   pickup_hotel text not null default '',
   room_number text not null default '',
   note text not null default '',
+  transfer_extra_charge text not null default '',
   pickup_time text not null default 'Awaiting pickup time',
   status text not null default 'Pending Pickup Time'
-    check (status in ('Confirmed', 'Pending Pickup Time')),
+    check (status in ('Confirmed', 'Pending Pickup Time', 'Cancelled')),
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now()),
   constraint bookings_pax_positive
@@ -219,12 +250,40 @@ before update on public.van_assignments
 for each row execute function public.set_updated_at();
 
 -- -----------------------------------------------------------------------------
+-- Booking cutoffs (singleton: when agents may book / cancel vs travel date)
+-- -----------------------------------------------------------------------------
+create table if not exists public.booking_cutoffs (
+  id text primary key default 'default' check (id = 'default'),
+  timezone text not null default 'Asia/Bangkok',
+  book_before_days int not null default 1
+    check (book_before_days >= 0 and book_before_days <= 30),
+  book_until_time text not null default '18:00'
+    check (book_until_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'),
+  cancel_before_days int not null default 1
+    check (cancel_before_days >= 0 and cancel_before_days <= 30),
+  cancel_until_time text not null default '16:00'
+    check (cancel_until_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'),
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+drop trigger if exists booking_cutoffs_set_updated_at on public.booking_cutoffs;
+create trigger booking_cutoffs_set_updated_at
+before update on public.booking_cutoffs
+for each row execute function public.set_updated_at();
+
+insert into public.booking_cutoffs (id)
+values ('default')
+on conflict (id) do nothing;
+
+-- -----------------------------------------------------------------------------
 -- Row Level Security
 -- Pilot: open anon/authenticated (tighten when you add real Auth)
 -- Server should still prefer service_role for admin writes.
 -- -----------------------------------------------------------------------------
 alter table public.agents enable row level security;
 alter table public.pickup_zones enable row level security;
+alter table public.hotels enable row level security;
 alter table public.bookings enable row level security;
 alter table public.availability enable row level security;
 alter table public.day_boat_plans enable row level security;
@@ -232,6 +291,7 @@ alter table public.boat_assignments enable row level security;
 alter table public.day_vehicle_plans enable row level security;
 alter table public.van_meta enable row level security;
 alter table public.van_assignments enable row level security;
+alter table public.booking_cutoffs enable row level security;
 
 -- Drop old pilot policies if re-running
 do $$
@@ -243,9 +303,10 @@ begin
     from pg_policies
     where schemaname = 'public'
       and tablename in (
-        'agents', 'pickup_zones', 'bookings', 'availability',
+        'agents', 'pickup_zones', 'hotels', 'bookings', 'availability',
         'day_boat_plans', 'boat_assignments',
-        'day_vehicle_plans', 'van_meta', 'van_assignments'
+        'day_vehicle_plans', 'van_meta', 'van_assignments',
+        'booking_cutoffs'
       )
       and policyname like 'pilot_%'
   loop
@@ -257,6 +318,9 @@ create policy pilot_agents_all on public.agents
   for all to anon, authenticated using (true) with check (true);
 
 create policy pilot_pickup_zones_all on public.pickup_zones
+  for all to anon, authenticated using (true) with check (true);
+
+create policy pilot_hotels_all on public.hotels
   for all to anon, authenticated using (true) with check (true);
 
 create policy pilot_bookings_all on public.bookings
@@ -278,6 +342,9 @@ create policy pilot_van_meta_all on public.van_meta
   for all to anon, authenticated using (true) with check (true);
 
 create policy pilot_van_assignments_all on public.van_assignments
+  for all to anon, authenticated using (true) with check (true);
+
+create policy pilot_booking_cutoffs_all on public.booking_cutoffs
   for all to anon, authenticated using (true) with check (true);
 
 -- -----------------------------------------------------------------------------

@@ -25,12 +25,12 @@ export function BrandMark({
           'relative flex size-9 shrink-0 items-center justify-center rounded-2xl text-[14px] font-semibold tracking-tight',
           light
             ? 'bg-white/18 text-white ring-1 ring-white/20'
-            : 'bg-gradient-to-br from-teal-500 via-teal-600 to-cyan-700 text-white shadow-md shadow-teal-700/25',
+            : 'bg-gradient-to-br from-sky-400 via-teal-500 to-cyan-700 text-white shadow-md shadow-teal-600/30',
         )}
       >
         <span className="relative z-10">G</span>
         {!light ? (
-          <span className="pointer-events-none absolute inset-0 rounded-2xl bg-[radial-gradient(circle_at_30%_25%,rgba(255,255,255,0.35),transparent_55%)]" />
+          <span className="pointer-events-none absolute inset-0 rounded-2xl bg-[radial-gradient(circle_at_30%_25%,rgba(255,255,255,0.4),transparent_55%)]" />
         ) : null}
       </div>
       <div className="min-w-0 leading-tight">

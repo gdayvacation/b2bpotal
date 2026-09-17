@@ -1,9 +1,20 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { CalendarIcon, Check, Plus, Search, X } from 'lucide-react'
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  CalendarIcon,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Plus,
+  Search,
+  X,
+} from 'lucide-react'
 import type { DateRange } from 'react-day-picker'
 import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
@@ -35,33 +46,76 @@ const SEARCH_FROM = (() => {
   return toISODate(d)
 })()
 
+/** Default list: newest first, capped so the table stays light. */
+const RECENT_LIMIT = 200
+const PAGE_SIZE = 50
+
 type QuickFilter = 'all' | 'today'
+type SortKey = 'code' | 'agent' | 'zone'
+type SortDir = 'asc' | 'desc'
+
+function SortableHead({
+  column,
+  active,
+  dir,
+  onSort,
+  children,
+  className,
+}: {
+  column: SortKey
+  active: boolean
+  dir: SortDir
+  onSort: (key: SortKey) => void
+  children: ReactNode
+  className?: string
+}) {
+  const Icon = !active ? ArrowUpDown : dir === 'asc' ? ArrowUp : ArrowDown
+  const label = typeof children === 'string' ? children : column
+  return (
+    <TableHead className={cn('text-teal-800/50', className)}>
+      <button
+        type="button"
+        className={cn(
+          'inline-flex items-center gap-1 rounded-md transition-colors hover:text-teal-900',
+          active && 'font-semibold text-teal-900',
+        )}
+        onClick={() => onSort(column)}
+        aria-label={`Sort by ${label}${active ? `, currently ${dir === 'asc' ? 'ascending' : 'descending'}` : ''}`}
+      >
+        {children}
+        <Icon className={cn('size-3.5 shrink-0', active ? 'opacity-80' : 'opacity-40')} />
+      </button>
+    </TableHead>
+  )
+}
 
 export function AdminBookings() {
-  const { bookings } = usePortal()
+  const { bookings, cancelBooking } = usePortal()
   const searchParams = useSearchParams()
   const createdCode = searchParams.get('created')
   const [quick, setQuick] = useState<QuickFilter>('all')
   const [range, setRange] = useState<DateRange | undefined>()
   const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
   const [dismissCreated, setDismissCreated] = useState(false)
+  const [sortKey, setSortKey] = useState<SortKey | null>(null)
+  const [sortDir, setSortDir] = useState<SortDir>('asc')
 
   const query = search.trim().toLowerCase()
   const isSearching = query.length > 0
+  const hasRange = Boolean(range?.from)
+  const hasActiveFilter = quick === 'today' || hasRange || isSearching
 
   const filtered = useMemo(() => {
     const fromIso = range?.from ? toISODate(range.from) : null
     const toIso = range?.to ? toISODate(range.to) : fromIso
+    const dir = sortDir === 'asc' ? 1 : -1
 
     return bookings
       .filter((booking) => {
         if (isSearching) {
           if (booking.date < SEARCH_FROM) return false
-          const haystack = [
-            booking.agentName,
-            booking.leadGuest,
-            booking.pickupHotel,
-          ]
+          const haystack = [booking.agentName, booking.leadGuest, booking.pickupHotel]
             .join(' ')
             .toLowerCase()
           if (!haystack.includes(query)) return false
@@ -72,16 +126,57 @@ export function AdminBookings() {
         return true
       })
       .slice()
-      .sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code))
-  }, [bookings, quick, range, isSearching, query])
+      .sort((a, b) => {
+        if (sortKey === 'code') {
+          return dir * a.code.localeCompare(b.code, undefined, { numeric: true })
+        }
+        if (sortKey === 'agent') {
+          return (
+            dir * a.agentName.localeCompare(b.agentName) ||
+            b.date.localeCompare(a.date) ||
+            a.code.localeCompare(b.code)
+          )
+        }
+        if (sortKey === 'zone') {
+          return (
+            dir * a.pickupZone.localeCompare(b.pickupZone) ||
+            a.pickupTime.localeCompare(b.pickupTime) ||
+            b.date.localeCompare(a.date) ||
+            a.code.localeCompare(b.code)
+          )
+        }
+        return b.date.localeCompare(a.date) || b.code.localeCompare(a.code)
+      })
+  }, [bookings, quick, range, isSearching, query, sortKey, sortDir])
 
-  const hasRange = Boolean(range?.from)
-  const hasActiveFilter = quick === 'today' || hasRange || isSearching
+  const capped = !hasActiveFilter
+  const list = capped ? filtered.slice(0, RECENT_LIMIT) : filtered
+  const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE))
+  const safePage = Math.min(page, totalPages)
+  const pageStart = (safePage - 1) * PAGE_SIZE
+  const pageRows = list.slice(pageStart, pageStart + PAGE_SIZE)
+
+  useEffect(() => {
+    setPage(1)
+  }, [quick, range, query, sortKey, sortDir])
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
 
   function clearFilters() {
     setQuick('all')
     setRange(undefined)
     setSearch('')
+  }
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'))
+      return
+    }
+    setSortKey(key)
+    setSortDir('asc')
   }
 
   function applyToday() {
@@ -94,6 +189,17 @@ export function AdminBookings() {
     if (next?.from) setQuick('all')
   }
 
+  function handleCancel(code: string) {
+    if (
+      !window.confirm(
+        `Cancel booking ${code}? Seats will free up on the departure date. This cannot be undone from here.`,
+      )
+    ) {
+      return
+    }
+    cancelBooking(code, { bypassCutoff: true })
+  }
+
   const rangeLabel = (() => {
     if (!range?.from) return 'Trip date range'
     const from = formatShortDate(toISODate(range.from))
@@ -102,12 +208,14 @@ export function AdminBookings() {
   })()
 
   const showCreated = Boolean(createdCode) && !dismissCreated
+  const showingFrom = list.length === 0 ? 0 : pageStart + 1
+  const showingTo = Math.min(pageStart + PAGE_SIZE, list.length)
 
   return (
     <div className="mx-auto max-w-6xl">
       <PageHeader
         title="Bookings"
-        description="Every partner reservation in this prototype — including offline bookings added by admin."
+        description="Partner reservations — default view shows the latest 200. Use filters or search for older trips."
         actions={
           <Link href="/admin/bookings/new" className={cn(buttonVariants(), 'h-10 gap-1.5')}>
             <Plus data-icon="inline-start" />
@@ -143,7 +251,7 @@ export function AdminBookings() {
                   active={quick === 'all' && !hasRange && !isSearching}
                   onClick={() => clearFilters()}
                 >
-                  All
+                  Recent
                 </Segment>
                 <Segment active={quick === 'today'} onClick={applyToday}>
                   Today
@@ -198,10 +306,13 @@ export function AdminBookings() {
             </div>
 
             <p className="text-sm text-teal-900/50">
-              {filtered.length} booking{filtered.length === 1 ? '' : 's'}
-              {isSearching
-                ? ` · search from ${formatShortDate(SEARCH_FROM)} onward`
+              {list.length === 0
+                ? '0 bookings'
+                : `${showingFrom}–${showingTo} of ${list.length}`}
+              {capped && filtered.length > RECENT_LIMIT
+                ? ` · latest ${RECENT_LIMIT}`
                 : null}
+              {isSearching ? ` · search from ${formatShortDate(SEARCH_FROM)} onward` : null}
               {!isSearching && quick === 'today'
                 ? ` · departing ${formatShortDate(TODAY)}`
                 : null}
@@ -233,56 +344,135 @@ export function AdminBookings() {
       </Surface>
 
       <Surface className="overflow-hidden">
-        {filtered.length === 0 ? (
+        {list.length === 0 ? (
           <div className="px-4 py-12 text-center text-sm text-teal-900/45">
             No bookings match this filter
             {isSearching ? ' (search covers last 7 days + upcoming only)' : ''}.
           </div>
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <TableHead className="px-4 text-teal-800/50">Booking Number</TableHead>
-                <TableHead className="text-teal-800/50">Date</TableHead>
-                <TableHead className="text-teal-800/50">Program</TableHead>
-                <TableHead className="text-teal-800/50">Agent</TableHead>
-                <TableHead className="text-teal-800/50">Agent Ref</TableHead>
-                <TableHead className="text-teal-800/50">Lead Guest</TableHead>
-                <TableHead className="text-teal-800/50">Total Pax</TableHead>
-                <TableHead className="text-teal-800/50">Pickup</TableHead>
-                <TableHead className="text-teal-800/50">Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.map((booking) => (
-                <TableRow
-                  key={booking.code}
-                  className={cn(createdCode === booking.code && 'bg-emerald-50/70')}
-                >
-                  <TableCell className="px-4 font-mono text-[13px] font-medium">
-                    {booking.code}
-                  </TableCell>
-                  <TableCell>{formatShortDate(booking.date)}</TableCell>
-                  <TableCell>{booking.program}</TableCell>
-                  <TableCell>{booking.agentName}</TableCell>
-                  <TableCell className="font-mono text-[13px] text-teal-900/70">
-                    {booking.agentRef?.trim() ? booking.agentRef : '—'}
-                  </TableCell>
-                  <TableCell>{booking.leadGuest}</TableCell>
-                  <TableCell>{totalPassengers(booking)}</TableCell>
-                  <TableCell>
-                    {booking.pickupZone} · {booking.pickupTime}
-                  </TableCell>
-                  <TableCell>
-                    <StatusBadge status={booking.status} />
-                  </TableCell>
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <SortableHead
+                    column="code"
+                    className="px-4"
+                    active={sortKey === 'code'}
+                    dir={sortDir}
+                    onSort={toggleSort}
+                  >
+                    Booking Number
+                  </SortableHead>
+                  <TableHead className="text-teal-800/50">Date</TableHead>
+                  <TableHead className="text-teal-800/50">Program</TableHead>
+                  <SortableHead
+                    column="agent"
+                    active={sortKey === 'agent'}
+                    dir={sortDir}
+                    onSort={toggleSort}
+                  >
+                    Agent
+                  </SortableHead>
+                  <TableHead className="text-teal-800/50">Agent Ref</TableHead>
+                  <TableHead className="text-teal-800/50">Lead Guest</TableHead>
+                  <TableHead className="text-teal-800/50">Total Pax</TableHead>
+                  <SortableHead
+                    column="zone"
+                    active={sortKey === 'zone'}
+                    dir={sortDir}
+                    onSort={toggleSort}
+                  >
+                    Pickup
+                  </SortableHead>
+                  <TableHead className="text-teal-800/50">Status</TableHead>
+                  <TableHead className="px-4 text-right text-teal-800/50">Actions</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {pageRows.map((booking) => (
+                  <TableRow
+                    key={booking.code}
+                    className={cn(
+                      createdCode === booking.code && 'bg-emerald-50/70',
+                      booking.status === 'Cancelled' && 'bg-rose-50/70 text-rose-900/80',
+                    )}
+                  >
+                    <TableCell
+                      className={cn(
+                        'px-4 font-mono text-[13px] font-medium',
+                        booking.status === 'Cancelled' && 'text-rose-800 line-through decoration-rose-300',
+                      )}
+                    >
+                      {booking.code}
+                    </TableCell>
+                    <TableCell>{formatShortDate(booking.date)}</TableCell>
+                    <TableCell>{booking.program}</TableCell>
+                    <TableCell>{booking.agentName}</TableCell>
+                    <TableCell className="font-mono text-[13px] text-teal-900/70">
+                      {booking.agentRef?.trim() ? booking.agentRef : '—'}
+                    </TableCell>
+                    <TableCell>{booking.leadGuest}</TableCell>
+                    <TableCell>{totalPassengers(booking)}</TableCell>
+                    <TableCell>
+                      {booking.pickupZone} · {booking.pickupTime}
+                    </TableCell>
+                    <TableCell>
+                      <StatusBadge status={booking.status} />
+                    </TableCell>
+                    <TableCell className="px-4 text-right">
+                      {booking.status !== 'Cancelled' ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 text-rose-700 hover:bg-rose-50 hover:text-rose-900"
+                          onClick={() => handleCancel(booking.code)}
+                        >
+                          Cancel
+                        </Button>
+                      ) : (
+                        <span className="text-xs font-medium text-rose-700/70">Cancelled</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+
+            {totalPages > 1 ? (
+              <div className="flex items-center justify-between gap-3 border-t border-teal-900/8 px-4 py-3">
+                <p className="text-sm text-teal-900/50">
+                  Page {safePage} of {totalPages}
+                </p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 gap-1 rounded-xl"
+                    disabled={safePage <= 1}
+                    onClick={() => setPage((current) => Math.max(1, current - 1))}
+                  >
+                    <ChevronLeft className="size-3.5" />
+                    Prev
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 gap-1 rounded-xl"
+                    disabled={safePage >= totalPages}
+                    onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                  >
+                    Next
+                    <ChevronRight className="size-3.5" />
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </>
         )}
       </Surface>
     </div>
   )
 }
-

@@ -6,7 +6,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { buttonVariants } from '@/components/ui/button'
 import { formatLongDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { formatPaxBreakdown, totalPassengers } from '@/lib/types'
+import { formatPaxBreakdown, isNoTransfer, totalPassengers } from '@/lib/types'
 import type { Booking } from '@/lib/types'
 
 export function ConfirmationView({ booking, slug }: { booking: Booking; slug: string }) {
@@ -43,8 +43,15 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
           <Item label="Total Passengers" value={`${formatPaxBreakdown(booking)} (${total})`} />
           <Item
             label="Pickup"
-            value={`${booking.pickupZone}\n${booking.pickupHotel}${booking.roomNumber ? ` · Room ${booking.roomNumber}` : ''}\n${booking.pickupTime}`}
+            value={
+              isNoTransfer(booking.pickupZone)
+                ? 'No Transfer — guest arranges own transport'
+                : `${booking.pickupZone}\n${booking.pickupHotel}${booking.roomNumber ? ` · Room ${booking.roomNumber}` : ''}\n${booking.pickupTime}`
+            }
           />
+          {booking.transferExtraCharge?.trim() ? (
+            <Item label="Extra Charge Transfer" value={booking.transferExtraCharge.trim()} />
+          ) : null}
           <Item label="Note" value={booking.note || '—'} />
           <Item label="Agent" value={booking.agentName} />
         </dl>

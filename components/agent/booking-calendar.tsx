@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/dialog'
 import { toISODate } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { totalPassengers, type Booking } from '@/lib/types'
+import { isActiveBooking, totalPassengers, type Booking } from '@/lib/types'
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
@@ -121,10 +121,26 @@ export function BookingCalendar({ bookings }: { bookings: Booking[] }) {
           ) : (
             <div className="max-h-[60vh] space-y-3 overflow-auto">
               {selectedBookings.map((booking) => (
-                <div key={booking.code} className="rounded-xl border border-neutral-200 p-4">
+                <div
+                  key={booking.code}
+                  className={cn(
+                    'rounded-xl border p-4',
+                    booking.status === 'Cancelled'
+                      ? 'border-rose-200 bg-rose-50/60'
+                      : 'border-neutral-200',
+                  )}
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <div className="font-mono text-sm font-semibold">{booking.code}</div>
+                      <div
+                        className={cn(
+                          'font-mono text-sm font-semibold',
+                          booking.status === 'Cancelled' &&
+                            'text-rose-800 line-through decoration-rose-300',
+                        )}
+                      >
+                        {booking.code}
+                      </div>
                       <div className="text-sm text-neutral-500">{booking.leadGuest}</div>
                     </div>
                     <StatusBadge status={booking.status} />
@@ -177,6 +193,6 @@ function groupByDate(bookings: Booking[]) {
 
 function sumProgram(bookings: Booking[], program: Booking['program']) {
   return bookings
-    .filter((booking) => booking.program === program)
+    .filter((booking) => booking.program === program && isActiveBooking(booking))
     .reduce((sum, booking) => sum + totalPassengers(booking), 0)
 }

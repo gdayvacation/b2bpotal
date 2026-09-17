@@ -25,7 +25,11 @@ export function bookingPrefix(program: 'PP' | 'James Bond') {
   return program === 'PP' ? 'PP' : 'JB'
 }
 
-/** Stem like PP2609- / JB2610- (program + YY + MM). */
+/**
+ * Monthly stem: program + YY + MM + '-'
+ * Examples: PP2609-  JB2701-
+ * (YY/MM from travel date, Gregorian calendar)
+ */
 export function bookingCodeStem(program: 'PP' | 'James Bond', date: string) {
   const prefix = bookingPrefix(program)
   const [year, month] = date.split('-')
@@ -34,12 +38,17 @@ export function bookingCodeStem(program: 'PP' | 'James Bond', date: string) {
   return `${prefix}${yy}${mm}-`
 }
 
+const CODE_SEQ_RE = /^(?:PP|JB)\d{4}-(\d+)$/
+
 /** Next code in format PP2609-0001 (monthly sequence per program). */
 export function nextBookingCode(program: 'PP' | 'James Bond', date: string, existingCodes: string[]) {
   const stem = bookingCodeStem(program, date)
   const sequence = existingCodes
     .filter((code) => code.startsWith(stem))
-    .map((code) => Number(code.slice(stem.length) || '0'))
+    .map((code) => {
+      const match = CODE_SEQ_RE.exec(code)
+      return match ? Number(match[1]) : Number(code.slice(stem.length) || '0')
+    })
     .filter((value) => Number.isFinite(value))
     .reduce((max, value) => Math.max(max, value), 0)
 

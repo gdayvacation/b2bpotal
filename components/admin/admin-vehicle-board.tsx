@@ -31,6 +31,8 @@ import {
   DEFAULT_VAN_CAPACITY,
   emptyVanMeta,
   formatPaxBreakdown,
+  isActiveBooking,
+  isNoTransfer,
   totalPassengers,
   type Booking,
   type DayVehiclePlan,
@@ -68,7 +70,7 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
   const dayBookings = useMemo(
     () =>
       bookings
-        .filter((booking) => booking.date === selectedDate)
+        .filter((booking) => booking.date === selectedDate && isActiveBooking(booking))
         .slice()
         .sort((a, b) => a.code.localeCompare(b.code)),
     [bookings, selectedDate],
@@ -76,7 +78,16 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
 
   const programBookings = useMemo(() => {
     if (!program) return []
-    return dayBookings.filter((booking) => booking.program === program)
+    return dayBookings.filter(
+      (booking) => booking.program === program && !isNoTransfer(booking.pickupZone),
+    )
+  }, [dayBookings, program])
+
+  const noTransferBookings = useMemo(() => {
+    if (!program) return []
+    return dayBookings.filter(
+      (booking) => booking.program === program && isNoTransfer(booking.pickupZone),
+    )
   }, [dayBookings, program])
 
   const plan = program ? getDayVehiclePlan(selectedDate, program) : null
@@ -209,6 +220,7 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
           date={selectedDate}
           program={program}
           bookings={programBookings}
+          noTransferBookings={noTransferBookings}
           plan={plan}
           onAssign={(code, van) => assignBookingToVan(selectedDate, program, code, van)}
           onSaveSplits={(code, legs) => setBookingVanSplits(selectedDate, program, code, legs)}
@@ -268,6 +280,7 @@ function VehicleBoard({
   date,
   program,
   bookings,
+  noTransferBookings = [],
   plan,
   onAssign,
   onSaveSplits,
@@ -278,6 +291,7 @@ function VehicleBoard({
   date: string
   program: Program
   bookings: Booking[]
+  noTransferBookings?: Booking[]
   plan: DayVehiclePlan
   onAssign: (code: string, van: number | null) => void
   onSaveSplits: (code: string, legs: VanSplit[]) => void
@@ -340,6 +354,7 @@ function VehicleBoard({
   const unassignedPax = bookings
     .filter((b) => !plan.assignments[b.code]?.length)
     .reduce((sum, b) => sum + totalPassengers(b), 0)
+  const noTransferPax = noTransferBookings.reduce((sum, b) => sum + totalPassengers(b), 0)
 
   const needsSeparate = bookings.filter((booking) => {
     const pax = totalPassengers(booking)
@@ -386,10 +401,13 @@ function VehicleBoard({
             <p className="mt-1.5 text-base text-teal-900/55">
               {bookings.length} bookings · {totalPax} pax · {assignedCount} assigned · van ≤{' '}
               {capacity}
+              {noTransferBookings.length > 0
+                ? ` · ${noTransferBookings.length} no transfer (${noTransferPax} pax)`
+                : ''}
             </p>
             <p className="mt-1 text-sm text-teal-900/45">
               Auto-assign never splits groups. Bookings over {capacity} pax stay highlighted until
-              you separate them manually.
+              you separate them manually. No Transfer bookings are excluded from vans.
             </p>
           </div>
           <div className="flex flex-wrap gap-2 sm:hidden">

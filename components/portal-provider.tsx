@@ -5,17 +5,31 @@ import { nextBookingCode, uniqueAgentSlug } from '@/lib/format'
 import { autoAssignBoats } from '@/lib/boat-assign'
 import { autoAssignVans, normalizeAssignments } from '@/lib/vehicle-assign'
 import {
+  bookingClosedMessage,
+  cancelClosedMessage,
+  DEFAULT_BOOKING_CUTOFFS,
+  isBookingOpenForDate,
+  isCancelOpenForDate,
+  normalizeBeforeDays,
+  normalizeCutoffTime,
+  type BookingCutoffSettings,
+} from '@/lib/booking-cutoffs'
+import {
   deleteAgent,
+  deleteHotel,
   deleteZone,
   insertBooking,
   loadPortalSnapshot,
   persistQuietly,
   saveDayBoatPlan,
   saveDayVehiclePlan,
+  updateBookingStatus,
   updateBookingsAgentName,
   upsertAgent,
   upsertAvailability,
   upsertAvailabilityRows,
+  upsertBookingCutoffs,
+  upsertHotel,
   upsertZone,
 } from '@/lib/supabase/portal-db'
 import type {
@@ -26,21 +40,26 @@ import type {
   Booking,
   DayBoatPlan,
   DayVehiclePlan,
+  Hotel,
   PickupZone,
   PickupZoneName,
   Program,
   VanMeta,
   VanSplit,
 } from '@/lib/types'
+import { HOTEL_CATALOG } from '@/lib/hotel-catalog'
 import {
   DEFAULT_JB_CAPACITY,
   DEFAULT_PP_CAPACITY,
+  NO_TRANSFER_TIME,
   dayBoatPlanKey,
   dayVehiclePlanKey,
   emptyDayBoatPlan,
   emptyDayVehiclePlan,
   emptyVanMeta,
+  isActiveBooking,
   isCorePickupZone,
+  isNoTransfer,
   totalPassengers,
 } from '@/lib/types'
 
@@ -50,13 +69,42 @@ type PortalContextValue = {
   agents: Agent[]
   bookings: Booking[]
   zones: PickupZone[]
+  hotels: Hotel[]
   availability: Availability[]
   dayBoatPlans: Record<string, DayBoatPlan>
   dayVehiclePlans: Record<string, DayVehiclePlan>
-  addBooking: (booking: Omit<Booking, 'code' | 'status' | 'pickupTime'> & { pickupTime?: string }) => Booking
+  bookingCutoffs: BookingCutoffSettings
+  updateBookingCutoffs: (patch: Partial<BookingCutoffSettings>) => void
+  isBookingOpen: (travelDate: string) => boolean
+  isCancelOpen: (travelDate: string) => boolean
+  addBooking: (
+    booking: Omit<Booking, 'code' | 'status' | 'pickupTime' | 'transferExtraCharge'> & {
+      pickupTime?: string
+      transferExtraCharge?: string
+    },
+    options?: { bypassCutoff?: boolean },
+  ) => { ok: true; booking: Booking } | { ok: false; error: string }
+  cancelBooking: (
+    code: string,
+    options?: { bypassCutoff?: boolean },
+  ) => { ok: true } | { ok: false; error: string }
   updateZoneTime: (name: PickupZoneName, time: string) => void
   addZone: (name: string, time: string) => string | null
   removeZone: (name: PickupZoneName) => void
+  addHotel: (
+    name: string,
+    zoneName: PickupZoneName | null,
+    extraChargeTransfer?: string,
+  ) => string | null
+  updateHotel: (
+    id: string,
+    name: string,
+    zoneName: PickupZoneName | null,
+    extraChargeTransfer?: string,
+  ) => string | null
+  removeHotel: (id: string) => void
+  /** Upsert canonical partner hotel list (Patong/Kata/Karon / unassigned). */
+  importHotelCatalog: () => { added: number; updated: number }
   setAgentStatus: (slug: string, status: AgentStatus) => void
   addAgent: (name: string, country: string) => string | null
   updateAgent: (slug: string, name: string, country: string) => string | null
@@ -111,9 +159,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [agents, setAgents] = useState<Agent[]>([])
   const [bookings, setBookings] = useState<Booking[]>([])
   const [zones, setZones] = useState<PickupZone[]>([])
+  const [hotels, setHotels] = useState<Hotel[]>([])
   const [availability, setAvailability] = useState<Availability[]>([])
   const [dayBoatPlans, setDayBoatPlans] = useState<Record<string, DayBoatPlan>>({})
   const [dayVehiclePlans, setDayVehiclePlans] = useState<Record<string, DayVehiclePlan>>({})
+  const [bookingCutoffs, setBookingCutoffs] = useState<BookingCutoffSettings>(DEFAULT_BOOKING_CUTOFFS)
 
   useEffect(() => {
     let cancelled = false
@@ -124,9 +174,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         setAgents(snapshot.agents)
         setBookings(snapshot.bookings)
         setZones(snapshot.zones)
+        setHotels(snapshot.hotels)
         setAvailability(snapshot.availability)
         setDayBoatPlans(snapshot.dayBoatPlans)
         setDayVehiclePlans(snapshot.dayVehiclePlans)
+        setBookingCutoffs(snapshot.bookingCutoffs)
         setLoadError(null)
       } catch (error) {
         if (cancelled) return
@@ -156,8 +208,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
     const bookedPaxFor = (date: string, program: 'PP' | 'James Bond') =>
       bookings
-        .filter((booking) => booking.date === date && booking.program === program)
+        .filter(
+          (booking) =>
+            isActiveBooking(booking) && booking.date === date && booking.program === program,
+        )
         .reduce((sum, booking) => sum + totalPassengers(booking), 0)
+
+    const activeDayBookings = (date: string, program: Program) =>
+      bookings.filter(
+        (booking) =>
+          isActiveBooking(booking) && booking.date === date && booking.program === program,
+      )
 
     const getDayBoatPlan = (date: string, program: Program) => {
       const key = dayBoatPlanKey(date, program)
@@ -182,7 +243,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       const key = dayVehiclePlanKey(date, program)
       const stored = dayVehiclePlans[key]
       if (!stored) return emptyDayVehiclePlan(date, program)
-      const dayBookings = bookings.filter((b) => b.date === date && b.program === program)
+      const dayBookings = activeDayBookings(date, program)
       return {
         ...emptyDayVehiclePlan(date, program),
         ...stored,
@@ -211,7 +272,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               vanMeta: fromState.vanMeta ?? {},
               assignments: normalizeAssignments(
                 fromState.assignments as unknown as Record<string, unknown>,
-                bookings.filter((b) => b.date === date && b.program === program),
+                activeDayBookings(date, program),
               ),
             }
           : base
@@ -227,36 +288,123 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       agents,
       bookings,
       zones,
+      hotels,
       availability,
       dayBoatPlans,
       dayVehiclePlans,
+      bookingCutoffs,
       getZoneTime,
       getCapacity,
       bookedPaxFor,
       getDayBoatPlan,
       getDayVehiclePlan,
-      addBooking: (input) => {
+      isBookingOpen: (travelDate) => isBookingOpenForDate(bookingCutoffs, travelDate),
+      isCancelOpen: (travelDate) => isCancelOpenForDate(bookingCutoffs, travelDate),
+      updateBookingCutoffs: (patch) => {
+        setBookingCutoffs((current) => {
+          const next: BookingCutoffSettings = {
+            ...current,
+            ...patch,
+            timezone: DEFAULT_BOOKING_CUTOFFS.timezone,
+            bookBeforeDays: normalizeBeforeDays(
+              patch.bookBeforeDays ?? current.bookBeforeDays,
+            ),
+            cancelBeforeDays: normalizeBeforeDays(
+              patch.cancelBeforeDays ?? current.cancelBeforeDays,
+            ),
+            bookUntilTime:
+              normalizeCutoffTime(patch.bookUntilTime ?? current.bookUntilTime) ??
+              current.bookUntilTime,
+            cancelUntilTime:
+              normalizeCutoffTime(patch.cancelUntilTime ?? current.cancelUntilTime) ??
+              current.cancelUntilTime,
+          }
+          persistQuietly('upsertBookingCutoffs', upsertBookingCutoffs(next))
+          return next
+        })
+      },
+      addBooking: (input, options) => {
+        if (!options?.bypassCutoff && !isBookingOpenForDate(bookingCutoffs, input.date)) {
+          return { ok: false, error: bookingClosedMessage(bookingCutoffs, input.date) }
+        }
+
+        const pax = totalPassengers(input)
+        const caps = getCapacity(input.date)
+        const capacity = input.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
+        const booked = bookedPaxFor(input.date, input.program)
+        const seatsLeft = Math.max(0, capacity - booked)
+        if (pax > seatsLeft) {
+          return {
+            ok: false,
+            error:
+              seatsLeft === 0
+                ? `${input.program} is sold out on this date (${capacity} seats).`
+                : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${input.program} on this date (capacity ${capacity}).`,
+          }
+        }
+
         const code = nextBookingCode(
           input.program,
           input.date,
           bookings.map((booking) => booking.code),
         )
+        const noTransfer = isNoTransfer(input.pickupZone)
         const zone = zones.find((item) => item.name === input.pickupZone)
-        const pending = zone?.pending ?? input.pickupZone === 'Other'
-        const pickupTime =
-          input.pickupTime ?? (pending ? 'Awaiting pickup time' : getZoneTime(input.pickupZone))
+        const pending = !noTransfer && (zone?.pending ?? input.pickupZone === 'Other')
+        const pickupTime = noTransfer
+          ? NO_TRANSFER_TIME
+          : (input.pickupTime ?? (pending ? 'Awaiting pickup time' : getZoneTime(input.pickupZone)))
+        const matchedHotel = hotels.find(
+          (hotel) =>
+            hotel.name.toLowerCase() === (input.pickupHotel ?? '').trim().toLowerCase(),
+        )
+        const transferExtraCharge =
+          input.transferExtraCharge?.trim() || matchedHotel?.extraChargeTransfer?.trim() || ''
         const booking: Booking = {
           ...input,
           agentRef: input.agentRef?.trim() ?? '',
           roomNumber: input.roomNumber?.trim() ?? '',
           note: input.note?.trim() ?? '',
+          transferExtraCharge,
           code,
           pickupTime,
           status: pending ? 'Pending Pickup Time' : 'Confirmed',
         }
         setBookings((current) => [booking, ...current])
         persistQuietly('insertBooking', insertBooking(booking))
-        return booking
+        return { ok: true, booking }
+      },
+      cancelBooking: (code, options) => {
+        const existing = bookings.find((booking) => booking.code === code)
+        if (!existing || existing.status === 'Cancelled') {
+          return { ok: false, error: 'Booking not found or already cancelled.' }
+        }
+        if (!options?.bypassCutoff && !isCancelOpenForDate(bookingCutoffs, existing.date)) {
+          return { ok: false, error: cancelClosedMessage(bookingCutoffs, existing.date) }
+        }
+
+        setBookings((current) =>
+          current.map((booking) =>
+            booking.code === code ? { ...booking, status: 'Cancelled' } : booking,
+          ),
+        )
+        persistQuietly('updateBookingStatus', updateBookingStatus(code, 'Cancelled'))
+
+        upsertPlan(existing.date, existing.program, (plan) => {
+          if (!(code in plan.assignments)) return plan
+          const assignments = { ...plan.assignments }
+          delete assignments[code]
+          return { ...plan, assignments }
+        })
+
+        upsertVehiclePlan(existing.date, existing.program, (plan) => {
+          if (!(code in plan.assignments)) return plan
+          const assignments = { ...plan.assignments }
+          delete assignments[code]
+          return { ...plan, assignments }
+        })
+
+        return { ok: true }
       },
       updateZoneTime: (name, time) => {
         setZones((current) => {
@@ -276,6 +424,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const trimmedTime = time.trim()
         if (!trimmedName) return 'Enter a zone name.'
         if (!trimmedTime) return 'Enter a pickup time.'
+        if (isNoTransfer(trimmedName)) {
+          return 'No Transfer is a built-in booking option, not a pickup zone.'
+        }
         const exists = zones.some(
           (zone) => zone.name.toLowerCase() === trimmedName.toLowerCase(),
         )
@@ -296,7 +447,110 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       removeZone: (name) => {
         if (isCorePickupZone(name)) return
         setZones((current) => current.filter((zone) => zone.name !== name))
+        setHotels((current) =>
+          current.map((hotel) =>
+            hotel.zoneName === name ? { ...hotel, zoneName: null } : hotel,
+          ),
+        )
         persistQuietly('deleteZone', deleteZone(name))
+      },
+      addHotel: (name, zoneName, extraChargeTransfer) => {
+        const trimmedName = name.trim().replace(/\s+/g, ' ')
+        if (!trimmedName) return 'Enter a hotel name.'
+        const duplicate = hotels.some(
+          (hotel) => hotel.name.toLowerCase() === trimmedName.toLowerCase(),
+        )
+        if (duplicate) return 'This hotel already exists.'
+        if (zoneName) {
+          const zoneExists = zones.some((zone) => zone.name === zoneName)
+          if (!zoneExists) return 'Select a valid pickup zone.'
+        }
+        const note = (extraChargeTransfer ?? '').trim()
+        const hotel: Hotel = {
+          id: crypto.randomUUID(),
+          name: trimmedName,
+          zoneName,
+          active: true,
+          extraChargeTransfer: note,
+        }
+        setHotels((current) =>
+          [...current, hotel].sort((a, b) => a.name.localeCompare(b.name)),
+        )
+        persistQuietly('upsertHotel', upsertHotel(hotel))
+        return null
+      },
+      updateHotel: (id, name, zoneName, extraChargeTransfer) => {
+        const trimmedName = name.trim().replace(/\s+/g, ' ')
+        if (!trimmedName) return 'Enter a hotel name.'
+        const duplicate = hotels.some(
+          (hotel) =>
+            hotel.id !== id && hotel.name.toLowerCase() === trimmedName.toLowerCase(),
+        )
+        if (duplicate) return 'This hotel already exists.'
+        if (zoneName) {
+          const zoneExists = zones.some((zone) => zone.name === zoneName)
+          if (!zoneExists) return 'Select a valid pickup zone.'
+        }
+        const existing = hotels.find((hotel) => hotel.id === id)
+        if (!existing) return 'Hotel not found.'
+        const note = (extraChargeTransfer ?? existing.extraChargeTransfer).trim()
+        const updated: Hotel = {
+          ...existing,
+          name: trimmedName,
+          zoneName,
+          extraChargeTransfer: note,
+        }
+        setHotels((current) =>
+          current
+            .map((hotel) => (hotel.id === id ? updated : hotel))
+            .sort((a, b) => a.name.localeCompare(b.name)),
+        )
+        persistQuietly('upsertHotel', upsertHotel(updated))
+        return null
+      },
+      removeHotel: (id) => {
+        setHotels((current) => current.filter((hotel) => hotel.id !== id))
+        persistQuietly('deleteHotel', deleteHotel(id))
+      },
+      importHotelCatalog: () => {
+        let added = 0
+        let updated = 0
+        const byName = new Map(
+          hotels.map((hotel) => [hotel.name.toLowerCase(), hotel] as const),
+        )
+        const next = [...hotels]
+        for (const [index, entry] of HOTEL_CATALOG.entries()) {
+          const key = entry.name.toLowerCase()
+          const existing = byName.get(key)
+          if (existing) {
+            if (existing.zoneName !== entry.zoneName) {
+              const hotel: Hotel = {
+                ...existing,
+                zoneName: entry.zoneName,
+                active: true,
+              }
+              const at = next.findIndex((item) => item.id === existing.id)
+              if (at >= 0) next[at] = hotel
+              byName.set(key, hotel)
+              persistQuietly('upsertHotel', upsertHotel(hotel, (index + 1) * 10))
+              updated += 1
+            }
+            continue
+          }
+          const hotel: Hotel = {
+            id: crypto.randomUUID(),
+            name: entry.name,
+            zoneName: entry.zoneName,
+            active: true,
+            extraChargeTransfer: '',
+          }
+          next.push(hotel)
+          byName.set(key, hotel)
+          persistQuietly('upsertHotel', upsertHotel(hotel, (index + 1) * 10))
+          added += 1
+        }
+        setHotels(next.sort((a, b) => a.name.localeCompare(b.name)))
+        return { added, updated }
       },
       setAgentStatus: (slug, status) => {
         setAgents((current) => {
@@ -439,9 +693,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         })
       },
       autoAssignDayBoats: (date, program) => {
-        const dayBookings = bookings.filter(
-          (booking) => booking.date === date && booking.program === program,
-        )
+        const dayBookings = activeDayBookings(date, program)
         upsertPlan(date, program, (plan) => ({
           ...plan,
           assignments: autoAssignBoats(dayBookings, plan.capacities),
@@ -451,7 +703,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         upsertPlan(date, program, (plan) => ({ ...plan, assignments: {} }))
       },
       assignBookingToVan: (date, program, bookingCode, van) => {
-        const booking = bookings.find((item) => item.code === bookingCode)
+        const booking = bookings.find((item) => item.code === bookingCode && isActiveBooking(item))
         const pax = booking ? totalPassengers(booking) : 0
         upsertVehiclePlan(date, program, (plan) => {
           const assignments = { ...plan.assignments }
@@ -488,9 +740,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         })
       },
       autoAssignDayVans: (date, program) => {
-        const dayBookings = bookings.filter(
-          (booking) => booking.date === date && booking.program === program,
-        )
+        const dayBookings = activeDayBookings(date, program)
         upsertVehiclePlan(date, program, (plan) => ({
           ...plan,
           assignments: autoAssignVans(dayBookings, plan.vanCapacity),
@@ -504,7 +754,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }))
       },
     }
-  }, [agents, bookings, zones, availability, dayBoatPlans, dayVehiclePlans, hydrated, loadError])
+  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, bookingCutoffs, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }

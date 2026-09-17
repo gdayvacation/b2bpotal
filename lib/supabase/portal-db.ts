@@ -1,4 +1,10 @@
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
+import {
+  DEFAULT_BOOKING_CUTOFFS,
+  normalizeBeforeDays,
+  normalizeCutoffTime,
+  type BookingCutoffSettings,
+} from '@/lib/booking-cutoffs'
 import type {
   Agent,
   AgentStatus,
@@ -7,6 +13,7 @@ import type {
   Booking,
   DayBoatPlan,
   DayVehiclePlan,
+  Hotel,
   PickupZone,
   Program,
   VanMeta,
@@ -28,6 +35,15 @@ type ZoneRow = {
   sort_order: number
 }
 
+type HotelRow = {
+  id: string
+  name: string
+  zone_name: string | null
+  active: boolean
+  extra_charge_transfer?: string | null
+  sort_order: number
+}
+
 type BookingRow = {
   code: string
   agent_slug: string
@@ -46,6 +62,7 @@ type BookingRow = {
   pickup_hotel: string
   room_number: string
   note: string
+  transfer_extra_charge?: string | null
   pickup_time: string
   status: Booking['status']
 }
@@ -93,13 +110,24 @@ type VanAssignmentRow = {
   pax: number
 }
 
+type BookingCutoffRow = {
+  id: string
+  timezone: string
+  book_before_days: number
+  book_until_time: string
+  cancel_before_days: number
+  cancel_until_time: string
+}
+
 export type PortalSnapshot = {
   agents: Agent[]
   zones: PickupZone[]
+  hotels: Hotel[]
   bookings: Booking[]
   availability: Availability[]
   dayBoatPlans: Record<string, DayBoatPlan>
   dayVehiclePlans: Record<string, DayVehiclePlan>
+  bookingCutoffs: BookingCutoffSettings
 }
 
 function asDateString(value: string) {
@@ -123,6 +151,16 @@ function mapZone(row: ZoneRow): PickupZone {
   }
 }
 
+function mapHotel(row: HotelRow): Hotel {
+  return {
+    id: row.id,
+    name: row.name,
+    zoneName: row.zone_name,
+    active: row.active,
+    extraChargeTransfer: row.extra_charge_transfer ?? '',
+  }
+}
+
 function mapBooking(row: BookingRow): Booking {
   return {
     code: row.code,
@@ -142,6 +180,7 @@ function mapBooking(row: BookingRow): Booking {
     pickupHotel: row.pickup_hotel,
     roomNumber: row.room_number ?? '',
     note: row.note ?? '',
+    transferExtraCharge: row.transfer_extra_charge ?? '',
     pickupTime: row.pickup_time,
     status: row.status,
   }
@@ -166,6 +205,7 @@ function bookingToRow(booking: Booking): BookingRow {
     pickup_hotel: booking.pickupHotel,
     room_number: booking.roomNumber ?? '',
     note: booking.note ?? '',
+    transfer_extra_charge: booking.transferExtraCharge ?? '',
     pickup_time: booking.pickupTime,
     status: booking.status,
   }
@@ -176,6 +216,20 @@ function mapAvailability(row: AvailabilityRow): Availability {
     date: asDateString(row.date),
     ppCapacity: row.pp_capacity,
     jamesBondCapacity: row.james_bond_capacity,
+  }
+}
+
+function mapBookingCutoffs(row: BookingCutoffRow | null | undefined): BookingCutoffSettings {
+  if (!row) return { ...DEFAULT_BOOKING_CUTOFFS }
+  const bookUntil = normalizeCutoffTime(row.book_until_time) ?? DEFAULT_BOOKING_CUTOFFS.bookUntilTime
+  const cancelUntil =
+    normalizeCutoffTime(row.cancel_until_time) ?? DEFAULT_BOOKING_CUTOFFS.cancelUntilTime
+  return {
+    timezone: DEFAULT_BOOKING_CUTOFFS.timezone,
+    bookBeforeDays: normalizeBeforeDays(row.book_before_days),
+    bookUntilTime: bookUntil,
+    cancelBeforeDays: normalizeBeforeDays(row.cancel_before_days),
+    cancelUntilTime: cancelUntil,
   }
 }
 
@@ -254,6 +308,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
   const [
     agentsRes,
     zonesRes,
+    hotelsRes,
     bookingsRes,
     availabilityRes,
     boatPlansRes,
@@ -261,9 +316,11 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     vehiclePlansRes,
     vanMetaRes,
     vanAssignRes,
+    cutoffsRes,
   ] = await Promise.all([
     supabase.from('agents').select('*').order('name'),
     supabase.from('pickup_zones').select('*').order('sort_order'),
+    supabase.from('hotels').select('*').order('name'),
     supabase.from('bookings').select('*').order('date', { ascending: false }),
     supabase.from('availability').select('*').order('date'),
     supabase.from('day_boat_plans').select('*'),
@@ -271,6 +328,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     supabase.from('day_vehicle_plans').select('*'),
     supabase.from('van_meta').select('*'),
     supabase.from('van_assignments').select('*'),
+    supabase.from('booking_cutoffs').select('*').eq('id', 'default').maybeSingle(),
   ])
 
   await assertOk('agents', agentsRes.error, agentsRes.data)
@@ -283,9 +341,30 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
   await assertOk('van_meta', vanMetaRes.error, vanMetaRes.data)
   await assertOk('van_assignments', vanAssignRes.error, vanAssignRes.data)
 
+  let hotels: Hotel[] = []
+  if (hotelsRes.error) {
+    console.warn(
+      '[supabase] hotels table unavailable — run supabase/add-hotels.sql',
+      hotelsRes.error.message,
+    )
+  } else {
+    hotels = (hotelsRes.data as HotelRow[]).map(mapHotel)
+  }
+
+  let bookingCutoffs = { ...DEFAULT_BOOKING_CUTOFFS }
+  if (cutoffsRes.error) {
+    console.warn(
+      '[supabase] booking_cutoffs table unavailable — run supabase/add-booking-cutoffs.sql',
+      cutoffsRes.error.message,
+    )
+  } else {
+    bookingCutoffs = mapBookingCutoffs(cutoffsRes.data as BookingCutoffRow | null)
+  }
+
   return {
     agents: (agentsRes.data as AgentRow[]).map(mapAgent),
     zones: (zonesRes.data as ZoneRow[]).map(mapZone),
+    hotels,
     bookings: (bookingsRes.data as BookingRow[]).map(mapBooking),
     availability: (availabilityRes.data as AvailabilityRow[]).map(mapAvailability),
     dayBoatPlans: buildBoatPlans(
@@ -297,6 +376,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
       vanMetaRes.data as VanMetaRow[],
       vanAssignRes.data as VanAssignmentRow[],
     ),
+    bookingCutoffs,
   }
 }
 
@@ -304,6 +384,12 @@ export async function insertBooking(booking: Booking) {
   const supabase = getSupabaseBrowserClient()
   const { error } = await supabase.from('bookings').insert(bookingToRow(booking))
   if (error) throw new Error(`insert booking: ${error.message}`)
+}
+
+export async function updateBookingStatus(code: string, status: Booking['status']) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase.from('bookings').update({ status }).eq('code', code)
+  if (error) throw new Error(`update booking status: ${error.message}`)
 }
 
 export async function upsertAgent(agent: Agent) {
@@ -344,6 +430,25 @@ export async function deleteZone(name: string) {
   const supabase = getSupabaseBrowserClient()
   const { error } = await supabase.from('pickup_zones').delete().eq('name', name)
   if (error) throw new Error(`delete zone: ${error.message}`)
+}
+
+export async function upsertHotel(hotel: Hotel, sortOrder = 100) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase.from('hotels').upsert({
+    id: hotel.id,
+    name: hotel.name,
+    zone_name: hotel.zoneName,
+    active: hotel.active,
+    extra_charge_transfer: hotel.extraChargeTransfer ?? '',
+    sort_order: sortOrder,
+  })
+  if (error) throw new Error(`upsert hotel: ${error.message}`)
+}
+
+export async function deleteHotel(id: string) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase.from('hotels').delete().eq('id', id)
+  if (error) throw new Error(`delete hotel: ${error.message}`)
 }
 
 export async function upsertAvailability(row: Availability) {
@@ -456,6 +561,23 @@ export async function saveDayVehiclePlan(plan: DayVehiclePlan) {
 
   const { error: insertError } = await supabase.from('van_assignments').insert(assignRows)
   if (insertError) throw new Error(`insert van assignments: ${insertError.message}`)
+}
+
+export async function upsertBookingCutoffs(settings: BookingCutoffSettings) {
+  const supabase = getSupabaseBrowserClient()
+  const bookUntil =
+    normalizeCutoffTime(settings.bookUntilTime) ?? DEFAULT_BOOKING_CUTOFFS.bookUntilTime
+  const cancelUntil =
+    normalizeCutoffTime(settings.cancelUntilTime) ?? DEFAULT_BOOKING_CUTOFFS.cancelUntilTime
+  const { error } = await supabase.from('booking_cutoffs').upsert({
+    id: 'default',
+    timezone: DEFAULT_BOOKING_CUTOFFS.timezone,
+    book_before_days: normalizeBeforeDays(settings.bookBeforeDays),
+    book_until_time: bookUntil,
+    cancel_before_days: normalizeBeforeDays(settings.cancelBeforeDays),
+    cancel_until_time: cancelUntil,
+  })
+  if (error) throw new Error(`upsert booking cutoffs: ${error.message}`)
 }
 
 export function persistQuietly(label: string, task: Promise<unknown>) {

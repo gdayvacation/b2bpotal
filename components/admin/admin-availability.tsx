@@ -3,22 +3,41 @@
 import { useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, Minus, Plus } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
-import { PageHeader, Segment, SegmentedControl, Surface } from '@/components/ui-primitives'
+import { PageHeader, Segment, SegmentedControl, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import {
+  addCalendarDays,
+  formatCutoffDeadline,
+  isBookingOpenForDate,
+  isCancelOpenForDate,
+  summarizeCutoffRule,
+} from '@/lib/booking-cutoffs'
 import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
-import { DEFAULT_JB_CAPACITY, DEFAULT_PP_CAPACITY } from '@/lib/types'
+import { DEFAULT_JB_CAPACITY, DEFAULT_PP_CAPACITY, type Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const DEFAULT_MONTH = new Date(2026, 8, 1)
 
-type Tab = 'capacity' | 'status'
+type Tab = 'capacity' | 'status' | 'cutoffs'
+type ProgramFilter = 'all' | Program
 
 export function AdminAvailability() {
-  const { getCapacity, bookedPaxFor, setCapacityForDates, nudgeCapacityForDates } = usePortal()
+  const {
+    getCapacity,
+    bookedPaxFor,
+    setCapacityForDates,
+    nudgeCapacityForDates,
+    bookingCutoffs,
+    updateBookingCutoffs,
+  } = usePortal()
   const [tab, setTab] = useState<Tab>('capacity')
   const [month, setMonth] = useState(DEFAULT_MONTH)
   const [selected, setSelected] = useState<string[]>(['2026-09-17'])
+  const [programFilter, setProgramFilter] = useState<ProgramFilter>('all')
+  const showPP = programFilter === 'all' || programFilter === 'PP'
+  const showJB = programFilter === 'all' || programFilter === 'James Bond'
 
   const days = useMemo(() => buildMonth(month), [month])
   const monthLabel = month.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
@@ -36,6 +55,16 @@ export function AdminAvailability() {
       jamesBondCapacity: jbValues.size === 1 ? [...jbValues][0] : null,
     }
   }, [selectedSorted, getCapacity])
+
+  const previewTravelDate = useMemo(() => {
+    const bangkokToday = new Intl.DateTimeFormat('en-CA', {
+      timeZone: bookingCutoffs.timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date())
+    return addCalendarDays(bangkokToday, 1)
+  }, [bookingCutoffs.timezone])
 
   function toggleDay(iso: string) {
     setSelected((current) =>
@@ -71,12 +100,14 @@ export function AdminAvailability() {
     setSelected(next)
   }
 
+  const headerDescription =
+    tab === 'cutoffs'
+      ? `Agents may book or cancel until a set time relative to the travel date (${bookingCutoffs.timezone}). Admin can always bypass.`
+      : `Default every day: PP ${DEFAULT_PP_CAPACITY} · James Bond ${DEFAULT_JB_CAPACITY}. Adjust per day or view live booking status.`
+
   return (
     <div className="mx-auto max-w-5xl">
-      <PageHeader
-        title="Availability"
-        description={`Default every day: PP ${DEFAULT_PP_CAPACITY} · James Bond ${DEFAULT_JB_CAPACITY}. Adjust per day or view live booking status.`}
-      />
+      <PageHeader title="Availability" description={headerDescription} />
 
       <SegmentedControl className="mb-4 w-full sm:w-auto">
         <Segment
@@ -93,213 +124,397 @@ export function AdminAvailability() {
         >
           Booking status
         </Segment>
+        <Segment
+          active={tab === 'cutoffs'}
+          onClick={() => setTab('cutoffs')}
+          className="flex-1 sm:flex-none"
+        >
+          Booking cutoffs
+        </Segment>
       </SegmentedControl>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_300px]">
-        <Surface className="p-4 sm:p-5">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold tracking-tight text-teal-950">{monthLabel}</h2>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}
-              >
-                <ChevronLeft />
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}
-              >
-                <ChevronRight />
-              </Button>
+      {tab === 'cutoffs' ? (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Surface className="p-5 sm:p-6">
+            <h2 className="text-sm font-semibold text-teal-950">Last book time</h2>
+            <p className="mt-1 text-xs leading-relaxed text-teal-950/50">
+              Agents can create bookings for a travel date until this deadline.
+            </p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-[7.5rem_1fr]">
+              <div>
+                <SoftLabel htmlFor="book-before-days">Days before</SoftLabel>
+                <Input
+                  id="book-before-days"
+                  type="number"
+                  min={0}
+                  max={30}
+                  className="mt-1.5 h-10"
+                  value={bookingCutoffs.bookBeforeDays}
+                  onChange={(event) =>
+                    updateBookingCutoffs({ bookBeforeDays: Number(event.target.value) || 0 })
+                  }
+                />
+              </div>
+              <div>
+                <SoftLabel htmlFor="book-until-time">Until time</SoftLabel>
+                <Input
+                  id="book-until-time"
+                  type="time"
+                  className="mt-1.5 h-10"
+                  value={bookingCutoffs.bookUntilTime}
+                  onChange={(event) => updateBookingCutoffs({ bookUntilTime: event.target.value })}
+                />
+              </div>
             </div>
-          </div>
+            <p className="mt-3 text-xs text-teal-800/65">
+              Rule: {summarizeCutoffRule(bookingCutoffs.bookBeforeDays, bookingCutoffs.bookUntilTime)}
+            </p>
+          </Surface>
 
-          {tab === 'capacity' ? (
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs text-teal-950/50">
-                Click days to select. Use the panel to raise or lower seats.
-              </p>
+          <Surface className="p-5 sm:p-6">
+            <h2 className="text-sm font-semibold text-teal-950">Last cancel time</h2>
+            <p className="mt-1 text-xs leading-relaxed text-teal-950/50">
+              Agents can cancel their own bookings until this deadline for that travel date.
+            </p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-[7.5rem_1fr]">
+              <div>
+                <SoftLabel htmlFor="cancel-before-days">Days before</SoftLabel>
+                <Input
+                  id="cancel-before-days"
+                  type="number"
+                  min={0}
+                  max={30}
+                  className="mt-1.5 h-10"
+                  value={bookingCutoffs.cancelBeforeDays}
+                  onChange={(event) =>
+                    updateBookingCutoffs({ cancelBeforeDays: Number(event.target.value) || 0 })
+                  }
+                />
+              </div>
+              <div>
+                <SoftLabel htmlFor="cancel-until-time">Until time</SoftLabel>
+                <Input
+                  id="cancel-until-time"
+                  type="time"
+                  className="mt-1.5 h-10"
+                  value={bookingCutoffs.cancelUntilTime}
+                  onChange={(event) =>
+                    updateBookingCutoffs({ cancelUntilTime: event.target.value })
+                  }
+                />
+              </div>
+            </div>
+            <p className="mt-3 text-xs text-teal-800/65">
+              Rule:{' '}
+              {summarizeCutoffRule(bookingCutoffs.cancelBeforeDays, bookingCutoffs.cancelUntilTime)}
+            </p>
+          </Surface>
+
+          <Surface className="p-5 sm:p-6 lg:col-span-2">
+            <h2 className="text-sm font-semibold text-teal-950">Live preview</h2>
+            <p className="mt-1 text-xs text-teal-950/50">
+              Example travel date {formatLongDate(previewTravelDate)} (tomorrow in{' '}
+              {bookingCutoffs.timezone}).
+            </p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <CutoffPreviewCard
+                label="Book"
+                open={isBookingOpenForDate(bookingCutoffs, previewTravelDate)}
+                deadline={formatCutoffDeadline(
+                  previewTravelDate,
+                  bookingCutoffs.bookBeforeDays,
+                  bookingCutoffs.bookUntilTime,
+                )}
+              />
+              <CutoffPreviewCard
+                label="Cancel"
+                open={isCancelOpenForDate(bookingCutoffs, previewTravelDate)}
+                deadline={formatCutoffDeadline(
+                  previewTravelDate,
+                  bookingCutoffs.cancelBeforeDays,
+                  bookingCutoffs.cancelUntilTime,
+                )}
+              />
+            </div>
+          </Surface>
+        </div>
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_300px]">
+          <Surface className="p-4 sm:p-5">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold tracking-tight text-teal-950">{monthLabel}</h2>
               <div className="flex gap-2">
-                <Button type="button" variant="outline" size="sm" onClick={selectWeekFromFirst}>
-                  Next 7 days
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}
+                >
+                  <ChevronLeft />
                 </Button>
                 <Button
                   type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={selected.length === 0}
-                  onClick={() => setSelected([])}
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}
                 >
-                  Clear
+                  <ChevronRight />
                 </Button>
               </div>
             </div>
-          ) : (
-            <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-teal-950/55">
-              <span className="inline-flex items-center gap-1.5">
-                <span className="size-2.5 rounded-sm bg-emerald-500" /> Available
-              </span>
-              <span className="inline-flex items-center gap-1.5">
-                <span className="size-2.5 rounded-sm bg-rose-500" /> Booked
-              </span>
-            </div>
-          )}
 
-          <div className="grid grid-cols-7 gap-px overflow-hidden rounded-xl border border-teal-900/10 bg-teal-900/10">
-            {WEEKDAYS.map((day) => (
-              <div
-                key={day}
-                className="bg-teal-50/80 px-1 py-2 text-center text-[10px] font-medium tracking-wide text-teal-700/45 uppercase sm:text-[11px]"
-              >
-                <span className="sm:hidden">{day.slice(0, 1)}</span>
-                <span className="hidden sm:inline">{day}</span>
-              </div>
-            ))}
-
-            {days.map((cell, index) => {
-              if (!cell) {
-                return <div key={`empty-${index}`} className="min-h-[88px] bg-white sm:min-h-[104px]" />
-              }
-
-              const iso = toISODate(cell)
-              const capacity = getCapacity(iso)
-              const ppBooked = bookedPaxFor(iso, 'PP')
-              const jbBooked = bookedPaxFor(iso, 'James Bond')
-              const ppLeft = Math.max(capacity.ppCapacity - ppBooked, 0)
-              const jbLeft = Math.max(capacity.jamesBondCapacity - jbBooked, 0)
-              const isSelected = selected.includes(iso)
-
-              if (tab === 'capacity') {
-                return (
-                  <button
-                    key={iso}
+            {tab === 'capacity' ? (
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-teal-950/50">
+                  Click days to select. Use the panel to raise or lower seats.
+                </p>
+                <div className="flex gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={selectWeekFromFirst}>
+                    Next 7 days
+                  </Button>
+                  <Button
                     type="button"
-                    onClick={() => toggleDay(iso)}
-                    className={cn(
-                      'min-h-[88px] bg-white p-1.5 text-left transition-colors hover:bg-teal-50/70 sm:min-h-[104px] sm:p-2',
-                      isSelected && 'bg-teal-50 ring-1 ring-inset ring-teal-700',
-                    )}
+                    variant="ghost"
+                    size="sm"
+                    disabled={selected.length === 0}
+                    onClick={() => setSelected([])}
                   >
-                    <div className="text-xs font-medium text-teal-900 sm:text-sm">{cell.getDate()}</div>
-                    <div className="mt-1.5 space-y-1">
-                      <CapacityChip label="PP" value={capacity.ppCapacity} />
-                      <CapacityChip label="JB" value={capacity.jamesBondCapacity} />
-                    </div>
-                  </button>
-                )
-              }
-
-              return (
-                <button
-                  key={iso}
-                  type="button"
-                  onClick={() => selectOnly(iso)}
-                  className={cn(
-                    'min-h-[88px] bg-white p-1.5 text-left transition-colors hover:bg-teal-50/70 sm:min-h-[104px] sm:p-2',
-                    isSelected && selected.length === 1 && 'ring-1 ring-inset ring-teal-700',
-                  )}
-                >
-                  <div className="text-xs font-medium text-teal-900 sm:text-sm">{cell.getDate()}</div>
-                  <div className="mt-1.5 space-y-1">
-                    <StatusChips label="PP" available={ppLeft} booked={ppBooked} />
-                    <StatusChips label="JB" available={jbLeft} booked={jbBooked} />
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-        </Surface>
-
-        <Surface className="flex h-fit flex-col p-5">
-          {tab === 'capacity' ? (
-            <>
-              <h2 className="text-sm font-semibold text-teal-950">Edit seats</h2>
-              <p className="mt-1 text-xs text-teal-950/50">
-                {selectedSorted.length === 0
-                  ? 'Select one or more days on the calendar.'
-                  : selectedSorted.length === 1
-                    ? formatLongDate(selectedSorted[0])
-                    : `${selectedSorted.length} days selected`}
-              </p>
-
-              {selectedSorted.length > 1 ? (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {selectedSorted.slice(0, 8).map((iso) => (
-                    <span
-                      key={iso}
-                      className="rounded-md bg-teal-50 px-2 py-1 text-[11px] font-medium text-teal-800"
-                    >
-                      {formatShortDate(iso)}
-                    </span>
-                  ))}
-                  {selectedSorted.length > 8 ? (
-                    <span className="px-1 py-1 text-[11px] text-neutral-500">
-                      +{selectedSorted.length - 8} more
-                    </span>
-                  ) : null}
+                    Clear
+                  </Button>
                 </div>
-              ) : null}
-
-              <div className="mt-5 space-y-4">
-                <StepperRow
-                  name="PP"
-                  value={sharedCapacity?.ppCapacity ?? null}
-                  disabled={selectedSorted.length === 0}
-                  onDecrement={() => bumpCapacity('PP', -1)}
-                  onIncrement={() => bumpCapacity('PP', 1)}
-                  onChange={(value) => setAbsoluteCapacity('PP', value)}
-                />
-                <StepperRow
-                  name="James Bond"
-                  value={sharedCapacity?.jamesBondCapacity ?? null}
-                  disabled={selectedSorted.length === 0}
-                  onDecrement={() => bumpCapacity('James Bond', -1)}
-                  onIncrement={() => bumpCapacity('James Bond', 1)}
-                  onChange={(value) => setAbsoluteCapacity('James Bond', value)}
-                />
               </div>
+            ) : (
+              <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+                <div className="flex flex-wrap items-center gap-3 text-xs text-teal-950/55">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="size-2.5 rounded-sm bg-emerald-500" /> Available
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="size-2.5 rounded-sm bg-rose-500" /> Booked
+                  </span>
+                </div>
+                <SegmentedControl>
+                  <Segment active={programFilter === 'all'} onClick={() => setProgramFilter('all')}>
+                    All
+                  </Segment>
+                  <Segment active={programFilter === 'PP'} onClick={() => setProgramFilter('PP')}>
+                    PP
+                  </Segment>
+                  <Segment
+                    active={programFilter === 'James Bond'}
+                    onClick={() => setProgramFilter('James Bond')}
+                  >
+                    James Bond
+                  </Segment>
+                </SegmentedControl>
+              </div>
+            )}
 
-              {selectedSorted.length > 1 &&
-              (sharedCapacity?.ppCapacity === null || sharedCapacity?.jamesBondCapacity === null) ? (
-                <p className="mt-4 text-xs leading-relaxed text-neutral-500">
-                  Mixed values across selected days. +/- adjusts each day from its current number.
+            <div className="overflow-hidden rounded-xl border border-teal-900/12">
+              <div className="grid grid-cols-7 -mb-px -mr-px">
+                {WEEKDAYS.map((day) => (
+                  <div
+                    key={day}
+                    className="border-r border-b border-teal-900/12 bg-teal-50/80 px-1 py-2 text-center text-[10px] font-medium tracking-wide text-teal-700/45 uppercase sm:text-[11px]"
+                  >
+                    <span className="sm:hidden">{day.slice(0, 1)}</span>
+                    <span className="hidden sm:inline">{day}</span>
+                  </div>
+                ))}
+
+                {days.map((cell, index) => {
+                  if (!cell) {
+                    return (
+                      <div
+                        key={`empty-${index}`}
+                        className="min-h-[88px] border-r border-b border-teal-900/12 bg-white/70 sm:min-h-[104px]"
+                      />
+                    )
+                  }
+
+                  const iso = toISODate(cell)
+                  const capacity = getCapacity(iso)
+                  const ppBooked = bookedPaxFor(iso, 'PP')
+                  const jbBooked = bookedPaxFor(iso, 'James Bond')
+                  const ppLeft = Math.max(capacity.ppCapacity - ppBooked, 0)
+                  const jbLeft = Math.max(capacity.jamesBondCapacity - jbBooked, 0)
+                  const isSelected = selected.includes(iso)
+
+                  if (tab === 'capacity') {
+                    return (
+                      <button
+                        key={iso}
+                        type="button"
+                        onClick={() => toggleDay(iso)}
+                        className={cn(
+                          'min-h-[88px] border-r border-b border-teal-900/12 bg-white p-1.5 text-left transition-colors hover:bg-teal-50/70 sm:min-h-[104px] sm:p-2',
+                          isSelected && 'bg-teal-50 shadow-[inset_0_0_0_2px_rgb(15_118_110)]',
+                        )}
+                      >
+                        <div className="text-xs font-medium text-teal-900 sm:text-sm">
+                          {cell.getDate()}
+                        </div>
+                        <div className="mt-1.5 space-y-1">
+                          <CapacityChip label="PP" value={capacity.ppCapacity} />
+                          <CapacityChip label="JB" value={capacity.jamesBondCapacity} />
+                        </div>
+                      </button>
+                    )
+                  }
+
+                  return (
+                    <button
+                      key={iso}
+                      type="button"
+                      onClick={() => selectOnly(iso)}
+                      className={cn(
+                        'min-h-[88px] border-r border-b border-teal-900/12 bg-white p-1.5 text-left transition-colors hover:bg-teal-50/70 sm:min-h-[104px] sm:p-2',
+                        isSelected &&
+                          selected.length === 1 &&
+                          'bg-teal-50/80 shadow-[inset_0_0_0_2px_rgb(15_118_110)]',
+                      )}
+                    >
+                      <div className="text-xs font-medium text-teal-900 sm:text-sm">
+                        {cell.getDate()}
+                      </div>
+                      <div className="mt-1.5 space-y-1">
+                        {showPP ? (
+                          <StatusChips label="PP" available={ppLeft} booked={ppBooked} />
+                        ) : null}
+                        {showJB ? (
+                          <StatusChips label="JB" available={jbLeft} booked={jbBooked} />
+                        ) : null}
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </Surface>
+
+          <Surface className="flex h-fit flex-col p-5">
+            {tab === 'capacity' ? (
+              <>
+                <h2 className="text-sm font-semibold text-teal-950">Edit seats</h2>
+                <p className="mt-1 text-xs text-teal-950/50">
+                  {selectedSorted.length === 0
+                    ? 'Select one or more days on the calendar.'
+                    : selectedSorted.length === 1
+                      ? formatLongDate(selectedSorted[0])
+                      : `${selectedSorted.length} days selected`}
                 </p>
-              ) : null}
-            </>
-          ) : (
-            <>
-              <h2 className="text-sm font-semibold text-teal-950">Day status</h2>
-              <p className="mt-1 text-xs text-teal-950/50">
-                {singleIso ? formatLongDate(singleIso) : 'Click a day to inspect seats.'}
-              </p>
 
-              {singleIso ? (
-                <div className="mt-5 space-y-3">
-                  <StatusDetail
+                {selectedSorted.length > 1 ? (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {selectedSorted.slice(0, 8).map((iso) => (
+                      <span
+                        key={iso}
+                        className="rounded-md bg-teal-50 px-2 py-1 text-[11px] font-medium text-teal-800"
+                      >
+                        {formatShortDate(iso)}
+                      </span>
+                    ))}
+                    {selectedSorted.length > 8 ? (
+                      <span className="px-1 py-1 text-[11px] text-neutral-500">
+                        +{selectedSorted.length - 8} more
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <div className="mt-5 space-y-4">
+                  <StepperRow
                     name="PP"
-                    capacity={getCapacity(singleIso).ppCapacity}
-                    booked={bookedPaxFor(singleIso, 'PP')}
+                    value={sharedCapacity?.ppCapacity ?? null}
+                    disabled={selectedSorted.length === 0}
+                    onDecrement={() => bumpCapacity('PP', -1)}
+                    onIncrement={() => bumpCapacity('PP', 1)}
+                    onChange={(value) => setAbsoluteCapacity('PP', value)}
                   />
-                  <StatusDetail
+                  <StepperRow
                     name="James Bond"
-                    capacity={getCapacity(singleIso).jamesBondCapacity}
-                    booked={bookedPaxFor(singleIso, 'James Bond')}
+                    value={sharedCapacity?.jamesBondCapacity ?? null}
+                    disabled={selectedSorted.length === 0}
+                    onDecrement={() => bumpCapacity('James Bond', -1)}
+                    onIncrement={() => bumpCapacity('James Bond', 1)}
+                    onChange={(value) => setAbsoluteCapacity('James Bond', value)}
                   />
                 </div>
-              ) : (
-                <p className="mt-5 text-sm text-neutral-500">
-                  Green is seats still open. Red is seats already booked.
+
+                {selectedSorted.length > 1 &&
+                (sharedCapacity?.ppCapacity === null ||
+                  sharedCapacity?.jamesBondCapacity === null) ? (
+                  <p className="mt-4 text-xs leading-relaxed text-neutral-500">
+                    Mixed values across selected days. +/- adjusts each day from its current number.
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <h2 className="text-sm font-semibold text-teal-950">Day status</h2>
+                <p className="mt-1 text-xs text-teal-950/50">
+                  {singleIso ? formatLongDate(singleIso) : 'Click a day to inspect seats.'}
                 </p>
-              )}
-            </>
+
+                {singleIso ? (
+                  <div className="mt-5 space-y-3">
+                    {showPP ? (
+                      <StatusDetail
+                        name="PP"
+                        capacity={getCapacity(singleIso).ppCapacity}
+                        booked={bookedPaxFor(singleIso, 'PP')}
+                      />
+                    ) : null}
+                    {showJB ? (
+                      <StatusDetail
+                        name="James Bond"
+                        capacity={getCapacity(singleIso).jamesBondCapacity}
+                        booked={bookedPaxFor(singleIso, 'James Bond')}
+                      />
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="mt-5 text-sm text-neutral-500">
+                    Green is seats still open. Red is seats already booked.
+                    {programFilter === 'all'
+                      ? ''
+                      : programFilter === 'PP'
+                        ? ' Showing PP only.'
+                        : ' Showing James Bond only.'}
+                  </p>
+                )}
+              </>
+            )}
+          </Surface>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CutoffPreviewCard({
+  label,
+  open,
+  deadline,
+}: {
+  label: string
+  open: boolean
+  deadline: string
+}) {
+  return (
+    <div className="rounded-xl border border-teal-900/8 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-medium text-teal-950">{label}</p>
+        <span
+          className={cn(
+            'rounded-md px-2 py-0.5 text-[11px] font-semibold',
+            open ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800',
           )}
-        </Surface>
+        >
+          {open ? 'Open' : 'Closed'}
+        </span>
       </div>
+      <p className="mt-2 text-xs leading-relaxed text-teal-950/55">Until {deadline}</p>
     </div>
   )
 }
@@ -402,6 +617,7 @@ function StatusDetail({
   booked: number
 }) {
   const available = Math.max(capacity - booked, 0)
+  const overbooked = booked > capacity
   return (
     <div className="rounded-xl border border-teal-900/8 p-3">
       <div className="mb-3 text-sm font-medium text-teal-950">{name}</div>
@@ -412,14 +628,27 @@ function StatusDetail({
           </div>
           <div className="mt-1 text-xl font-semibold text-emerald-800">{available}</div>
         </div>
-        <div className="rounded-lg bg-rose-50 px-3 py-3 text-center">
+        <div
+          className={cn(
+            'rounded-lg px-3 py-3 text-center',
+            overbooked ? 'bg-rose-100 ring-1 ring-rose-300' : 'bg-rose-50',
+          )}
+        >
           <div className="text-[10px] font-medium tracking-wide text-rose-700/70 uppercase">
             Booked
           </div>
           <div className="mt-1 text-xl font-semibold text-rose-800">{booked}</div>
         </div>
       </div>
-      <p className="mt-2 text-center text-[11px] text-neutral-500">Capacity {capacity}</p>
+      <p className="mt-2 text-center text-[11px] text-neutral-500">
+        Capacity {capacity}
+        {overbooked ? (
+          <span className="font-medium text-rose-700">
+            {' '}
+            · Over by {booked - capacity}
+          </span>
+        ) : null}
+      </p>
     </div>
   )
 }

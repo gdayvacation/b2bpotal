@@ -30,6 +30,7 @@ import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
 import {
   BOAT_NUMBERS,
   DEFAULT_BOAT_CAPACITY,
+  isActiveBooking,
   totalPassengers,
   type BoatNumber,
   type Booking,
@@ -134,7 +135,7 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
   const dayBookings = useMemo(
     () =>
       bookings
-        .filter((booking) => booking.date === selectedDate)
+        .filter((booking) => booking.date === selectedDate && isActiveBooking(booking))
         .slice()
         .sort((a, b) => a.code.localeCompare(b.code)),
     [bookings, selectedDate],
