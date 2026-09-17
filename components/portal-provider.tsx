@@ -144,7 +144,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<PortalContextValue>(() => {
     const getZoneTime = (name: PickupZoneName) =>
-      zones.find((zone) => zone.name === name)?.time ?? 'Pending Confirmation'
+      zones.find((zone) => zone.name === name)?.time ?? 'Awaiting pickup time'
 
     const getCapacity = (date: string) => {
       const row = availability.find((item) => item.date === date)
@@ -244,7 +244,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const zone = zones.find((item) => item.name === input.pickupZone)
         const pending = zone?.pending ?? input.pickupZone === 'Other'
         const pickupTime =
-          input.pickupTime ?? (pending ? 'Pending Confirmation' : getZoneTime(input.pickupZone))
+          input.pickupTime ?? (pending ? 'Awaiting pickup time' : getZoneTime(input.pickupZone))
         const booking: Booking = {
           ...input,
           agentRef: input.agentRef?.trim() ?? '',

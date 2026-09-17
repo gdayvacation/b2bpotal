@@ -12,7 +12,7 @@ export const INITIAL_ZONES: PickupZone[] = [
   { name: 'Patong', time: '07:30', pending: false },
   { name: 'Kata', time: '07:45', pending: false },
   { name: 'Karon', time: '08:00', pending: false },
-  { name: 'Other', time: 'Pending Confirmation', pending: true },
+  { name: 'Other', time: 'Awaiting pickup time', pending: true },
 ]
 
 /** Realistic day board: mostly couples / singles, a few small groups. */
@@ -84,7 +84,7 @@ const SEP17_JB_GUESTS: Array<{
 ]
 
 function zoneTime(zone: PickupZone['name'], pending?: boolean) {
-  if (pending || zone === 'Other') return { pickupTime: 'Pending Confirmation', status: 'Pending Pickup Time' as const }
+  if (pending || zone === 'Other') return { pickupTime: 'Awaiting pickup time', status: 'Pending Pickup Time' as const }
   const match = INITIAL_ZONES.find((item) => item.name === zone)
   return { pickupTime: match?.time ?? '07:30', status: 'Confirmed' as const }
 }
@@ -202,7 +202,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     pickupHotel: 'Laguna Phuket',
     roomNumber: '',
     note: '',
-    pickupTime: 'Pending Confirmation',
+    pickupTime: 'Awaiting pickup time',
     status: 'Pending Pickup Time',
   },
   {
@@ -349,7 +349,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     pickupHotel: 'Trisara Phuket',
     roomNumber: '',
     note: '',
-    pickupTime: 'Pending Confirmation',
+    pickupTime: 'Awaiting pickup time',
     status: 'Pending Pickup Time',
   },
   {
@@ -496,7 +496,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     pickupHotel: 'The Nai Harn',
     roomNumber: '',
     note: '',
-    pickupTime: 'Pending Confirmation',
+    pickupTime: 'Awaiting pickup time',
     status: 'Pending Pickup Time',
   },
   {

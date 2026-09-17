@@ -30,7 +30,7 @@ export function AdminPickupZones() {
     <div className="mx-auto max-w-2xl">
       <PageHeader
         title="Pickup Zones"
-        description="Set times shown to agents. Add extra zones anytime. Other stays pending confirmation."
+        description="Set times shown to agents. Add extra zones anytime. Other awaits pickup time from admin."
       />
       <Surface className="divide-y divide-teal-900/6">
         {zones.map((zone) => {
@@ -45,7 +45,7 @@ export function AdminPickupZones() {
                   <div className="font-semibold text-teal-950">{zone.name}</div>
                   <div className="text-sm text-teal-900/50">
                     {zone.pending
-                      ? 'Pending Confirmation'
+                      ? 'Awaiting pickup time'
                       : custom
                         ? 'Custom pickup time'
                         : 'Predefined pickup time'}
@@ -54,7 +54,7 @@ export function AdminPickupZones() {
               </div>
               {zone.pending ? (
                 <div className="rounded-xl bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
-                  Pending Confirmation
+                  Awaiting pickup time
                 </div>
               ) : (
                 <div className="flex items-end gap-2">

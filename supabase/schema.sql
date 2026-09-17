@@ -41,7 +41,7 @@ for each row execute function public.set_updated_at();
 -- -----------------------------------------------------------------------------
 create table if not exists public.pickup_zones (
   name text primary key,
-  time text not null default 'Pending Confirmation',
+  time text not null default 'Awaiting pickup time',
   pending boolean not null default false,
   sort_order int not null default 100,
   created_at timestamptz not null default timezone('utc', now()),
@@ -76,7 +76,7 @@ create table if not exists public.bookings (
   pickup_hotel text not null default '',
   room_number text not null default '',
   note text not null default '',
-  pickup_time text not null default 'Pending Confirmation',
+  pickup_time text not null default 'Awaiting pickup time',
   status text not null default 'Pending Pickup Time'
     check (status in ('Confirmed', 'Pending Pickup Time')),
   created_at timestamptz not null default timezone('utc', now()),

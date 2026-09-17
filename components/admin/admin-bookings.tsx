@@ -3,13 +3,14 @@
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { CalendarIcon, Check, Plus, X } from 'lucide-react'
+import { CalendarIcon, Check, Plus, Search, X } from 'lucide-react'
 import type { DateRange } from 'react-day-picker'
 import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
 import { PageHeader, Segment, SegmentedControl, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
+import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   Table,
@@ -27,6 +28,13 @@ import { cn } from '@/lib/utils'
 const TODAY = '2026-09-17'
 const TODAY_DATE = new Date(2026, 8, 17)
 
+/** Search only looks from 7 days ago through all future trips (keeps lists fast). */
+const SEARCH_FROM = (() => {
+  const d = new Date(TODAY_DATE)
+  d.setDate(d.getDate() - 7)
+  return toISODate(d)
+})()
+
 type QuickFilter = 'all' | 'today'
 
 export function AdminBookings() {
@@ -35,7 +43,11 @@ export function AdminBookings() {
   const createdCode = searchParams.get('created')
   const [quick, setQuick] = useState<QuickFilter>('all')
   const [range, setRange] = useState<DateRange | undefined>()
+  const [search, setSearch] = useState('')
   const [dismissCreated, setDismissCreated] = useState(false)
+
+  const query = search.trim().toLowerCase()
+  const isSearching = query.length > 0
 
   const filtered = useMemo(() => {
     const fromIso = range?.from ? toISODate(range.from) : null
@@ -43,6 +55,17 @@ export function AdminBookings() {
 
     return bookings
       .filter((booking) => {
+        if (isSearching) {
+          if (booking.date < SEARCH_FROM) return false
+          const haystack = [
+            booking.agentName,
+            booking.leadGuest,
+            booking.pickupHotel,
+          ]
+            .join(' ')
+            .toLowerCase()
+          if (!haystack.includes(query)) return false
+        }
         if (quick === 'today' && booking.date !== TODAY) return false
         if (fromIso && booking.date < fromIso) return false
         if (toIso && booking.date > toIso) return false
@@ -50,14 +73,15 @@ export function AdminBookings() {
       })
       .slice()
       .sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code))
-  }, [bookings, quick, range])
+  }, [bookings, quick, range, isSearching, query])
 
   const hasRange = Boolean(range?.from)
-  const hasActiveFilter = quick === 'today' || hasRange
+  const hasActiveFilter = quick === 'today' || hasRange || isSearching
 
   function clearFilters() {
     setQuick('all')
     setRange(undefined)
+    setSearch('')
   }
 
   function applyToday() {
@@ -110,77 +134,109 @@ export function AdminBookings() {
       ) : null}
 
       <Surface className="mb-4 p-3 sm:p-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-          <div className="flex flex-wrap items-center gap-2">
-            <SoftLabel>Filter</SoftLabel>
-            <SegmentedControl>
-              <Segment active={quick === 'all' && !hasRange} onClick={() => clearFilters()}>
-                All
-              </Segment>
-              <Segment active={quick === 'today'} onClick={applyToday}>
-                Today
-              </Segment>
-            </SegmentedControl>
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <SoftLabel>Filter</SoftLabel>
+              <SegmentedControl>
+                <Segment
+                  active={quick === 'all' && !hasRange && !isSearching}
+                  onClick={() => clearFilters()}
+                >
+                  All
+                </Segment>
+                <Segment active={quick === 'today'} onClick={applyToday}>
+                  Today
+                </Segment>
+              </SegmentedControl>
 
-            <Popover>
-              <PopoverTrigger
-                render={
-                  <Button
-                    variant="outline"
-                    className={cn(
-                      'h-10 justify-start gap-2 rounded-xl font-normal',
-                      hasRange && 'border-teal-700/40 bg-teal-50 text-teal-950',
-                    )}
-                  />
-                }
-              >
-                <CalendarIcon className="size-4 text-teal-900/35" />
-                <span className="truncate">{rangeLabel}</span>
-              </PopoverTrigger>
-              <PopoverContent align="start" className="w-auto p-2">
-                <Calendar
-                  mode="range"
-                  selected={range}
-                  onSelect={applyRange}
-                  defaultMonth={range?.from ?? TODAY_DATE}
-                  numberOfMonths={1}
-                />
-                {hasRange ? (
-                  <div className="border-t border-teal-900/8 px-2 pt-2">
+              <Popover>
+                <PopoverTrigger
+                  render={
                     <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="w-full"
-                      onClick={() => setRange(undefined)}
-                    >
-                      Clear range
-                    </Button>
-                  </div>
-                ) : null}
-              </PopoverContent>
-            </Popover>
+                      variant="outline"
+                      className={cn(
+                        'h-10 justify-start gap-2 rounded-xl font-normal',
+                        hasRange && 'border-teal-700/40 bg-teal-50 text-teal-950',
+                      )}
+                    />
+                  }
+                >
+                  <CalendarIcon className="size-4 text-teal-900/35" />
+                  <span className="truncate">{rangeLabel}</span>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-auto p-2">
+                  <Calendar
+                    mode="range"
+                    selected={range}
+                    onSelect={applyRange}
+                    defaultMonth={range?.from ?? TODAY_DATE}
+                    numberOfMonths={1}
+                  />
+                  {hasRange ? (
+                    <div className="border-t border-teal-900/8 px-2 pt-2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="w-full"
+                        onClick={() => setRange(undefined)}
+                      >
+                        Clear range
+                      </Button>
+                    </div>
+                  ) : null}
+                </PopoverContent>
+              </Popover>
 
-            {hasActiveFilter ? (
-              <Button type="button" variant="ghost" size="sm" className="gap-1" onClick={clearFilters}>
-                <X className="size-3.5" />
-                Clear
-              </Button>
-            ) : null}
+              {hasActiveFilter ? (
+                <Button type="button" variant="ghost" size="sm" className="gap-1" onClick={clearFilters}>
+                  <X className="size-3.5" />
+                  Clear
+                </Button>
+              ) : null}
+            </div>
+
+            <p className="text-sm text-teal-900/50">
+              {filtered.length} booking{filtered.length === 1 ? '' : 's'}
+              {isSearching
+                ? ` · search from ${formatShortDate(SEARCH_FROM)} onward`
+                : null}
+              {!isSearching && quick === 'today'
+                ? ` · departing ${formatShortDate(TODAY)}`
+                : null}
+              {!isSearching && hasRange ? ' · by trip date' : null}
+            </p>
           </div>
 
-          <p className="text-sm text-teal-900/50">
-            {filtered.length} booking{filtered.length === 1 ? '' : 's'}
-            {quick === 'today' ? ` · departing ${formatShortDate(TODAY)}` : null}
-            {hasRange ? ' · by trip date' : null}
-          </p>
+          <div className="relative max-w-md">
+            <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-teal-900/35" />
+            <Input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search agent, guest, or hotel…"
+              className="h-10 rounded-xl pr-9 pl-9"
+              aria-label="Search bookings by agent, guest, or hotel"
+            />
+            {isSearching ? (
+              <button
+                type="button"
+                className="absolute top-1/2 right-2.5 -translate-y-1/2 rounded-md p-1 text-teal-900/40 hover:bg-teal-950/5 hover:text-teal-950"
+                aria-label="Clear search"
+                onClick={() => setSearch('')}
+              >
+                <X className="size-3.5" />
+              </button>
+            ) : null}
+          </div>
         </div>
       </Surface>
 
       <Surface className="overflow-hidden">
         {filtered.length === 0 ? (
           <div className="px-4 py-12 text-center text-sm text-teal-900/45">
-            No bookings match this filter.
+            No bookings match this filter
+            {isSearching ? ' (search covers last 7 days + upcoming only)' : ''}.
           </div>
         ) : (
           <Table>

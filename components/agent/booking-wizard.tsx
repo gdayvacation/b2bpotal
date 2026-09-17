@@ -365,7 +365,6 @@ export function BookingWizard({
                   id="offline-agent"
                   value={offlineAgentName}
                   onChange={(event) => setOfflineAgentName(event.target.value)}
-                  placeholder="e.g. Walk-in guest, Phone booking…"
                   className="h-11"
                 />
                 <p className="text-xs text-neutral-500">
@@ -380,7 +379,6 @@ export function BookingWizard({
                 id="agent-ref"
                 value={agentRef}
                 onChange={(event) => setAgentRef(event.target.value)}
-                placeholder="e.g. AG-10284 or voucher #"
                 className="h-11"
               />
               <p className="text-xs text-neutral-500">
@@ -475,7 +473,6 @@ export function BookingWizard({
                 id="lead-guest"
                 value={leadGuest}
                 onChange={(event) => setLeadGuest(event.target.value)}
-                placeholder="John Smith"
                 className="h-11"
               />
             </div>
@@ -486,7 +483,6 @@ export function BookingWizard({
                   id="agent-ref-guest"
                   value={agentRef}
                   onChange={(event) => setAgentRef(event.target.value)}
-                  placeholder="e.g. AG-10284 or voucher #"
                   className="h-11"
                 />
                 <p className="text-xs text-neutral-500">
@@ -501,7 +497,7 @@ export function BookingWizard({
           <div className="space-y-5">
             <div>
               <Label className="mb-3">Pickup Zone</Label>
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-2 sm:grid-cols-2">
                 {zones.map((zone) => {
                   const time = getZoneTime(zone.name)
                   return (
@@ -510,44 +506,46 @@ export function BookingWizard({
                       type="button"
                       onClick={() => setPickupZone(zone.name)}
                       className={cn(
-                        'rounded-2xl border p-4 text-left transition-all',
+                        'flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-left transition-all',
                         pickupZone === zone.name
                           ? 'border-teal-700 bg-teal-50/90 ring-1 ring-teal-700 shadow-sm shadow-teal-700/10'
                           : 'border-teal-900/10 bg-white/70 hover:border-teal-700/30',
                       )}
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-teal-950">{zone.name}</span>
-                        {pickupZone === zone.name ? <Check className="size-4" /> : null}
-                      </div>
-                      <p className="mt-1 flex items-center gap-1.5 text-sm text-teal-900/50">
+                      <span className="min-w-0 truncate font-semibold text-teal-950">
+                        {zone.name}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-1.5 text-sm text-teal-900/50">
                         <Clock3 className="size-3.5" />
-                        {zone.pending ? 'Pending Confirmation' : time}
-                      </p>
+                        {zone.pending ? 'Awaiting time' : time}
+                        {pickupZone === zone.name ? (
+                          <Check className="size-3.5 text-teal-800" />
+                        ) : null}
+                      </span>
                     </button>
                   )
                 })}
               </div>
             </div>
-            <div className="max-w-md space-y-2">
-              <Label htmlFor="hotel">Pickup Hotel</Label>
-              <Input
-                id="hotel"
-                value={pickupHotel}
-                onChange={(event) => setPickupHotel(event.target.value)}
-                placeholder={pendingPickup ? 'Hotel name' : 'ABC Hotel'}
-                className="h-11"
-              />
-            </div>
-            <div className="max-w-md space-y-2">
-              <Label htmlFor="room-number">Room number</Label>
-              <Input
-                id="room-number"
-                value={roomNumber}
-                onChange={(event) => setRoomNumber(event.target.value)}
-                placeholder="e.g. 1204"
-                className="h-11"
-              />
+            <div className="flex max-w-md gap-3">
+              <div className="min-w-0 flex-1 space-y-2">
+                <Label htmlFor="hotel">Pickup Hotel</Label>
+                <Input
+                  id="hotel"
+                  value={pickupHotel}
+                  onChange={(event) => setPickupHotel(event.target.value)}
+                  className="h-11"
+                />
+              </div>
+              <div className="w-[7.5rem] shrink-0 space-y-2 sm:w-32">
+                <Label htmlFor="room-number">Room</Label>
+                <Input
+                  id="room-number"
+                  value={roomNumber}
+                  onChange={(event) => setRoomNumber(event.target.value)}
+                  className="h-11"
+                />
+              </div>
             </div>
             <div className="max-w-md space-y-2">
               <Label htmlFor="pickup-note">Note</Label>
@@ -555,13 +553,12 @@ export function BookingWizard({
                 id="pickup-note"
                 value={note}
                 onChange={(event) => setNote(event.target.value)}
-                placeholder="Special request, landmark, contact…"
                 className="min-h-24"
               />
             </div>
             {pendingPickup ? (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                Pickup Time: Pending Confirmation
+                Pickup time: awaiting admin to set
               </div>
             ) : pickupZone ? (
               <div className="rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-600">
@@ -642,7 +639,7 @@ export function BookingWizard({
                 <DetailCell label="Zone" value={pickupZone ?? '—'} />
                 <DetailCell
                   label="Time"
-                  value={pendingPickup ? 'Pending' : pickupTime || '—'}
+                  value={pendingPickup ? 'Awaiting time' : pickupTime || '—'}
                   emphasize
                 />
                 <DetailCell label="Hotel" value={pickupHotel || '—'} className="sm:col-span-2" />

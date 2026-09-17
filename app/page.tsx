@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { ArrowRight, Link2, Shield } from 'lucide-react'
 import { BrandMark } from '@/components/brand-mark'
+import { BRAND_LEGAL, BRAND_SHORT } from '@/lib/brand'
 
 export default function HomePage() {
   return (
@@ -15,8 +16,9 @@ export default function HomePage() {
         <div className="gday-fade-up text-center">
           <p className="gday-soft-label mb-3">B2B tour bookings</p>
           <h1 className="font-display text-4xl font-semibold tracking-tight text-teal-950 sm:text-5xl">
-            Gday
+            {BRAND_SHORT}
           </h1>
+          <p className="mt-2 text-sm font-medium text-teal-900/45">{BRAND_LEGAL}</p>
           <p className="mx-auto mt-3 max-w-md text-[15px] leading-relaxed text-teal-950/55">
             Partner portal for agents and operations — book tours, confirm pickups, run the daily board.
           </p>
@@ -29,7 +31,7 @@ export default function HomePage() {
             </div>
             <h2 className="font-display text-lg font-semibold text-teal-950">Agent</h2>
             <p className="mt-1.5 text-sm leading-relaxed text-teal-950/55">
-              Open the private booking link from Gday admin. Each agency has its own URL.
+              Open the private booking link from {BRAND_SHORT} admin. Each agency has its own URL.
             </p>
           </section>
 

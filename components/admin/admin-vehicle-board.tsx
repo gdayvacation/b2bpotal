@@ -26,6 +26,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
+import { BRAND_LEGAL } from '@/lib/brand'
 import {
   DEFAULT_VAN_CAPACITY,
   emptyVanMeta,
@@ -1041,7 +1042,7 @@ function VanPrintSheet({
       <div className="mb-2 flex items-end justify-between gap-6 border-b border-neutral-800 pb-2">
         <div className="min-w-0 flex-1">
           <p className="text-[10px] font-semibold tracking-[0.14em] text-neutral-500 uppercase">
-            Gday Partner Portal · Vehicle run sheet
+            {BRAND_LEGAL} · Vehicle run sheet
           </p>
           <h1 className="mt-0.5 text-xl font-semibold leading-tight text-neutral-900">
             Van {van} · {program} · {formatLongDate(date)}
