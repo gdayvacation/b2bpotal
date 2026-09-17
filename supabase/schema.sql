@@ -1,0 +1,287 @@
+-- =============================================================================
+-- G'day B2B Portal — Supabase schema (run once in SQL Editor)
+-- Maps to: agents, pickup zones, bookings, availability, boat & van plans
+-- =============================================================================
+
+create extension if not exists "pgcrypto";
+
+-- -----------------------------------------------------------------------------
+-- Helpers
+-- -----------------------------------------------------------------------------
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = timezone('utc', now());
+  return new;
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- Agents (partner travel companies)
+-- -----------------------------------------------------------------------------
+create table if not exists public.agents (
+  slug text primary key,
+  name text not null,
+  country text not null default '',
+  status text not null default 'Active'
+    check (status in ('Active', 'Inactive')),
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+drop trigger if exists agents_set_updated_at on public.agents;
+create trigger agents_set_updated_at
+before update on public.agents
+for each row execute function public.set_updated_at();
+
+-- -----------------------------------------------------------------------------
+-- Pickup zones (Patong / Kata / Karon / Other / custom)
+-- -----------------------------------------------------------------------------
+create table if not exists public.pickup_zones (
+  name text primary key,
+  time text not null default 'Pending Confirmation',
+  pending boolean not null default false,
+  sort_order int not null default 100,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+drop trigger if exists pickup_zones_set_updated_at on public.pickup_zones;
+create trigger pickup_zones_set_updated_at
+before update on public.pickup_zones
+for each row execute function public.set_updated_at();
+
+-- -----------------------------------------------------------------------------
+-- Bookings
+-- -----------------------------------------------------------------------------
+create table if not exists public.bookings (
+  code text primary key,
+  agent_slug text not null references public.agents (slug) on update cascade on delete restrict,
+  agent_name text not null,
+  agent_ref text not null default '',
+  program text not null check (program in ('PP', 'James Bond')),
+  date date not null,
+  park_fee text not null default 'Included'
+    check (park_fee in ('Included', 'Not Included')),
+  canoe text null
+    check (canoe is null or canoe in ('Included', 'Not Included')),
+  adults int not null default 0 check (adults >= 0),
+  children int not null default 0 check (children >= 0),
+  infants int not null default 0 check (infants >= 0),
+  tour_leaders int not null default 0 check (tour_leaders >= 0),
+  lead_guest text not null,
+  pickup_zone text not null,
+  pickup_hotel text not null default '',
+  room_number text not null default '',
+  note text not null default '',
+  pickup_time text not null default 'Pending Confirmation',
+  status text not null default 'Pending Pickup Time'
+    check (status in ('Confirmed', 'Pending Pickup Time')),
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now()),
+  constraint bookings_pax_positive
+    check (adults + children + infants + tour_leaders >= 1)
+);
+
+create index if not exists bookings_date_program_idx
+  on public.bookings (date, program);
+
+create index if not exists bookings_agent_slug_idx
+  on public.bookings (agent_slug);
+
+create index if not exists bookings_date_idx
+  on public.bookings (date);
+
+drop trigger if exists bookings_set_updated_at on public.bookings;
+create trigger bookings_set_updated_at
+before update on public.bookings
+for each row execute function public.set_updated_at();
+
+-- -----------------------------------------------------------------------------
+-- Daily capacity overrides (default in app: PP=60, JB=20 when row missing)
+-- -----------------------------------------------------------------------------
+create table if not exists public.availability (
+  date date primary key,
+  pp_capacity int not null default 60 check (pp_capacity >= 0),
+  james_bond_capacity int not null default 20 check (james_bond_capacity >= 0),
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+drop trigger if exists availability_set_updated_at on public.availability;
+create trigger availability_set_updated_at
+before update on public.availability
+for each row execute function public.set_updated_at();
+
+-- -----------------------------------------------------------------------------
+-- Boat plans (3 boats per date + program)
+-- -----------------------------------------------------------------------------
+create table if not exists public.day_boat_plans (
+  date date not null,
+  program text not null check (program in ('PP', 'James Bond')),
+  capacity_1 int not null default 25 check (capacity_1 >= 1),
+  capacity_2 int not null default 25 check (capacity_2 >= 1),
+  capacity_3 int not null default 25 check (capacity_3 >= 1),
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now()),
+  primary key (date, program)
+);
+
+drop trigger if exists day_boat_plans_set_updated_at on public.day_boat_plans;
+create trigger day_boat_plans_set_updated_at
+before update on public.day_boat_plans
+for each row execute function public.set_updated_at();
+
+create table if not exists public.boat_assignments (
+  date date not null,
+  program text not null check (program in ('PP', 'James Bond')),
+  booking_code text not null references public.bookings (code) on delete cascade,
+  boat_number int not null check (boat_number between 1 and 3),
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now()),
+  primary key (date, program, booking_code),
+  foreign key (date, program)
+    references public.day_boat_plans (date, program)
+    on delete cascade
+);
+
+create index if not exists boat_assignments_booking_idx
+  on public.boat_assignments (booking_code);
+
+drop trigger if exists boat_assignments_set_updated_at on public.boat_assignments;
+create trigger boat_assignments_set_updated_at
+before update on public.boat_assignments
+for each row execute function public.set_updated_at();
+
+-- -----------------------------------------------------------------------------
+-- Van / transfer plans
+-- -----------------------------------------------------------------------------
+create table if not exists public.day_vehicle_plans (
+  date date not null,
+  program text not null check (program in ('PP', 'James Bond')),
+  van_capacity int not null default 12 check (van_capacity >= 1),
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now()),
+  primary key (date, program)
+);
+
+drop trigger if exists day_vehicle_plans_set_updated_at on public.day_vehicle_plans;
+create trigger day_vehicle_plans_set_updated_at
+before update on public.day_vehicle_plans
+for each row execute function public.set_updated_at();
+
+create table if not exists public.van_meta (
+  date date not null,
+  program text not null check (program in ('PP', 'James Bond')),
+  van_number int not null check (van_number >= 1),
+  plate text not null default '',
+  driver text not null default '',
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now()),
+  primary key (date, program, van_number),
+  foreign key (date, program)
+    references public.day_vehicle_plans (date, program)
+    on delete cascade
+);
+
+drop trigger if exists van_meta_set_updated_at on public.van_meta;
+create trigger van_meta_set_updated_at
+before update on public.van_meta
+for each row execute function public.set_updated_at();
+
+-- One booking can split across multiple vans (pax legs)
+create table if not exists public.van_assignments (
+  id uuid primary key default gen_random_uuid(),
+  date date not null,
+  program text not null check (program in ('PP', 'James Bond')),
+  booking_code text not null references public.bookings (code) on delete cascade,
+  van_number int not null check (van_number >= 1),
+  pax int not null check (pax >= 1),
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now()),
+  unique (date, program, booking_code, van_number),
+  foreign key (date, program)
+    references public.day_vehicle_plans (date, program)
+    on delete cascade
+);
+
+create index if not exists van_assignments_booking_idx
+  on public.van_assignments (booking_code);
+
+create index if not exists van_assignments_day_idx
+  on public.van_assignments (date, program, van_number);
+
+drop trigger if exists van_assignments_set_updated_at on public.van_assignments;
+create trigger van_assignments_set_updated_at
+before update on public.van_assignments
+for each row execute function public.set_updated_at();
+
+-- -----------------------------------------------------------------------------
+-- Row Level Security
+-- Pilot: open anon/authenticated (tighten when you add real Auth)
+-- Server should still prefer service_role for admin writes.
+-- -----------------------------------------------------------------------------
+alter table public.agents enable row level security;
+alter table public.pickup_zones enable row level security;
+alter table public.bookings enable row level security;
+alter table public.availability enable row level security;
+alter table public.day_boat_plans enable row level security;
+alter table public.boat_assignments enable row level security;
+alter table public.day_vehicle_plans enable row level security;
+alter table public.van_meta enable row level security;
+alter table public.van_assignments enable row level security;
+
+-- Drop old pilot policies if re-running
+do $$
+declare
+  r record;
+begin
+  for r in
+    select policyname, tablename
+    from pg_policies
+    where schemaname = 'public'
+      and tablename in (
+        'agents', 'pickup_zones', 'bookings', 'availability',
+        'day_boat_plans', 'boat_assignments',
+        'day_vehicle_plans', 'van_meta', 'van_assignments'
+      )
+      and policyname like 'pilot_%'
+  loop
+    execute format('drop policy if exists %I on public.%I', r.policyname, r.tablename);
+  end loop;
+end $$;
+
+create policy pilot_agents_all on public.agents
+  for all to anon, authenticated using (true) with check (true);
+
+create policy pilot_pickup_zones_all on public.pickup_zones
+  for all to anon, authenticated using (true) with check (true);
+
+create policy pilot_bookings_all on public.bookings
+  for all to anon, authenticated using (true) with check (true);
+
+create policy pilot_availability_all on public.availability
+  for all to anon, authenticated using (true) with check (true);
+
+create policy pilot_day_boat_plans_all on public.day_boat_plans
+  for all to anon, authenticated using (true) with check (true);
+
+create policy pilot_boat_assignments_all on public.boat_assignments
+  for all to anon, authenticated using (true) with check (true);
+
+create policy pilot_day_vehicle_plans_all on public.day_vehicle_plans
+  for all to anon, authenticated using (true) with check (true);
+
+create policy pilot_van_meta_all on public.van_meta
+  for all to anon, authenticated using (true) with check (true);
+
+create policy pilot_van_assignments_all on public.van_assignments
+  for all to anon, authenticated using (true) with check (true);
+
+-- -----------------------------------------------------------------------------
+-- Seed mock data (agents + zones + 63 bookings) lives in supabase/seed.sql
+-- After this file, run:  supabase/seed.sql
+-- Or later: select public.seed_mock_data();
+-- -----------------------------------------------------------------------------

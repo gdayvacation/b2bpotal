@@ -1,0 +1,159 @@
+export type Program = 'PP' | 'James Bond'
+export type IncludeOption = 'Included' | 'Not Included'
+export type PickupZoneName = string
+export type BookingStatus = 'Confirmed' | 'Pending Pickup Time'
+export type AgentStatus = 'Active' | 'Inactive'
+
+export const CORE_PICKUP_ZONE_NAMES = ['Patong', 'Kata', 'Karon', 'Other'] as const
+
+export function isCorePickupZone(name: string) {
+  return CORE_PICKUP_ZONE_NAMES.some((core) => core.toLowerCase() === name.trim().toLowerCase())
+}
+
+export type Agent = {
+  slug: string
+  name: string
+  country: string
+  status: AgentStatus
+}
+
+export type PickupZone = {
+  name: PickupZoneName
+  time: string
+  pending: boolean
+}
+
+export type Booking = {
+  code: string
+  agentSlug: string
+  agentName: string
+  /** Partner’s own reference / voucher number (optional). */
+  agentRef: string
+  program: Program
+  date: string
+  parkFee: IncludeOption
+  canoe: IncludeOption | null
+  adults: number
+  children: number
+  infants: number
+  tourLeaders: number
+  leadGuest: string
+  pickupZone: PickupZoneName
+  pickupHotel: string
+  /** Hotel room number for pickup (optional). */
+  roomNumber: string
+  /** Free-text note for ops / pickup (optional). */
+  note: string
+  pickupTime: string
+  status: BookingStatus
+}
+
+export type Availability = {
+  date: string
+  ppCapacity: number
+  jamesBondCapacity: number
+}
+
+/** Default daily seats when a date has no override stored. */
+export const DEFAULT_PP_CAPACITY = 60
+export const DEFAULT_JB_CAPACITY = 20
+
+/** Boat assignment for a single departure day + program. */
+export type BoatNumber = 1 | 2 | 3
+
+export type DayBoatPlan = {
+  date: string
+  program: Program
+  /** Seats per boat — admin can raise/lower from the ~20–30 default. */
+  capacities: [number, number, number]
+  /** booking code → boat number */
+  assignments: Record<string, BoatNumber>
+}
+
+export const DEFAULT_BOAT_CAPACITY = 25
+export const BOAT_NUMBERS: BoatNumber[] = [1, 2, 3]
+
+export function dayBoatPlanKey(date: string, program: Program) {
+  return `${date}|${program}`
+}
+
+export function emptyDayBoatPlan(date: string, program: Program): DayBoatPlan {
+  return {
+    date,
+    program,
+    capacities: [DEFAULT_BOAT_CAPACITY, DEFAULT_BOAT_CAPACITY, DEFAULT_BOAT_CAPACITY],
+    assignments: {},
+  }
+}
+
+/** Van / transfer vehicle assignment for a single departure day + program. */
+export const DEFAULT_VAN_CAPACITY = 12
+
+/** One leg of a booking on a van (a booking may split across vans). */
+export type VanSplit = {
+  van: number
+  pax: number
+}
+
+export type VanMeta = {
+  /** Vehicle plate / fleet number for ops. */
+  plate: string
+  /** Driver name or ID for ops. */
+  driver: string
+}
+
+export type DayVehiclePlan = {
+  date: string
+  program: Program
+  /** Seats per van — default 12. */
+  vanCapacity: number
+  /** booking code → one or more van legs */
+  assignments: Record<string, VanSplit[]>
+  /** Per-van ops fields keyed by van number string */
+  vanMeta: Record<string, VanMeta>
+}
+
+export function dayVehiclePlanKey(date: string, program: Program) {
+  return `${date}|${program}`
+}
+
+export function emptyDayVehiclePlan(date: string, program: Program): DayVehiclePlan {
+  return {
+    date,
+    program,
+    vanCapacity: DEFAULT_VAN_CAPACITY,
+    assignments: {},
+    vanMeta: {},
+  }
+}
+
+export function emptyVanMeta(): VanMeta {
+  return { plate: '', driver: '' }
+}
+
+export type NewBookingDraft = {
+  program: Program | null
+  parkFee: IncludeOption
+  canoe: IncludeOption
+  date: string
+  adults: number
+  children: number
+  infants: number
+  tourLeaders: number
+  leadGuest: string
+  pickupZone: PickupZoneName | null
+  pickupHotel: string
+  roomNumber: string
+  note: string
+}
+
+export function totalPassengers(booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>) {
+  return booking.adults + booking.children + booking.infants + booking.tourLeaders
+}
+
+/** Compact pax readout: adults+children+infants+tourLeadersT → e.g. 3+2+1+1T */
+export function formatPaxBreakdown(
+  booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>,
+) {
+  return `${booking.adults}+${booking.children}+${booking.infants}+${booking.tourLeaders}T`
+}
