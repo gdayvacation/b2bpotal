@@ -232,21 +232,17 @@ export function BookingWizard({
 
   return (
     <div className="mx-auto max-w-3xl">
-      <div className="mb-6 sm:mb-8">
-        {headerEyebrow ? (
-          <p className="mb-2 text-[11px] font-semibold tracking-[0.16em] text-teal-700/55 uppercase">
-            {headerEyebrow}
-          </p>
-        ) : null}
-        <h1 className="font-display text-2xl font-semibold tracking-tight text-teal-950 sm:text-[28px]">
+      <div className="mb-5 sm:mb-7">
+        {headerEyebrow ? <p className="gday-soft-label mb-1.5">{headerEyebrow}</p> : null}
+        <h1 className="font-display text-[1.65rem] font-semibold tracking-tight text-teal-950 sm:text-[1.85rem]">
           {title}
         </h1>
-        <p className="mt-1.5 text-sm text-teal-950/55">{description}</p>
+        <p className="mt-1.5 text-[15px] leading-relaxed text-teal-950/55">{description}</p>
       </div>
 
       <ol
         className={cn(
-          'mb-6 hidden gap-2 sm:grid',
+          'mb-5 hidden gap-2 sm:grid',
           steps.length > 7 ? 'sm:grid-cols-4 lg:grid-cols-8' : 'sm:grid-cols-7',
         )}
       >
@@ -274,20 +270,20 @@ export function BookingWizard({
         })}
       </ol>
       <div className="mb-4 sm:hidden">
-        <div className="mb-2 h-1.5 overflow-hidden rounded-full bg-teal-900/10">
+        <div className="mb-2 h-2 overflow-hidden rounded-full bg-teal-900/8">
           <div
-            className="h-full rounded-full bg-teal-700 transition-all"
+            className="h-full rounded-full bg-gradient-to-r from-teal-600 to-cyan-600 transition-all"
             style={{ width: `${((step + 1) / steps.length) * 100}%` }}
           />
         </div>
-        <p className="text-sm font-medium text-teal-900/60">
+        <p className="text-sm font-semibold text-teal-900/65">
           Step {step + 1} of {steps.length} — {steps[step]}
         </p>
       </div>
 
-      <div className="rounded-3xl border border-teal-900/8 bg-white/90 p-5 shadow-[0_12px_40px_-28px_rgba(15,118,110,0.35)] backdrop-blur-sm sm:p-8">
+      <div className="gday-sheet rounded-[1.5rem] p-5 sm:p-8">
         <div className="mb-6">
-          <p className="text-[11px] font-semibold tracking-[0.16em] text-teal-700/50 uppercase">
+          <p className="gday-soft-label">
             Step {step + 1} of {steps.length}
           </p>
           <h2 className="font-display mt-1 text-xl font-semibold tracking-tight text-teal-950">
@@ -305,10 +301,10 @@ export function BookingWizard({
                   setError('')
                 }}
                 className={cn(
-                  'rounded-xl border px-4 py-3 text-sm font-medium transition-colors',
+                  'min-h-12 rounded-2xl border px-4 py-3 text-sm font-semibold transition-colors',
                   agentMode === 'existing'
-                    ? 'border-teal-800 bg-teal-800 text-white'
-                    : 'border-teal-900/10 text-teal-900/65 hover:border-teal-700/30',
+                    ? 'border-teal-800 bg-teal-800 text-white shadow-sm shadow-teal-800/20'
+                    : 'border-teal-900/10 bg-white/70 text-teal-900/65 hover:border-teal-700/30',
                 )}
               >
                 Existing agent
@@ -321,10 +317,10 @@ export function BookingWizard({
                   setError('')
                 }}
                 className={cn(
-                  'rounded-xl border px-4 py-3 text-sm font-medium transition-colors',
+                  'min-h-12 rounded-2xl border px-4 py-3 text-sm font-semibold transition-colors',
                   agentMode === 'offline'
-                    ? 'border-teal-800 bg-teal-800 text-white'
-                    : 'border-teal-900/10 text-teal-900/65 hover:border-teal-700/30',
+                    ? 'border-teal-800 bg-teal-800 text-white shadow-sm shadow-teal-800/20'
+                    : 'border-teal-900/10 bg-white/70 text-teal-900/65 hover:border-teal-700/30',
                 )}
               >
                 Offline / walk-in
@@ -346,17 +342,17 @@ export function BookingWizard({
                         type="button"
                         onClick={() => setSelectedAgentSlug(item.slug)}
                         className={cn(
-                          'rounded-xl border p-4 text-left transition-colors',
+                          'rounded-2xl border p-4 text-left transition-all',
                           selectedAgentSlug === item.slug
-                            ? 'border-teal-700 bg-teal-50/80 ring-1 ring-teal-700'
-                            : 'border-teal-900/10 hover:border-teal-700/30',
+                            ? 'border-teal-700 bg-teal-50/90 ring-1 ring-teal-700 shadow-sm shadow-teal-700/10'
+                            : 'border-teal-900/10 bg-white/70 hover:border-teal-700/30',
                         )}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="font-medium">{item.name}</span>
+                          <span className="font-semibold text-teal-950">{item.name}</span>
                           {selectedAgentSlug === item.slug ? <Check className="size-4 shrink-0" /> : null}
                         </div>
-                        <p className="mt-1 text-sm text-neutral-500">{item.country}</p>
+                        <p className="mt-1 text-sm text-teal-900/50">{item.country}</p>
                       </button>
                     ))}
                   </div>
@@ -459,13 +455,13 @@ export function BookingWizard({
             <GuestRow label="Children" hint="2–11 years" value={children} onChange={setChildren} />
             <GuestRow label="Infants" hint="Under 2 years" value={infants} onChange={setInfants} />
             <GuestRow label="Tour Leaders" hint="Accompanying guides" value={tourLeaders} onChange={setTourLeaders} />
-            <div className="mt-4 flex items-center justify-between rounded-xl bg-neutral-50 px-4 py-3">
-              <span className="text-sm text-neutral-500">Total Passengers</span>
+            <div className="mt-4 flex items-center justify-between rounded-2xl bg-teal-950/[0.04] px-4 py-3.5">
+              <span className="text-sm font-medium text-teal-900/55">Total Passengers</span>
               <span className="text-right">
-                <span className="font-mono text-lg font-semibold tracking-tight tabular-nums">
+                <span className="font-mono text-lg font-semibold tracking-tight text-teal-950 tabular-nums">
                   {formatPaxBreakdown({ adults, children, infants, tourLeaders })}
                 </span>
-                <span className="ml-2 text-sm text-neutral-400">({total})</span>
+                <span className="ml-2 text-sm text-teal-900/40">({total})</span>
               </span>
             </div>
           </div>
@@ -514,17 +510,17 @@ export function BookingWizard({
                       type="button"
                       onClick={() => setPickupZone(zone.name)}
                       className={cn(
-                        'rounded-xl border p-4 text-left transition-colors',
+                        'rounded-2xl border p-4 text-left transition-all',
                         pickupZone === zone.name
-                          ? 'border-teal-700 bg-teal-50/80 ring-1 ring-teal-700'
-                          : 'border-teal-900/10 hover:border-teal-700/30',
+                          ? 'border-teal-700 bg-teal-50/90 ring-1 ring-teal-700 shadow-sm shadow-teal-700/10'
+                          : 'border-teal-900/10 bg-white/70 hover:border-teal-700/30',
                       )}
                     >
                       <div className="flex items-center justify-between">
-                        <span className="font-medium">{zone.name}</span>
+                        <span className="font-semibold text-teal-950">{zone.name}</span>
                         {pickupZone === zone.name ? <Check className="size-4" /> : null}
                       </div>
-                      <p className="mt-1 flex items-center gap-1.5 text-sm text-neutral-500">
+                      <p className="mt-1 flex items-center gap-1.5 text-sm text-teal-900/50">
                         <Clock3 className="size-3.5" />
                         {zone.pending ? 'Pending Confirmation' : time}
                       </p>
@@ -682,7 +678,7 @@ export function BookingWizard({
         <div className="mt-8 flex items-center justify-between gap-3 border-t border-teal-900/8 pt-5">
           <Button
             variant="outline"
-            className="h-11 min-w-0 flex-1 px-4 sm:flex-none"
+            className="h-12 min-w-0 flex-1 rounded-xl px-4 sm:flex-none"
             disabled={step === 0}
             onClick={() => {
               setError('')
@@ -693,12 +689,12 @@ export function BookingWizard({
             Back
           </Button>
           {step < steps.length - 1 ? (
-            <Button className="h-11 min-w-0 flex-1 px-4 sm:flex-none" onClick={next}>
+            <Button className="h-12 min-w-0 flex-1 rounded-xl px-4 sm:flex-none" onClick={next}>
               Continue
               <ChevronRight data-icon="inline-end" />
             </Button>
           ) : (
-            <Button className="h-11 min-w-0 flex-1 px-4 sm:flex-none" onClick={confirm}>
+            <Button className="h-12 min-w-0 flex-1 rounded-xl px-4 sm:flex-none" onClick={confirm}>
               Confirm Booking
             </Button>
           )}
@@ -770,27 +766,27 @@ function ProgramCard({
       type="button"
       onClick={onSelect}
       className={cn(
-        'flex items-center gap-4 rounded-2xl border p-4 text-left transition-all',
+        'flex min-h-[4.5rem] items-center gap-4 rounded-2xl border p-4 text-left transition-all active:scale-[0.99]',
         selected
-          ? 'border-teal-700 bg-teal-50/70 ring-1 ring-teal-700 shadow-sm shadow-teal-700/10'
-          : 'border-teal-900/10 hover:border-teal-700/30',
+          ? 'border-teal-700 bg-teal-50/90 ring-1 ring-teal-700 shadow-sm shadow-teal-700/10'
+          : 'border-teal-900/10 bg-white/70 hover:border-teal-700/30',
       )}
     >
       <div
         className={cn(
-          'flex size-12 items-center justify-center rounded-xl',
+          'flex size-12 items-center justify-center rounded-2xl',
           selected
-            ? 'bg-gradient-to-br from-teal-600 to-cyan-700 text-white'
-            : 'bg-teal-900/5 text-teal-800',
+            ? 'bg-gradient-to-br from-teal-500 to-cyan-700 text-white shadow-sm'
+            : 'bg-teal-950/[0.05] text-teal-800',
         )}
       >
         {icon}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="font-semibold">{title}</div>
-        <div className="text-sm text-neutral-500">{subtitle}</div>
+        <div className="font-semibold text-teal-950">{title}</div>
+        <div className="text-sm text-teal-900/50">{subtitle}</div>
       </div>
-      {selected ? <Check className="size-4 shrink-0" /> : null}
+      {selected ? <Check className="size-4 shrink-0 text-teal-800" /> : null}
     </button>
   )
 }
@@ -840,25 +836,27 @@ function GuestRow({
   onChange: (value: number) => void
 }) {
   return (
-    <div className="flex items-center justify-between border-b border-neutral-100 py-4 last:border-0">
+    <div className="flex items-center justify-between border-b border-teal-900/6 py-4 last:border-0">
       <div>
-        <div className="text-sm font-medium">{label}</div>
-        <div className="text-xs text-neutral-500">{hint}</div>
+        <div className="text-sm font-semibold text-teal-950">{label}</div>
+        <div className="text-xs text-teal-900/50">{hint}</div>
       </div>
       <div className="flex items-center gap-3">
         <Button
           variant="outline"
           size="icon"
-          className="size-8 rounded-full"
+          className="size-10 rounded-full"
           onClick={() => onChange(Math.max(0, value - 1))}
         >
           <Minus />
         </Button>
-        <span className="w-6 text-center text-sm font-semibold">{value}</span>
+        <span className="w-7 text-center text-base font-semibold tabular-nums text-teal-950">
+          {value}
+        </span>
         <Button
           variant="outline"
           size="icon"
-          className="size-8 rounded-full"
+          className="size-10 rounded-full"
           onClick={() => onChange(value + 1)}
         >
           <Plus />

@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { StatusBadge } from '@/components/status-badge'
-import { PageHeader, Surface } from '@/components/ui-primitives'
+import { EmptyState, PageHeader, Surface } from '@/components/ui-primitives'
 import {
   Table,
   TableBody,
@@ -32,8 +32,8 @@ export function BookingsTable({
 
       <div className="space-y-3 md:hidden">
         {bookings.length === 0 ? (
-          <Surface className="px-4 py-10 text-center text-sm text-teal-900/50">
-            No bookings yet.
+          <Surface>
+            <EmptyState>No bookings yet.</EmptyState>
           </Surface>
         ) : (
           bookings.map((booking) => (
@@ -48,7 +48,7 @@ export function BookingsTable({
                       {booking.code}
                     </Link>
                   ) : (
-                    <p className="font-mono text-sm font-semibold">{booking.code}</p>
+                    <p className="font-mono text-sm font-semibold text-teal-950">{booking.code}</p>
                   )}
                   <p className="mt-1 text-sm text-teal-950/55">
                     {formatShortDate(booking.date)} · {booking.program}
@@ -56,32 +56,24 @@ export function BookingsTable({
                 </div>
                 <StatusBadge status={booking.status} />
               </div>
-              <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+              <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
                 <div>
-                  <p className="text-[11px] font-medium tracking-wide text-teal-700/45 uppercase">
-                    Lead guest
-                  </p>
-                  <p className="mt-0.5 font-medium">{booking.leadGuest}</p>
+                  <p className="gday-soft-label">Lead guest</p>
+                  <p className="mt-0.5 font-semibold text-teal-950">{booking.leadGuest}</p>
                 </div>
                 <div>
-                  <p className="text-[11px] font-medium tracking-wide text-teal-700/45 uppercase">
-                    Pax
-                  </p>
-                  <p className="mt-0.5 font-medium">{totalPassengers(booking)}</p>
+                  <p className="gday-soft-label">Pax</p>
+                  <p className="mt-0.5 font-semibold text-teal-950">{totalPassengers(booking)}</p>
                 </div>
                 {showAgent ? (
                   <div className="col-span-2">
-                    <p className="text-[11px] font-medium tracking-wide text-teal-700/45 uppercase">
-                      Agent
-                    </p>
-                    <p className="mt-0.5 font-medium">{booking.agentName}</p>
+                    <p className="gday-soft-label">Agent</p>
+                    <p className="mt-0.5 font-semibold text-teal-950">{booking.agentName}</p>
                   </div>
                 ) : null}
                 <div className="col-span-2">
-                  <p className="text-[11px] font-medium tracking-wide text-teal-700/45 uppercase">
-                    Pickup
-                  </p>
-                  <p className="mt-0.5 font-medium">
+                  <p className="gday-soft-label">Pickup</p>
+                  <p className="mt-0.5 font-semibold text-teal-950">
                     {booking.pickupZone}
                     {booking.pickupTime ? ` · ${booking.pickupTime}` : ''}
                   </p>
@@ -96,14 +88,14 @@ export function BookingsTable({
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="px-4 text-teal-700/45">Booking Number</TableHead>
-              <TableHead className="text-teal-700/45">Date</TableHead>
-              <TableHead className="text-teal-700/45">Program</TableHead>
-              {showAgent ? <TableHead className="text-teal-700/45">Agent</TableHead> : null}
-              <TableHead className="text-teal-700/45">Lead Guest</TableHead>
-              <TableHead className="text-teal-700/45">Total Pax</TableHead>
-              <TableHead className="text-teal-700/45">Pickup</TableHead>
-              <TableHead className="text-teal-700/45">Status</TableHead>
+              <TableHead className="px-4 text-teal-800/50">Booking Number</TableHead>
+              <TableHead className="text-teal-800/50">Date</TableHead>
+              <TableHead className="text-teal-800/50">Program</TableHead>
+              {showAgent ? <TableHead className="text-teal-800/50">Agent</TableHead> : null}
+              <TableHead className="text-teal-800/50">Lead Guest</TableHead>
+              <TableHead className="text-teal-800/50">Total Pax</TableHead>
+              <TableHead className="text-teal-800/50">Pickup</TableHead>
+              <TableHead className="text-teal-800/50">Status</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -118,7 +110,7 @@ export function BookingsTable({
               </TableRow>
             ) : (
               bookings.map((booking) => (
-                <TableRow key={booking.code}>
+                <TableRow key={booking.code} className="hover:bg-teal-950/[0.02]">
                   <TableCell className="px-4 font-mono text-[13px] font-medium">
                     {slug ? (
                       <Link
@@ -134,7 +126,7 @@ export function BookingsTable({
                   <TableCell>{formatShortDate(booking.date)}</TableCell>
                   <TableCell>{booking.program}</TableCell>
                   {showAgent ? <TableCell>{booking.agentName}</TableCell> : null}
-                  <TableCell>{booking.leadGuest}</TableCell>
+                  <TableCell className="font-medium">{booking.leadGuest}</TableCell>
                   <TableCell>{totalPassengers(booking)}</TableCell>
                   <TableCell>
                     {booking.pickupZone}

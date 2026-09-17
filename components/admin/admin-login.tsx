@@ -49,26 +49,22 @@ export function AdminLogin({ onSuccess }: { onSuccess: () => void }) {
   }
 
   return (
-    <div className="relative flex min-h-screen flex-col overflow-hidden">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(13,148,136,0.14),_transparent_55%),radial-gradient(ellipse_at_bottom_right,_rgba(14,116,144,0.1),_transparent_45%)]" />
-      <div className="gday-grid pointer-events-none absolute inset-0 opacity-40" />
+    <div className="gday-app relative flex flex-col overflow-hidden">
+      <div className="gday-grid pointer-events-none absolute inset-0 opacity-45" />
 
       <header className="relative mx-auto flex h-16 w-full max-w-md items-center px-4 sm:px-6">
         <BrandMark />
       </header>
 
       <main className="relative mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-4 pb-16 sm:px-6">
-        <form
-          onSubmit={handleSubmit}
-          className="gday-fade-up rounded-3xl border border-teal-900/8 bg-white/90 p-6 shadow-[0_20px_50px_-28px_rgba(13,148,136,0.45)] backdrop-blur-sm sm:p-8"
-        >
-          <div className="mb-6 flex size-11 items-center justify-center rounded-2xl bg-gradient-to-br from-teal-700 to-cyan-800 text-white shadow-md shadow-teal-800/20">
+        <form onSubmit={handleSubmit} className="gday-fade-up gday-sheet rounded-[1.6rem] p-6 sm:p-8">
+          <div className="mb-5 flex size-12 items-center justify-center rounded-2xl bg-gradient-to-br from-teal-600 to-cyan-700 text-white shadow-md shadow-teal-800/25">
             <Shield className="size-5" />
           </div>
           <h1 className="font-display text-2xl font-semibold tracking-tight text-teal-950">
             Admin sign in
           </h1>
-          <p className="mt-1.5 text-sm leading-relaxed text-teal-950/55">
+          <p className="mt-1.5 text-[15px] leading-relaxed text-teal-950/55">
             Enter the 4-digit PIN to open the operations dashboard.
           </p>
 
@@ -81,7 +77,7 @@ export function AdminLogin({ onSuccess }: { onSuccess: () => void }) {
                 value={username}
                 readOnly
                 onChange={(event) => setUsername(event.target.value)}
-                className="h-11 bg-teal-50/60 text-teal-900/70"
+                className="bg-teal-950/[0.03] text-teal-900/70"
               />
             </div>
             <div className="space-y-2">
@@ -97,25 +93,25 @@ export function AdminLogin({ onSuccess }: { onSuccess: () => void }) {
                 value={pin}
                 onChange={(event) => handlePinChange(event.target.value)}
                 placeholder="••••"
-                className="h-11 tracking-[0.35em]"
+                className="tracking-[0.4em]"
               />
             </div>
           </div>
 
           {error ? (
-            <p className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+            <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-800">
               {error}
             </p>
           ) : null}
 
-          <Button type="submit" className="mt-6 h-11 w-full">
+          <Button type="submit" className="mt-6 h-12 w-full rounded-xl text-base">
             Sign in
           </Button>
         </form>
 
         <Link
           href="/"
-          className="gday-fade-up delay-100 mt-6 inline-flex items-center gap-2 self-start text-sm text-teal-800/70 transition-colors hover:text-teal-950"
+          className="gday-fade-up delay-100 mt-6 inline-flex items-center gap-2 self-start text-sm font-medium text-teal-800/70 transition-colors hover:text-teal-950"
         >
           <ArrowLeft className="size-4" />
           Back to portal

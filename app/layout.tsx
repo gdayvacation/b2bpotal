@@ -20,9 +20,10 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
-  themeColor: '#ecf8f6',
+  themeColor: '#f2f7f6',
   width: 'device-width',
   initialScale: 1,
+  viewportFit: 'cover',
 }
 
 export default function RootLayout({
@@ -32,9 +33,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`light ${jakarta.variable} ${sora.variable}`}>
-      <body
-        className={`${jakarta.className} min-h-screen bg-[var(--gday-canvas)] text-teal-950 antialiased`}
-      >
+      <body className={`${jakarta.className} min-h-dvh text-teal-950 antialiased`}>
         <Providers>{children}</Providers>
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>

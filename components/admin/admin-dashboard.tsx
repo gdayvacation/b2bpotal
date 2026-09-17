@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
-import { PageHeader, Surface } from '@/components/ui-primitives'
+import { PageHeader, Segment, SegmentedControl, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
 import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
 import { totalPassengers, type Booking, type Program } from '@/lib/types'
@@ -120,25 +120,27 @@ export function AdminDashboard() {
         description="Today’s partner departures, or browse any month by agent and program. Prototype data only — no pricing."
       />
 
-      <Surface className="mb-6 p-4 sm:p-5">
+      <Surface className="mb-5 p-4 sm:p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-3">
-            <p className="text-[11px] font-medium tracking-wide text-teal-700/45 uppercase">Period</p>
+            <SoftLabel>Period</SoftLabel>
             <div className="flex flex-wrap items-center gap-2">
-              <div className="flex gap-1 rounded-xl border border-teal-900/8 bg-teal-50/50 p-1">
-                <FilterChip active={range === 'today'} onClick={() => setRangeMode('today')}>
+              <SegmentedControl>
+                <Segment active={range === 'today'} onClick={() => setRangeMode('today')}>
                   Today
-                </FilterChip>
-                <FilterChip active={range === 'month'} onClick={() => setRangeMode('month')}>
+                </Segment>
+                <Segment active={range === 'month'} onClick={() => setRangeMode('month')}>
                   Month
-                </FilterChip>
-              </div>
+                </Segment>
+              </SegmentedControl>
               {range === 'month' ? (
                 <div className="flex items-center gap-1">
                   <Button type="button" variant="outline" size="icon-sm" onClick={() => changeMonth(-1)}>
                     <ChevronLeft />
                   </Button>
-                  <div className="min-w-[9.5rem] text-center text-sm font-medium text-teal-950">{monthLabel}</div>
+                  <div className="min-w-[9.5rem] text-center text-sm font-semibold text-teal-950">
+                    {monthLabel}
+                  </div>
                   <Button type="button" variant="outline" size="icon-sm" onClick={() => changeMonth(1)}>
                     <ChevronRight />
                   </Button>
@@ -162,31 +164,26 @@ export function AdminDashboard() {
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
             <div className="space-y-2">
-              <p className="text-[11px] font-medium tracking-wide text-teal-700/45 uppercase">Program</p>
-              <div className="flex gap-1 rounded-xl border border-teal-900/8 bg-teal-50/50 p-1">
-                <FilterChip active={program === 'all'} onClick={() => setProgram('all')}>
+              <SoftLabel>Program</SoftLabel>
+              <SegmentedControl>
+                <Segment active={program === 'all'} onClick={() => setProgram('all')}>
                   All
-                </FilterChip>
-                <FilterChip active={program === 'PP'} onClick={() => setProgram('PP')}>
+                </Segment>
+                <Segment active={program === 'PP'} onClick={() => setProgram('PP')}>
                   PP
-                </FilterChip>
-                <FilterChip active={program === 'James Bond'} onClick={() => setProgram('James Bond')}>
+                </Segment>
+                <Segment active={program === 'James Bond'} onClick={() => setProgram('James Bond')}>
                   James Bond
-                </FilterChip>
-              </div>
+                </Segment>
+              </SegmentedControl>
             </div>
             <div className="space-y-2 sm:min-w-[220px]">
-              <label
-                htmlFor="dashboard-agent"
-                className="text-[11px] font-medium tracking-wide text-teal-700/45 uppercase"
-              >
-                Agent
-              </label>
+              <SoftLabel htmlFor="dashboard-agent">Agent</SoftLabel>
               <select
                 id="dashboard-agent"
                 value={agentSlug}
                 onChange={(event) => setAgentSlug(event.target.value)}
-                className="h-8 w-full rounded-lg border border-input bg-white px-2.5 text-sm text-teal-950 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                className="h-10 w-full rounded-xl border border-teal-900/12 bg-white/80 px-3 text-sm text-teal-950 outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
               >
                 <option value="all">All agents</option>
                 {agentOptions.map(([slug, name]) => (
@@ -206,35 +203,49 @@ export function AdminDashboard() {
           cards.length > 3 ? 'xl:grid-cols-4' : 'xl:grid-cols-3',
         )}
       >
-        {cards.map((card, index) => (
-          <Surface
-            key={card.label}
-            className={cn(
-              'p-5',
-              index === 0 && 'bg-gradient-to-br from-teal-700 to-cyan-800 text-white border-transparent',
-            )}
-          >
-            <p
-              className={cn(
-                'text-[11px] font-medium tracking-wide uppercase',
-                index === 0 ? 'text-teal-50/70' : 'text-teal-700/45',
-              )}
-            >
-              {card.label}
-            </p>
-            <p
-              className={cn(
-                'mt-3 font-display text-3xl font-semibold tracking-tight',
-                index === 0 ? 'text-white' : 'text-teal-950',
-              )}
-            >
-              {card.value}
-            </p>
-            <p className={cn('mt-2 text-sm', index === 0 ? 'text-teal-50/75' : 'text-teal-900/50')}>
-              {card.detail}
-            </p>
-          </Surface>
-        ))}
+        {cards.map((card, index) => {
+          const highlighted = index === 0
+          const body = (
+            <>
+              <p
+                className={cn(
+                  'text-[11px] font-semibold tracking-tight',
+                  highlighted ? 'text-white/75' : 'text-teal-800/50',
+                )}
+              >
+                {card.label}
+              </p>
+              <p
+                className={cn(
+                  'mt-3 font-display text-3xl font-semibold tracking-tight',
+                  highlighted ? 'text-white' : 'text-teal-950',
+                )}
+              >
+                {card.value}
+              </p>
+              <p className={cn('mt-2 text-sm', highlighted ? 'text-white/70' : 'text-teal-900/50')}>
+                {card.detail}
+              </p>
+            </>
+          )
+
+          if (highlighted) {
+            return (
+              <div
+                key={card.label}
+                className="rounded-[1.35rem] bg-gradient-to-br from-teal-700 to-cyan-800 p-5 text-white shadow-[0_18px_40px_-28px_rgba(15,118,110,0.65)]"
+              >
+                {body}
+              </div>
+            )
+          }
+
+          return (
+            <Surface key={card.label} className="p-5">
+              {body}
+            </Surface>
+          )
+        })}
       </div>
 
       {range === 'month' ? (
@@ -379,35 +390,12 @@ function ProgramChip({ program }: { program: Program }) {
   return (
     <span
       className={cn(
-        'rounded-full px-2 py-0.5 text-[11px] font-medium',
+        'rounded-full px-2.5 py-0.5 text-[11px] font-semibold',
         program === 'PP' ? 'bg-sky-50 text-sky-800' : 'bg-amber-50 text-amber-800',
       )}
     >
       {program}
     </span>
-  )
-}
-
-function FilterChip({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean
-  onClick: () => void
-  children: string
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
-        active ? 'bg-teal-900 text-white shadow-sm' : 'text-teal-900/65 hover:bg-white hover:text-teal-950',
-      )}
-    >
-      {children}
-    </button>
   )
 }
 

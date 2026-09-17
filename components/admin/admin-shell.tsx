@@ -49,74 +49,76 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   }
 
   if (authed === null) {
-    return <div className="min-h-screen bg-[var(--gday-canvas)]" />
+    return <div className="gday-app" />
   }
 
   if (!authed) {
     return <AdminLogin onSuccess={signIn} />
   }
 
+  const current =
+    nav.find((item) =>
+      item.href === '/admin' ? pathname === '/admin' : pathname.startsWith(item.href),
+    )?.label ?? 'Admin'
+
   return (
-    <div className="relative min-h-screen bg-[var(--gday-canvas)]">
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-[radial-gradient(ellipse_at_top_left,_rgba(13,148,136,0.12),_transparent_55%)]" />
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 border-r border-teal-900/8 bg-white/90 backdrop-blur-md lg:flex lg:flex-col">
-        <div className="flex h-16 items-center border-b border-teal-900/6 px-5">
+    <div className="gday-app relative">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-teal-900/6 bg-white/80 backdrop-blur-xl lg:flex lg:flex-col">
+        <div className="flex h-16 items-center px-5">
           <Link href="/admin">
             <BrandMark />
           </Link>
         </div>
-        <nav className="flex flex-1 flex-col gap-1 p-3">
-          <p className="px-3 py-2 text-[11px] font-semibold tracking-[0.16em] text-teal-700/50 uppercase">
-            Operations
-          </p>
+        <nav className="flex flex-1 flex-col gap-1 px-3 pb-4">
+          <p className="gday-soft-label px-3 py-2">Operations</p>
           {nav.map((item) => (
             <NavLink key={item.href} item={item} pathname={pathname} />
           ))}
         </nav>
-        <div className="border-t border-teal-900/8 p-4">
-          <p className="text-xs text-teal-800/50">Signed in as admin</p>
-          <button
-            type="button"
-            onClick={signOut}
-            className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-teal-800/70 transition-colors hover:text-teal-950"
-          >
-            <LogOut className="size-3.5" />
-            Sign out
-          </button>
+        <div className="border-t border-teal-900/6 p-4">
+          <div className="rounded-2xl bg-teal-950/[0.03] px-3.5 py-3">
+            <p className="text-xs font-medium text-teal-950">Signed in as admin</p>
+            <button
+              type="button"
+              onClick={signOut}
+              className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-teal-800/70 transition-colors hover:text-teal-950"
+            >
+              <LogOut className="size-3.5" />
+              Sign out
+            </button>
+          </div>
         </div>
       </aside>
 
-      <div className="lg:pl-60">
-        <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-teal-900/8 bg-white/85 px-4 backdrop-blur-md sm:h-16 lg:px-8">
+      <div className="lg:pl-64">
+        <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-teal-900/6 bg-white/80 px-4 backdrop-blur-xl sm:h-16 lg:px-8">
           <div className="flex min-w-0 items-center gap-3">
             <MobileNav pathname={pathname} onSignOut={signOut} />
-            <div className="truncate text-sm text-teal-900/50">
-              Operations
-              <span className="mx-2 text-teal-900/20">/</span>
-              <span className="font-medium text-teal-950">
-                {nav.find((item) =>
-                  item.href === '/admin' ? pathname === '/admin' : pathname.startsWith(item.href),
-                )?.label ?? 'Admin'}
-              </span>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-teal-950 lg:hidden">{current}</p>
+              <p className="hidden text-sm text-teal-900/45 lg:block">
+                Operations
+                <span className="mx-2 text-teal-900/20">/</span>
+                <span className="font-semibold text-teal-950">{current}</span>
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Link
-              href="/admin/agents"
-              className="hidden text-xs text-teal-800/60 transition-colors hover:text-teal-950 sm:inline"
+            <Button
+              variant="ghost"
+              size="sm"
+              className="hidden h-9 px-3 text-xs text-teal-800/70 sm:inline-flex"
+              onClick={signOut}
             >
-              Partner links
-            </Link>
-            <Button variant="ghost" size="sm" className="h-8 px-2 text-xs text-teal-800/70" onClick={signOut}>
               <LogOut data-icon="inline-start" />
               Sign out
             </Button>
-            <div className="flex size-8 items-center justify-center rounded-full bg-gradient-to-br from-teal-600 to-cyan-700 text-[11px] font-semibold text-white">
+            <div className="flex size-9 items-center justify-center rounded-full bg-gradient-to-br from-teal-500 to-cyan-700 text-[11px] font-semibold text-white shadow-sm">
               AD
             </div>
           </div>
         </header>
-        <main className="relative px-4 py-6 sm:py-8 lg:px-8">{children}</main>
+        <main className="relative px-4 py-5 sm:py-7 lg:px-8">{children}</main>
       </div>
     </div>
   )
@@ -135,13 +137,13 @@ function NavLink({
     <Link
       href={item.href}
       className={cn(
-        'flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors',
+        'flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm font-medium transition-all',
         active
-          ? 'bg-teal-800 font-medium text-white shadow-md shadow-teal-800/15'
-          : 'text-teal-900/65 hover:bg-teal-900/5',
+          ? 'bg-teal-800 text-white shadow-md shadow-teal-800/20'
+          : 'text-teal-900/60 hover:bg-teal-950/[0.04] hover:text-teal-950',
       )}
     >
-      <Icon className="size-4" />
+      <Icon className="size-4 shrink-0" strokeWidth={active ? 2.4 : 2} />
       {item.label}
     </Link>
   )
@@ -150,10 +152,12 @@ function NavLink({
 function MobileNav({ pathname, onSignOut }: { pathname: string; onSignOut: () => void }) {
   return (
     <Sheet>
-      <SheetTrigger render={<Button variant="ghost" size="icon" className="lg:hidden" />}>
-        <Menu />
+      <SheetTrigger
+        render={<Button variant="ghost" size="icon" className="size-10 rounded-xl lg:hidden" />}
+      >
+        <Menu className="size-5" />
       </SheetTrigger>
-      <SheetContent side="left" className="w-[min(100%,18rem)] bg-white">
+      <SheetContent side="left" className="w-[min(100%,18.5rem)] border-teal-900/8 bg-white/95">
         <SheetHeader>
           <SheetTitle>
             <BrandMark />
@@ -165,11 +169,11 @@ function MobileNav({ pathname, onSignOut }: { pathname: string; onSignOut: () =>
           ))}
         </div>
         <div className="mt-auto border-t border-teal-900/8 px-4 py-4">
-          <p className="text-sm font-medium text-teal-950">admin</p>
+          <p className="text-sm font-semibold text-teal-950">admin</p>
           <button
             type="button"
             onClick={onSignOut}
-            className="mt-2 inline-flex items-center gap-1.5 text-sm text-teal-800/70 transition-colors hover:text-teal-950"
+            className="mt-2 inline-flex items-center gap-1.5 text-sm font-medium text-teal-800/70 transition-colors hover:text-teal-950"
           >
             <LogOut className="size-3.5" />
             Sign out

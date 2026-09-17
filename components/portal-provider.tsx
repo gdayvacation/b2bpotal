@@ -1,10 +1,23 @@
 'use client'
 
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { nextBookingCode, uniqueAgentSlug } from '@/lib/format'
-import { AGENTS, INITIAL_AVAILABILITY, INITIAL_BOOKINGS, INITIAL_ZONES, mergeBookings } from '@/lib/mock-data'
 import { autoAssignBoats } from '@/lib/boat-assign'
 import { autoAssignVans, normalizeAssignments } from '@/lib/vehicle-assign'
+import {
+  deleteAgent,
+  deleteZone,
+  insertBooking,
+  loadPortalSnapshot,
+  persistQuietly,
+  saveDayBoatPlan,
+  saveDayVehiclePlan,
+  updateBookingsAgentName,
+  upsertAgent,
+  upsertAvailability,
+  upsertAvailabilityRows,
+  upsertZone,
+} from '@/lib/supabase/portal-db'
 import type {
   Agent,
   AgentStatus,
@@ -33,6 +46,7 @@ import {
 
 type PortalContextValue = {
   hydrated: boolean
+  loadError: string | null
   agents: Agent[]
   bookings: Booking[]
   zones: PickupZone[]
@@ -91,46 +105,42 @@ type PortalContextValue = {
 
 const PortalContext = createContext<PortalContextValue | null>(null)
 
-function readStore<T>(key: string, fallback: T): T {
-  try {
-    const raw = sessionStorage.getItem(key)
-    return raw ? (JSON.parse(raw) as T) : fallback
-  } catch {
-    return fallback
-  }
-}
-
 export function PortalProvider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false)
-  const [agents, setAgents] = useState(AGENTS)
-  const [bookings, setBookings] = useState(INITIAL_BOOKINGS)
-  const [zones, setZones] = useState(INITIAL_ZONES)
-  const [availability, setAvailability] = useState(INITIAL_AVAILABILITY)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [agents, setAgents] = useState<Agent[]>([])
+  const [bookings, setBookings] = useState<Booking[]>([])
+  const [zones, setZones] = useState<PickupZone[]>([])
+  const [availability, setAvailability] = useState<Availability[]>([])
   const [dayBoatPlans, setDayBoatPlans] = useState<Record<string, DayBoatPlan>>({})
   const [dayVehiclePlans, setDayVehiclePlans] = useState<Record<string, DayVehiclePlan>>({})
-  const mutated = useRef(false)
 
   useEffect(() => {
-    if (!mutated.current) {
-      setAgents(readStore('gday-agents', AGENTS))
-      setBookings(mergeBookings(readStore('gday-bookings-v4', INITIAL_BOOKINGS), INITIAL_BOOKINGS))
-      setZones(readStore('gday-zones', INITIAL_ZONES))
-      setAvailability(readStore('gday-availability-v2', INITIAL_AVAILABILITY))
-      setDayBoatPlans(readStore('gday-day-boat-plans-v2', {}))
-      setDayVehiclePlans(readStore('gday-day-vehicle-plans-v3', {}))
+    let cancelled = false
+    ;(async () => {
+      try {
+        const snapshot = await loadPortalSnapshot()
+        if (cancelled) return
+        setAgents(snapshot.agents)
+        setBookings(snapshot.bookings)
+        setZones(snapshot.zones)
+        setAvailability(snapshot.availability)
+        setDayBoatPlans(snapshot.dayBoatPlans)
+        setDayVehiclePlans(snapshot.dayVehiclePlans)
+        setLoadError(null)
+      } catch (error) {
+        if (cancelled) return
+        const message = error instanceof Error ? error.message : 'Failed to load portal data'
+        console.error('[portal] load failed', error)
+        setLoadError(message)
+      } finally {
+        if (!cancelled) setHydrated(true)
+      }
+    })()
+    return () => {
+      cancelled = true
     }
-    setHydrated(true)
   }, [])
-
-  useEffect(() => {
-    if (!hydrated) return
-    sessionStorage.setItem('gday-agents', JSON.stringify(agents))
-    sessionStorage.setItem('gday-bookings-v4', JSON.stringify(bookings))
-    sessionStorage.setItem('gday-zones', JSON.stringify(zones))
-    sessionStorage.setItem('gday-availability-v2', JSON.stringify(availability))
-    sessionStorage.setItem('gday-day-boat-plans-v2', JSON.stringify(dayBoatPlans))
-    sessionStorage.setItem('gday-day-vehicle-plans-v3', JSON.stringify(dayVehiclePlans))
-  }, [agents, bookings, zones, availability, dayBoatPlans, dayVehiclePlans, hydrated])
 
   const value = useMemo<PortalContextValue>(() => {
     const getZoneTime = (name: PickupZoneName) =>
@@ -159,11 +169,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       program: Program,
       updater: (plan: DayBoatPlan) => DayBoatPlan,
     ) => {
-      mutated.current = true
       setDayBoatPlans((current) => {
         const key = dayBoatPlanKey(date, program)
         const base = current[key] ?? emptyDayBoatPlan(date, program)
-        return { ...current, [key]: updater(base) }
+        const next = updater(base)
+        persistQuietly('saveDayBoatPlan', saveDayBoatPlan(next))
+        return { ...current, [key]: next }
       })
     }
 
@@ -189,11 +200,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       program: Program,
       updater: (plan: DayVehiclePlan) => DayVehiclePlan,
     ) => {
-      mutated.current = true
       setDayVehiclePlans((current) => {
         const key = dayVehiclePlanKey(date, program)
         const base = getDayVehiclePlan(date, program)
-        // Prefer in-memory current if present so rapid updates don't race on stale closure
         const fromState = current[key]
         const resolved = fromState
           ? {
@@ -206,12 +215,15 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               ),
             }
           : base
-        return { ...current, [key]: updater(resolved) }
+        const next = updater(resolved)
+        persistQuietly('saveDayVehiclePlan', saveDayVehiclePlan(next))
+        return { ...current, [key]: next }
       })
     }
 
     return {
       hydrated,
+      loadError,
       agents,
       bookings,
       zones,
@@ -242,17 +254,22 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           pickupTime,
           status: pending ? 'Pending Pickup Time' : 'Confirmed',
         }
-        mutated.current = true
         setBookings((current) => [booking, ...current])
+        persistQuietly('insertBooking', insertBooking(booking))
         return booking
       },
       updateZoneTime: (name, time) => {
-        mutated.current = true
-        setZones((current) =>
-          current.map((zone) =>
+        setZones((current) => {
+          const next = current.map((zone) =>
             zone.name === name && !zone.pending ? { ...zone, time } : zone,
-          ),
-        )
+          )
+          const updated = next.find((zone) => zone.name === name)
+          if (updated) {
+            const sortOrder = next.findIndex((zone) => zone.name === name) * 10 + 10
+            persistQuietly('upsertZone', upsertZone(updated, sortOrder))
+          }
+          return next
+        })
       },
       addZone: (name, time) => {
         const trimmedName = name.trim().replace(/\s+/g, ' ')
@@ -263,25 +280,31 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           (zone) => zone.name.toLowerCase() === trimmedName.toLowerCase(),
         )
         if (exists) return 'This zone already exists.'
-        mutated.current = true
+        const nextZone: PickupZone = { name: trimmedName, time: trimmedTime, pending: false }
         setZones((current) => {
-          const nextZone: PickupZone = { name: trimmedName, time: trimmedTime, pending: false }
           const otherIndex = current.findIndex((zone) => zone.name === 'Other' || zone.pending)
-          if (otherIndex === -1) return [...current, nextZone]
-          return [...current.slice(0, otherIndex), nextZone, ...current.slice(otherIndex)]
+          const next =
+            otherIndex === -1
+              ? [...current, nextZone]
+              : [...current.slice(0, otherIndex), nextZone, ...current.slice(otherIndex)]
+          const sortOrder = next.findIndex((zone) => zone.name === trimmedName) * 10 + 10
+          persistQuietly('upsertZone', upsertZone(nextZone, sortOrder))
+          return next
         })
         return null
       },
       removeZone: (name) => {
         if (isCorePickupZone(name)) return
-        mutated.current = true
         setZones((current) => current.filter((zone) => zone.name !== name))
+        persistQuietly('deleteZone', deleteZone(name))
       },
       setAgentStatus: (slug, status) => {
-        mutated.current = true
-        setAgents((current) =>
-          current.map((agent) => (agent.slug === slug ? { ...agent, status } : agent)),
-        )
+        setAgents((current) => {
+          const next = current.map((agent) => (agent.slug === slug ? { ...agent, status } : agent))
+          const updated = next.find((agent) => agent.slug === slug)
+          if (updated) persistQuietly('upsertAgent', upsertAgent(updated))
+          return next
+        })
       },
       addAgent: (name, country) => {
         const trimmedName = name.trim().replace(/\s+/g, ' ')
@@ -296,11 +319,14 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           trimmedName,
           agents.map((agent) => agent.slug),
         )
-        mutated.current = true
-        setAgents((current) => [
-          ...current,
-          { slug, name: trimmedName, country: trimmedCountry, status: 'Active' },
-        ])
+        const agent: Agent = {
+          slug,
+          name: trimmedName,
+          country: trimmedCountry,
+          status: 'Active',
+        }
+        setAgents((current) => [...current, agent])
+        persistQuietly('upsertAgent', upsertAgent(agent))
         return null
       },
       updateAgent: (slug, name, country) => {
@@ -315,29 +341,30 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         if (duplicate) return 'An agent with this name already exists.'
         const existing = agents.find((agent) => agent.slug === slug)
         if (!existing) return 'Agent not found.'
-        mutated.current = true
+        const updated: Agent = {
+          ...existing,
+          name: trimmedName,
+          country: trimmedCountry,
+        }
         setAgents((current) =>
-          current.map((agent) =>
-            agent.slug === slug
-              ? { ...agent, name: trimmedName, country: trimmedCountry }
-              : agent,
-          ),
+          current.map((agent) => (agent.slug === slug ? updated : agent)),
         )
+        persistQuietly('upsertAgent', upsertAgent(updated))
         if (existing.name !== trimmedName) {
           setBookings((current) =>
             current.map((booking) =>
               booking.agentSlug === slug ? { ...booking, agentName: trimmedName } : booking,
             ),
           )
+          persistQuietly('updateBookingsAgentName', updateBookingsAgentName(slug, trimmedName))
         }
         return null
       },
       removeAgent: (slug) => {
-        mutated.current = true
         setAgents((current) => current.filter((agent) => agent.slug !== slug))
+        persistQuietly('deleteAgent', deleteAgent(slug))
       },
       setCapacity: (date, program, capacity) => {
-        mutated.current = true
         setAvailability((current) => {
           const existing = current.find((item) => item.date === date)
           const next: Availability = {
@@ -347,6 +374,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           }
           if (program === 'PP') next.ppCapacity = capacity
           else next.jamesBondCapacity = capacity
+          persistQuietly('upsertAvailability', upsertAvailability(next))
           if (existing) {
             return current.map((item) => (item.date === date ? next : item))
           }
@@ -356,36 +384,42 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       setCapacityForDates: (dates, capacities) => {
         if (dates.length === 0) return
         if (capacities.ppCapacity === undefined && capacities.jamesBondCapacity === undefined) return
-        mutated.current = true
         setAvailability((current) => {
           const byDate = new Map(current.map((item) => [item.date, item]))
+          const touched: Availability[] = []
           for (const date of dates) {
             const existing = byDate.get(date)
-            byDate.set(date, {
+            const next: Availability = {
               date,
               ppCapacity: capacities.ppCapacity ?? existing?.ppCapacity ?? DEFAULT_PP_CAPACITY,
               jamesBondCapacity:
                 capacities.jamesBondCapacity ?? existing?.jamesBondCapacity ?? DEFAULT_JB_CAPACITY,
-            })
+            }
+            byDate.set(date, next)
+            touched.push(next)
           }
+          persistQuietly('upsertAvailabilityRows', upsertAvailabilityRows(touched))
           return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date))
         })
       },
       nudgeCapacityForDates: (dates, program, delta) => {
         if (dates.length === 0 || delta === 0) return
-        mutated.current = true
         setAvailability((current) => {
           const byDate = new Map(current.map((item) => [item.date, item]))
+          const touched: Availability[] = []
           for (const date of dates) {
             const existing = byDate.get(date)
             const pp = existing?.ppCapacity ?? DEFAULT_PP_CAPACITY
             const jb = existing?.jamesBondCapacity ?? DEFAULT_JB_CAPACITY
-            byDate.set(date, {
+            const next: Availability = {
               date,
               ppCapacity: program === 'PP' ? Math.max(0, pp + delta) : pp,
               jamesBondCapacity: program === 'James Bond' ? Math.max(0, jb + delta) : jb,
-            })
+            }
+            byDate.set(date, next)
+            touched.push(next)
           }
+          persistQuietly('upsertAvailabilityRows', upsertAvailabilityRows(touched))
           return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date))
         })
       },
@@ -470,7 +504,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }))
       },
     }
-  }, [agents, bookings, zones, availability, dayBoatPlans, dayVehiclePlans, hydrated])
+  }, [agents, bookings, zones, availability, dayBoatPlans, dayVehiclePlans, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }

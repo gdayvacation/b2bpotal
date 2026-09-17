@@ -13,21 +13,17 @@ export function PageHeader({
   actions?: ReactNode
 }) {
   return (
-    <div className="mb-6 flex flex-col gap-4 sm:mb-8 sm:flex-row sm:items-end sm:justify-between">
-      <div>
-        {eyebrow ? (
-          <p className="mb-2 text-[11px] font-semibold tracking-[0.16em] text-teal-700/55 uppercase">
-            {eyebrow}
-          </p>
-        ) : null}
-        <h1 className="font-display text-2xl font-semibold tracking-tight text-teal-950 sm:text-[28px]">
+    <div className="mb-5 flex flex-col gap-4 sm:mb-7 sm:flex-row sm:items-end sm:justify-between">
+      <div className="min-w-0">
+        {eyebrow ? <p className="gday-soft-label mb-1.5">{eyebrow}</p> : null}
+        <h1 className="font-display text-[1.65rem] font-semibold tracking-tight text-teal-950 sm:text-[1.85rem]">
           {title}
         </h1>
         {description ? (
-          <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-teal-950/55">{description}</p>
+          <p className="mt-1.5 max-w-xl text-[15px] leading-relaxed text-teal-950/55">{description}</p>
         ) : null}
       </div>
-      {actions}
+      {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
     </div>
   )
 }
@@ -40,13 +36,80 @@ export function Surface({
   className?: string
 }) {
   return (
+    <div className={cn('gday-sheet rounded-[1.35rem]', className)}>
+      {children}
+    </div>
+  )
+}
+
+export function SoftLabel({
+  children,
+  className,
+  htmlFor,
+}: {
+  children: ReactNode
+  className?: string
+  htmlFor?: string
+}) {
+  if (htmlFor) {
+    return (
+      <label htmlFor={htmlFor} className={cn('gday-soft-label', className)}>
+        {children}
+      </label>
+    )
+  }
+  return <p className={cn('gday-soft-label', className)}>{children}</p>
+}
+
+export function SegmentedControl({
+  children,
+  className,
+}: {
+  children: ReactNode
+  className?: string
+}) {
+  return (
     <div
       className={cn(
-        'rounded-2xl border border-teal-900/8 bg-white/90 shadow-[0_12px_40px_-28px_rgba(15,118,110,0.35)] backdrop-blur-sm',
+        'inline-flex max-w-full flex-wrap gap-1 rounded-2xl border border-teal-900/8 bg-teal-950/[0.03] p-1',
         className,
       )}
     >
       {children}
     </div>
+  )
+}
+
+export function Segment({
+  active,
+  onClick,
+  children,
+  className,
+}: {
+  active: boolean
+  onClick: () => void
+  children: ReactNode
+  className?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'rounded-xl px-3.5 py-2 text-sm font-medium transition-all',
+        active
+          ? 'bg-white text-teal-950 shadow-sm shadow-teal-950/8 ring-1 ring-teal-900/8'
+          : 'text-teal-900/55 hover:bg-white/60 hover:text-teal-950',
+        className,
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
+export function EmptyState({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <p className={cn('px-4 py-12 text-center text-sm text-teal-900/45', className)}>{children}</p>
   )
 }

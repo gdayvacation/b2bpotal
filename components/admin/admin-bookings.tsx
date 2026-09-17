@@ -1,13 +1,13 @@
 'use client'
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { CalendarIcon, Check, Plus, X } from 'lucide-react'
 import type { DateRange } from 'react-day-picker'
 import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
-import { PageHeader, Surface } from '@/components/ui-primitives'
+import { PageHeader, Segment, SegmentedControl, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -112,17 +112,15 @@ export function AdminBookings() {
       <Surface className="mb-4 p-3 sm:p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-medium tracking-wide text-teal-700/55 uppercase">
-              Filter
-            </span>
-            <div className="flex gap-1 rounded-lg border border-teal-900/8 bg-teal-50/40 p-1">
-              <FilterChip active={quick === 'all' && !hasRange} onClick={() => clearFilters()}>
+            <SoftLabel>Filter</SoftLabel>
+            <SegmentedControl>
+              <Segment active={quick === 'all' && !hasRange} onClick={() => clearFilters()}>
                 All
-              </FilterChip>
-              <FilterChip active={quick === 'today'} onClick={applyToday}>
+              </Segment>
+              <Segment active={quick === 'today'} onClick={applyToday}>
                 Today
-              </FilterChip>
-            </div>
+              </Segment>
+            </SegmentedControl>
 
             <Popover>
               <PopoverTrigger
@@ -130,13 +128,13 @@ export function AdminBookings() {
                   <Button
                     variant="outline"
                     className={cn(
-                      'h-9 justify-start gap-2 font-normal',
+                      'h-10 justify-start gap-2 rounded-xl font-normal',
                       hasRange && 'border-teal-700/40 bg-teal-50 text-teal-950',
                     )}
                   />
                 }
               >
-                <CalendarIcon className="size-4 text-neutral-400" />
+                <CalendarIcon className="size-4 text-teal-900/35" />
                 <span className="truncate">{rangeLabel}</span>
               </PopoverTrigger>
               <PopoverContent align="start" className="w-auto p-2">
@@ -181,22 +179,22 @@ export function AdminBookings() {
 
       <Surface className="overflow-hidden">
         {filtered.length === 0 ? (
-          <div className="px-4 py-12 text-center text-sm text-neutral-500">
+          <div className="px-4 py-12 text-center text-sm text-teal-900/45">
             No bookings match this filter.
           </div>
         ) : (
           <Table>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
-                <TableHead className="px-4 text-neutral-400">Booking Number</TableHead>
-                <TableHead className="text-neutral-400">Date</TableHead>
-                <TableHead className="text-neutral-400">Program</TableHead>
-                <TableHead className="text-neutral-400">Agent</TableHead>
-                <TableHead className="text-neutral-400">Agent Ref</TableHead>
-                <TableHead className="text-neutral-400">Lead Guest</TableHead>
-                <TableHead className="text-neutral-400">Total Pax</TableHead>
-                <TableHead className="text-neutral-400">Pickup</TableHead>
-                <TableHead className="text-neutral-400">Status</TableHead>
+                <TableHead className="px-4 text-teal-800/50">Booking Number</TableHead>
+                <TableHead className="text-teal-800/50">Date</TableHead>
+                <TableHead className="text-teal-800/50">Program</TableHead>
+                <TableHead className="text-teal-800/50">Agent</TableHead>
+                <TableHead className="text-teal-800/50">Agent Ref</TableHead>
+                <TableHead className="text-teal-800/50">Lead Guest</TableHead>
+                <TableHead className="text-teal-800/50">Total Pax</TableHead>
+                <TableHead className="text-teal-800/50">Pickup</TableHead>
+                <TableHead className="text-teal-800/50">Status</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -232,27 +230,3 @@ export function AdminBookings() {
   )
 }
 
-function FilterChip({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean
-  onClick: () => void
-  children: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-        active
-          ? 'bg-teal-900 text-white shadow-sm'
-          : 'text-teal-900/60 hover:bg-white hover:text-teal-950',
-      )}
-    >
-      {children}
-    </button>
-  )
-}

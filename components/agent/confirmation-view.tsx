@@ -13,25 +13,25 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
   const total = totalPassengers(booking)
 
   return (
-    <div className="mx-auto max-w-2xl py-6 text-center">
-      <div className="mx-auto mb-5 flex size-14 items-center justify-center rounded-full bg-emerald-50 text-emerald-700">
-        <Check className="size-7" />
+    <div className="gday-fade-up mx-auto max-w-2xl py-4 text-center sm:py-8">
+      <div className="mx-auto mb-5 flex size-16 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-8 ring-emerald-50/60">
+        <Check className="size-7" strokeWidth={2.5} />
       </div>
-      <p className="text-[11px] font-semibold tracking-[0.2em] text-emerald-700 uppercase">
-        Booking Confirmed
-      </p>
-      <h1 className="mt-2 text-3xl font-semibold tracking-tight">{booking.code}</h1>
-      <p className="mt-2 text-sm text-neutral-500">
+      <p className="gday-soft-label text-emerald-700/80">Booking confirmed</p>
+      <h1 className="font-display mt-2 text-3xl font-semibold tracking-tight text-teal-950 sm:text-4xl">
+        {booking.code}
+      </h1>
+      <p className="mx-auto mt-2 max-w-md text-[15px] text-teal-950/55">
         The booking is now in your partner account. No payment is collected here.
       </p>
 
-      <div className="mt-8 rounded-2xl border border-neutral-200 bg-white p-6 text-left shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
-        <div className="mb-5 flex items-start justify-between gap-3 border-b border-neutral-100 pb-5">
+      <div className="gday-sheet mt-8 rounded-[1.4rem] p-5 text-left sm:p-6">
+        <div className="mb-5 flex items-start justify-between gap-3 border-b border-teal-900/8 pb-5">
           <div>
-            <p className="text-[11px] font-medium tracking-wide text-neutral-400 uppercase">
-              Confirmation number
+            <p className="gday-soft-label">Confirmation number</p>
+            <p className="mt-1 font-mono text-lg font-semibold tracking-tight text-teal-950">
+              {booking.code}
             </p>
-            <p className="mt-1 font-mono text-lg font-semibold tracking-tight">{booking.code}</p>
           </div>
           <StatusBadge status={booking.status} />
         </div>
@@ -53,14 +53,14 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
       <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
         <Link
           href={`/agent/${slug}/voucher/${booking.code}`}
-          className={cn(buttonVariants(), 'h-10 px-4')}
+          className={cn(buttonVariants({ size: 'lg' }), 'h-12 rounded-xl px-5')}
         >
           <Ticket data-icon="inline-start" />
           View Voucher
         </Link>
         <Link
           href={`/agent/${slug}/voucher/${booking.code}?print=1`}
-          className={cn(buttonVariants({ variant: 'outline' }), 'h-10 px-4')}
+          className={cn(buttonVariants({ variant: 'outline', size: 'lg' }), 'h-12 rounded-xl px-5')}
         >
           <Printer data-icon="inline-start" />
           Print Voucher
@@ -73,8 +73,8 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
 function Item({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="text-[11px] font-medium tracking-wide text-neutral-400 uppercase">{label}</dt>
-      <dd className="mt-1 whitespace-pre-line text-sm font-medium text-neutral-900">{value}</dd>
+      <dt className="gday-soft-label">{label}</dt>
+      <dd className="mt-1 whitespace-pre-line text-sm font-semibold text-teal-950">{value}</dd>
     </div>
   )
 }

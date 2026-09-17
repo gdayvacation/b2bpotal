@@ -5,18 +5,21 @@ export function BrandMark({ className, light = false }: { className?: string; li
     <div className={cn('flex items-center gap-2.5', className)}>
       <div
         className={cn(
-          'flex size-8 items-center justify-center rounded-xl text-[13px] font-semibold tracking-tight shadow-sm',
+          'relative flex size-9 items-center justify-center rounded-2xl text-[14px] font-semibold tracking-tight',
           light
-            ? 'bg-white/20 text-white'
-            : 'bg-gradient-to-br from-teal-600 to-cyan-700 text-white shadow-teal-700/20',
+            ? 'bg-white/18 text-white ring-1 ring-white/20'
+            : 'bg-gradient-to-br from-teal-500 via-teal-600 to-cyan-700 text-white shadow-md shadow-teal-700/25',
         )}
       >
-        G
+        <span className="relative z-10">G</span>
+        {!light ? (
+          <span className="pointer-events-none absolute inset-0 rounded-2xl bg-[radial-gradient(circle_at_30%_25%,rgba(255,255,255,0.35),transparent_55%)]" />
+        ) : null}
       </div>
       <div className="leading-tight">
         <div
           className={cn(
-            'font-display text-sm font-semibold tracking-tight',
+            'font-display text-[15px] font-semibold tracking-tight',
             light ? 'text-white' : 'text-teal-950',
           )}
         >

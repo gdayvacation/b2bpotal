@@ -1,9 +1,9 @@
 'use client'
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, Minus, Plus } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
-import { PageHeader, Surface } from '@/components/ui-primitives'
+import { PageHeader, Segment, SegmentedControl, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
 import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
 import { DEFAULT_JB_CAPACITY, DEFAULT_PP_CAPACITY } from '@/lib/types'
@@ -78,14 +78,22 @@ export function AdminAvailability() {
         description={`Default every day: PP ${DEFAULT_PP_CAPACITY} · James Bond ${DEFAULT_JB_CAPACITY}. Adjust per day or view live booking status.`}
       />
 
-      <div className="mb-4 flex gap-1 rounded-xl border border-teal-900/8 bg-white/80 p-1">
-        <TabButton active={tab === 'capacity'} onClick={() => setTab('capacity')}>
+      <SegmentedControl className="mb-4 w-full sm:w-auto">
+        <Segment
+          active={tab === 'capacity'}
+          onClick={() => setTab('capacity')}
+          className="flex-1 sm:flex-none"
+        >
           Adjust capacity
-        </TabButton>
-        <TabButton active={tab === 'status'} onClick={() => setTab('status')}>
+        </Segment>
+        <Segment
+          active={tab === 'status'}
+          onClick={() => setTab('status')}
+          className="flex-1 sm:flex-none"
+        >
           Booking status
-        </TabButton>
-      </div>
+        </Segment>
+      </SegmentedControl>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_300px]">
         <Surface className="p-4 sm:p-5">
@@ -293,31 +301,6 @@ export function AdminAvailability() {
         </Surface>
       </div>
     </div>
-  )
-}
-
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean
-  onClick: () => void
-  children: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'flex-1 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
-        active
-          ? 'bg-teal-900 text-white shadow-sm'
-          : 'text-teal-900/60 hover:bg-teal-50 hover:text-teal-950',
-      )}
-    >
-      {children}
-    </button>
   )
 }
 

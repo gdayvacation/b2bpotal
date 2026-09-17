@@ -7,14 +7,17 @@ export function StatusBadge({
   status: 'Confirmed' | 'Pending Pickup Time' | 'Active' | 'Inactive'
 }) {
   const styles = {
-    Confirmed: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-    'Pending Pickup Time': 'border-amber-200 bg-amber-50 text-amber-700',
-    Active: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-    Inactive: 'border-neutral-200 bg-neutral-50 text-neutral-500',
+    Confirmed: 'border-emerald-200/80 bg-emerald-50 text-emerald-800',
+    'Pending Pickup Time': 'border-amber-200/80 bg-amber-50 text-amber-800',
+    Active: 'border-emerald-200/80 bg-emerald-50 text-emerald-800',
+    Inactive: 'border-teal-900/10 bg-teal-950/[0.04] text-teal-900/50',
   }[status]
 
   return (
-    <Badge variant="outline" className={cn('rounded-full font-medium', styles)}>
+    <Badge
+      variant="outline"
+      className={cn('rounded-full px-2.5 py-0.5 text-[11px] font-semibold tracking-tight', styles)}
+    >
       {status}
     </Badge>
   )

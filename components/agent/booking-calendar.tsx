@@ -53,11 +53,11 @@ export function BookingCalendar({ bookings }: { bookings: Booking[] }) {
             </Button>
           </div>
         </div>
-        <div className="grid grid-cols-7 gap-px overflow-hidden rounded-xl border border-teal-900/10 bg-teal-900/10">
+        <div className="grid grid-cols-7 gap-px overflow-hidden rounded-2xl border border-teal-900/10 bg-teal-900/10">
           {WEEKDAYS.map((day) => (
             <div
               key={day}
-              className="bg-teal-50/80 px-1 py-2 text-center text-[10px] font-medium tracking-wide text-teal-700/45 uppercase sm:px-2 sm:text-[11px]"
+              className="bg-teal-50/80 px-1 py-2.5 text-center text-[10px] font-semibold tracking-wide text-teal-700/45 uppercase sm:px-2 sm:text-[11px]"
             >
               <span className="sm:hidden">{day.slice(0, 1)}</span>
               <span className="hidden sm:inline">{day}</span>
@@ -65,7 +65,7 @@ export function BookingCalendar({ bookings }: { bookings: Booking[] }) {
           ))}
           {days.map((cell, index) => {
             if (!cell) {
-              return <div key={`empty-${index}`} className="min-h-14 bg-white sm:min-h-[108px]" />
+              return <div key={`empty-${index}`} className="min-h-16 bg-white sm:min-h-[108px]" />
             }
             const iso = toISODate(cell)
             const dayBookings = byDate[iso] ?? []
@@ -77,7 +77,7 @@ export function BookingCalendar({ bookings }: { bookings: Booking[] }) {
                 type="button"
                 onClick={() => setSelectedDate(iso)}
                 className={cn(
-                  'min-h-14 bg-white p-1.5 text-left transition-colors hover:bg-teal-50/60 sm:min-h-[108px] sm:p-2',
+                  'min-h-16 bg-white p-1.5 text-left transition-colors hover:bg-teal-50/70 sm:min-h-[108px] sm:p-2',
                   selectedDate === iso && 'bg-teal-50 ring-1 ring-inset ring-teal-700',
                 )}
               >

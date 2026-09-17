@@ -54,14 +54,14 @@ export function AdminDailyBookings() {
 
         <div className="grid gap-4 sm:grid-cols-2">
           <ModeCard
-            title="Arrange vehicles"
+            title="จัดการรถ"
             subtitle="Group pickups by location proximity for transfer vans and cars."
             meta="By zone & hotel"
             icon={<Bus className="size-7" />}
             onClick={() => setBoardMode('vehicles')}
           />
           <ModeCard
-            title="Arrange boats"
+            title="จัดการเรือ"
             subtitle="Assign bookings to boats by program. Typical capacity is about 30–40 pax per boat."
             meta="By program & capacity"
             icon={<Ship className="size-7" />}
@@ -96,13 +96,13 @@ function ModeCard({
     <button
       type="button"
       onClick={onClick}
-      className="rounded-2xl border border-teal-900/8 bg-white/90 p-6 text-left shadow-[0_12px_40px_-28px_rgba(15,118,110,0.35)] transition-colors hover:border-teal-700/30 hover:bg-teal-50/40 sm:p-7"
+      className="gday-sheet rounded-[1.4rem] p-6 text-left transition-all hover:border-teal-700/25 hover:bg-white active:scale-[0.99] sm:p-7"
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="flex size-14 items-center justify-center rounded-2xl bg-gradient-to-br from-teal-600 to-cyan-700 text-white shadow-sm shadow-teal-700/20">
+        <div className="flex size-14 items-center justify-center rounded-2xl bg-gradient-to-br from-teal-500 to-cyan-700 text-white shadow-sm shadow-teal-700/20">
           {icon}
         </div>
-        <p className="rounded-lg bg-teal-900/5 px-2.5 py-1 text-[11px] font-semibold tracking-wide text-teal-800/70 uppercase">
+        <p className="rounded-lg bg-teal-950/[0.05] px-2.5 py-1 text-[11px] font-semibold text-teal-800/70">
           {meta}
         </p>
       </div>
@@ -110,7 +110,7 @@ function ModeCard({
         {title}
       </p>
       <p className="mt-2 text-base leading-relaxed text-teal-900/55">{subtitle}</p>
-      <p className="mt-6 text-base font-medium text-teal-800">Continue →</p>
+      <p className="mt-6 text-base font-semibold text-teal-800">Continue →</p>
     </button>
   )
 }
