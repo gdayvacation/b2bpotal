@@ -80,6 +80,17 @@ export type Availability = {
   jamesBondCapacity: number
 }
 
+/** Admin closed a travel date for a program (storm, boat out, etc.). */
+export type BookingClosure = {
+  date: string
+  program: Program
+  reason: string
+}
+
+export function bookingClosureKey(date: string, program: Program) {
+  return `${date}|${program}`
+}
+
 /** Default daily seats when a date has no override stored. */
 export const DEFAULT_PP_CAPACITY = 60
 export const DEFAULT_JB_CAPACITY = 20

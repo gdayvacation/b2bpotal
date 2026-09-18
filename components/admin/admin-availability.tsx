@@ -6,6 +6,7 @@ import { usePortal } from '@/components/portal-provider'
 import { PageHeader, Segment, SegmentedControl, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import {
   addCalendarDays,
   formatCutoffDeadline,
@@ -13,14 +14,13 @@ import {
   isCancelOpenForDate,
   summarizeCutoffRule,
 } from '@/lib/booking-cutoffs'
-import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
+import { formatLongDate, formatShortDate, startOfThisMonth, todayISO, toISODate } from '@/lib/format'
 import { DEFAULT_JB_CAPACITY, DEFAULT_PP_CAPACITY, type Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-const DEFAULT_MONTH = new Date(2026, 8, 1)
 
-type Tab = 'capacity' | 'status' | 'cutoffs'
+type Tab = 'capacity' | 'status' | 'close' | 'cutoffs'
 type ProgramFilter = 'all' | Program
 
 export function AdminAvailability() {
@@ -31,11 +31,18 @@ export function AdminAvailability() {
     nudgeCapacityForDates,
     bookingCutoffs,
     updateBookingCutoffs,
+    bookingClosures,
+    isProgramClosed,
+    getBookingClosure,
+    closeBookingForDates,
+    openBookingForDates,
   } = usePortal()
   const [tab, setTab] = useState<Tab>('capacity')
-  const [month, setMonth] = useState(DEFAULT_MONTH)
-  const [selected, setSelected] = useState<string[]>(['2026-09-17'])
+  const [month, setMonth] = useState(() => startOfThisMonth())
+  const [selected, setSelected] = useState(() => [todayISO()])
   const [programFilter, setProgramFilter] = useState<ProgramFilter>('all')
+  const [closePrograms, setClosePrograms] = useState<Program[]>(['PP', 'James Bond'])
+  const [closureReason, setClosureReason] = useState('')
   const showPP = programFilter === 'all' || programFilter === 'PP'
   const showJB = programFilter === 'all' || programFilter === 'James Bond'
 
@@ -55,6 +62,34 @@ export function AdminAvailability() {
       jamesBondCapacity: jbValues.size === 1 ? [...jbValues][0] : null,
     }
   }, [selectedSorted, getCapacity])
+
+  const selectedClosureState = useMemo(() => {
+    if (selectedSorted.length === 0) {
+      return { pp: 'none' as const, jb: 'none' as const, reason: '' }
+    }
+    const ppClosed = selectedSorted.map((iso) => isProgramClosed(iso, 'PP'))
+    const jbClosed = selectedSorted.map((iso) => isProgramClosed(iso, 'James Bond'))
+    const reasons = new Set(
+      selectedSorted.flatMap((iso) => {
+        const notes: string[] = []
+        const pp = getBookingClosure(iso, 'PP')
+        const jb = getBookingClosure(iso, 'James Bond')
+        if (pp?.reason) notes.push(pp.reason)
+        if (jb?.reason) notes.push(jb.reason)
+        return notes
+      }),
+    )
+    return {
+      pp: ppClosed.every(Boolean) ? ('all' as const) : ppClosed.some(Boolean) ? ('mixed' as const) : ('none' as const),
+      jb: jbClosed.every(Boolean) ? ('all' as const) : jbClosed.some(Boolean) ? ('mixed' as const) : ('none' as const),
+      reason: reasons.size === 1 ? [...reasons][0] : '',
+    }
+  }, [selectedSorted, isProgramClosed, getBookingClosure])
+
+  const monthClosures = useMemo(() => {
+    const monthPrefix = `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, '0')}`
+    return bookingClosures.filter((item) => item.date.startsWith(monthPrefix))
+  }, [bookingClosures, month])
 
   const previewTravelDate = useMemo(() => {
     const bangkokToday = new Intl.DateTimeFormat('en-CA', {
@@ -87,6 +122,24 @@ export function AdminAvailability() {
     setCapacityForDates(selectedSorted, { [key]: Math.max(0, value) })
   }
 
+  function toggleCloseProgram(program: Program) {
+    setClosePrograms((current) =>
+      current.includes(program)
+        ? current.filter((item) => item !== program)
+        : [...current, program],
+    )
+  }
+
+  function applyCloseBooking() {
+    if (selectedSorted.length === 0 || closePrograms.length === 0) return
+    closeBookingForDates(selectedSorted, closePrograms, closureReason)
+  }
+
+  function applyOpenBooking(programs: Program[] = closePrograms) {
+    if (selectedSorted.length === 0 || programs.length === 0) return
+    openBookingForDates(selectedSorted, programs)
+  }
+
   function selectWeekFromFirst() {
     const anchorIso =
       selectedSorted[0] ?? toISODate(new Date(month.getFullYear(), month.getMonth(), 1))
@@ -103,7 +156,9 @@ export function AdminAvailability() {
   const headerDescription =
     tab === 'cutoffs'
       ? `Agents may book or cancel until a set time relative to the travel date (${bookingCutoffs.timezone}). Admin can always bypass.`
-      : `Default every day: PP ${DEFAULT_PP_CAPACITY} · James Bond ${DEFAULT_JB_CAPACITY}. Adjust per day or view live booking status.`
+      : tab === 'close'
+        ? 'Close booking on specific dates for PP, James Bond, or both — for weather, boat issues, or other ops holds. Agents cannot book closed dates; admin can still bypass.'
+        : `Default every day: PP ${DEFAULT_PP_CAPACITY} · James Bond ${DEFAULT_JB_CAPACITY}. Adjust per day or view live booking status.`
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -123,6 +178,13 @@ export function AdminAvailability() {
           className="flex-1 sm:flex-none"
         >
           Booking status
+        </Segment>
+        <Segment
+          active={tab === 'close'}
+          onClick={() => setTab('close')}
+          className="flex-1 sm:flex-none"
+        >
+          Close booking
         </Segment>
         <Segment
           active={tab === 'cutoffs'}
@@ -263,10 +325,12 @@ export function AdminAvailability() {
               </div>
             </div>
 
-            {tab === 'capacity' ? (
+            {tab === 'capacity' || tab === 'close' ? (
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <p className="text-xs text-teal-950/50">
-                  Click days to select. Use the panel to raise or lower seats.
+                  {tab === 'close'
+                    ? 'Click days to select, then close or reopen booking in the panel.'
+                    : 'Click days to select. Use the panel to raise or lower seats.'}
                 </p>
                 <div className="flex gap-2">
                   <Button type="button" variant="outline" size="sm" onClick={selectWeekFromFirst}>
@@ -310,6 +374,23 @@ export function AdminAvailability() {
               </div>
             )}
 
+            {tab === 'close' ? (
+              <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-teal-950/55">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="size-2.5 rounded-sm bg-rose-500" /> Closed
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="size-2.5 rounded-sm bg-emerald-500" /> Open
+                </span>
+                {monthClosures.length > 0 ? (
+                  <span className="text-teal-900/40">
+                    {monthClosures.length} closed slot{monthClosures.length === 1 ? '' : 's'} this
+                    month
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+
             <div className="overflow-hidden rounded-xl border border-teal-900/12">
               <div className="grid grid-cols-7 -mb-px -mr-px">
                 {WEEKDAYS.map((day) => (
@@ -339,6 +420,8 @@ export function AdminAvailability() {
                   const ppLeft = Math.max(capacity.ppCapacity - ppBooked, 0)
                   const jbLeft = Math.max(capacity.jamesBondCapacity - jbBooked, 0)
                   const isSelected = selected.includes(iso)
+                  const ppClosed = isProgramClosed(iso, 'PP')
+                  const jbClosed = isProgramClosed(iso, 'James Bond')
 
                   if (tab === 'capacity') {
                     return (
@@ -357,6 +440,30 @@ export function AdminAvailability() {
                         <div className="mt-1.5 space-y-1">
                           <CapacityChip label="PP" value={capacity.ppCapacity} />
                           <CapacityChip label="JB" value={capacity.jamesBondCapacity} />
+                        </div>
+                      </button>
+                    )
+                  }
+
+                  if (tab === 'close') {
+                    return (
+                      <button
+                        key={iso}
+                        type="button"
+                        onClick={() => toggleDay(iso)}
+                        className={cn(
+                          'min-h-[88px] border-r border-b border-teal-900/12 bg-white p-1.5 text-left transition-colors hover:bg-teal-50/70 sm:min-h-[104px] sm:p-2',
+                          (ppClosed || jbClosed) && 'bg-rose-50/60',
+                          isSelected && 'shadow-[inset_0_0_0_2px_rgb(15_118_110)]',
+                          isSelected && !(ppClosed || jbClosed) && 'bg-teal-50',
+                        )}
+                      >
+                        <div className="text-xs font-medium text-teal-900 sm:text-sm">
+                          {cell.getDate()}
+                        </div>
+                        <div className="mt-1.5 space-y-1">
+                          <ClosureChip label="PP" closed={ppClosed} />
+                          <ClosureChip label="JB" closed={jbClosed} />
                         </div>
                       </button>
                     )
@@ -449,6 +556,98 @@ export function AdminAvailability() {
                   </p>
                 ) : null}
               </>
+            ) : tab === 'close' ? (
+              <>
+                <h2 className="text-sm font-semibold text-teal-950">Close booking</h2>
+                <p className="mt-1 text-xs text-teal-950/50">
+                  {selectedSorted.length === 0
+                    ? 'Select one or more days on the calendar.'
+                    : selectedSorted.length === 1
+                      ? formatLongDate(selectedSorted[0])
+                      : `${selectedSorted.length} days selected`}
+                </p>
+
+                {selectedSorted.length > 1 ? (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {selectedSorted.slice(0, 8).map((iso) => (
+                      <span
+                        key={iso}
+                        className="rounded-md bg-teal-50 px-2 py-1 text-[11px] font-medium text-teal-800"
+                      >
+                        {formatShortDate(iso)}
+                      </span>
+                    ))}
+                    {selectedSorted.length > 8 ? (
+                      <span className="px-1 py-1 text-[11px] text-neutral-500">
+                        +{selectedSorted.length - 8} more
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {selectedSorted.length > 0 ? (
+                  <div className="mt-4 grid grid-cols-2 gap-2">
+                    <ClosureStatusPill label="PP" state={selectedClosureState.pp} />
+                    <ClosureStatusPill label="JB" state={selectedClosureState.jb} />
+                  </div>
+                ) : null}
+
+                <div className="mt-5 space-y-3">
+                  <p className="text-xs font-medium text-teal-900/60">Programs to close / reopen</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={closePrograms.includes('PP') ? 'default' : 'outline'}
+                      onClick={() => toggleCloseProgram('PP')}
+                    >
+                      PP
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={closePrograms.includes('James Bond') ? 'default' : 'outline'}
+                      onClick={() => toggleCloseProgram('James Bond')}
+                    >
+                      James Bond
+                    </Button>
+                  </div>
+
+                  <div>
+                    <SoftLabel htmlFor="closure-reason">Reason (optional)</SoftLabel>
+                    <Textarea
+                      id="closure-reason"
+                      className="mt-1.5 min-h-[72px] resize-none"
+                      placeholder="e.g. Storm warning, boat maintenance"
+                      value={closureReason}
+                      onChange={(event) => setClosureReason(event.target.value)}
+                    />
+                    {selectedClosureState.reason && !closureReason ? (
+                      <p className="mt-1.5 text-[11px] text-teal-900/45">
+                        Current note: {selectedClosureState.reason}
+                      </p>
+                    ) : null}
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <Button
+                      type="button"
+                      disabled={selectedSorted.length === 0 || closePrograms.length === 0}
+                      onClick={applyCloseBooking}
+                    >
+                      Close booking
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={selectedSorted.length === 0 || closePrograms.length === 0}
+                      onClick={() => applyOpenBooking()}
+                    >
+                      Reopen booking
+                    </Button>
+                  </div>
+                </div>
+              </>
             ) : (
               <>
                 <h2 className="text-sm font-semibold text-teal-950">Day status</h2>
@@ -523,6 +722,42 @@ function CapacityChip({ label, value }: { label: string; value: number }) {
   return (
     <div className="rounded-md bg-neutral-50 px-1.5 py-1 text-[10px] font-medium text-teal-900 sm:text-[11px]">
       {label} {value}
+    </div>
+  )
+}
+
+function ClosureChip({ label, closed }: { label: string; closed: boolean }) {
+  return (
+    <div
+      className={cn(
+        'rounded-md px-1.5 py-1 text-[10px] font-medium sm:text-[11px]',
+        closed ? 'bg-rose-100 text-rose-800' : 'bg-emerald-50 text-emerald-800',
+      )}
+    >
+      {label} {closed ? 'Closed' : 'Open'}
+    </div>
+  )
+}
+
+function ClosureStatusPill({
+  label,
+  state,
+}: {
+  label: string
+  state: 'all' | 'none' | 'mixed'
+}) {
+  return (
+    <div
+      className={cn(
+        'rounded-lg px-2.5 py-2 text-center text-[11px] font-semibold',
+        state === 'all'
+          ? 'bg-rose-50 text-rose-800'
+          : state === 'mixed'
+            ? 'bg-amber-50 text-amber-900'
+            : 'bg-emerald-50 text-emerald-800',
+      )}
+    >
+      {label}: {state === 'all' ? 'Closed' : state === 'mixed' ? 'Mixed' : 'Open'}
     </div>
   )
 }

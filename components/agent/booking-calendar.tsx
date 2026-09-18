@@ -12,14 +12,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { toISODate } from '@/lib/format'
+import { startOfThisMonth, toISODate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { isActiveBooking, totalPassengers, type Booking } from '@/lib/types'
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 export function BookingCalendar({ bookings }: { bookings: Booking[] }) {
-  const [month, setMonth] = useState(new Date(2026, 8, 1))
+  const [month, setMonth] = useState(() => startOfThisMonth())
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
 
   const monthLabel = month.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })

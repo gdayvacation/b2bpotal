@@ -26,7 +26,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
+import { formatLongDate, formatShortDate, todayISO, toISODate } from '@/lib/format'
 import {
   BOAT_NUMBERS,
   DEFAULT_BOAT_CAPACITY,
@@ -37,8 +37,6 @@ import {
   type Program,
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
-
-const TODAY = '2026-09-17'
 
 type BoardMode = 'vehicles' | 'boats'
 
@@ -126,7 +124,7 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
     clearDayBoatAssignments,
   } = usePortal()
 
-  const [selectedDate, setSelectedDate] = useState(TODAY)
+  const [selectedDate, setSelectedDate] = useState(() => todayISO())
   const [program, setProgram] = useState<Program | null>(null)
   const [calendarOpen, setCalendarOpen] = useState(false)
 

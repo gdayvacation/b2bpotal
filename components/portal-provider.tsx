@@ -16,6 +16,7 @@ import {
 } from '@/lib/booking-cutoffs'
 import {
   deleteAgent,
+  deleteBookingClosures,
   deleteHotel,
   deleteZone,
   insertBooking,
@@ -28,6 +29,7 @@ import {
   upsertAgent,
   upsertAvailability,
   upsertAvailabilityRows,
+  upsertBookingClosures,
   upsertBookingCutoffs,
   upsertHotel,
   upsertZone,
@@ -38,6 +40,7 @@ import type {
   Availability,
   BoatNumber,
   Booking,
+  BookingClosure,
   DayBoatPlan,
   DayVehiclePlan,
   Hotel,
@@ -52,6 +55,7 @@ import {
   DEFAULT_JB_CAPACITY,
   DEFAULT_PP_CAPACITY,
   NO_TRANSFER_TIME,
+  bookingClosureKey,
   dayBoatPlanKey,
   dayVehiclePlanKey,
   emptyDayBoatPlan,
@@ -75,6 +79,11 @@ type PortalContextValue = {
   dayVehiclePlans: Record<string, DayVehiclePlan>
   bookingCutoffs: BookingCutoffSettings
   updateBookingCutoffs: (patch: Partial<BookingCutoffSettings>) => void
+  bookingClosures: BookingClosure[]
+  isProgramClosed: (date: string, program: Program) => boolean
+  getBookingClosure: (date: string, program: Program) => BookingClosure | null
+  closeBookingForDates: (dates: string[], programs: Program[], reason?: string) => void
+  openBookingForDates: (dates: string[], programs: Program[]) => void
   isBookingOpen: (travelDate: string) => boolean
   isCancelOpen: (travelDate: string) => boolean
   addBooking: (
@@ -164,6 +173,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [dayBoatPlans, setDayBoatPlans] = useState<Record<string, DayBoatPlan>>({})
   const [dayVehiclePlans, setDayVehiclePlans] = useState<Record<string, DayVehiclePlan>>({})
   const [bookingCutoffs, setBookingCutoffs] = useState<BookingCutoffSettings>(DEFAULT_BOOKING_CUTOFFS)
+  const [bookingClosures, setBookingClosures] = useState<BookingClosure[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -179,6 +189,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         setDayBoatPlans(snapshot.dayBoatPlans)
         setDayVehiclePlans(snapshot.dayVehiclePlans)
         setBookingCutoffs(snapshot.bookingCutoffs)
+        setBookingClosures(snapshot.bookingClosures)
         setLoadError(null)
       } catch (error) {
         if (cancelled) return
@@ -213,6 +224,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             isActiveBooking(booking) && booking.date === date && booking.program === program,
         )
         .reduce((sum, booking) => sum + totalPassengers(booking), 0)
+
+    const getBookingClosure = (date: string, program: Program) =>
+      bookingClosures.find((item) => item.date === date && item.program === program) ?? null
+
+    const isProgramClosed = (date: string, program: Program) =>
+      getBookingClosure(date, program) !== null
 
     const activeDayBookings = (date: string, program: Program) =>
       bookings.filter(
@@ -293,11 +310,14 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       dayBoatPlans,
       dayVehiclePlans,
       bookingCutoffs,
+      bookingClosures,
       getZoneTime,
       getCapacity,
       bookedPaxFor,
       getDayBoatPlan,
       getDayVehiclePlan,
+      getBookingClosure,
+      isProgramClosed,
       isBookingOpen: (travelDate) => isBookingOpenForDate(bookingCutoffs, travelDate),
       isCancelOpen: (travelDate) => isCancelOpenForDate(bookingCutoffs, travelDate),
       updateBookingCutoffs: (patch) => {
@@ -323,9 +343,57 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           return next
         })
       },
+      closeBookingForDates: (dates, programs, reason = '') => {
+        if (dates.length === 0 || programs.length === 0) return
+        const trimmedReason = reason.trim()
+        setBookingClosures((current) => {
+          const byKey = new Map(
+            current.map((item) => [bookingClosureKey(item.date, item.program), item]),
+          )
+          const touched: BookingClosure[] = []
+          for (const date of dates) {
+            for (const program of programs) {
+              const next: BookingClosure = { date, program, reason: trimmedReason }
+              byKey.set(bookingClosureKey(date, program), next)
+              touched.push(next)
+            }
+          }
+          persistQuietly('upsertBookingClosures', upsertBookingClosures(touched))
+          return Array.from(byKey.values()).sort((a, b) =>
+            a.date === b.date
+              ? a.program.localeCompare(b.program)
+              : a.date.localeCompare(b.date),
+          )
+        })
+      },
+      openBookingForDates: (dates, programs) => {
+        if (dates.length === 0 || programs.length === 0) return
+        const toRemove = dates.flatMap((date) =>
+          programs.map((program) => ({ date, program })),
+        )
+        setBookingClosures((current) => {
+          const removeKeys = new Set(
+            toRemove.map((item) => bookingClosureKey(item.date, item.program)),
+          )
+          persistQuietly('deleteBookingClosures', deleteBookingClosures(toRemove))
+          return current.filter(
+            (item) => !removeKeys.has(bookingClosureKey(item.date, item.program)),
+          )
+        })
+      },
       addBooking: (input, options) => {
         if (!options?.bypassCutoff && !isBookingOpenForDate(bookingCutoffs, input.date)) {
           return { ok: false, error: bookingClosedMessage(bookingCutoffs, input.date) }
+        }
+
+        const closure = getBookingClosure(input.date, input.program)
+        if (closure && !options?.bypassCutoff) {
+          return {
+            ok: false,
+            error: closure.reason
+              ? `Booking closed for ${input.program} on this date — ${closure.reason}`
+              : `Booking closed for ${input.program} on this date.`,
+          }
         }
 
         const pax = totalPassengers(input)
@@ -754,7 +822,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }))
       },
     }
-  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, bookingCutoffs, hydrated, loadError])
+  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, bookingCutoffs, bookingClosures, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }

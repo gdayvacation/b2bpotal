@@ -32,7 +32,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
-import { formatLongDate, slugifyAgentName, toISODate } from '@/lib/format'
+import { formatLongDate, slugifyAgentName, startOfToday, toISODate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { formatPaxBreakdown, isNoTransfer, NO_TRANSFER_ZONE, type Agent, type Booking, type Hotel, type IncludeOption, type PickupZoneName, type Program } from '@/lib/types'
 
@@ -43,8 +43,6 @@ const CORE_STEPS = [
   'Pickup',
   'Review',
 ] as const
-
-const TODAY = new Date(2026, 8, 17)
 
 type ResolvedAgent = { slug: string; name: string }
 
@@ -66,8 +64,18 @@ export function BookingWizard({
   onSuccess?: (booking: Booking) => void
 }) {
   const router = useRouter()
-  const { addBooking, agents, bookedPaxFor, getCapacity, getZoneTime, hotels, isBookingOpen, zones } =
-    usePortal()
+  const {
+    addBooking,
+    agents,
+    bookedPaxFor,
+    getBookingClosure,
+    getCapacity,
+    getZoneTime,
+    hotels,
+    isBookingOpen,
+    isProgramClosed,
+    zones,
+  } = usePortal()
 
   const steps = useMemo(
     () => (selectAgent ? (['Agent', ...CORE_STEPS] as string[]) : [...CORE_STEPS]),
@@ -91,7 +99,7 @@ export function BookingWizard({
   const [pendingProgram, setPendingProgram] = useState<Program | null>(null)
   const [draftParkFee, setDraftParkFee] = useState<IncludeOption>('Included')
   const [draftCanoe, setDraftCanoe] = useState<IncludeOption>('Included')
-  const [date, setDate] = useState<Date | undefined>(TODAY)
+  const [date, setDate] = useState<Date | undefined>(() => startOfToday())
   const [adults, setAdults] = useState(2)
   const [children, setChildren] = useState(0)
   const [infants, setInfants] = useState(0)
@@ -141,6 +149,11 @@ export function BookingWizard({
   const total = adults + children + infants + tourLeaders
   const isoDate = date ? toISODate(date) : ''
   const bookingOpen = !isoDate || selectAgent || isBookingOpen(isoDate)
+  const programClosedOnDate =
+    Boolean(program && isoDate) && isProgramClosed(isoDate, program!)
+  const programClosed = programClosedOnDate && !selectAgent
+  const closureNote =
+    program && isoDate ? getBookingClosure(isoDate, program)?.reason ?? '' : ''
   const capacityInfo = useMemo(() => {
     if (!program || !isoDate) return null
     const caps = getCapacity(isoDate)
@@ -150,6 +163,7 @@ export function BookingWizard({
     return { capacity, booked, seatsLeft }
   }, [program, isoDate, getCapacity, bookedPaxFor])
   const seatsLeft = capacityInfo?.seatsLeft ?? null
+  const dateSelectable = bookingOpen && !programClosed && (seatsLeft === null || seatsLeft > 0)
   const pickupTime = pickupZone && !isNoTransfer(pickupZone) ? getZoneTime(pickupZone) : ''
   const selectedZone = zones.find((zone) => zone.name === pickupZone)
   const pendingPickup = !isNoTransfer(pickupZone) && (selectedZone?.pending ?? false)
@@ -174,7 +188,7 @@ export function BookingWizard({
   const canContinue = useMemo(() => {
     if (selectAgent && step === 0) return resolvedAgent !== null
     if (step === programStep) return program !== null
-    if (step === dateStep) return Boolean(date) && bookingOpen && (seatsLeft === null || seatsLeft > 0)
+    if (step === dateStep) return Boolean(date) && dateSelectable
     if (step === guestsStep)
       return (
         adults + children + infants + tourLeaders > 0 &&
@@ -199,7 +213,7 @@ export function BookingWizard({
     program,
     dateStep,
     date,
-    bookingOpen,
+    dateSelectable,
     seatsLeft,
     guestsStep,
     adults,
@@ -228,9 +242,13 @@ export function BookingWizard({
             : step === dateStep
               ? !bookingOpen
                 ? 'Booking is closed for this travel date.'
-                : seatsLeft === 0
-                  ? 'This date is sold out for the selected program.'
-                  : 'Please choose a tour date.'
+                : programClosed
+                  ? closureNote
+                    ? `Booking closed for this program — ${closureNote}`
+                    : 'Booking is closed for this program on this date.'
+                  : seatsLeft === 0
+                    ? 'This date is sold out for the selected program.'
+                    : 'Please choose a tour date.'
               : step === guestsStep
                 ? adults + children + infants + tourLeaders <= 0
                   ? 'Add at least one passenger.'
@@ -526,11 +544,14 @@ export function BookingWizard({
                   selected={date}
                   onSelect={setDate}
                   disabled={(day) => {
-                    if (toISODate(day) < toISODate(TODAY)) return true
+                    if (toISODate(day) < toISODate(startOfToday())) return true
                     if (selectAgent) return false
-                    return !isBookingOpen(toISODate(day))
+                    const dayIso = toISODate(day)
+                    if (!isBookingOpen(dayIso)) return true
+                    if (program && isProgramClosed(dayIso, program)) return true
+                    return false
                   }}
-                  defaultMonth={date ?? TODAY}
+                  defaultMonth={date ?? startOfToday()}
                 />
               </PopoverContent>
             </Popover>
@@ -539,16 +560,38 @@ export function BookingWizard({
                 <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
                   Booking closed for this travel date — choose another day.
                 </div>
+              ) : programClosed ? (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                  {closureNote
+                    ? `Booking closed for ${program} — ${closureNote}`
+                    : `Booking closed for ${program} on this date — choose another day.`}
+                </div>
+              ) : selectAgent && programClosedOnDate ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                  {closureNote
+                    ? `This date is closed for agents (${closureNote}). Admin can still book.`
+                    : 'This date is closed for agents. Admin can still book.'}
+                </div>
               ) : seatsLeft === 0 ? (
                 <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-                  Sold out — {program} has no seats left on this date (capacity{' '}
-                  {capacityInfo.capacity}).
+                  {selectAgent
+                    ? `Sold out — ${program} has no seats left on this date (capacity ${capacityInfo.capacity}).`
+                    : `Sold out — ${program} has no seats left on this date.`}
                 </div>
               ) : (
                 <div className="rounded-xl border border-teal-200 bg-teal-50/80 px-4 py-3 text-sm text-teal-900/75">
-                  <span className="font-semibold text-teal-950">{seatsLeft}</span> of{' '}
-                  {capacityInfo.capacity} seats left for {program}
-                  <span className="text-teal-900/40"> · {capacityInfo.booked} booked</span>
+                  {selectAgent ? (
+                    <>
+                      <span className="font-semibold text-teal-950">{seatsLeft}</span> of{' '}
+                      {capacityInfo.capacity} seats left for {program}
+                      <span className="text-teal-900/40"> · {capacityInfo.booked} booked</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-semibold text-teal-950">{seatsLeft}</span> seat
+                      {seatsLeft === 1 ? '' : 's'} left for {program}
+                    </>
+                  )}
                 </div>
               )
             ) : null}

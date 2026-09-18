@@ -6,12 +6,10 @@ import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
 import { PageHeader, Segment, SegmentedControl, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
-import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
+import { formatLongDate, formatShortDate, startOfThisMonth, todayISO, toISODate } from '@/lib/format'
 import { totalPassengers, isActiveBooking, type Booking, type Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
-const TODAY = '2026-09-17'
-const TODAY_MONTH = new Date(2026, 8, 1)
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 type RangeMode = 'today' | 'month'
@@ -20,10 +18,12 @@ type ProgramFilter = 'all' | Program
 export function AdminDashboard() {
   const { bookings, agents } = usePortal()
   const [range, setRange] = useState<RangeMode>('today')
-  const [month, setMonth] = useState(TODAY_MONTH)
+  const [month, setMonth] = useState(() => startOfThisMonth())
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
   const [program, setProgram] = useState<ProgramFilter>('all')
   const [agentSlug, setAgentSlug] = useState('all')
+  const today = todayISO()
+  const thisMonth = startOfThisMonth()
 
   const agentOptions = useMemo(() => {
     const map = new Map<string, string>()
@@ -50,14 +50,14 @@ export function AdminDashboard() {
         ? bookings.filter((booking) => {
             if (agentSlug !== 'all' && booking.agentSlug !== agentSlug) return false
             if (program !== 'all' && booking.program !== program) return false
-            return booking.date === TODAY
+            return booking.date === today
           })
         : selectedDay
           ? monthBookings.filter((booking) => booking.date === selectedDay)
           : monthBookings
 
     return [...rows].sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code))
-  }, [bookings, range, agentSlug, program, selectedDay, monthBookings])
+  }, [bookings, range, agentSlug, program, selectedDay, monthBookings, today])
 
   const grouped = useMemo(() => groupByDate(visible), [visible])
   const byDate = useMemo(() => indexByDate(monthBookings), [monthBookings])
@@ -69,10 +69,10 @@ export function AdminDashboard() {
   const activeCount = visible.filter(isActiveBooking).length
   const monthLabel = month.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
   const isCurrentMonth =
-    month.getFullYear() === TODAY_MONTH.getFullYear() && month.getMonth() === TODAY_MONTH.getMonth()
+    month.getFullYear() === thisMonth.getFullYear() && month.getMonth() === thisMonth.getMonth()
   const periodLabel =
     range === 'today'
-      ? formatShortDate(TODAY)
+      ? formatShortDate(today)
       : selectedDay
         ? formatLongDate(selectedDay)
         : monthLabel
@@ -106,7 +106,7 @@ export function AdminDashboard() {
   function setRangeMode(next: RangeMode) {
     setRange(next)
     setSelectedDay(null)
-    if (next === 'month') setMonth(TODAY_MONTH)
+    if (next === 'month') setMonth(startOfThisMonth())
   }
 
   function toggleDay(iso: string) {
@@ -116,7 +116,7 @@ export function AdminDashboard() {
   return (
     <div className="mx-auto max-w-6xl">
       <PageHeader
-        eyebrow="Wednesday, 17 September 2026"
+        eyebrow={formatLongDate(today)}
         title="Dashboard"
         description="Today’s partner departures, or browse any month by agent and program. Prototype data only — no pricing."
       />
@@ -151,7 +151,7 @@ export function AdminDashboard() {
                       variant="ghost"
                       size="sm"
                       onClick={() => {
-                        setMonth(TODAY_MONTH)
+                        setMonth(startOfThisMonth())
                         setSelectedDay(null)
                       }}
                     >
@@ -301,7 +301,7 @@ export function AdminDashboard() {
               const dayBookings = byDate[iso] ?? []
               const pp = sumPax(dayBookings.filter((booking) => booking.program === 'PP'))
               const jb = sumPax(dayBookings.filter((booking) => booking.program === 'James Bond'))
-              const isToday = iso === TODAY
+              const isToday = iso === today
               return (
                 <button
                   key={iso}

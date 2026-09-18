@@ -24,7 +24,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
+import { formatLongDate, formatShortDate, startOfToday, todayISO, toISODate } from '@/lib/format'
 import {
   bookingsToReportRows,
   downloadReportCsv,
@@ -40,10 +40,6 @@ import {
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
-/** Prototype “today” — matches dashboard seed data. */
-const TODAY = '2026-09-17'
-const TODAY_DATE = new Date(2026, 8, 17)
-
 type ProgramFilter = 'all' | Program
 type SortKey = 'pickup' | 'zone' | 'agent' | 'code' | 'guest'
 
@@ -57,9 +53,9 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
 
 export function AdminReports() {
   const { bookings, agents } = usePortal()
-  const [range, setRange] = useState<DateRange | undefined>({
-    from: TODAY_DATE,
-    to: TODAY_DATE,
+  const [range, setRange] = useState<DateRange | undefined>(() => {
+    const today = startOfToday()
+    return { from: today, to: today }
   })
   const [program, setProgram] = useState<ProgramFilter>('all')
   const [agentSlug, setAgentSlug] = useState('all')
@@ -76,7 +72,8 @@ export function AdminReports() {
     return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]))
   }, [agents, bookings])
 
-  const fromIso = range?.from ? toISODate(range.from) : TODAY
+  const today = todayISO()
+  const fromIso = range?.from ? toISODate(range.from) : today
   const toIso = range?.to ? toISODate(range.to) : fromIso
 
   const rows = useMemo(() => {
@@ -115,7 +112,8 @@ export function AdminReports() {
   })()
 
   function setToday() {
-    setRange({ from: TODAY_DATE, to: TODAY_DATE })
+    const today = startOfToday()
+    setRange({ from: today, to: today })
   }
 
   function handlePrint() {
@@ -197,7 +195,7 @@ export function AdminReports() {
                       selected={range}
                       onSelect={setRange}
                       numberOfMonths={1}
-                      defaultMonth={range?.from ?? TODAY_DATE}
+                      defaultMonth={range?.from ?? startOfToday()}
                     />
                   </PopoverContent>
                 </Popover>

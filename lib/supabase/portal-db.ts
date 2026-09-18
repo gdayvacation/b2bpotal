@@ -11,6 +11,7 @@ import type {
   Availability,
   BoatNumber,
   Booking,
+  BookingClosure,
   DayBoatPlan,
   DayVehiclePlan,
   Hotel,
@@ -119,6 +120,12 @@ type BookingCutoffRow = {
   cancel_until_time: string
 }
 
+type BookingClosureRow = {
+  date: string
+  program: Program
+  reason: string | null
+}
+
 export type PortalSnapshot = {
   agents: Agent[]
   zones: PickupZone[]
@@ -128,6 +135,7 @@ export type PortalSnapshot = {
   dayBoatPlans: Record<string, DayBoatPlan>
   dayVehiclePlans: Record<string, DayVehiclePlan>
   bookingCutoffs: BookingCutoffSettings
+  bookingClosures: BookingClosure[]
 }
 
 function asDateString(value: string) {
@@ -233,6 +241,14 @@ function mapBookingCutoffs(row: BookingCutoffRow | null | undefined): BookingCut
   }
 }
 
+function mapBookingClosure(row: BookingClosureRow): BookingClosure {
+  return {
+    date: asDateString(row.date),
+    program: row.program,
+    reason: (row.reason ?? '').trim(),
+  }
+}
+
 function buildBoatPlans(
   plans: BoatPlanRow[],
   assignments: BoatAssignmentRow[],
@@ -317,6 +333,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     vanMetaRes,
     vanAssignRes,
     cutoffsRes,
+    closuresRes,
   ] = await Promise.all([
     supabase.from('agents').select('*').order('name'),
     supabase.from('pickup_zones').select('*').order('sort_order'),
@@ -329,6 +346,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     supabase.from('van_meta').select('*'),
     supabase.from('van_assignments').select('*'),
     supabase.from('booking_cutoffs').select('*').eq('id', 'default').maybeSingle(),
+    supabase.from('booking_closures').select('*').order('date'),
   ])
 
   await assertOk('agents', agentsRes.error, agentsRes.data)
@@ -361,6 +379,16 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     bookingCutoffs = mapBookingCutoffs(cutoffsRes.data as BookingCutoffRow | null)
   }
 
+  let bookingClosures: BookingClosure[] = []
+  if (closuresRes.error) {
+    console.warn(
+      '[supabase] booking_closures table unavailable — run supabase/add-booking-closures.sql',
+      closuresRes.error.message,
+    )
+  } else {
+    bookingClosures = (closuresRes.data as BookingClosureRow[]).map(mapBookingClosure)
+  }
+
   return {
     agents: (agentsRes.data as AgentRow[]).map(mapAgent),
     zones: (zonesRes.data as ZoneRow[]).map(mapZone),
@@ -377,6 +405,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
       vanAssignRes.data as VanAssignmentRow[],
     ),
     bookingCutoffs,
+    bookingClosures,
   }
 }
 
@@ -578,6 +607,32 @@ export async function upsertBookingCutoffs(settings: BookingCutoffSettings) {
     cancel_until_time: cancelUntil,
   })
   if (error) throw new Error(`upsert booking cutoffs: ${error.message}`)
+}
+
+export async function upsertBookingClosures(rows: BookingClosure[]) {
+  if (rows.length === 0) return
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase.from('booking_closures').upsert(
+    rows.map((row) => ({
+      date: row.date,
+      program: row.program,
+      reason: row.reason.trim(),
+    })),
+  )
+  if (error) throw new Error(`upsert booking closures: ${error.message}`)
+}
+
+export async function deleteBookingClosures(rows: Array<{ date: string; program: Program }>) {
+  if (rows.length === 0) return
+  const supabase = getSupabaseBrowserClient()
+  for (const row of rows) {
+    const { error } = await supabase
+      .from('booking_closures')
+      .delete()
+      .eq('date', row.date)
+      .eq('program', row.program)
+    if (error) throw new Error(`delete booking closure: ${error.message}`)
+  }
 }
 
 export function persistQuietly(label: string, task: Promise<unknown>) {

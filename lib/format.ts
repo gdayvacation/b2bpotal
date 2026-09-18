@@ -21,6 +21,21 @@ export function toISODate(date: Date) {
   return `${year}-${month}-${day}`
 }
 
+/** Local calendar date at midnight (no time-of-day). */
+export function startOfToday(): Date {
+  const now = new Date()
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate())
+}
+
+export function todayISO(): string {
+  return toISODate(startOfToday())
+}
+
+export function startOfThisMonth(): Date {
+  const now = new Date()
+  return new Date(now.getFullYear(), now.getMonth(), 1)
+}
+
 export function bookingPrefix(program: 'PP' | 'James Bond') {
   return program === 'PP' ? 'PP' : 'JB'
 }

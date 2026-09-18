@@ -25,7 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
+import { formatLongDate, formatShortDate, todayISO, toISODate } from '@/lib/format'
 import { BRAND_LEGAL } from '@/lib/brand'
 import {
   DEFAULT_VAN_CAPACITY,
@@ -48,8 +48,6 @@ import {
 } from '@/lib/vehicle-assign'
 import { cn } from '@/lib/utils'
 
-const TODAY = '2026-09-17'
-
 export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
   const {
     bookings,
@@ -61,7 +59,7 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
     clearDayVanAssignments,
   } = usePortal()
 
-  const [selectedDate, setSelectedDate] = useState(TODAY)
+  const [selectedDate, setSelectedDate] = useState(() => todayISO())
   const [program, setProgram] = useState<Program | null>(null)
   const [calendarOpen, setCalendarOpen] = useState(false)
 

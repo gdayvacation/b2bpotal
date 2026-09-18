@@ -31,20 +31,16 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatShortDate, toISODate } from '@/lib/format'
+import { formatShortDate, startOfToday, todayISO, toISODate } from '@/lib/format'
 import { totalPassengers } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
-/** Prototype “today” — matches dashboard seed data. */
-const TODAY = '2026-09-17'
-const TODAY_DATE = new Date(2026, 8, 17)
-
 /** Search only looks from 7 days ago through all future trips (keeps lists fast). */
-const SEARCH_FROM = (() => {
-  const d = new Date(TODAY_DATE)
+function searchFromISO() {
+  const d = startOfToday()
   d.setDate(d.getDate() - 7)
   return toISODate(d)
-})()
+}
 
 /** Default list: newest first, capped so the table stays light. */
 const RECENT_LIMIT = 200
@@ -105,6 +101,8 @@ export function AdminBookings() {
   const isSearching = query.length > 0
   const hasRange = Boolean(range?.from)
   const hasActiveFilter = quick === 'today' || hasRange || isSearching
+  const today = todayISO()
+  const searchFrom = searchFromISO()
 
   const filtered = useMemo(() => {
     const fromIso = range?.from ? toISODate(range.from) : null
@@ -114,13 +112,13 @@ export function AdminBookings() {
     return bookings
       .filter((booking) => {
         if (isSearching) {
-          if (booking.date < SEARCH_FROM) return false
+          if (booking.date < searchFrom) return false
           const haystack = [booking.agentName, booking.leadGuest, booking.pickupHotel]
             .join(' ')
             .toLowerCase()
           if (!haystack.includes(query)) return false
         }
-        if (quick === 'today' && booking.date !== TODAY) return false
+        if (quick === 'today' && booking.date !== today) return false
         if (fromIso && booking.date < fromIso) return false
         if (toIso && booking.date > toIso) return false
         return true
@@ -147,7 +145,7 @@ export function AdminBookings() {
         }
         return b.date.localeCompare(a.date) || b.code.localeCompare(a.code)
       })
-  }, [bookings, quick, range, isSearching, query, sortKey, sortDir])
+  }, [bookings, quick, range, isSearching, query, sortKey, sortDir, today, searchFrom])
 
   const capped = !hasActiveFilter
   const list = capped ? filtered.slice(0, RECENT_LIMIT) : filtered
@@ -278,7 +276,7 @@ export function AdminBookings() {
                     mode="range"
                     selected={range}
                     onSelect={applyRange}
-                    defaultMonth={range?.from ?? TODAY_DATE}
+                    defaultMonth={range?.from ?? startOfToday()}
                     numberOfMonths={1}
                   />
                   {hasRange ? (
@@ -312,9 +310,9 @@ export function AdminBookings() {
               {capped && filtered.length > RECENT_LIMIT
                 ? ` · latest ${RECENT_LIMIT}`
                 : null}
-              {isSearching ? ` · search from ${formatShortDate(SEARCH_FROM)} onward` : null}
+              {isSearching ? ` · search from ${formatShortDate(searchFrom)} onward` : null}
               {!isSearching && quick === 'today'
-                ? ` · departing ${formatShortDate(TODAY)}`
+                ? ` · departing ${formatShortDate(today)}`
                 : null}
               {!isSearching && hasRange ? ' · by trip date' : null}
             </p>

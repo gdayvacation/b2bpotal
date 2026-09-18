@@ -277,6 +277,23 @@ values ('default')
 on conflict (id) do nothing;
 
 -- -----------------------------------------------------------------------------
+-- Booking closures (admin closes a date + program: storm, boat out, etc.)
+-- -----------------------------------------------------------------------------
+create table if not exists public.booking_closures (
+  date date not null,
+  program text not null check (program in ('PP', 'James Bond')),
+  reason text not null default '',
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now()),
+  primary key (date, program)
+);
+
+drop trigger if exists booking_closures_set_updated_at on public.booking_closures;
+create trigger booking_closures_set_updated_at
+before update on public.booking_closures
+for each row execute function public.set_updated_at();
+
+-- -----------------------------------------------------------------------------
 -- Row Level Security
 -- Pilot: open anon/authenticated (tighten when you add real Auth)
 -- Server should still prefer service_role for admin writes.
@@ -292,6 +309,7 @@ alter table public.day_vehicle_plans enable row level security;
 alter table public.van_meta enable row level security;
 alter table public.van_assignments enable row level security;
 alter table public.booking_cutoffs enable row level security;
+alter table public.booking_closures enable row level security;
 
 -- Drop old pilot policies if re-running
 do $$
@@ -306,7 +324,7 @@ begin
         'agents', 'pickup_zones', 'hotels', 'bookings', 'availability',
         'day_boat_plans', 'boat_assignments',
         'day_vehicle_plans', 'van_meta', 'van_assignments',
-        'booking_cutoffs'
+        'booking_cutoffs', 'booking_closures'
       )
       and policyname like 'pilot_%'
   loop
@@ -345,6 +363,9 @@ create policy pilot_van_assignments_all on public.van_assignments
   for all to anon, authenticated using (true) with check (true);
 
 create policy pilot_booking_cutoffs_all on public.booking_cutoffs
+  for all to anon, authenticated using (true) with check (true);
+
+create policy pilot_booking_closures_all on public.booking_closures
   for all to anon, authenticated using (true) with check (true);
 
 -- -----------------------------------------------------------------------------
