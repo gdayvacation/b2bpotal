@@ -19,11 +19,18 @@ import {
   deleteBookingClosures,
   deleteHotel,
   deleteZone,
+  fetchBookingEvents,
+  fetchBookings,
   insertBooking,
+  insertBookingEvent,
   loadPortalSnapshot,
   persistQuietly,
   saveDayBoatPlan,
   saveDayVehiclePlan,
+  updateBookingDate,
+  updateBookingDetails,
+  updateBookingPickup,
+  updateBookingRebook,
   updateBookingStatus,
   updateBookingsAgentName,
   upsertAgent,
@@ -40,7 +47,11 @@ import type {
   Availability,
   BoatNumber,
   Booking,
+  BookingActionOptions,
+  BookingActor,
   BookingClosure,
+  BookingEvent,
+  BookingEventType,
   DayBoatPlan,
   DayVehiclePlan,
   Hotel,
@@ -91,12 +102,47 @@ type PortalContextValue = {
       pickupTime?: string
       transferExtraCharge?: string
     },
-    options?: { bypassCutoff?: boolean },
+    options?: BookingActionOptions,
   ) => { ok: true; booking: Booking } | { ok: false; error: string }
   cancelBooking: (
     code: string,
-    options?: { bypassCutoff?: boolean },
+    options?: BookingActionOptions,
   ) => { ok: true } | { ok: false; error: string }
+  changeBookingDate: (
+    code: string,
+    newDate: string,
+    options?: BookingActionOptions,
+  ) => { ok: true } | { ok: false; error: string }
+  rebookBooking: (
+    code: string,
+    newDate: string,
+    options?: BookingActionOptions,
+  ) => { ok: true } | { ok: false; error: string }
+  updateBookingDetails: (
+    code: string,
+    patch: {
+      leadGuest?: string
+      adults?: number
+      children?: number
+      infants?: number
+      tourLeaders?: number
+      pickupHotel?: string
+      roomNumber?: string
+      note?: string
+      agentRef?: string
+      parkFee?: Booking['parkFee']
+      canoe?: Booking['canoe']
+      transferExtraCharge?: string
+    },
+    options?: BookingActionOptions,
+  ) => { ok: true; booking: Booking } | { ok: false; error: string }
+  setBookingPickupTime: (
+    code: string,
+    pickupTime: string,
+    options?: BookingActionOptions,
+  ) => { ok: true } | { ok: false; error: string }
+  getBookingHistory: (code: string) => BookingEvent[]
+  loadBookingHistory: (code: string) => Promise<BookingEvent[]>
   updateZoneTime: (name: PickupZoneName, time: string) => void
   addZone: (name: string, time: string) => string | null
   removeZone: (name: PickupZoneName) => void
@@ -115,8 +161,8 @@ type PortalContextValue = {
   /** Upsert canonical partner hotel list (Patong/Kata/Karon / unassigned). */
   importHotelCatalog: () => { added: number; updated: number }
   setAgentStatus: (slug: string, status: AgentStatus) => void
-  addAgent: (name: string, country: string) => string | null
-  updateAgent: (slug: string, name: string, country: string) => string | null
+  addAgent: (name: string) => string | null
+  updateAgent: (slug: string, name: string) => string | null
   removeAgent: (slug: string) => void
   setCapacity: (date: string, program: 'PP' | 'James Bond', capacity: number) => void
   setCapacityForDates: (
@@ -174,6 +220,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [dayVehiclePlans, setDayVehiclePlans] = useState<Record<string, DayVehiclePlan>>({})
   const [bookingCutoffs, setBookingCutoffs] = useState<BookingCutoffSettings>(DEFAULT_BOOKING_CUTOFFS)
   const [bookingClosures, setBookingClosures] = useState<BookingClosure[]>([])
+  const [bookingEventsByCode, setBookingEventsByCode] = useState<Record<string, BookingEvent[]>>({})
 
   useEffect(() => {
     let cancelled = false
@@ -205,6 +252,36 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  /** Pull latest bookings when returning to the tab so agency cancels show as Cancelled. */
+  useEffect(() => {
+    if (!hydrated) return
+
+    let busy = false
+    async function refreshBookings() {
+      if (busy || document.visibilityState !== 'visible') return
+      busy = true
+      try {
+        const next = await fetchBookings()
+        setBookings(next)
+      } catch (error) {
+        console.error('[portal] bookings refresh failed', error)
+      } finally {
+        busy = false
+      }
+    }
+
+    function onVisible() {
+      if (document.visibilityState === 'visible') void refreshBookings()
+    }
+
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
+  }, [hydrated])
+
   const value = useMemo<PortalContextValue>(() => {
     const getZoneTime = (name: PickupZoneName) =>
       zones.find((zone) => zone.name === name)?.time ?? 'Awaiting pickup time'
@@ -224,6 +301,36 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             isActiveBooking(booking) && booking.date === date && booking.program === program,
         )
         .reduce((sum, booking) => sum + totalPassengers(booking), 0)
+
+    const resolveActor = (actor?: BookingActor): BookingActor =>
+      actor ?? { role: 'admin', name: 'Admin' }
+
+    const logBookingEvent = (
+      bookingCode: string,
+      type: BookingEventType,
+      summary: string,
+      actor?: BookingActor,
+    ) => {
+      const who = resolveActor(actor)
+      const event: BookingEvent = {
+        id: crypto.randomUUID(),
+        bookingCode,
+        type,
+        summary,
+        actorRole: who.role,
+        actorName: who.name,
+        actorSlug: who.slug ?? '',
+        createdAt: new Date().toISOString(),
+      }
+      setBookingEventsByCode((current) => ({
+        ...current,
+        [bookingCode]: [event, ...(current[bookingCode] ?? [])],
+      }))
+      persistQuietly(
+        'insertBookingEvent',
+        insertBookingEvent(event).then(() => undefined),
+      )
+    }
 
     const getBookingClosure = (date: string, program: Program) =>
       bookingClosures.find((item) => item.date === date && item.program === program) ?? null
@@ -440,6 +547,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
         setBookings((current) => [booking, ...current])
         persistQuietly('insertBooking', insertBooking(booking))
+        logBookingEvent(
+          code,
+          'created',
+          `Created for ${booking.date} · ${booking.program} · ${totalPassengers(booking)} pax`,
+          options?.actor ?? {
+            role: 'agent',
+            name: booking.agentName,
+            slug: booking.agentSlug,
+          },
+        )
         return { ok: true, booking }
       },
       cancelBooking: (code, options) => {
@@ -457,6 +574,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           ),
         )
         persistQuietly('updateBookingStatus', updateBookingStatus(code, 'Cancelled'))
+        logBookingEvent(code, 'cancelled', `Cancelled · was ${existing.date}`, options?.actor)
 
         upsertPlan(existing.date, existing.program, (plan) => {
           if (!(code in plan.assignments)) return plan
@@ -473,6 +591,283 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         })
 
         return { ok: true }
+      },
+      changeBookingDate: (code, newDate, options) => {
+        const existing = bookings.find((booking) => booking.code === code)
+        if (!existing || existing.status === 'Cancelled') {
+          return { ok: false, error: 'Booking not found or already cancelled.' }
+        }
+
+        const trimmedDate = newDate.trim()
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmedDate)) {
+          return { ok: false, error: 'Choose a valid travel date.' }
+        }
+        if (trimmedDate === existing.date) {
+          return { ok: false, error: 'Pick a different travel date.' }
+        }
+
+        // Same window as cancel: agents may only change while cancel is still open on the current date.
+        if (!options?.bypassCutoff && !isCancelOpenForDate(bookingCutoffs, existing.date)) {
+          return { ok: false, error: cancelClosedMessage(bookingCutoffs, existing.date) }
+        }
+
+        if (!options?.bypassCutoff && !isBookingOpenForDate(bookingCutoffs, trimmedDate)) {
+          return { ok: false, error: bookingClosedMessage(bookingCutoffs, trimmedDate) }
+        }
+
+        const closure = getBookingClosure(trimmedDate, existing.program)
+        if (closure && !options?.bypassCutoff) {
+          return {
+            ok: false,
+            error: closure.reason
+              ? `Booking closed for ${existing.program} on the new date — ${closure.reason}`
+              : `Booking closed for ${existing.program} on the new date.`,
+          }
+        }
+
+        const pax = totalPassengers(existing)
+        const caps = getCapacity(trimmedDate)
+        const capacity =
+          existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
+        const booked = bookedPaxFor(trimmedDate, existing.program)
+        const seatsLeft = Math.max(0, capacity - booked)
+        if (pax > seatsLeft) {
+          return {
+            ok: false,
+            error:
+              seatsLeft === 0
+                ? `${existing.program} is sold out on ${trimmedDate} (${capacity} seats).`
+                : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${existing.program} on ${trimmedDate}.`,
+          }
+        }
+
+        const oldDate = existing.date
+        const program = existing.program
+
+        setBookings((current) =>
+          current.map((booking) =>
+            booking.code === code ? { ...booking, date: trimmedDate } : booking,
+          ),
+        )
+        persistQuietly('updateBookingDate', updateBookingDate(code, trimmedDate))
+        logBookingEvent(
+          code,
+          'date_changed',
+          `Date changed ${oldDate} → ${trimmedDate}`,
+          options?.actor,
+        )
+
+        // Free seats on the old date by dropping boat/van assignments for this booking.
+        upsertPlan(oldDate, program, (plan) => {
+          if (!(code in plan.assignments)) return plan
+          const assignments = { ...plan.assignments }
+          delete assignments[code]
+          return { ...plan, assignments }
+        })
+        upsertVehiclePlan(oldDate, program, (plan) => {
+          if (!(code in plan.assignments)) return plan
+          const assignments = { ...plan.assignments }
+          delete assignments[code]
+          return { ...plan, assignments }
+        })
+
+        return { ok: true }
+      },
+      rebookBooking: (code, newDate, options) => {
+        const existing = bookings.find((booking) => booking.code === code)
+        if (!existing) {
+          return { ok: false, error: 'Booking not found.' }
+        }
+        if (existing.status !== 'Cancelled') {
+          return { ok: false, error: 'Only cancelled bookings can be rebooked.' }
+        }
+
+        const trimmedDate = newDate.trim()
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmedDate)) {
+          return { ok: false, error: 'Choose a valid travel date.' }
+        }
+
+        if (!options?.bypassCutoff && !isBookingOpenForDate(bookingCutoffs, trimmedDate)) {
+          return { ok: false, error: bookingClosedMessage(bookingCutoffs, trimmedDate) }
+        }
+
+        const closure = getBookingClosure(trimmedDate, existing.program)
+        if (closure && !options?.bypassCutoff) {
+          return {
+            ok: false,
+            error: closure.reason
+              ? `Booking closed for ${existing.program} on this date — ${closure.reason}`
+              : `Booking closed for ${existing.program} on this date.`,
+          }
+        }
+
+        const pax = totalPassengers(existing)
+        const caps = getCapacity(trimmedDate)
+        const capacity =
+          existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
+        const booked = bookedPaxFor(trimmedDate, existing.program)
+        const seatsLeft = Math.max(0, capacity - booked)
+        if (pax > seatsLeft) {
+          return {
+            ok: false,
+            error:
+              seatsLeft === 0
+                ? `${existing.program} is sold out on this date (${capacity} seats).`
+                : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${existing.program} on this date (capacity ${capacity}).`,
+          }
+        }
+
+        const noTransfer = isNoTransfer(existing.pickupZone)
+        const zone = zones.find((item) => item.name === existing.pickupZone)
+        const awaiting =
+          !existing.pickupTime ||
+          existing.pickupTime.toLowerCase().includes('awaiting')
+        const pending =
+          !noTransfer &&
+          awaiting &&
+          (zone?.pending ?? existing.pickupZone === 'Other')
+        const nextStatus = pending ? ('Pending Pickup Time' as const) : ('Confirmed' as const)
+
+        setBookings((current) =>
+          current.map((booking) =>
+            booking.code === code
+              ? { ...booking, date: trimmedDate, status: nextStatus }
+              : booking,
+          ),
+        )
+        persistQuietly(
+          'updateBookingRebook',
+          updateBookingRebook(code, trimmedDate, nextStatus),
+        )
+        logBookingEvent(
+          code,
+          'rebooked',
+          `Rebooked to ${trimmedDate} · ${nextStatus}`,
+          options?.actor,
+        )
+
+        return { ok: true }
+      },
+      updateBookingDetails: (code, patch, options) => {
+        const existing = bookings.find((booking) => booking.code === code)
+        if (!existing || existing.status === 'Cancelled') {
+          return { ok: false, error: 'Booking not found or already cancelled.' }
+        }
+        if (!options?.bypassCutoff && !isCancelOpenForDate(bookingCutoffs, existing.date)) {
+          return { ok: false, error: cancelClosedMessage(bookingCutoffs, existing.date) }
+        }
+
+        const next: Booking = {
+          ...existing,
+          leadGuest: patch.leadGuest !== undefined ? patch.leadGuest.trim() : existing.leadGuest,
+          adults: patch.adults ?? existing.adults,
+          children: patch.children ?? existing.children,
+          infants: patch.infants ?? existing.infants,
+          tourLeaders: patch.tourLeaders ?? existing.tourLeaders,
+          pickupHotel:
+            patch.pickupHotel !== undefined ? patch.pickupHotel.trim() : existing.pickupHotel,
+          roomNumber:
+            patch.roomNumber !== undefined ? patch.roomNumber.trim() : existing.roomNumber,
+          note: patch.note !== undefined ? patch.note.trim() : existing.note,
+          agentRef: patch.agentRef !== undefined ? patch.agentRef.trim() : existing.agentRef,
+          parkFee: patch.parkFee ?? existing.parkFee,
+          canoe: patch.canoe !== undefined ? patch.canoe : existing.canoe,
+          transferExtraCharge:
+            patch.transferExtraCharge !== undefined
+              ? patch.transferExtraCharge.trim()
+              : existing.transferExtraCharge,
+        }
+
+        if (!next.leadGuest) return { ok: false, error: 'Enter the lead guest name.' }
+        const newPax = totalPassengers(next)
+        if (newPax < 1) return { ok: false, error: 'At least 1 passenger is required.' }
+
+        const oldPax = totalPassengers(existing)
+        const delta = newPax - oldPax
+        if (delta > 0) {
+          const caps = getCapacity(existing.date)
+          const capacity =
+            existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
+          const booked = bookedPaxFor(existing.date, existing.program)
+          const seatsLeft = Math.max(0, capacity - booked)
+          if (delta > seatsLeft) {
+            return {
+              ok: false,
+              error:
+                seatsLeft === 0
+                  ? `No seats left to add guests on this date (capacity ${capacity}).`
+                  : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left — cannot add ${delta} more.`,
+            }
+          }
+        }
+
+        if (patch.pickupHotel !== undefined && patch.transferExtraCharge === undefined) {
+          const matchedHotel = hotels.find(
+            (hotel) => hotel.name.toLowerCase() === next.pickupHotel.toLowerCase(),
+          )
+          if (matchedHotel?.extraChargeTransfer) {
+            next.transferExtraCharge = matchedHotel.extraChargeTransfer
+          }
+        }
+
+        const changes: string[] = []
+        if (next.leadGuest !== existing.leadGuest) changes.push('guest')
+        if (newPax !== oldPax) changes.push(`pax ${oldPax}→${newPax}`)
+        if (next.pickupHotel !== existing.pickupHotel) changes.push('hotel')
+        if (next.roomNumber !== existing.roomNumber) changes.push('room')
+        if (next.note !== existing.note) changes.push('note')
+        if (next.agentRef !== existing.agentRef) changes.push('agent ref')
+        if (next.parkFee !== existing.parkFee) changes.push('park fee')
+        if (next.canoe !== existing.canoe) changes.push('canoe')
+        if (changes.length === 0) return { ok: false, error: 'No changes to save.' }
+
+        setBookings((current) =>
+          current.map((booking) => (booking.code === code ? next : booking)),
+        )
+        persistQuietly('updateBookingDetails', updateBookingDetails(next))
+        logBookingEvent(
+          code,
+          'details_edited',
+          `Updated ${changes.join(', ')}`,
+          options?.actor,
+        )
+        return { ok: true, booking: next }
+      },
+      setBookingPickupTime: (code, pickupTime, options) => {
+        const existing = bookings.find((booking) => booking.code === code)
+        if (!existing || existing.status === 'Cancelled') {
+          return { ok: false, error: 'Booking not found or already cancelled.' }
+        }
+        if (isNoTransfer(existing.pickupZone)) {
+          return { ok: false, error: 'No Transfer bookings do not need a pickup time.' }
+        }
+        const trimmed = pickupTime.trim()
+        if (!trimmed) return { ok: false, error: 'Enter a pickup time.' }
+
+        setBookings((current) =>
+          current.map((booking) =>
+            booking.code === code
+              ? { ...booking, pickupTime: trimmed, status: 'Confirmed' }
+              : booking,
+          ),
+        )
+        persistQuietly(
+          'updateBookingPickup',
+          updateBookingPickup(code, trimmed, 'Confirmed'),
+        )
+        logBookingEvent(code, 'pickup_set', `Pickup time set to ${trimmed}`, options?.actor)
+        return { ok: true }
+      },
+      getBookingHistory: (code) => bookingEventsByCode[code] ?? [],
+      loadBookingHistory: async (code) => {
+        try {
+          const events = await fetchBookingEvents(code)
+          setBookingEventsByCode((current) => ({ ...current, [code]: events }))
+          return events
+        } catch (error) {
+          console.error('[portal] load booking history failed', error)
+          return bookingEventsByCode[code] ?? []
+        }
       },
       updateZoneTime: (name, time) => {
         setZones((current) => {
@@ -628,11 +1023,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           return next
         })
       },
-      addAgent: (name, country) => {
+      addAgent: (name) => {
         const trimmedName = name.trim().replace(/\s+/g, ' ')
-        const trimmedCountry = country.trim().replace(/\s+/g, ' ')
         if (!trimmedName) return 'Enter an agent name.'
-        if (!trimmedCountry) return 'Enter a country.'
         const duplicate = agents.some(
           (agent) => agent.name.toLowerCase() === trimmedName.toLowerCase(),
         )
@@ -644,18 +1037,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const agent: Agent = {
           slug,
           name: trimmedName,
-          country: trimmedCountry,
+          country: '',
           status: 'Active',
         }
         setAgents((current) => [...current, agent])
         persistQuietly('upsertAgent', upsertAgent(agent))
         return null
       },
-      updateAgent: (slug, name, country) => {
+      updateAgent: (slug, name) => {
         const trimmedName = name.trim().replace(/\s+/g, ' ')
-        const trimmedCountry = country.trim().replace(/\s+/g, ' ')
         if (!trimmedName) return 'Enter an agent name.'
-        if (!trimmedCountry) return 'Enter a country.'
         const duplicate = agents.some(
           (agent) =>
             agent.slug !== slug && agent.name.toLowerCase() === trimmedName.toLowerCase(),
@@ -666,7 +1057,6 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const updated: Agent = {
           ...existing,
           name: trimmedName,
-          country: trimmedCountry,
         }
         setAgents((current) =>
           current.map((agent) => (agent.slug === slug ? updated : agent)),
@@ -822,7 +1212,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }))
       },
     }
-  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, bookingCutoffs, bookingClosures, hydrated, loadError])
+  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }

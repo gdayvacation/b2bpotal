@@ -1,9 +1,10 @@
 'use client'
 
 import Link from 'next/link'
-import { Check, Printer, Ticket } from 'lucide-react'
+import { Check, Ticket } from 'lucide-react'
 import { StatusBadge } from '@/components/status-badge'
 import { buttonVariants } from '@/components/ui/button'
+import { VoucherShareActions } from '@/components/voucher-share-actions'
 import { formatLongDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { formatPaxBreakdown, isNoTransfer, totalPassengers } from '@/lib/types'
@@ -57,7 +58,7 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
         </dl>
       </div>
 
-      <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
+      <div className="mt-6 flex flex-col items-center justify-center gap-3">
         <Link
           href={`/agent/${slug}/voucher/${booking.code}`}
           className={cn(buttonVariants({ size: 'lg' }), 'h-12 rounded-xl px-5')}
@@ -65,13 +66,12 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
           <Ticket data-icon="inline-start" />
           View Voucher
         </Link>
-        <Link
-          href={`/agent/${slug}/voucher/${booking.code}?print=1`}
-          className={cn(buttonVariants({ variant: 'outline', size: 'lg' }), 'h-12 rounded-xl px-5')}
-        >
-          <Printer data-icon="inline-start" />
-          Print Voucher
-        </Link>
+        <VoucherShareActions
+          slug={slug}
+          code={booking.code}
+          guestName={booking.leadGuest}
+          className="justify-center"
+        />
       </div>
     </div>
   )
@@ -81,7 +81,7 @@ function Item({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <dt className="gday-soft-label">{label}</dt>
-      <dd className="mt-1 whitespace-pre-line text-sm font-semibold text-teal-950">{value}</dd>
+      <dd className="mt-1 whitespace-pre-wrap text-[15px] font-semibold text-teal-950">{value}</dd>
     </div>
   )
 }

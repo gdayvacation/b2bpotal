@@ -294,6 +294,31 @@ before update on public.booking_closures
 for each row execute function public.set_updated_at();
 
 -- -----------------------------------------------------------------------------
+-- Booking change history
+-- -----------------------------------------------------------------------------
+create table if not exists public.booking_events (
+  id uuid primary key default gen_random_uuid(),
+  booking_code text not null references public.bookings (code) on update cascade on delete cascade,
+  event_type text not null
+    check (event_type in (
+      'created',
+      'cancelled',
+      'date_changed',
+      'rebooked',
+      'pickup_set',
+      'details_edited'
+    )),
+  summary text not null default '',
+  actor_role text not null check (actor_role in ('admin', 'agent')),
+  actor_name text not null default '',
+  actor_slug text not null default '',
+  created_at timestamptz not null default timezone('utc', now())
+);
+
+create index if not exists booking_events_booking_code_idx
+  on public.booking_events (booking_code, created_at desc);
+
+-- -----------------------------------------------------------------------------
 -- Row Level Security
 -- Pilot: open anon/authenticated (tighten when you add real Auth)
 -- Server should still prefer service_role for admin writes.
@@ -310,6 +335,7 @@ alter table public.van_meta enable row level security;
 alter table public.van_assignments enable row level security;
 alter table public.booking_cutoffs enable row level security;
 alter table public.booking_closures enable row level security;
+alter table public.booking_events enable row level security;
 
 -- Drop old pilot policies if re-running
 do $$
@@ -324,7 +350,7 @@ begin
         'agents', 'pickup_zones', 'hotels', 'bookings', 'availability',
         'day_boat_plans', 'boat_assignments',
         'day_vehicle_plans', 'van_meta', 'van_assignments',
-        'booking_cutoffs', 'booking_closures'
+        'booking_cutoffs', 'booking_closures', 'booking_events'
       )
       and policyname like 'pilot_%'
   loop
@@ -366,6 +392,9 @@ create policy pilot_booking_cutoffs_all on public.booking_cutoffs
   for all to anon, authenticated using (true) with check (true);
 
 create policy pilot_booking_closures_all on public.booking_closures
+  for all to anon, authenticated using (true) with check (true);
+
+create policy pilot_booking_events_all on public.booking_events
   for all to anon, authenticated using (true) with check (true);
 
 -- -----------------------------------------------------------------------------

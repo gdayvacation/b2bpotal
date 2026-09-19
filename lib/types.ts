@@ -4,6 +4,38 @@ export type PickupZoneName = string
 export type BookingStatus = 'Confirmed' | 'Pending Pickup Time' | 'Cancelled'
 export type AgentStatus = 'Active' | 'Inactive'
 
+export type BookingActorRole = 'admin' | 'agent'
+
+export type BookingActor = {
+  role: BookingActorRole
+  name: string
+  slug?: string
+}
+
+export type BookingEventType =
+  | 'created'
+  | 'cancelled'
+  | 'date_changed'
+  | 'rebooked'
+  | 'pickup_set'
+  | 'details_edited'
+
+export type BookingEvent = {
+  id: string
+  bookingCode: string
+  type: BookingEventType
+  summary: string
+  actorRole: BookingActorRole
+  actorName: string
+  actorSlug: string
+  createdAt: string
+}
+
+export type BookingActionOptions = {
+  bypassCutoff?: boolean
+  actor?: BookingActor
+}
+
 export const CORE_PICKUP_ZONE_NAMES = ['Patong', 'Kata', 'Karon', 'Other'] as const
 
 /** Special pickup choice — guest does not need hotel transfer. */

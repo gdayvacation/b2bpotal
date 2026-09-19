@@ -32,11 +32,9 @@ export function AdminAgents() {
   const { agents, bookings, setAgentStatus, addAgent, updateAgent, removeAgent } = usePortal()
   const [copied, setCopied] = useState<string | null>(null)
   const [newName, setNewName] = useState('')
-  const [newCountry, setNewCountry] = useState('')
   const [addError, setAddError] = useState('')
   const [editing, setEditing] = useState<Agent | null>(null)
   const [editName, setEditName] = useState('')
-  const [editCountry, setEditCountry] = useState('')
   const [editError, setEditError] = useState('')
 
   async function copyLink(slug: string) {
@@ -51,26 +49,24 @@ export function AdminAgents() {
   }
 
   function handleAdd() {
-    const result = addAgent(newName, newCountry)
+    const result = addAgent(newName)
     if (result) {
       setAddError(result)
       return
     }
     setNewName('')
-    setNewCountry('')
     setAddError('')
   }
 
   function openEdit(agent: Agent) {
     setEditing(agent)
     setEditName(agent.name)
-    setEditCountry(agent.country)
     setEditError('')
   }
 
   function handleEditSave() {
     if (!editing) return
-    const result = updateAgent(editing.slug, editName, editCountry)
+    const result = updateAgent(editing.slug, editName)
     if (result) {
       setEditError(result)
       return
@@ -122,21 +118,6 @@ export function AdminAgents() {
               className="h-10"
             />
           </div>
-          <div className="w-full max-w-[180px] space-y-1.5">
-            <Label htmlFor="new-agent-country" className="text-xs text-neutral-400">
-              Country
-            </Label>
-            <Input
-              id="new-agent-country"
-              value={newCountry}
-              onChange={(event) => {
-                setNewCountry(event.target.value)
-                if (addError) setAddError('')
-              }}
-              placeholder="India"
-              className="h-10"
-            />
-          </div>
           <Button type="submit" className="h-10">
             <Plus data-icon="inline-start" />
             Add agent
@@ -153,7 +134,6 @@ export function AdminAgents() {
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="font-semibold text-teal-950">{agent.name}</p>
-                  <p className="text-sm text-teal-900/50">{agent.country}</p>
                 </div>
                 <StatusBadge status={agent.status} />
               </div>
@@ -214,7 +194,6 @@ export function AdminAgents() {
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <TableHead className="px-4 text-teal-700/45">Agent Name</TableHead>
-              <TableHead className="text-teal-700/45">Country</TableHead>
               <TableHead className="text-teal-700/45">Booking Link</TableHead>
               <TableHead className="text-teal-700/45">Bookings</TableHead>
               <TableHead className="text-teal-700/45">Status</TableHead>
@@ -227,7 +206,6 @@ export function AdminAgents() {
               return (
                 <TableRow key={agent.slug}>
                   <TableCell className="px-4 font-medium">{agent.name}</TableCell>
-                  <TableCell>{agent.country}</TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <Link
@@ -306,7 +284,7 @@ export function AdminAgents() {
           <DialogHeader>
             <DialogTitle>Edit agent</DialogTitle>
             <DialogDescription>
-              Update the partner name and country. The booking URL stays the same.
+              Update the partner name. The booking URL stays the same.
             </DialogDescription>
           </DialogHeader>
           <form
@@ -323,18 +301,6 @@ export function AdminAgents() {
                 value={editName}
                 onChange={(event) => {
                   setEditName(event.target.value)
-                  if (editError) setEditError('')
-                }}
-                className="h-10"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="edit-agent-country">Country</Label>
-              <Input
-                id="edit-agent-country"
-                value={editCountry}
-                onChange={(event) => {
-                  setEditCountry(event.target.value)
                   if (editError) setEditError('')
                 }}
                 className="h-10"

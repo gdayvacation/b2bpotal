@@ -456,7 +456,6 @@ export function BookingWizard({
                           <span className="font-semibold text-teal-950">{item.name}</span>
                           {selectedAgentSlug === item.slug ? <Check className="size-4 shrink-0" /> : null}
                         </div>
-                        <p className="mt-1 text-sm text-teal-900/50">{item.country}</p>
                       </button>
                     ))}
                   </div>

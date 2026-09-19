@@ -1,13 +1,17 @@
 'use client'
 
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import { CalendarDays, MapPin, Printer, Ship, Users } from 'lucide-react'
+import { CalendarDays, History, MapPin, Pencil, Ship, Users } from 'lucide-react'
 import { BrandMark } from '@/components/brand-mark'
+import { BookingHistoryDialog } from '@/components/booking-history-dialog'
+import { ChangeBookingDateDialog } from '@/components/change-booking-date-dialog'
+import { EditBookingDialog } from '@/components/edit-booking-dialog'
 import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
-import { Button, buttonVariants } from '@/components/ui/button'
+import { Button } from '@/components/ui/button'
+import { VoucherShareActions } from '@/components/voucher-share-actions'
 import { BRAND_LEGAL } from '@/lib/brand'
 import { formatLongDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -15,12 +19,20 @@ import { formatPaxBreakdown, isNoTransfer, totalPassengers, type Booking } from 
 
 export function VoucherView({ booking, slug }: { booking: Booking; slug: string }) {
   const searchParams = useSearchParams()
-  const { cancelBooking, bookings, isCancelOpen } = usePortal()
+  const { agents, cancelBooking, bookings, isCancelOpen } = usePortal()
   const shouldPrint = searchParams.get('print') === '1'
   const live = bookings.find((item) => item.code === booking.code) ?? booking
   const total = totalPassengers(live)
   const cancelled = live.status === 'Cancelled'
-  const canCancel = !cancelled && isCancelOpen(live.date)
+  const canEdit = !cancelled && isCancelOpen(live.date)
+  const [dateOpen, setDateOpen] = useState(false)
+  const [rebookOpen, setRebookOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const actor = useMemo(() => {
+    const agent = agents.find((item) => item.slug === slug)
+    return { role: 'agent' as const, name: agent?.name ?? live.agentName, slug }
+  }, [agents, slug, live.agentName])
   const pickupLine = [
     live.pickupHotel,
     live.roomNumber ? `Rm ${live.roomNumber}` : null,
@@ -36,7 +48,7 @@ export function VoucherView({ booking, slug }: { booking: Booking; slug: string 
   }, [shouldPrint])
 
   function handleCancel() {
-    if (!canCancel) {
+    if (!canEdit) {
       window.alert('Cancel is closed for this travel date.')
       return
     }
@@ -47,7 +59,7 @@ export function VoucherView({ booking, slug }: { booking: Booking; slug: string 
     ) {
       return
     }
-    const result = cancelBooking(live.code)
+    const result = cancelBooking(live.code, { actor })
     if (!result.ok) window.alert(result.error)
   }
 
@@ -61,30 +73,63 @@ export function VoucherView({ booking, slug }: { booking: Booking; slug: string 
           ← My Bookings
         </Link>
         <div className="flex flex-wrap items-center gap-2">
-          {!cancelled && canCancel ? (
+          {!cancelled && canEdit ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl px-3.5"
+                onClick={() => setEditOpen(true)}
+              >
+                <Pencil data-icon="inline-start" />
+                Edit
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl px-3.5"
+                onClick={() => setDateOpen(true)}
+              >
+                <CalendarDays data-icon="inline-start" />
+                Change date
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl border-rose-200 px-3.5 text-rose-700 hover:bg-rose-50 hover:text-rose-900"
+                onClick={handleCancel}
+              >
+                Cancel
+              </Button>
+            </>
+          ) : null}
+          {cancelled ? (
             <Button
               type="button"
               variant="outline"
-              className="h-10 rounded-xl border-rose-200 px-3.5 text-rose-700 hover:bg-rose-50 hover:text-rose-900"
-              onClick={handleCancel}
+              className="h-10 rounded-xl px-3.5"
+              onClick={() => setRebookOpen(true)}
             >
-              Cancel booking
+              <CalendarDays data-icon="inline-start" />
+              Rebook
             </Button>
           ) : null}
-          <button
+          <Button
             type="button"
-            onClick={() => window.print()}
-            className={cn(buttonVariants({ variant: 'outline' }), 'h-10 rounded-xl px-3.5')}
+            variant="outline"
+            className="h-10 rounded-xl px-3.5"
+            onClick={() => setHistoryOpen(true)}
           >
-            <Printer data-icon="inline-start" />
-            Print Voucher
-          </button>
+            <History data-icon="inline-start" />
+            History
+          </Button>
+          <VoucherShareActions slug={slug} code={live.code} guestName={live.leadGuest} />
         </div>
       </div>
 
       {cancelled ? (
         <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-800 print:hidden">
-          This booking is cancelled. Seats have been released.
+          This booking is cancelled. Seats have been released. You can rebook with a new travel date.
         </div>
       ) : null}
 
@@ -214,6 +259,34 @@ export function VoucherView({ booking, slug }: { booking: Booking; slug: string 
           price shown.
         </div>
       </article>
+
+      <ChangeBookingDateDialog
+        booking={live}
+        open={dateOpen}
+        onOpenChange={setDateOpen}
+        actor={actor}
+      />
+
+      <ChangeBookingDateDialog
+        booking={live}
+        open={rebookOpen}
+        onOpenChange={setRebookOpen}
+        mode="rebook"
+        actor={actor}
+      />
+
+      <EditBookingDialog
+        booking={live}
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        actor={actor}
+      />
+
+      <BookingHistoryDialog
+        booking={live}
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+      />
     </div>
   )
 }

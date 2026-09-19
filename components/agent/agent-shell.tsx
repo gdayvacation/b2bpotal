@@ -50,7 +50,6 @@ export function AgentShell({ agent, children }: { agent: Agent; children: React.
           <div className="flex min-w-0 shrink-0 items-center gap-2.5 sm:gap-3">
             <div className="hidden min-w-0 text-right sm:block">
               <div className="truncate text-sm font-semibold text-teal-950">{agent.name}</div>
-              <div className="text-[11px] text-teal-800/55">{agent.country}</div>
             </div>
             <div className="flex size-9 items-center justify-center rounded-full bg-gradient-to-br from-sky-400 via-teal-500 to-cyan-700 text-xs font-semibold text-white shadow-md shadow-teal-600/25">
               {agent.name

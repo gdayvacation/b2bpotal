@@ -7,21 +7,37 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  CalendarDays,
   CalendarIcon,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  History,
+  Pencil,
   Plus,
   Search,
   X,
 } from 'lucide-react'
 import type { DateRange } from 'react-day-picker'
+import { BookingHistoryDialog } from '@/components/booking-history-dialog'
+import { ChangeBookingDateDialog } from '@/components/change-booking-date-dialog'
+import { EditBookingDialog } from '@/components/edit-booking-dialog'
 import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
 import { PageHeader, Segment, SegmentedControl, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   Table,
@@ -32,7 +48,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { formatShortDate, startOfToday, todayISO, toISODate } from '@/lib/format'
-import { totalPassengers } from '@/lib/types'
+import { isNoTransfer, totalPassengers, type Booking } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 /** Search only looks from 7 days ago through all future trips (keeps lists fast). */
@@ -85,8 +101,155 @@ function SortableHead({
   )
 }
 
+function toTimeInputValue(pickupTime: string) {
+  const match = pickupTime.match(/^(\d{1,2}):(\d{2})/)
+  if (!match) return ''
+  return `${match[1].padStart(2, '0')}:${match[2]}`
+}
+
+function BookingPickupCell({
+  booking,
+  onSetPickup,
+}: {
+  booking: Booking
+  onSetPickup: (booking: Booking) => void
+}) {
+  const cancelled = booking.status === 'Cancelled'
+  const canEdit = !cancelled && !isNoTransfer(booking.pickupZone)
+  const awaiting = booking.status === 'Pending Pickup Time'
+
+  if (!canEdit) {
+    return (
+      <span>
+        {booking.pickupZone} · {booking.pickupTime}
+      </span>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      className={cn(
+        'inline-flex max-w-full items-center gap-1 rounded-md text-left transition-colors hover:bg-teal-50 focus-visible:ring-2 focus-visible:ring-teal-700/25',
+        awaiting && 'text-amber-800',
+      )}
+      onClick={() => onSetPickup(booking)}
+      aria-label={
+        awaiting
+          ? `Add pickup time for ${booking.code}`
+          : `Edit pickup time for ${booking.code}`
+      }
+    >
+      <span className="truncate">
+        {booking.pickupZone}
+        {' · '}
+        <span className={cn(awaiting && 'font-medium underline decoration-amber-400/80 underline-offset-2')}>
+          {awaiting ? 'Add pickup time' : booking.pickupTime}
+        </span>
+      </span>
+    </button>
+  )
+}
+
+function BookingStatusMenu({
+  booking,
+  onCancel,
+  onChangeDate,
+  onRebook,
+  onEdit,
+  onHistory,
+}: {
+  booking: Booking
+  onCancel: (code: string) => void
+  onChangeDate: (booking: Booking) => void
+  onRebook: (booking: Booking) => void
+  onEdit: (booking: Booking) => void
+  onHistory: (booking: Booking) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const cancelled = booking.status === 'Cancelled'
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-full outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-teal-700/25"
+            aria-label={`Manage status for ${booking.code}`}
+          />
+        }
+      >
+        <StatusBadge status={booking.status} />
+        <ChevronDown className="size-3.5 text-teal-800/45" />
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-52 gap-1 p-1.5">
+        {cancelled ? (
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-teal-950 hover:bg-teal-50"
+            onClick={() => {
+              setOpen(false)
+              onRebook(booking)
+            }}
+          >
+            <CalendarDays className="size-3.5 text-teal-800/50" />
+            Rebook
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-teal-950 hover:bg-teal-50"
+              onClick={() => {
+                setOpen(false)
+                onEdit(booking)
+              }}
+            >
+              <Pencil className="size-3.5 text-teal-800/50" />
+              Edit details
+            </button>
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-teal-950 hover:bg-teal-50"
+              onClick={() => {
+                setOpen(false)
+                onChangeDate(booking)
+              }}
+            >
+              <CalendarDays className="size-3.5 text-teal-800/50" />
+              Change date
+            </button>
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-rose-700 hover:bg-rose-50"
+              onClick={() => {
+                setOpen(false)
+                onCancel(booking.code)
+              }}
+            >
+              Cancel booking
+            </button>
+          </>
+        )}
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-teal-950 hover:bg-teal-50"
+          onClick={() => {
+            setOpen(false)
+            onHistory(booking)
+          }}
+        >
+          <History className="size-3.5 text-teal-800/50" />
+          History
+        </button>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 export function AdminBookings() {
-  const { bookings, cancelBooking } = usePortal()
+  const { bookings, cancelBooking, setBookingPickupTime } = usePortal()
   const searchParams = useSearchParams()
   const createdCode = searchParams.get('created')
   const [quick, setQuick] = useState<QuickFilter>('all')
@@ -96,6 +259,15 @@ export function AdminBookings() {
   const [dismissCreated, setDismissCreated] = useState(false)
   const [sortKey, setSortKey] = useState<SortKey | null>(null)
   const [sortDir, setSortDir] = useState<SortDir>('asc')
+  const [pickupTarget, setPickupTarget] = useState<Booking | null>(null)
+  const [pickupTime, setPickupTime] = useState('')
+  const [pickupError, setPickupError] = useState('')
+  const [dateTarget, setDateTarget] = useState<Booking | null>(null)
+  const [rebookTarget, setRebookTarget] = useState<Booking | null>(null)
+  const [editTarget, setEditTarget] = useState<Booking | null>(null)
+  const [historyTarget, setHistoryTarget] = useState<Booking | null>(null)
+
+  const adminActor = { role: 'admin' as const, name: 'Admin' }
 
   const query = search.trim().toLowerCase()
   const isSearching = query.length > 0
@@ -195,7 +367,26 @@ export function AdminBookings() {
     ) {
       return
     }
-    cancelBooking(code, { bypassCutoff: true })
+    cancelBooking(code, { bypassCutoff: true, actor: { role: 'admin', name: 'Admin' } })
+  }
+
+  function openPickupDialog(booking: Booking) {
+    setPickupTarget(booking)
+    setPickupTime(toTimeInputValue(booking.pickupTime))
+    setPickupError('')
+  }
+
+  function handleSavePickup() {
+    if (!pickupTarget) return
+    const result = setBookingPickupTime(pickupTarget.code, pickupTime, {
+      actor: { role: 'admin', name: 'Admin' },
+    })
+    if (!result.ok) {
+      setPickupError(result.error)
+      return
+    }
+    setPickupTarget(null)
+    setPickupError('')
   }
 
   const rangeLabel = (() => {
@@ -382,8 +573,7 @@ export function AdminBookings() {
                   >
                     Pickup
                   </SortableHead>
-                  <TableHead className="text-teal-800/50">Status</TableHead>
-                  <TableHead className="px-4 text-right text-teal-800/50">Actions</TableHead>
+                  <TableHead className="px-4 text-teal-800/50">Status</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -412,25 +602,17 @@ export function AdminBookings() {
                     <TableCell>{booking.leadGuest}</TableCell>
                     <TableCell>{totalPassengers(booking)}</TableCell>
                     <TableCell>
-                      {booking.pickupZone} · {booking.pickupTime}
+                      <BookingPickupCell booking={booking} onSetPickup={openPickupDialog} />
                     </TableCell>
-                    <TableCell>
-                      <StatusBadge status={booking.status} />
-                    </TableCell>
-                    <TableCell className="px-4 text-right">
-                      {booking.status !== 'Cancelled' ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 text-rose-700 hover:bg-rose-50 hover:text-rose-900"
-                          onClick={() => handleCancel(booking.code)}
-                        >
-                          Cancel
-                        </Button>
-                      ) : (
-                        <span className="text-xs font-medium text-rose-700/70">Cancelled</span>
-                      )}
+                    <TableCell className="px-4">
+                      <BookingStatusMenu
+                        booking={booking}
+                        onCancel={handleCancel}
+                        onChangeDate={setDateTarget}
+                        onRebook={setRebookTarget}
+                        onEdit={setEditTarget}
+                        onHistory={setHistoryTarget}
+                      />
                     </TableCell>
                   </TableRow>
                 ))}
@@ -471,6 +653,95 @@ export function AdminBookings() {
           </>
         )}
       </Surface>
+
+      <Dialog
+        open={pickupTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPickupTarget(null)
+            setPickupError('')
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Set pickup time</DialogTitle>
+            <DialogDescription>
+              {pickupTarget
+                ? `${pickupTarget.code} · ${pickupTarget.pickupZone} · ${pickupTarget.leadGuest}`
+                : null}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault()
+              handleSavePickup()
+            }}
+          >
+            <div className="space-y-1.5">
+              <Label htmlFor="booking-pickup-time">Pickup time</Label>
+              <Input
+                id="booking-pickup-time"
+                type="time"
+                value={pickupTime}
+                onChange={(event) => {
+                  setPickupTime(event.target.value)
+                  if (pickupError) setPickupError('')
+                }}
+                className="h-10"
+                required
+              />
+            </div>
+            {pickupError ? <p className="text-sm text-red-600">{pickupError}</p> : null}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setPickupTarget(null)}>
+                Cancel
+              </Button>
+              <Button type="submit">Save pickup time</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <ChangeBookingDateDialog
+        booking={dateTarget}
+        open={dateTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDateTarget(null)
+        }}
+        bypassCutoff
+        actor={adminActor}
+      />
+
+      <ChangeBookingDateDialog
+        booking={rebookTarget}
+        open={rebookTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setRebookTarget(null)
+        }}
+        bypassCutoff
+        mode="rebook"
+        actor={adminActor}
+      />
+
+      <EditBookingDialog
+        booking={editTarget}
+        open={editTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setEditTarget(null)
+        }}
+        bypassCutoff
+        actor={adminActor}
+      />
+
+      <BookingHistoryDialog
+        booking={historyTarget}
+        open={historyTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setHistoryTarget(null)
+        }}
+      />
     </div>
   )
 }

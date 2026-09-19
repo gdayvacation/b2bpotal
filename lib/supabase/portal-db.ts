@@ -12,6 +12,9 @@ import type {
   BoatNumber,
   Booking,
   BookingClosure,
+  BookingEvent,
+  BookingEventType,
+  BookingActorRole,
   DayBoatPlan,
   DayVehiclePlan,
   Hotel,
@@ -419,6 +422,126 @@ export async function updateBookingStatus(code: string, status: Booking['status'
   const supabase = getSupabaseBrowserClient()
   const { error } = await supabase.from('bookings').update({ status }).eq('code', code)
   if (error) throw new Error(`update booking status: ${error.message}`)
+}
+
+export async function updateBookingPickup(
+  code: string,
+  pickupTime: string,
+  status: Booking['status'],
+) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase
+    .from('bookings')
+    .update({ pickup_time: pickupTime, status })
+    .eq('code', code)
+  if (error) throw new Error(`update booking pickup: ${error.message}`)
+}
+
+export async function updateBookingDate(code: string, date: string) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase.from('bookings').update({ date }).eq('code', code)
+  if (error) throw new Error(`update booking date: ${error.message}`)
+}
+
+export async function updateBookingRebook(
+  code: string,
+  date: string,
+  status: Booking['status'],
+) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase.from('bookings').update({ date, status }).eq('code', code)
+  if (error) throw new Error(`rebook booking: ${error.message}`)
+}
+
+export async function updateBookingDetails(booking: Booking) {
+  const supabase = getSupabaseBrowserClient()
+  const row = bookingToRow(booking)
+  const { error } = await supabase
+    .from('bookings')
+    .update({
+      agent_ref: row.agent_ref,
+      park_fee: row.park_fee,
+      canoe: row.canoe,
+      adults: row.adults,
+      children: row.children,
+      infants: row.infants,
+      tour_leaders: row.tour_leaders,
+      lead_guest: row.lead_guest,
+      pickup_hotel: row.pickup_hotel,
+      room_number: row.room_number,
+      note: row.note,
+      transfer_extra_charge: row.transfer_extra_charge,
+    })
+    .eq('code', booking.code)
+  if (error) throw new Error(`update booking details: ${error.message}`)
+}
+
+type BookingEventRow = {
+  id: string
+  booking_code: string
+  event_type: BookingEventType
+  summary: string
+  actor_role: BookingActorRole
+  actor_name: string
+  actor_slug: string
+  created_at: string
+}
+
+function mapBookingEvent(row: BookingEventRow): BookingEvent {
+  return {
+    id: row.id,
+    bookingCode: row.booking_code,
+    type: row.event_type,
+    summary: row.summary ?? '',
+    actorRole: row.actor_role,
+    actorName: row.actor_name ?? '',
+    actorSlug: row.actor_slug ?? '',
+    createdAt: row.created_at,
+  }
+}
+
+export async function insertBookingEvent(
+  event: Omit<BookingEvent, 'id' | 'createdAt'> & { id?: string; createdAt?: string },
+) {
+  const supabase = getSupabaseBrowserClient()
+  const id = event.id ?? crypto.randomUUID()
+  const createdAt = event.createdAt ?? new Date().toISOString()
+  const { error } = await supabase.from('booking_events').insert({
+    id,
+    booking_code: event.bookingCode,
+    event_type: event.type,
+    summary: event.summary,
+    actor_role: event.actorRole,
+    actor_name: event.actorName,
+    actor_slug: event.actorSlug,
+    created_at: createdAt,
+  })
+  if (error) throw new Error(`insert booking event: ${error.message}`)
+  return { id, createdAt }
+}
+
+export async function fetchBookingEvents(bookingCode: string): Promise<BookingEvent[]> {
+  const supabase = getSupabaseBrowserClient()
+  const { data, error } = await supabase
+    .from('booking_events')
+    .select('*')
+    .eq('booking_code', bookingCode)
+    .order('created_at', { ascending: false })
+  if (error) {
+    console.warn('[supabase] booking_events unavailable — run supabase/add-booking-events.sql', error.message)
+    return []
+  }
+  return (data as BookingEventRow[]).map(mapBookingEvent)
+}
+
+export async function fetchBookings(): Promise<Booking[]> {
+  const supabase = getSupabaseBrowserClient()
+  const { data, error } = await supabase
+    .from('bookings')
+    .select('*')
+    .order('date', { ascending: false })
+  await assertOk('bookings', error, data)
+  return (data as BookingRow[]).map(mapBooking)
 }
 
 export async function upsertAgent(agent: Agent) {
