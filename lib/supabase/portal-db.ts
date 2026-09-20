@@ -499,11 +499,14 @@ export async function updateBookingDetails(booking: Booking) {
       infants: row.infants,
       tour_leaders: row.tour_leaders,
       lead_guest: row.lead_guest,
+      pickup_zone: row.pickup_zone,
       pickup_hotel: row.pickup_hotel,
       room_number: row.room_number,
       note: row.note,
       cash_on_tour: row.cash_on_tour,
       transfer_extra_charge: row.transfer_extra_charge,
+      pickup_time: row.pickup_time,
+      status: row.status,
     })
     .eq('code', booking.code)
   if (error) throw new Error(`update booking details: ${error.message}`)

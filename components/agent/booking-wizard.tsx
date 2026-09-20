@@ -255,7 +255,7 @@ export function BookingWizard({
                   ? 'Add at least one passenger.'
                   : seatsLeft !== null && total > seatsLeft
                     ? `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left on this date.`
-                    : 'Enter the lead guest name.'
+                    : 'Enter the guest name.'
                 : 'Select a pickup zone and hotel, or choose No Transfer.',
       )
       return
@@ -651,7 +651,7 @@ export function BookingWizard({
             <div className="max-w-2xl space-y-5 border-t border-teal-900/8 pt-5">
               <div className="flex flex-col gap-4 sm:flex-row sm:gap-3">
                 <div className="min-w-0 flex-1 space-y-2">
-                  <Label htmlFor="lead-guest">Lead Guest Name</Label>
+                  <Label htmlFor="lead-guest">Guest Name</Label>
                   <Input
                     id="lead-guest"
                     value={leadGuest}
@@ -660,7 +660,7 @@ export function BookingWizard({
                   />
                 </div>
                 <div className="min-w-0 flex-1 space-y-2">
-                  <Label htmlFor="agent-ref-guest">Agent Ref / Agent Voucher Number</Label>
+                  <Label htmlFor="agent-ref-guest">Voucher Number</Label>
                   <Input
                     id="agent-ref-guest"
                     value={agentRef}
@@ -668,7 +668,7 @@ export function BookingWizard({
                     className="h-11"
                   />
                   <p className="text-xs text-neutral-500">
-                    Optional — your own reference or voucher number for this booking.
+                    Optional — voucher number for this booking.
                   </p>
                 </div>
               </div>
@@ -913,7 +913,7 @@ export function BookingWizard({
                   value={program === 'James Bond' ? canoe : 'N/A'}
                 />
                 <DetailCell
-                  label="Agent ref"
+                  label="Voucher number"
                   value={agentRef.trim() || '—'}
                   className="col-span-2 sm:col-span-1"
                 />

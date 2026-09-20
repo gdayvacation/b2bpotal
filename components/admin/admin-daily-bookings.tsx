@@ -14,7 +14,7 @@ import {
 import { usePortal } from '@/components/portal-provider'
 import { VehicleDailyBoard } from '@/components/admin/admin-vehicle-board'
 import { StatusBadge } from '@/components/status-badge'
-import { PageHeader, Surface } from '@/components/ui-primitives'
+import { PageHeader, Segment, SegmentedControl, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
 import {
@@ -31,14 +31,18 @@ import {
   BOAT_NUMBERS,
   DEFAULT_BOAT_CAPACITY,
   isActiveBooking,
+  isNoTransfer,
   totalPassengers,
   type BoatNumber,
   type Booking,
   type Program,
+  type VanSplit,
 } from '@/lib/types'
+import { formatVanLegs, primaryVan } from '@/lib/vehicle-assign'
 import { cn } from '@/lib/utils'
 
 type BoardMode = 'vehicles' | 'boats'
+type BoatGuestFilter = 'all' | 'no-van' | 'no-transfer'
 
 export function AdminDailyBookings() {
   const [boardMode, setBoardMode] = useState<BoardMode | null>(null)
@@ -48,21 +52,21 @@ export function AdminDailyBookings() {
       <div className="mx-auto max-w-7xl">
         <PageHeader
           title="Daily Board"
-          description="Pick what to organize first. Vehicle transfers and boat assignments are separate workflows."
+          description="Arrange vans first, then put each van’s guests onto the same boat. No-transfer bookings can go to any boat."
         />
 
         <div className="grid gap-4 sm:grid-cols-2">
           <ModeCard
             title="จัดการรถ"
-            subtitle="Group pickups by location proximity for transfer vans and cars."
-            meta="By zone & hotel"
+            subtitle="Step 1 — assign transfer vans by zone and hotel. Finish vans before boats so boat auto-assign can keep van groups together."
+            meta="By zone & hotel · first"
             icon={<Bus className="size-7" />}
             onClick={() => setBoardMode('vehicles')}
           />
           <ModeCard
             title="จัดการเรือ"
-            subtitle="Assign bookings to boats by program. Typical capacity is about 30–40 pax per boat."
-            meta="By program & capacity"
+            subtitle="Step 2 — assign boats by program. Same-van guests stay together; filter for no-van or no-transfer bookings and place them on any boat."
+            meta="By program · after vans"
             icon={<Ship className="size-7" />}
             onClick={() => setBoardMode('boats')}
           />
@@ -118,6 +122,7 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
   const {
     bookings,
     getDayBoatPlan,
+    getDayVehiclePlan,
     assignBookingToBoat,
     setBoatCapacity,
     autoAssignDayBoats,
@@ -145,6 +150,7 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
   }, [dayBookings, program])
 
   const plan = program ? getDayBoatPlan(selectedDate, program) : null
+  const vehiclePlan = program ? getDayVehiclePlan(selectedDate, program) : null
 
   const ppDay = dayBookings.filter((b) => b.program === 'PP')
   const jbDay = dayBookings.filter((b) => b.program === 'James Bond')
@@ -173,7 +179,7 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
         </div>
         <PageHeader
           title="Arrange boats"
-          description="Day board for many small bookings (often 1–2 pax). Pick a date, choose PP or James Bond, assign to boats (~30–40 pax each)."
+          description="Uses van groups from Step 1 when possible — same van stays on the same boat. Filter for guests still missing a van, or no-transfer bookings to place freely."
           actions={
             program ? (
               <div className="flex flex-wrap gap-2">
@@ -195,7 +201,7 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
                   onClick={() => autoAssignDayBoats(selectedDate, program)}
                 >
                   <Sparkles data-icon="inline-start" />
-                  Auto-assign
+                  Auto-assign by van
                 </Button>
               </div>
             ) : null
@@ -277,12 +283,13 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
         </>
       ) : null}
 
-      {program && plan ? (
+      {program && plan && vehiclePlan ? (
         <BoatBoard
           date={selectedDate}
           program={program}
           bookings={programBookings}
           plan={plan}
+          vanAssignments={vehiclePlan.assignments}
           onAssign={(code, boat) => assignBookingToBoat(selectedDate, program, code, boat)}
           onCapacity={(boat, capacity) => setBoatCapacity(selectedDate, program, boat, capacity)}
           onAutoAssign={() => autoAssignDayBoats(selectedDate, program)}
@@ -342,6 +349,7 @@ function BoatBoard({
   program,
   bookings,
   plan,
+  vanAssignments,
   onAssign,
   onCapacity,
   onAutoAssign,
@@ -352,6 +360,7 @@ function BoatBoard({
   program: Program
   bookings: Booking[]
   plan: ReturnType<ReturnType<typeof usePortal>['getDayBoatPlan']>
+  vanAssignments: Record<string, VanSplit[]>
   onAssign: (code: string, boat: BoatNumber | null) => void
   onCapacity: (boat: BoatNumber, capacity: number) => void
   onAutoAssign: () => void
@@ -359,15 +368,39 @@ function BoatBoard({
   onPrint: () => void
 }) {
   const [selectedCode, setSelectedCode] = useState<string | null>(null)
-  const unassigned = bookings.filter((booking) => !plan.assignments[booking.code])
-  const byBoat = BOAT_NUMBERS.map((boat) => ({
-    boat,
-    capacity: plan.capacities[boat - 1],
-    items: bookings.filter((booking) => plan.assignments[booking.code] === boat),
-  }))
+  const [guestFilter, setGuestFilter] = useState<BoatGuestFilter>('all')
+
+  function vanLabel(booking: Booking): string {
+    if (isNoTransfer(booking.pickupZone)) return 'No transfer'
+    return formatVanLegs(vanAssignments[booking.code])
+  }
+
+  function matchesFilter(booking: Booking): boolean {
+    if (guestFilter === 'all') return true
+    if (guestFilter === 'no-transfer') return isNoTransfer(booking.pickupZone)
+    // no-van: needs transfer but has no van yet
+    return !isNoTransfer(booking.pickupZone) && primaryVan(vanAssignments[booking.code]) === null
+  }
+
+  const visible = bookings.filter(matchesFilter)
+  const unassigned = visible.filter((booking) => !plan.assignments[booking.code])
+  const byBoat = BOAT_NUMBERS.map((boat) => {
+    const allOnBoat = bookings.filter((booking) => plan.assignments[booking.code] === boat)
+    return {
+      boat,
+      capacity: plan.capacities[boat - 1],
+      items: allOnBoat.filter(matchesFilter),
+      loadPax: allOnBoat.reduce((sum, b) => sum + totalPassengers(b), 0),
+      loadCount: allOnBoat.length,
+    }
+  })
 
   const totalPax = bookings.reduce((sum, b) => sum + totalPassengers(b), 0)
   const unassignedPax = unassigned.reduce((sum, b) => sum + totalPassengers(b), 0)
+  const noVanCount = bookings.filter(
+    (b) => !isNoTransfer(b.pickupZone) && primaryVan(vanAssignments[b.code]) === null,
+  ).length
+  const noTransferCount = bookings.filter((b) => isNoTransfer(b.pickupZone)).length
   const selected = selectedCode
     ? (bookings.find((booking) => booking.code === selectedCode) ?? null)
     : null
@@ -385,33 +418,66 @@ function BoatBoard({
       </div>
 
       <Surface className="mb-5 p-5 print:hidden">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="text-xs font-semibold tracking-[0.14em] text-teal-700/55 uppercase">
-              {formatLongDate(date)}
-            </p>
-            <h2 className="mt-1 font-display text-2xl font-semibold text-teal-950">
-              {program === 'PP' ? 'PP · Phi Phi Islands' : 'James Bond · Phang Nga Bay'}
-            </h2>
-            <p className="mt-1.5 text-base text-teal-900/55">
-              {bookings.length} bookings · {totalPax} pax · boat capacity ~{DEFAULT_BOAT_CAPACITY}
-            </p>
-            <p className="mt-1 text-sm text-teal-900/45">
-              Click a booking to move it between boats.
-            </p>
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold tracking-[0.14em] text-teal-700/55 uppercase">
+                {formatLongDate(date)}
+              </p>
+              <h2 className="mt-1 font-display text-2xl font-semibold text-teal-950">
+                {program === 'PP' ? 'PP · Phi Phi Islands' : 'James Bond · Phang Nga Bay'}
+              </h2>
+              <p className="mt-1.5 text-base text-teal-900/55">
+                {bookings.length} bookings · {totalPax} pax · boat capacity ~{DEFAULT_BOAT_CAPACITY}
+              </p>
+              <p className="mt-1 text-sm text-teal-900/45">
+                Auto-assign keeps same-van guests on the same boat. Click a booking to move it.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 sm:hidden">
+              <Button type="button" variant="outline" onClick={onPrint}>
+                <Printer data-icon="inline-start" />
+                Print
+              </Button>
+              <Button type="button" variant="outline" onClick={onClear}>
+                Clear
+              </Button>
+              <Button type="button" onClick={onAutoAssign}>
+                <Sparkles data-icon="inline-start" />
+                Auto-assign by van
+              </Button>
+            </div>
           </div>
-          <div className="flex flex-wrap gap-2 sm:hidden">
-            <Button type="button" variant="outline" onClick={onPrint}>
-              <Printer data-icon="inline-start" />
-              Print
-            </Button>
-            <Button type="button" variant="outline" onClick={onClear}>
-              Clear
-            </Button>
-            <Button type="button" onClick={onAutoAssign}>
-              <Sparkles data-icon="inline-start" />
-              Auto-assign
-            </Button>
+
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <SoftLabel>Show</SoftLabel>
+              <SegmentedControl>
+                <Segment active={guestFilter === 'all'} onClick={() => setGuestFilter('all')}>
+                  All
+                </Segment>
+                <Segment
+                  active={guestFilter === 'no-van'}
+                  onClick={() => setGuestFilter('no-van')}
+                >
+                  No van ({noVanCount})
+                </Segment>
+                <Segment
+                  active={guestFilter === 'no-transfer'}
+                  onClick={() => setGuestFilter('no-transfer')}
+                >
+                  No transfer ({noTransferCount})
+                </Segment>
+              </SegmentedControl>
+            </div>
+            {guestFilter !== 'all' ? (
+              <p className="text-sm text-teal-900/50">
+                Showing {visible.length} of {bookings.length} bookings
+                {guestFilter === 'no-van'
+                  ? ' — assign a van first, or place them on any boat'
+                  : ' — place freely on any boat'}
+              </p>
+            ) : null}
           </div>
         </div>
       </Surface>
@@ -419,6 +485,10 @@ function BoatBoard({
       {bookings.length === 0 ? (
         <Surface className="px-4 py-12 text-center text-base text-neutral-500">
           No bookings for this program on {formatShortDate(date)}.
+        </Surface>
+      ) : visible.length === 0 ? (
+        <Surface className="px-4 py-12 text-center text-base text-neutral-500">
+          No bookings match this filter.
         </Surface>
       ) : (
         <div className="flex flex-col gap-5">
@@ -434,7 +504,7 @@ function BoatBoard({
             </div>
             {unassigned.length === 0 ? (
               <div className="px-5 py-8 text-center text-base text-teal-900/45">
-                All bookings are assigned.
+                All visible bookings are assigned.
               </div>
             ) : (
               <ul className="max-h-72 divide-y divide-teal-900/6 overflow-y-auto">
@@ -443,6 +513,7 @@ function BoatBoard({
                     key={booking.code}
                     booking={booking}
                     boat={null}
+                    vanLabel={vanLabel(booking)}
                     onOpen={() => setSelectedCode(booking.code)}
                   />
                 ))}
@@ -451,9 +522,8 @@ function BoatBoard({
           </Surface>
 
           <div className="grid gap-4 lg:grid-cols-3">
-            {byBoat.map(({ boat, capacity, items }) => {
-              const pax = items.reduce((sum, b) => sum + totalPassengers(b), 0)
-              const over = pax > capacity
+            {byBoat.map(({ boat, capacity, items, loadPax, loadCount }) => {
+              const over = loadPax > capacity
               return (
                 <Surface
                   key={boat}
@@ -473,11 +543,14 @@ function BoatBoard({
                             : 'bg-teal-50 text-teal-800',
                         )}
                       >
-                        {pax}/{capacity}
+                        {loadPax}/{capacity}
                       </span>
                     </div>
                     <p className="mt-1 text-sm text-teal-900/50">
-                      {items.length} booking{items.length === 1 ? '' : 's'}
+                      {loadCount} booking{loadCount === 1 ? '' : 's'}
+                      {guestFilter !== 'all' && items.length !== loadCount
+                        ? ` · showing ${items.length}`
+                        : ''}
                     </p>
                     <div className="mt-3 flex items-center gap-1.5 print:hidden">
                       <Button
@@ -525,6 +598,7 @@ function BoatBoard({
                           key={booking.code}
                           booking={booking}
                           boat={boat}
+                          vanLabel={vanLabel(booking)}
                           onOpen={() => setSelectedCode(booking.code)}
                         />
                       ))}
@@ -559,7 +633,7 @@ function BoatBoard({
                 <DetailRow label="Booking" value={selected.code} mono />
                 <DetailRow label="Agent" value={selected.agentName} />
                 <DetailRow
-                  label="Agent ref"
+                  label="Voucher number"
                   value={selected.agentRef?.trim() ? selected.agentRef : '—'}
                 />
                 <DetailRow
@@ -575,6 +649,7 @@ function BoatBoard({
                   label="Room"
                   value={selected.roomNumber?.trim() ? selected.roomNumber : '—'}
                 />
+                <DetailRow label="Van" value={vanLabel(selected)} />
                 <DetailRow
                   label="Note"
                   value={selected.note?.trim() ? selected.note : '—'}
@@ -653,9 +728,10 @@ function BoatBoard({
                 <thead>
                   <tr className="border-b border-neutral-300 text-left">
                     <th className="py-1 pr-2">Code</th>
-                    <th className="py-1 pr-2">Lead guest</th>
+                    <th className="py-1 pr-2">Guest name</th>
                     <th className="py-1 pr-2">Agent</th>
                     <th className="py-1 pr-2">Pax</th>
+                    <th className="py-1 pr-2">Van</th>
                     <th className="py-1 pr-2">Pickup</th>
                   </tr>
                 </thead>
@@ -666,6 +742,7 @@ function BoatBoard({
                       <td className="py-1.5 pr-2">{booking.leadGuest}</td>
                       <td className="py-1.5 pr-2">{booking.agentName}</td>
                       <td className="py-1.5 pr-2">{totalPassengers(booking)}</td>
+                      <td className="py-1.5 pr-2">{vanLabel(booking)}</td>
                       <td className="py-1.5 pr-2">
                         {booking.pickupZone} · {booking.pickupTime}
                       </td>
@@ -673,7 +750,7 @@ function BoatBoard({
                   ))}
                   {items.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="py-2 text-neutral-500">
+                      <td colSpan={6} className="py-2 text-neutral-500">
                         No bookings
                       </td>
                     </tr>
@@ -683,15 +760,20 @@ function BoatBoard({
             </div>
           )
         })}
-        {unassigned.length > 0 ? (
+        {bookings.filter((b) => !plan.assignments[b.code]).length > 0 ? (
           <div className="break-inside-avoid">
-            <h2 className="mb-2 text-base font-semibold">Unassigned ({unassigned.length})</h2>
+            <h2 className="mb-2 text-base font-semibold">
+              Unassigned ({bookings.filter((b) => !plan.assignments[b.code]).length})
+            </h2>
             <ul className="text-sm">
-              {unassigned.map((booking) => (
-                <li key={booking.code}>
-                  {booking.code} — {booking.leadGuest} ({totalPassengers(booking)} pax)
-                </li>
-              ))}
+              {bookings
+                .filter((b) => !plan.assignments[b.code])
+                .map((booking) => (
+                  <li key={booking.code}>
+                    {booking.code} — {booking.leadGuest} ({totalPassengers(booking)} pax) ·{' '}
+                    {vanLabel(booking)}
+                  </li>
+                ))}
             </ul>
           </div>
         ) : null}
@@ -727,13 +809,17 @@ function DetailRow({
 function BookingRow({
   booking,
   boat,
+  vanLabel,
   onOpen,
 }: {
   booking: Booking
   boat: BoatNumber | null
+  vanLabel: string
   onOpen: () => void
 }) {
   const pax = totalPassengers(booking)
+  const noTransfer = isNoTransfer(booking.pickupZone)
+  const noVan = !noTransfer && vanLabel === '—'
   return (
     <li>
       <button
@@ -745,6 +831,18 @@ function BookingRow({
           <p className="text-base font-semibold text-teal-950">{booking.leadGuest}</p>
           <span className="rounded-md bg-teal-800 px-2 py-0.5 text-sm font-semibold tabular-nums text-white">
             {pax} pax
+          </span>
+          <span
+            className={cn(
+              'rounded-md px-2 py-0.5 text-xs font-medium',
+              noTransfer
+                ? 'bg-sky-50 text-sky-800'
+                : noVan
+                  ? 'bg-amber-50 text-amber-800'
+                  : 'bg-teal-50 text-teal-800',
+            )}
+          >
+            {vanLabel}
           </span>
           {boat !== null ? (
             <span className="rounded-md bg-teal-50 px-2 py-0.5 text-xs font-medium text-teal-800">

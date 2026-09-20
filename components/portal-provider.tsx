@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { nextBookingCode, uniqueAgentSlug } from '@/lib/format'
 import { autoAssignBoats } from '@/lib/boat-assign'
-import { autoAssignVans, normalizeAssignments } from '@/lib/vehicle-assign'
+import { autoAssignVans, normalizeAssignments, paxOnVan } from '@/lib/vehicle-assign'
 import {
   bookingClosedMessage,
   cancelClosedMessage,
@@ -129,6 +129,7 @@ type PortalContextValue = {
       children?: number
       infants?: number
       tourLeaders?: number
+      pickupZone?: Booking['pickupZone']
       pickupHotel?: string
       roomNumber?: string
       note?: string
@@ -192,11 +193,24 @@ type PortalContextValue = {
   ) => void
   autoAssignDayBoats: (date: string, program: Program) => void
   clearDayBoatAssignments: (date: string, program: Program) => void
+  /** Assign every booking currently on this van to one boat (whole van group). */
+  assignVanToBoat: (
+    date: string,
+    program: Program,
+    van: number,
+    boat: BoatNumber | null,
+  ) => void
   getDayVehiclePlan: (date: string, program: Program) => DayVehiclePlan
   assignBookingToVan: (
     date: string,
     program: Program,
     bookingCode: string,
+    van: number | null,
+  ) => void
+  assignBookingsToVan: (
+    date: string,
+    program: Program,
+    bookingCodes: string[],
     van: number | null,
   ) => void
   setBookingVanSplits: (
@@ -345,6 +359,24 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
     const isProgramClosed = (date: string, program: Program) =>
       getBookingClosure(date, program) !== null
+
+    /** Agents may edit/cancel/move only while cancel cutoff is open and admin has not closed the day. */
+    const agentModifyBlocked = (
+      booking: { date: string; program: Program },
+      options?: BookingActionOptions,
+    ): string | null => {
+      if (options?.bypassCutoff) return null
+      if (!isCancelOpenForDate(bookingCutoffs, booking.date)) {
+        return cancelClosedMessage(bookingCutoffs, booking.date)
+      }
+      const closure = getBookingClosure(booking.date, booking.program)
+      if (closure) {
+        return closure.reason
+          ? `Booking closed by admin for ${booking.program} on this date — ${closure.reason}`
+          : `Booking closed by admin for ${booking.program} on this date.`
+      }
+      return null
+    }
 
     const activeDayBookings = (date: string, program: Program) =>
       bookings.filter(
@@ -593,9 +625,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         if (!existing || existing.status === 'Cancelled') {
           return { ok: false, error: 'Booking not found or already cancelled.' }
         }
-        if (!options?.bypassCutoff && !isCancelOpenForDate(bookingCutoffs, existing.date)) {
-          return { ok: false, error: cancelClosedMessage(bookingCutoffs, existing.date) }
-        }
+        const blocked = agentModifyBlocked(existing, options)
+        if (blocked) return { ok: false, error: blocked }
 
         setBookings((current) =>
           current.map((booking) =>
@@ -635,10 +666,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           return { ok: false, error: 'Pick a different travel date.' }
         }
 
-        // Same window as cancel: agents may only change while cancel is still open on the current date.
-        if (!options?.bypassCutoff && !isCancelOpenForDate(bookingCutoffs, existing.date)) {
-          return { ok: false, error: cancelClosedMessage(bookingCutoffs, existing.date) }
-        }
+        // Same window as cancel: agents may only change while cancel is still open and day is not admin-closed.
+        const blocked = agentModifyBlocked(existing, options)
+        if (blocked) return { ok: false, error: blocked }
 
         if (!options?.bypassCutoff && !isBookingOpenForDate(bookingCutoffs, trimmedDate)) {
           return { ok: false, error: bookingClosedMessage(bookingCutoffs, trimmedDate) }
@@ -782,9 +812,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         if (!existing || existing.status === 'Cancelled') {
           return { ok: false, error: 'Booking not found or already cancelled.' }
         }
-        if (!options?.bypassCutoff && !isCancelOpenForDate(bookingCutoffs, existing.date)) {
-          return { ok: false, error: cancelClosedMessage(bookingCutoffs, existing.date) }
-        }
+        const blocked = agentModifyBlocked(existing, options)
+        if (blocked) return { ok: false, error: blocked }
+
+        const nextPickupZone =
+          patch.pickupZone !== undefined ? patch.pickupZone.trim() : existing.pickupZone
+        if (!nextPickupZone) return { ok: false, error: 'Choose a pickup option.' }
 
         const next: Booking = {
           ...existing,
@@ -793,6 +826,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           children: patch.children ?? existing.children,
           infants: patch.infants ?? existing.infants,
           tourLeaders: patch.tourLeaders ?? existing.tourLeaders,
+          pickupZone: nextPickupZone,
           pickupHotel:
             patch.pickupHotel !== undefined ? patch.pickupHotel.trim() : existing.pickupHotel,
           roomNumber:
@@ -809,7 +843,42 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               : existing.transferExtraCharge,
         }
 
-        if (!next.leadGuest) return { ok: false, error: 'Enter the lead guest name.' }
+        const noTransfer = isNoTransfer(next.pickupZone)
+        if (noTransfer) {
+          next.pickupHotel = ''
+          next.roomNumber = ''
+          next.pickupTime = NO_TRANSFER_TIME
+          next.transferExtraCharge = ''
+          next.status = 'Confirmed'
+        } else {
+          if (!zones.some((zone) => zone.name === next.pickupZone)) {
+            return { ok: false, error: 'Choose a valid pickup zone.' }
+          }
+          if (!next.pickupHotel) {
+            return { ok: false, error: 'Enter the pickup hotel.' }
+          }
+          const zone = zones.find((item) => item.name === next.pickupZone)
+          const awaiting =
+            !next.pickupTime ||
+            next.pickupTime.toLowerCase().includes('awaiting') ||
+            isNoTransfer(existing.pickupZone) ||
+            next.pickupZone !== existing.pickupZone
+          const pending = zone?.pending ?? next.pickupZone === 'Other'
+          if (awaiting || next.pickupZone !== existing.pickupZone) {
+            next.pickupTime = pending
+              ? 'Awaiting pickup time'
+              : getZoneTime(next.pickupZone)
+          }
+          next.status = pending ? 'Pending Pickup Time' : 'Confirmed'
+          if (patch.transferExtraCharge === undefined) {
+            const matchedHotel = hotels.find(
+              (hotel) => hotel.name.toLowerCase() === next.pickupHotel.toLowerCase(),
+            )
+            next.transferExtraCharge = matchedHotel?.extraChargeTransfer.trim() ?? ''
+          }
+        }
+
+        if (!next.leadGuest) return { ok: false, error: 'Enter the guest name.' }
         const newPax = totalPassengers(next)
         if (newPax < 1) return { ok: false, error: 'At least 1 passenger is required.' }
 
@@ -832,23 +901,23 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        if (patch.pickupHotel !== undefined && patch.transferExtraCharge === undefined) {
-          const matchedHotel = hotels.find(
-            (hotel) => hotel.name.toLowerCase() === next.pickupHotel.toLowerCase(),
-          )
-          if (matchedHotel?.extraChargeTransfer) {
-            next.transferExtraCharge = matchedHotel.extraChargeTransfer
-          }
-        }
-
         const changes: string[] = []
         if (next.leadGuest !== existing.leadGuest) changes.push('guest')
         if (newPax !== oldPax) changes.push(`pax ${oldPax}→${newPax}`)
+        if (next.pickupZone !== existing.pickupZone) {
+          changes.push(
+            isNoTransfer(next.pickupZone)
+              ? 'no transfer'
+              : isNoTransfer(existing.pickupZone)
+                ? 'add transfer'
+                : 'pickup zone',
+          )
+        }
         if (next.pickupHotel !== existing.pickupHotel) changes.push('hotel')
         if (next.roomNumber !== existing.roomNumber) changes.push('room')
         if (next.note !== existing.note) changes.push('note')
         if (next.cashOnTour !== existing.cashOnTour) changes.push('cash on tour')
-        if (next.agentRef !== existing.agentRef) changes.push('agent ref')
+        if (next.agentRef !== existing.agentRef) changes.push('voucher number')
         if (next.parkFee !== existing.parkFee) changes.push('park fee')
         if (next.canoe !== existing.canoe) changes.push('canoe')
         if (changes.length === 0) return { ok: false, error: 'No changes to save.' }
@@ -1184,13 +1253,29 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       },
       autoAssignDayBoats: (date, program) => {
         const dayBookings = activeDayBookings(date, program)
+        const vehiclePlan = getDayVehiclePlan(date, program)
         upsertPlan(date, program, (plan) => ({
           ...plan,
-          assignments: autoAssignBoats(dayBookings, plan.capacities),
+          assignments: autoAssignBoats(dayBookings, plan.capacities, vehiclePlan.assignments),
         }))
       },
       clearDayBoatAssignments: (date, program) => {
         upsertPlan(date, program, (plan) => ({ ...plan, assignments: {} }))
+      },
+      assignVanToBoat: (date, program, van, boat) => {
+        const vehiclePlan = getDayVehiclePlan(date, program)
+        const codes = activeDayBookings(date, program)
+          .filter((booking) => paxOnVan(vehiclePlan.assignments[booking.code], van) > 0)
+          .map((booking) => booking.code)
+        if (codes.length === 0) return
+        upsertPlan(date, program, (plan) => {
+          const assignments = { ...plan.assignments }
+          for (const code of codes) {
+            if (boat === null) delete assignments[code]
+            else assignments[code] = boat
+          }
+          return { ...plan, assignments }
+        })
       },
       assignBookingToVan: (date, program, bookingCode, van) => {
         const booking = bookings.find((item) => item.code === bookingCode && isActiveBooking(item))
@@ -1199,6 +1284,27 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           const assignments = { ...plan.assignments }
           if (van === null) delete assignments[bookingCode]
           else assignments[bookingCode] = [{ van, pax }]
+          return { ...plan, assignments }
+        })
+      },
+      assignBookingsToVan: (date, program, bookingCodes, van) => {
+        if (bookingCodes.length === 0) return
+        const paxByCode = new Map<string, number>()
+        for (const code of bookingCodes) {
+          const booking = bookings.find((item) => item.code === code && isActiveBooking(item))
+          if (booking) paxByCode.set(code, totalPassengers(booking))
+        }
+        upsertVehiclePlan(date, program, (plan) => {
+          const assignments = { ...plan.assignments }
+          for (const code of bookingCodes) {
+            if (van === null) {
+              delete assignments[code]
+              continue
+            }
+            const pax = paxByCode.get(code)
+            if (pax === undefined) continue
+            assignments[code] = [{ van, pax }]
+          }
           return { ...plan, assignments }
         })
       },

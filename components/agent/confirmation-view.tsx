@@ -39,8 +39,8 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
         <dl className="grid gap-5 sm:grid-cols-2">
           <Item label="Tour Program" value={booking.program} />
           <Item label="Tour Date" value={formatLongDate(booking.date)} />
-          <Item label="Lead Guest" value={booking.leadGuest} />
-          <Item label="Agent Ref / Voucher #" value={booking.agentRef || '—'} />
+          <Item label="Guest Name" value={booking.leadGuest} />
+          <Item label="Voucher Number" value={booking.agentRef || '—'} />
           <Item label="Total Passengers" value={`${formatPaxBreakdown(booking)} (${total})`} />
           <Item
             label="Pickup"

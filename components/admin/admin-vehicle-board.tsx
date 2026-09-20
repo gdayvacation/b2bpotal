@@ -28,13 +28,17 @@ import {
 import { formatLongDate, formatShortDate, todayISO, toISODate } from '@/lib/format'
 import { BRAND_LEGAL } from '@/lib/brand'
 import {
+  BOAT_NUMBERS,
+  DEFAULT_BOAT_CAPACITY,
   DEFAULT_VAN_CAPACITY,
   emptyVanMeta,
   formatPaxBreakdown,
   isActiveBooking,
   isNoTransfer,
   totalPassengers,
+  type BoatNumber,
   type Booking,
+  type DayBoatPlan,
   type DayVehiclePlan,
   type Program,
   type VanSplit,
@@ -52,7 +56,12 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
   const {
     bookings,
     getDayVehiclePlan,
+    getDayBoatPlan,
     assignBookingToVan,
+    assignBookingsToVan,
+    assignVanToBoat,
+    autoAssignDayBoats,
+    clearDayBoatAssignments,
     setBookingVanSplits,
     setVanMeta,
     autoAssignDayVans,
@@ -89,6 +98,7 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
   }, [dayBookings, program])
 
   const plan = program ? getDayVehiclePlan(selectedDate, program) : null
+  const boatPlan = program ? getDayBoatPlan(selectedDate, program) : null
 
   const ppDay = dayBookings.filter((b) => b.program === 'PP')
   const jbDay = dayBookings.filter((b) => b.program === 'James Bond')
@@ -113,7 +123,7 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
         </div>
         <PageHeader
           title="Arrange vehicles"
-          description="Pick a date and program, then assign transfers by pickup zone. Each van holds up to 12 guests. Oversized bookings are highlighted for manual Separate Van — AI never auto-splits."
+          description="Step 1 — assign vans. Step 2 — put each van on a boat (default 44 pax). Same-van guests stay together."
           actions={
             program ? (
               <div className="flex flex-wrap gap-2">
@@ -213,14 +223,23 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
         </>
       ) : null}
 
-      {program && plan ? (
+      {program && plan && boatPlan ? (
         <VehicleBoard
           date={selectedDate}
           program={program}
           bookings={programBookings}
           noTransferBookings={noTransferBookings}
           plan={plan}
+          boatPlan={boatPlan}
           onAssign={(code, van) => assignBookingToVan(selectedDate, program, code, van)}
+          onAssignMany={(codes, van) =>
+            assignBookingsToVan(selectedDate, program, codes, van)
+          }
+          onAssignVanToBoat={(van, boat) =>
+            assignVanToBoat(selectedDate, program, van, boat)
+          }
+          onAutoAssignBoats={() => autoAssignDayBoats(selectedDate, program)}
+          onClearBoats={() => clearDayBoatAssignments(selectedDate, program)}
           onSaveSplits={(code, legs) => setBookingVanSplits(selectedDate, program, code, legs)}
           onVanMeta={(van, meta) => setVanMeta(selectedDate, program, van, meta)}
           onAutoAssign={() => autoAssignDayVans(selectedDate, program)}
@@ -280,7 +299,12 @@ function VehicleBoard({
   bookings,
   noTransferBookings = [],
   plan,
+  boatPlan,
   onAssign,
+  onAssignMany,
+  onAssignVanToBoat,
+  onAutoAssignBoats,
+  onClearBoats,
   onSaveSplits,
   onVanMeta,
   onAutoAssign,
@@ -291,7 +315,12 @@ function VehicleBoard({
   bookings: Booking[]
   noTransferBookings?: Booking[]
   plan: DayVehiclePlan
+  boatPlan: DayBoatPlan
   onAssign: (code: string, van: number | null) => void
+  onAssignMany: (codes: string[], van: number | null) => void
+  onAssignVanToBoat: (van: number, boat: BoatNumber | null) => void
+  onAutoAssignBoats: () => void
+  onClearBoats: () => void
   onSaveSplits: (code: string, legs: VanSplit[]) => void
   onVanMeta: (van: number, meta: { plate?: string; driver?: string; phone?: string }) => void
   onAutoAssign: () => void
@@ -301,6 +330,8 @@ function VehicleBoard({
   const [openVan, setOpenVan] = useState<number | null>(null)
   const [splitCode, setSplitCode] = useState<string | null>(null)
   const [sheetQuery, setSheetQuery] = useState('')
+  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(() => new Set())
+  const [bulkVan, setBulkVan] = useState('')
   const capacity = plan.vanCapacity || DEFAULT_VAN_CAPACITY
   const vanNumbers = listVanNumbers(plan.assignments)
   const maxVan = vanNumbers.length > 0 ? Math.max(...vanNumbers) : 0
@@ -308,6 +339,8 @@ function VehicleBoard({
 
   useEffect(() => {
     setSheetQuery('')
+    setSelectedCodes(new Set())
+    setBulkVan('')
   }, [date, program])
 
   const sorted = useMemo(() => {
@@ -348,6 +381,61 @@ function VehicleBoard({
     })
   }, [sorted, sheetQuery])
 
+  const selectableSheetRows = useMemo(
+    () =>
+      sheetRows.filter((booking) => {
+        const pax = totalPassengers(booking)
+        const legs = plan.assignments[booking.code]
+        const needsSplit = pax > capacity && (legs?.length ?? 0) <= 1
+        return !needsSplit
+      }),
+    [sheetRows, plan.assignments, capacity],
+  )
+
+  const selectedList = useMemo(
+    () => [...selectedCodes].filter((code) => selectableSheetRows.some((b) => b.code === code)),
+    [selectedCodes, selectableSheetRows],
+  )
+  const selectedPax = useMemo(() => {
+    return selectedList.reduce((sum, code) => {
+      const booking = bookings.find((b) => b.code === code)
+      return sum + (booking ? totalPassengers(booking) : 0)
+    }, 0)
+  }, [selectedList, bookings])
+
+  const allVisibleSelected =
+    selectableSheetRows.length > 0 &&
+    selectableSheetRows.every((booking) => selectedCodes.has(booking.code))
+
+  function toggleCode(code: string) {
+    setSelectedCodes((current) => {
+      const next = new Set(current)
+      if (next.has(code)) next.delete(code)
+      else next.add(code)
+      return next
+    })
+  }
+
+  function toggleSelectAllVisible() {
+    setSelectedCodes((current) => {
+      if (allVisibleSelected) {
+        const next = new Set(current)
+        for (const booking of selectableSheetRows) next.delete(booking.code)
+        return next
+      }
+      const next = new Set(current)
+      for (const booking of selectableSheetRows) next.add(booking.code)
+      return next
+    })
+  }
+
+  function applyBulkVan(van: number | null) {
+    if (selectedList.length === 0) return
+    onAssignMany(selectedList, van)
+    setSelectedCodes(new Set())
+    setBulkVan('')
+  }
+
   const totalPax = bookings.reduce((sum, b) => sum + totalPassengers(b), 0)
   const assignedCount = bookings.filter((b) => (plan.assignments[b.code]?.length ?? 0) > 0).length
   const unassignedPax = bookings
@@ -376,8 +464,31 @@ function VehicleBoard({
       items.length > 0
         ? [...new Set(items.map((item) => item.booking.pickupZone))].join(', ')
         : '—'
-    return { van, items, pax, zone, over: pax > capacity }
+    const boatVotes = new Map<BoatNumber, number>()
+    for (const item of items) {
+      const boat = boatPlan.assignments[item.booking.code]
+      if (boat) boatVotes.set(boat, (boatVotes.get(boat) ?? 0) + 1)
+    }
+    let assignedBoat: BoatNumber | null = null
+    if (boatVotes.size === 1) {
+      assignedBoat = [...boatVotes.keys()][0]
+    } else if (boatVotes.size > 1) {
+      assignedBoat = null // mixed
+    }
+    const boatMixed = boatVotes.size > 1
+    return { van, items, pax, zone, over: pax > capacity, assignedBoat, boatMixed }
   })
+
+  const byBoat = BOAT_NUMBERS.map((boat) => {
+    const capacityBoat = boatPlan.capacities[boat - 1] || DEFAULT_BOAT_CAPACITY
+    const items = bookings.filter((booking) => boatPlan.assignments[booking.code] === boat)
+    const pax = items.reduce((sum, b) => sum + totalPassengers(b), 0)
+    return { boat, capacity: capacityBoat, items, pax, over: pax > capacityBoat }
+  })
+  const boatAssignedCount = bookings.filter((b) => boatPlan.assignments[b.code]).length
+  const boatUnassignedPax = bookings
+    .filter((b) => !boatPlan.assignments[b.code])
+    .reduce((sum, b) => sum + totalPassengers(b), 0)
 
   const openDetail = openVan !== null ? byVan.find((item) => item.van === openVan) : null
   const openMeta =
@@ -407,8 +518,8 @@ function VehicleBoard({
                 : ''}
             </p>
             <p className="mt-1 text-sm text-teal-900/45">
-              Auto-assign never splits groups. Bookings over {capacity} pax stay highlighted until
-              you separate them manually. No Transfer bookings are excluded from vans.
+              Assign vans first, then tap Boat 1–3 on each van card (or Auto-assign boats). Each boat
+              defaults to {DEFAULT_BOAT_CAPACITY} pax.
             </p>
           </div>
           <div className="flex flex-wrap gap-2 sm:hidden">
@@ -457,40 +568,134 @@ function VehicleBoard({
         <div className="flex flex-col gap-5 print:hidden">
           {byVan.length > 0 || unassignedPax > 0 ? (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {byVan.map(({ van, pax, zone, items, over }) => (
-                <button
+              {byVan.map(({ van, pax, zone, items, over, assignedBoat, boatMixed }) => (
+                <div
                   key={van}
-                  type="button"
-                  onClick={() => setOpenVan(van)}
                   className={cn(
-                    'rounded-2xl border bg-white/90 p-4 text-left shadow-[0_12px_40px_-28px_rgba(15,118,110,0.35)] transition-colors hover:border-teal-700/30 hover:bg-teal-50/40',
+                    'rounded-2xl border bg-white/90 p-4 shadow-[0_12px_40px_-28px_rgba(15,118,110,0.35)]',
                     over ? 'border-amber-500/40' : 'border-teal-900/8',
                   )}
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm font-semibold text-teal-950">Van {van}</p>
-                    <span
-                      className={cn(
-                        'rounded-lg px-2 py-0.5 text-xs font-semibold tabular-nums',
-                        over ? 'bg-amber-50 text-amber-800' : 'bg-teal-50 text-teal-800',
-                      )}
-                    >
-                      {pax}/{capacity}
-                    </span>
+                  <button
+                    type="button"
+                    onClick={() => setOpenVan(van)}
+                    className="w-full text-left transition-colors hover:opacity-90"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-teal-950">Van {van}</p>
+                      <span
+                        className={cn(
+                          'rounded-lg px-2 py-0.5 text-xs font-semibold tabular-nums',
+                          over ? 'bg-amber-50 text-amber-800' : 'bg-teal-50 text-teal-800',
+                        )}
+                      >
+                        {pax}/{capacity}
+                      </span>
+                    </div>
+                    <p className="mt-1 truncate text-sm text-teal-900/55">{zone}</p>
+                    <p className="mt-0.5 text-xs text-teal-900/40">
+                      {items.length} booking{items.length === 1 ? '' : 's'} · Details →
+                    </p>
+                  </button>
+                  <div className="mt-3 border-t border-teal-900/8 pt-3">
+                    <p className="mb-1.5 text-[10px] font-semibold tracking-wide text-teal-800/55 uppercase">
+                      Put on boat
+                      {assignedBoat ? ` · Boat ${assignedBoat}` : boatMixed ? ' · mixed' : ''}
+                    </p>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {BOAT_NUMBERS.map((boat) => (
+                        <button
+                          key={boat}
+                          type="button"
+                          onClick={() => onAssignVanToBoat(van, boat)}
+                          className={cn(
+                            'rounded-lg px-1.5 py-1.5 text-xs font-semibold transition-colors',
+                            assignedBoat === boat && !boatMixed
+                              ? 'bg-teal-800 text-white'
+                              : 'bg-teal-50 text-teal-800 hover:bg-teal-100',
+                          )}
+                        >
+                          {boat}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  <p className="mt-1 truncate text-sm text-teal-900/55">{zone}</p>
-                  <p className="mt-0.5 text-xs text-teal-900/40">
-                    {items.length} booking{items.length === 1 ? '' : 's'} · Open details →
-                  </p>
-                </button>
+                </div>
               ))}
               {unassignedPax > 0 ? (
                 <Surface className="border-dashed border-amber-300/60 bg-amber-50/40 p-4">
-                  <p className="text-sm font-semibold text-teal-950">Unassigned</p>
+                  <p className="text-sm font-semibold text-teal-950">Unassigned vans</p>
                   <p className="mt-1 text-sm text-teal-900/55">{unassignedPax} pax waiting</p>
                 </Surface>
               ) : null}
             </div>
+          ) : null}
+
+          {byVan.length > 0 || boatAssignedCount > 0 ? (
+            <Surface className="p-4 sm:p-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold tracking-[0.14em] text-teal-700/55 uppercase">
+                    Step 2 · Boats
+                  </p>
+                  <h3 className="mt-1 text-lg font-semibold text-teal-950">
+                    Assign vans to boats
+                  </h3>
+                  <p className="mt-1 text-sm text-teal-900/55">
+                    Tap a boat number on each van above, or auto-assign so each van stays together.
+                    Default {DEFAULT_BOAT_CAPACITY} pax per boat.
+                    {noTransferBookings.length > 0
+                      ? ` ${noTransferBookings.length} no-transfer booking${noTransferBookings.length === 1 ? '' : 's'} — use จัดการเรือ to place them freely.`
+                      : ''}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={onClearBoats}>
+                    Clear boats
+                  </Button>
+                  <Button type="button" size="sm" onClick={onAutoAssignBoats}>
+                    <Sparkles data-icon="inline-start" />
+                    Auto-assign boats
+                  </Button>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                {byBoat.map(({ boat, capacity: boatCap, pax, items, over }) => (
+                  <div
+                    key={boat}
+                    className={cn(
+                      'rounded-xl border px-3 py-3',
+                      over
+                        ? 'border-amber-400 bg-amber-50/50'
+                        : 'border-teal-900/8 bg-teal-950/[0.02]',
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-teal-950">Boat {boat}</p>
+                      <span
+                        className={cn(
+                          'rounded-md px-2 py-0.5 text-xs font-semibold tabular-nums',
+                          over ? 'bg-amber-100 text-amber-900' : 'bg-white text-teal-800',
+                        )}
+                      >
+                        {pax}/{boatCap}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-teal-900/50">
+                      {items.length} booking{items.length === 1 ? '' : 's'}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              {boatUnassignedPax > 0 ? (
+                <p className="mt-3 text-sm text-amber-900/80">
+                  {boatUnassignedPax} pax not on a boat yet — assign remaining vans or use
+                  Auto-assign boats.
+                </p>
+              ) : boatAssignedCount > 0 ? (
+                <p className="mt-3 text-sm text-teal-800/70">All transfer bookings are on a boat.</p>
+              ) : null}
+            </Surface>
           ) : null}
 
           <Surface className="overflow-hidden">
@@ -499,7 +704,8 @@ function VehicleBoard({
                 <div className="min-w-0">
                   <h3 className="text-lg font-semibold text-teal-950">Booking sheet</h3>
                   <p className="mt-0.5 text-sm text-teal-900/55">
-                    Search this day only — guest, agent, hotel, or code — then change van.
+                    Select several bookings, then assign them to one van together — or change van
+                    one by one.
                   </p>
                 </div>
                 <div className="relative w-full sm:max-w-xs">
@@ -518,15 +724,85 @@ function VehicleBoard({
                   Showing {sheetRows.length} of {sorted.length} on {formatShortDate(date)}
                 </p>
               ) : null}
+              {selectedList.length > 0 ? (
+                <div className="mt-3 flex flex-col gap-2 rounded-xl border border-teal-700/20 bg-teal-50/70 px-3 py-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+                  <p className="text-sm font-medium text-teal-950">
+                    {selectedList.length} selected · {selectedPax} pax
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="flex items-center gap-1.5 text-sm text-teal-900/70">
+                      <span className="whitespace-nowrap">Assign to van</span>
+                      <select
+                        value={bulkVan}
+                        onChange={(event) => setBulkVan(event.target.value)}
+                        className="h-8 w-[4.5rem] rounded-lg border border-teal-900/12 bg-white px-2 text-sm font-medium text-teal-950 outline-none focus:border-teal-700/40"
+                        aria-label="Van for selected bookings"
+                      >
+                        <option value="">—</option>
+                        {vanOptions.map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-8"
+                      disabled={!bulkVan}
+                      onClick={() => applyBulkVan(Number(bulkVan))}
+                    >
+                      Assign
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8"
+                      onClick={() => applyBulkVan(null)}
+                    >
+                      Unassign
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8"
+                      onClick={() => {
+                        setSelectedCodes(new Set())
+                        setBulkVan('')
+                      }}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
             </div>
             <Table className="text-[13px]">
               <TableHeader>
                 <TableRow className="bg-teal-950/[0.03] hover:bg-teal-950/[0.03]">
-                  <TableHead className="sticky left-0 z-10 bg-[#f7faf9] px-2 font-semibold text-teal-900/70">
+                  <TableHead className="sticky left-0 z-10 w-10 bg-[#f7faf9] px-2">
+                    <input
+                      type="checkbox"
+                      className="size-4 rounded border-teal-900/25 accent-teal-700"
+                      checked={allVisibleSelected}
+                      ref={(el) => {
+                        if (!el) return
+                        el.indeterminate =
+                          selectedList.length > 0 && !allVisibleSelected
+                      }}
+                      onChange={toggleSelectAllVisible}
+                      aria-label="Select all visible bookings"
+                      disabled={selectableSheetRows.length === 0}
+                    />
+                  </TableHead>
+                  <TableHead className="bg-[#f7faf9] px-2 font-semibold text-teal-900/70">
                     Code
                   </TableHead>
-                  <TableHead className="px-2 font-semibold text-teal-900/70">Lead guest</TableHead>
-                  <TableHead className="px-2 font-semibold text-teal-900/70">Agent ref</TableHead>
+                  <TableHead className="px-2 font-semibold text-teal-900/70">Guest name</TableHead>
+                  <TableHead className="px-2 font-semibold text-teal-900/70">Voucher number</TableHead>
                   <TableHead className="w-10 px-1 text-center font-semibold text-teal-900/70">
                     AD
                   </TableHead>
@@ -555,7 +831,10 @@ function VehicleBoard({
               <TableBody>
                 {sheetRows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={14} className="px-4 py-10 text-center text-sm text-teal-900/45">
+                    <TableCell
+                      colSpan={15}
+                      className="px-4 py-10 text-center text-sm text-teal-900/45"
+                    >
                       No bookings match “{sheetQuery.trim()}” on this day.
                     </TableCell>
                   </TableRow>
@@ -567,16 +846,33 @@ function VehicleBoard({
                   const oversized = pax > capacity
                   const split = (legs?.length ?? 0) > 1
                   const needsSplit = oversized && !split
+                  const checked = selectedCodes.has(booking.code)
                   return (
                     <TableRow
                       key={booking.code}
                       className={cn(
                         'hover:bg-teal-50/40',
-                        !legs?.length && !needsSplit && 'bg-amber-50/30',
+                        checked && 'bg-teal-50/80',
+                        !legs?.length && !needsSplit && !checked && 'bg-amber-50/30',
                         needsSplit && 'bg-amber-100/80 ring-1 ring-inset ring-amber-300/70',
                       )}
                     >
-                      <TableCell className="sticky left-0 z-10 bg-inherit px-2 font-mono text-xs text-teal-900/70">
+                      <TableCell className="sticky left-0 z-10 bg-inherit px-2">
+                        <input
+                          type="checkbox"
+                          className="size-4 rounded border-teal-900/25 accent-teal-700"
+                          checked={checked}
+                          disabled={needsSplit}
+                          onChange={() => toggleCode(booking.code)}
+                          aria-label={`Select ${booking.leadGuest}`}
+                          title={
+                            needsSplit
+                              ? 'Use Separate Van for oversized bookings'
+                              : undefined
+                          }
+                        />
+                      </TableCell>
+                      <TableCell className="bg-inherit px-2 font-mono text-xs text-teal-900/70">
                         {booking.code}
                       </TableCell>
                       <TableCell className="whitespace-nowrap px-2 font-medium text-teal-950">
@@ -1126,8 +1422,8 @@ function VanPrintSheet({
           <tr className="border-b-2 border-neutral-800 text-left">
             <th className="py-1 pr-1 font-semibold">#</th>
             <th className="py-1 pr-1 font-semibold">Code</th>
-            <th className="py-1 pr-1 font-semibold">Lead guest</th>
-            <th className="py-1 pr-1 font-semibold">Agent ref</th>
+            <th className="py-1 pr-1 font-semibold">Guest name</th>
+            <th className="py-1 pr-1 font-semibold">Voucher number</th>
             <th className="py-1 pr-1 text-center font-semibold">Pax</th>
             <th className="py-1 pr-1 font-semibold">AD+CH+IF+TL</th>
             <th className="py-1 pr-1 font-semibold">Hotel</th>

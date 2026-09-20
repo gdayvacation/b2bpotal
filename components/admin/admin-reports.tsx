@@ -51,7 +51,7 @@ import {
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
-type ReportMode = 'bookings' | 'job-order'
+type ReportMode = 'bookings' | 'job-order-ops' | 'job-order-agent'
 type ProgramFilter = 'all' | Program
 type SortKey = 'pickup' | 'zone' | 'agent' | 'code' | 'guest'
 
@@ -60,7 +60,7 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: 'zone', label: 'Pickup zone' },
   { value: 'agent', label: 'Agent' },
   { value: 'code', label: 'Booking code' },
-  { value: 'guest', label: 'Lead guest' },
+  { value: 'guest', label: 'Guest name' },
 ]
 
 export function AdminReports() {
@@ -71,10 +71,10 @@ export function AdminReports() {
       <div className="mx-auto max-w-7xl">
         <PageHeader
           title="Report"
-          description="Choose a report type. Booking exports for partners, or a daily job order for ops."
+          description="Booking exports for partners, OP job order by van, or agent job order sorted by agency."
         />
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <ModeCard
             title="Booking report"
             subtitle="Filter by date, program, and agent — then print or download CSV / Excel."
@@ -82,14 +82,29 @@ export function AdminReports() {
             icon={<FileText className="size-7" />}
             onClick={() => setMode('bookings')}
           />
-          <DailyJobOrderModeCard onClick={() => setMode('job-order')} />
+          <DailyJobOrderModeCard
+            title="OP Job Order"
+            meta="For operations"
+            subtitle="Day sheet grouped by van with driver and plate — for ops / drivers."
+            onClick={() => setMode('job-order-ops')}
+          />
+          <DailyJobOrderModeCard
+            title="Agent Job Order"
+            meta="For partners"
+            subtitle="Same bookings sorted by agency, with van number for each pickup — print and send per agent."
+            onClick={() => setMode('job-order-agent')}
+          />
         </div>
       </div>
     )
   }
 
-  if (mode === 'job-order') {
-    return <AdminDailyJobOrder onBack={() => setMode(null)} />
+  if (mode === 'job-order-ops') {
+    return <AdminDailyJobOrder audience="ops" onBack={() => setMode(null)} />
+  }
+
+  if (mode === 'job-order-agent') {
+    return <AdminDailyJobOrder audience="agent" onBack={() => setMode(null)} />
   }
 
   return <BookingReport onBack={() => setMode(null)} />

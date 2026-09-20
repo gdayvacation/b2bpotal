@@ -453,7 +453,7 @@ export function AdminBookings() {
                   New Booking
                 </Segment>
                 <Segment active={quick === 'today'} onClick={applyToday}>
-                  Today Booking
+                  Travel today
                 </Segment>
               </SegmentedControl>
 
@@ -589,8 +589,8 @@ export function AdminBookings() {
                   >
                     Agent
                   </SortableHead>
-                  <TableHead className="text-teal-800/50">Agent Ref</TableHead>
-                  <TableHead className="text-teal-800/50">Lead Guest</TableHead>
+                  <TableHead className="text-teal-800/50">Voucher Number</TableHead>
+                  <TableHead className="text-teal-800/50">Guest Name</TableHead>
                   <TableHead className="text-teal-800/50">Total Pax</TableHead>
                   <SortableHead
                     column="zone"

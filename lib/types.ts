@@ -80,7 +80,7 @@ export type Booking = {
   code: string
   agentSlug: string
   agentName: string
-  /** Partner’s own reference / voucher number (optional). */
+  /** Partner voucher number (optional). */
   agentRef: string
   program: Program
   date: string
@@ -126,8 +126,8 @@ export function bookingClosureKey(date: string, program: Program) {
 }
 
 /** Default daily seats when a date has no override stored. */
-export const DEFAULT_PP_CAPACITY = 60
-export const DEFAULT_JB_CAPACITY = 20
+export const DEFAULT_PP_CAPACITY = 44
+export const DEFAULT_JB_CAPACITY = 40
 
 /** Boat assignment for a single departure day + program. */
 export type BoatNumber = 1 | 2 | 3
@@ -135,13 +135,13 @@ export type BoatNumber = 1 | 2 | 3
 export type DayBoatPlan = {
   date: string
   program: Program
-  /** Seats per boat — admin can raise/lower from the ~20–30 default. */
+  /** Seats per boat — admin can raise/lower from the ~44 default. */
   capacities: [number, number, number]
   /** booking code → boat number */
   assignments: Record<string, BoatNumber>
 }
 
-export const DEFAULT_BOAT_CAPACITY = 25
+export const DEFAULT_BOAT_CAPACITY = 44
 export const BOAT_NUMBERS: BoatNumber[] = [1, 2, 3]
 
 export function dayBoatPlanKey(date: string, program: Program) {

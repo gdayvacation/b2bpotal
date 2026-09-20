@@ -136,8 +136,8 @@ for each row execute function public.set_updated_at();
 -- -----------------------------------------------------------------------------
 create table if not exists public.availability (
   date date primary key,
-  pp_capacity int not null default 60 check (pp_capacity >= 0),
-  james_bond_capacity int not null default 20 check (james_bond_capacity >= 0),
+  pp_capacity int not null default 44 check (pp_capacity >= 0),
+  james_bond_capacity int not null default 40 check (james_bond_capacity >= 0),
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );
@@ -153,9 +153,9 @@ for each row execute function public.set_updated_at();
 create table if not exists public.day_boat_plans (
   date date not null,
   program text not null check (program in ('PP', 'James Bond')),
-  capacity_1 int not null default 25 check (capacity_1 >= 1),
-  capacity_2 int not null default 25 check (capacity_2 >= 1),
-  capacity_3 int not null default 25 check (capacity_3 >= 1),
+  capacity_1 int not null default 44 check (capacity_1 >= 1),
+  capacity_2 int not null default 44 check (capacity_2 >= 1),
+  capacity_3 int not null default 44 check (capacity_3 >= 1),
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now()),
   primary key (date, program)

@@ -110,7 +110,7 @@ export function VoucherView({ booking, slug }: { booking: Booking; slug: string 
               label="Tour date"
               value={formatLongDate(live.date)}
             />
-            <HeroFact label="Lead guest" value={live.leadGuest} />
+            <HeroFact label="Guest name" value={live.leadGuest} />
             <HeroFact
               label="Passengers"
               value={`${formatPaxBreakdown(live)} · ${total}`}
@@ -160,7 +160,7 @@ export function VoucherView({ booking, slug }: { booking: Booking; slug: string 
               <DetailCell label="Park fee" value={live.parkFee} />
               <DetailCell label="Canoe" value={live.canoe ?? '—'} />
               <DetailCell
-                label="Agent ref"
+                label="Voucher number"
                 value={live.agentRef || '—'}
                 className="col-span-2 sm:col-span-1"
               />

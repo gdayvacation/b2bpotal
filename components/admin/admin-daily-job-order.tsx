@@ -47,16 +47,95 @@ type VanGroup = {
 }
 
 type PickupSortDir = 'asc' | 'desc'
+type JobAudience = 'ops' | 'agent'
 
-export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
+type AgentJobRow = {
+  no: number
+  booking: Booking
+  vanLabel: string
+  driver: string
+  plate: string
+  phone: string
+  /** Display cash on tour (booking value or mock preview). */
+  cashOnTour: string
+}
+
+type AgentGroup = {
+  id: string
+  agentSlug: string
+  agentName: string
+  rows: AgentJobRow[]
+  totals: { adults: number; children: number; infants: number; tourLeaders: number; pax: number }
+}
+
+const MOCK_VAN_CREW = [
+  { driver: 'Somchai Jaidee', plate: 'กข 1234 Phuket', phone: '081-234-5678' },
+  { driver: 'Nattapong Srisuk', plate: 'ขค 5678 Phuket', phone: '089-111-2233' },
+  { driver: 'Wichai Thongdi', plate: 'งจ 9012 Phuket', phone: '086-555-7788' },
+  { driver: 'Anan Chaiyaphum', plate: 'ฉช 3456 Phuket', phone: '082-999-0011' },
+  { driver: 'Preecha Boonmee', plate: 'ฐฑ 7890 Phuket', phone: '088-444-5566' },
+] as const
+
+const MOCK_CASH_SAMPLES = ['1,500 THB', '2,000 THB', '900 THB', '3,200 THB', '1,800 THB'] as const
+
+function mockCrewForVan(van: number | null) {
+  if (van === null || van < 1) {
+    return { driver: '—', plate: '—', phone: '—' }
+  }
+  return MOCK_VAN_CREW[(van - 1) % MOCK_VAN_CREW.length]
+}
+
+function displayVanCrew(group: VanGroup) {
+  const mock = mockCrewForVan(group.van)
+  if (group.van === null) {
+    return { driver: '—', plate: '—', phone: '—' }
+  }
+  return {
+    driver: group.driver.trim() || mock.driver,
+    plate: group.plate.trim() || mock.plate,
+    phone: group.phone.trim() || mock.phone,
+  }
+}
+
+function displayCashOnTour(booking: Booking, index: number) {
+  const real = booking.cashOnTour?.trim() ?? ''
+  if (real) return real
+  // Preview mock so empty COT cells are visible while testing.
+  if (index % 3 === 0) return MOCK_CASH_SAMPLES[index % MOCK_CASH_SAMPLES.length]
+  return ''
+}
+
+/** rowspan for Detail: merge consecutive rows that share the same van. */
+function detailRowSpans(rows: AgentJobRow[]): number[] {
+  const spans = Array.from({ length: rows.length }, () => 0)
+  let i = 0
+  while (i < rows.length) {
+    const key = rows[i].vanLabel
+    let end = i + 1
+    while (end < rows.length && rows[end].vanLabel === key) end += 1
+    spans[i] = end - i
+    i = end
+  }
+  return spans
+}
+
+export function AdminDailyJobOrder({
+  onBack,
+  audience = 'ops',
+}: {
+  onBack: () => void
+  audience?: JobAudience
+}) {
   const { bookings, getDayVehiclePlan, resolveVanMeta } = usePortal()
   const [selectedDate, setSelectedDate] = useState(() => todayISO())
   const [program, setProgram] = useState<Program | null>(null)
   const [calendarOpen, setCalendarOpen] = useState(false)
   const [pickupSortDir, setPickupSortDir] = useState<PickupSortDir>('asc')
   const [editVan, setEditVan] = useState<number | null>(null)
+  const [agentFilter, setAgentFilter] = useState<string>('all')
 
   const selectedDateObj = new Date(`${selectedDate}T12:00:00`)
+  const isAgentView = audience === 'agent'
 
   const dayBookings = useMemo(
     () =>
@@ -69,10 +148,11 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
   const ppPax = ppDay.reduce((sum, b) => sum + totalPassengers(b), 0)
   const jbPax = jbDay.reduce((sum, b) => sum + totalPassengers(b), 0)
 
-  const { groups, usingMockAssignments, bookingCount, totals } = useMemo(() => {
+  const { groups, agentGroups, usingMockAssignments, bookingCount, totals } = useMemo(() => {
     if (!program) {
       return {
         groups: [] as VanGroup[],
+        agentGroups: [] as AgentGroup[],
         usingMockAssignments: false,
         bookingCount: 0,
         totals: { adults: 0, children: 0, infants: 0, tourLeaders: 0 },
@@ -87,6 +167,7 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
     const allRows = built.groups.flatMap((group) => group.rows)
     return {
       groups: built.groups,
+      agentGroups: buildAgentGroups(built.groups),
       usingMockAssignments: built.usingMockAssignments,
       bookingCount: allRows.length,
       totals: allRows.reduce(
@@ -102,7 +183,12 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
     }
   }, [dayBookings, getDayVehiclePlan, program, selectedDate, pickupSortDir, resolveVanMeta])
 
-  const jobNumber = program ? jobOrderNumber(selectedDate, program) : ''
+  const visibleAgentGroups = useMemo(() => {
+    if (agentFilter === 'all') return agentGroups
+    return agentGroups.filter((group) => group.agentSlug === agentFilter)
+  }, [agentGroups, agentFilter])
+
+  const jobNumber = program ? jobOrderNumber(selectedDate, program, isAgentView) : ''
   const programLabel =
     program === 'PP' ? 'PP · Phi Phi Islands' : program === 'James Bond' ? 'James Bond · Phang Nga Bay' : ''
 
@@ -110,6 +196,7 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
     if (!date) return
     setSelectedDate(toISODate(date))
     setProgram(null)
+    setAgentFilter('all')
     setCalendarOpen(false)
   }
 
@@ -117,7 +204,8 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
     if (!program) return
     const previousTitle = document.title
     const programTag = program === 'PP' ? 'PP' : 'JB'
-    document.title = `${programTag} JobOrder ${formatShortDate(selectedDate)}`
+    const kind = isAgentView ? 'AgentJO' : 'JobOrder'
+    document.title = `${programTag} ${kind} ${formatShortDate(selectedDate)}`
     let restored = false
     const restoreTitle = () => {
       if (restored) return
@@ -141,11 +229,21 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
         </div>
 
         <PageHeader
-          title="Daily Job Order"
-          description="Pick a date and program, then print the ops day sheet grouped by van with driver details."
+          title={isAgentView ? 'Agent Job Order' : 'OP Job Order'}
+          description={
+            isAgentView
+              ? 'Grouped by agency with van number for each pickup — filter one agent, then print to send.'
+              : 'Pick a date and program, then print the ops day sheet grouped by van with driver details.'
+          }
           actions={
             program ? (
-              <Button type="button" onClick={handlePrint} disabled={bookingCount === 0}>
+              <Button
+                type="button"
+                onClick={handlePrint}
+                disabled={
+                  bookingCount === 0 || (isAgentView && visibleAgentGroups.length === 0)
+                }
+              >
                 <Printer data-icon="inline-start" />
                 Print A4 landscape
               </Button>
@@ -160,7 +258,10 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
               variant="ghost"
               size="sm"
               className="gap-1.5"
-              onClick={() => setProgram(null)}
+              onClick={() => {
+                setProgram(null)
+                setAgentFilter('all')
+              }}
             >
               <ArrowLeft className="size-3.5" />
               Choose program
@@ -204,6 +305,7 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
                       onClick={() => {
                         setSelectedDate(todayISO())
                         setProgram(null)
+                        setAgentFilter('all')
                       }}
                     >
                       Today
@@ -236,7 +338,7 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
           </>
         ) : null}
 
-        {program ? (
+        {program && !isAgentView ? (
           <>
             <Surface className="mb-5 p-4 sm:p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -292,22 +394,87 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
               )}
             </Surface>
 
-            {program ? (
-              <EditVanDetailsDialog
-                open={editVan !== null}
-                onOpenChange={(open) => {
-                  if (!open) setEditVan(null)
-                }}
-                date={selectedDate}
-                program={program}
-                van={editVan}
-              />
-            ) : null}
+            <EditVanDetailsDialog
+              open={editVan !== null}
+              onOpenChange={(open) => {
+                if (!open) setEditVan(null)
+              }}
+              date={selectedDate}
+              program={program}
+              van={editVan}
+            />
+          </>
+        ) : null}
+
+        {program && isAgentView ? (
+          <>
+            <Surface className="mb-5 p-4 sm:p-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <p className="text-xs font-semibold tracking-[0.14em] text-teal-700/55 uppercase">
+                    {formatLongDate(selectedDate)}
+                  </p>
+                  <p className="mt-1 font-display text-2xl font-semibold text-teal-950">
+                    {programLabel}
+                  </p>
+                  <p className="mt-1.5 text-sm text-teal-900/55">
+                    <span className="font-semibold text-teal-950">{bookingCount}</span> booking
+                    {bookingCount === 1 ? '' : 's'} · {agentGroups.length} agent
+                    {agentGroups.length === 1 ? '' : 's'} · Job {jobNumber}
+                  </p>
+                </div>
+                <div className="space-y-1.5 sm:min-w-[16rem]">
+                  <SoftLabel>Filter agent</SoftLabel>
+                  <select
+                    value={agentFilter}
+                    onChange={(event) => setAgentFilter(event.target.value)}
+                    className="h-10 w-full rounded-xl border border-teal-900/12 bg-white px-3 text-sm font-medium text-teal-950 outline-none focus:border-teal-700/40"
+                    aria-label="Filter by agent"
+                  >
+                    <option value="all">All agents</option>
+                    {agentGroups.map((group) => (
+                      <option key={group.agentSlug} value={group.agentSlug}>
+                        {group.agentName} ({group.rows.length})
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-teal-800/55 sm:text-right">
+                    Print uses this filter — choose one agent to send their sheet only.
+                  </p>
+                </div>
+              </div>
+            </Surface>
+
+            {bookingCount === 0 ? (
+              <Surface className="overflow-hidden">
+                <EmptyState>No active bookings for this program on this date.</EmptyState>
+              </Surface>
+            ) : visibleAgentGroups.length === 0 ? (
+              <Surface className="overflow-hidden">
+                <EmptyState>No bookings for this agent.</EmptyState>
+              </Surface>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+                  <div>
+                    <p className="text-sm font-semibold text-teal-950">Preview</p>
+                    <p className="text-xs text-teal-900/45">{programLabel} · one card per agency</p>
+                  </div>
+                  <p className="text-xs font-medium text-teal-800/55">
+                    Showing {visibleAgentGroups.length} of {agentGroups.length} agent
+                    {agentGroups.length === 1 ? '' : 's'}
+                  </p>
+                </div>
+                {visibleAgentGroups.map((group) => (
+                  <AgentGroupSection key={group.id} group={group} />
+                ))}
+              </div>
+            )}
           </>
         ) : null}
       </div>
 
-      {program ? (
+      {program && !isAgentView ? (
         <JobOrderPrintSheet
           date={selectedDate}
           program={program}
@@ -315,6 +482,17 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
           jobNumber={jobNumber}
           groups={groups}
           totals={totals}
+          usingMockAssignments={usingMockAssignments}
+        />
+      ) : null}
+
+      {program && isAgentView ? (
+        <AgentJobOrderPrintSheet
+          date={selectedDate}
+          program={program}
+          programLabel={programLabel}
+          jobNumber={jobNumber}
+          groups={visibleAgentGroups}
           usingMockAssignments={usingMockAssignments}
         />
       ) : null}
@@ -370,6 +548,14 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
           .job-order-van-card--tall tr {
             break-inside: avoid;
             page-break-inside: avoid;
+          }
+          .job-order-agent-card {
+            break-before: page;
+            page-break-before: always;
+          }
+          .job-order-agent-card:first-child {
+            break-before: auto;
+            page-break-before: auto;
           }
           .job-order-print-footer {
             break-inside: avoid;
@@ -546,6 +732,321 @@ function VanGroupSection({
           </TableBody>
         </Table>
       </div>
+    </div>
+  )
+}
+
+function AgentGroupSection({ group }: { group: AgentGroup }) {
+  const detailSpans = detailRowSpans(group.rows)
+
+  return (
+    <Surface className="overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-900/10 bg-gradient-to-r from-teal-50/90 to-white px-4 py-3.5 sm:px-5">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold tracking-[0.14em] text-teal-700/55 uppercase">
+            Agency
+          </p>
+          <p className="mt-0.5 text-base font-semibold text-teal-950">{group.agentName}</p>
+        </div>
+        <div className="rounded-full border border-teal-900/10 bg-white/80 px-3 py-1 text-xs font-medium tabular-nums text-teal-800/70">
+          {group.rows.length} booking{group.rows.length === 1 ? '' : 's'} · {group.totals.pax} pax
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <Table className="table-fixed">
+          <TableHeader>
+            <TableRow className="border-b border-teal-900/15 bg-teal-950/[0.04] hover:bg-teal-950/[0.04]">
+              <TableHead className="w-9 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                No.
+              </TableHead>
+              <TableHead className="w-[8.5rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                Guest name
+              </TableHead>
+              <TableHead className="w-[6.5rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                Voucher no.
+              </TableHead>
+              <TableHead className="w-7 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                AD
+              </TableHead>
+              <TableHead className="w-7 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                CHD
+              </TableHead>
+              <TableHead className="w-7 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                INF
+              </TableHead>
+              <TableHead className="w-7 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                TL
+              </TableHead>
+              <TableHead className="w-[5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                Zone
+              </TableHead>
+              <TableHead className="w-[4rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                P/U Time
+              </TableHead>
+              <TableHead className="w-[9rem] pr-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                Hotel
+              </TableHead>
+              <TableHead className="w-11 pl-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                Room
+              </TableHead>
+              <TableHead className="w-[7rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                COT
+              </TableHead>
+              <TableHead className="w-[11rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                Detail
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {group.rows.map(({ no, booking, vanLabel, driver, plate, phone, cashOnTour }, index) => {
+              const span = detailSpans[index]
+              let owningGroup = 0
+              {
+                let seen = 0
+                for (let i = 0; i <= index; i++) {
+                  if (detailSpans[i] > 0) owningGroup = seen++
+                }
+              }
+              const stripe = owningGroup % 2 === 0
+              return (
+                <TableRow
+                  key={`${group.agentSlug}-${booking.code}`}
+                  className={cn(
+                    stripe
+                      ? 'bg-teal-50/50 hover:bg-teal-50/70'
+                      : 'bg-stone-50/80 hover:bg-stone-100/70',
+                  )}
+                >
+                  <TableCell className="tabular-nums text-teal-900/55">{no}</TableCell>
+                  <TableCell>
+                    <div className="truncate font-medium" title={booking.leadGuest}>
+                      {booking.leadGuest}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <div className="truncate tabular-nums text-teal-950" title={booking.agentRef || undefined}>
+                      {booking.agentRef?.trim() || '—'}
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-0.5 text-center tabular-nums">{booking.adults || ''}</TableCell>
+                  <TableCell className="px-0.5 text-center tabular-nums">{booking.children || ''}</TableCell>
+                  <TableCell className="px-0.5 text-center tabular-nums">{booking.infants || ''}</TableCell>
+                  <TableCell className="px-0.5 text-center tabular-nums">
+                    {booking.tourLeaders || ''}
+                  </TableCell>
+                  <TableCell className="px-1 whitespace-nowrap text-teal-950">
+                    {booking.pickupZone}
+                  </TableCell>
+                  <TableCell className="px-1 whitespace-nowrap tabular-nums text-teal-950">
+                    {formatPickupTime(booking.pickupTime)}
+                  </TableCell>
+                  <TableCell className="pr-1">
+                    <div className="truncate" title={booking.pickupHotel}>
+                      {booking.pickupHotel || '—'}
+                    </div>
+                  </TableCell>
+                  <TableCell className="pl-1 whitespace-nowrap tabular-nums">
+                    {booking.roomNumber || ''}
+                  </TableCell>
+                  <TableCell>
+                    <div className="truncate font-medium text-teal-950" title={cashOnTour}>
+                      {cashOnTour || ''}
+                    </div>
+                  </TableCell>
+                  {span > 0 ? (
+                    <TableCell
+                      rowSpan={span}
+                      className={cn(
+                        'align-middle border-l border-teal-900/15 px-3 py-2.5',
+                        stripe ? 'bg-teal-50/50' : 'bg-stone-50/80',
+                      )}
+                    >
+                      {vanLabel.startsWith('Van') ? (
+                        <div className="space-y-1.5 text-sm leading-snug text-teal-900/80">
+                          <p>
+                            <span className="text-teal-900/50">Driver</span>{' '}
+                            <span className="font-semibold text-teal-950">{driver}</span>
+                          </p>
+                          <p>
+                            <span className="text-teal-900/50">Plate</span>{' '}
+                            <span className="font-semibold text-teal-950">{plate}</span>
+                          </p>
+                          <p>
+                            <span className="text-teal-900/50">Tel</span>{' '}
+                            <span className="font-semibold text-teal-950">{phone}</span>
+                          </p>
+                        </div>
+                      ) : (
+                        <span className="text-sm text-teal-900/40">—</span>
+                      )}
+                    </TableCell>
+                  ) : null}
+                </TableRow>
+              )
+            })}
+            <TableRow className="bg-teal-50/40 hover:bg-teal-50/40">
+              <TableCell colSpan={3} className="text-xs font-semibold text-teal-900/70">
+                Agent total
+              </TableCell>
+              <TableCell className="px-0.5 text-center tabular-nums text-xs font-semibold">
+                {group.totals.adults}
+              </TableCell>
+              <TableCell className="px-0.5 text-center tabular-nums text-xs font-semibold">
+                {group.totals.children}
+              </TableCell>
+              <TableCell className="px-0.5 text-center tabular-nums text-xs font-semibold">
+                {group.totals.infants}
+              </TableCell>
+              <TableCell className="px-0.5 text-center tabular-nums text-xs font-semibold">
+                {group.totals.tourLeaders}
+              </TableCell>
+              <TableCell colSpan={6} />
+            </TableRow>
+          </TableBody>
+        </Table>
+      </div>
+    </Surface>
+  )
+}
+
+function AgentJobOrderPrintSheet({
+  date,
+  program,
+  programLabel,
+  jobNumber,
+  groups,
+  usingMockAssignments,
+}: {
+  date: string
+  program: Program
+  programLabel: string
+  jobNumber: string
+  groups: AgentGroup[]
+  usingMockAssignments: boolean
+}) {
+  return (
+    <div className="job-order-print-sheet hidden print:block">
+      {groups.length === 0 ? (
+        <p className="text-sm text-neutral-500">No bookings to print.</p>
+      ) : (
+        groups.map((group) => {
+          const detailSpans = detailRowSpans(group.rows)
+          return (
+          <div key={group.id} className="job-order-agent-card mb-4">
+            <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2 border border-neutral-400 bg-neutral-100 px-2 py-1.5 text-[10px]">
+              <div>
+                <p className="text-sm font-semibold text-neutral-900">
+                  Agent Job Order · {program === 'PP' ? 'PP' : 'JB'} · {group.agentName}
+                </p>
+                <p className="mt-0.5 text-neutral-600">
+                  {formatLongDate(date)} · {programLabel} · Job {jobNumber}
+                  {usingMockAssignments ? ' · preview vans' : ''}
+                </p>
+              </div>
+              <p className="font-semibold tabular-nums text-neutral-700">
+                {group.rows.length} bookings · {group.totals.pax} pax
+              </p>
+            </div>
+
+            <table className="w-full border-collapse text-[9px]">
+              <thead>
+                <tr className="bg-neutral-100">
+                  <th className="w-7 border border-neutral-400 px-1 py-1 font-semibold">NO.</th>
+                  <th className="border border-neutral-400 px-1 py-1 font-semibold">GUEST</th>
+                  <th className="w-16 border border-neutral-400 px-1 py-1 font-semibold">
+                    VOUCHER
+                  </th>
+                  <th className="w-7 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
+                    AD
+                  </th>
+                  <th className="w-7 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
+                    CHD
+                  </th>
+                  <th className="w-7 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
+                    INF
+                  </th>
+                  <th className="w-7 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
+                    TL
+                  </th>
+                  <th className="w-14 border border-neutral-400 px-0.5 py-1 font-semibold">ZONE</th>
+                  <th className="w-12 border border-neutral-400 px-0.5 py-1 font-semibold">
+                    P/U TIME
+                  </th>
+                  <th className="border border-neutral-400 px-1 py-1 font-semibold">HOTEL</th>
+                  <th className="w-10 border border-neutral-400 px-0.5 py-1 font-semibold">ROOM</th>
+                  <th className="w-14 border border-neutral-400 px-1 py-1 font-semibold">COT</th>
+                  <th className="border border-neutral-400 px-1 py-1 font-semibold">DETAIL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {group.rows.map(({ no, booking, vanLabel, driver, plate, phone, cashOnTour }, index) => {
+                  const span = detailSpans[index]
+                  return (
+                  <tr key={`${group.agentSlug}-${booking.code}`}>
+                    <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
+                      {no}
+                    </td>
+                    <td className="border border-neutral-400 px-1 py-0.5">{booking.leadGuest}</td>
+                    <td className="border border-neutral-400 px-1 py-0.5 tabular-nums">
+                      {booking.agentRef?.trim() || '—'}
+                    </td>
+                    <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
+                      {blankIfZero(booking.adults)}
+                    </td>
+                    <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
+                      {blankIfZero(booking.children)}
+                    </td>
+                    <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
+                      {blankIfZero(booking.infants)}
+                    </td>
+                    <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
+                      {blankIfZero(booking.tourLeaders)}
+                    </td>
+                    <td className="border border-neutral-400 px-1 py-0.5">{booking.pickupZone}</td>
+                    <td className="border border-neutral-400 px-1 py-0.5 tabular-nums">
+                      {formatPickupTime(booking.pickupTime)}
+                    </td>
+                    <td className="border border-neutral-400 px-1 py-0.5">{booking.pickupHotel}</td>
+                    <td className="border border-neutral-400 px-1 py-0.5">{booking.roomNumber}</td>
+                    <td className="border border-neutral-400 px-1 py-0.5 font-medium">{cashOnTour}</td>
+                    {span > 0 ? (
+                      <td
+                        rowSpan={span}
+                        className="border border-neutral-400 px-1 py-0.5 align-middle"
+                      >
+                        {vanLabel.startsWith('Van')
+                          ? `${driver} · ${plate} · ${phone}`
+                          : '—'}
+                      </td>
+                    ) : null}
+                  </tr>
+                  )
+                })}
+                <tr className="bg-neutral-50 font-semibold">
+                  <td className="border border-neutral-400 px-1 py-1" colSpan={3}>
+                    AGENT TOTAL
+                  </td>
+                  <td className="border border-neutral-400 px-1 py-1 text-center tabular-nums">
+                    {group.totals.adults}
+                  </td>
+                  <td className="border border-neutral-400 px-1 py-1 text-center tabular-nums">
+                    {group.totals.children}
+                  </td>
+                  <td className="border border-neutral-400 px-1 py-1 text-center tabular-nums">
+                    {group.totals.infants}
+                  </td>
+                  <td className="border border-neutral-400 px-1 py-1 text-center tabular-nums">
+                    {group.totals.tourLeaders}
+                  </td>
+                  <td className="border border-neutral-400 px-1 py-1" colSpan={6} />
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          )
+        })
+      )}
     </div>
   )
 }
@@ -800,7 +1301,17 @@ function JobOrderPrintSheet({
   )
 }
 
-export function DailyJobOrderModeCard({ onClick }: { onClick: () => void }) {
+export function DailyJobOrderModeCard({
+  onClick,
+  title = 'OP Job Order',
+  subtitle = 'Ops day sheet grouped by van with driver details.',
+  meta = 'For operations',
+}: {
+  onClick: () => void
+  title?: string
+  subtitle?: string
+  meta?: string
+}) {
   return (
     <button
       type="button"
@@ -812,18 +1323,86 @@ export function DailyJobOrderModeCard({ onClick }: { onClick: () => void }) {
           <ClipboardList className="size-7" />
         </div>
         <p className="rounded-lg bg-teal-950/[0.05] px-2.5 py-1 text-[11px] font-semibold text-teal-800/70">
-          Ops day sheet
+          {meta}
         </p>
       </div>
       <p className="font-display mt-6 text-2xl font-semibold tracking-tight text-teal-950 sm:text-3xl">
-        Daily Job Order
+        {title}
       </p>
-      <p className="mt-2 text-base leading-relaxed text-teal-900/55">
-        Separate Phi Phi and James Bond day sheets grouped by van with driver details.
-      </p>
+      <p className="mt-2 text-base leading-relaxed text-teal-900/55">{subtitle}</p>
       <p className="mt-6 text-base font-semibold text-teal-800">Continue →</p>
     </button>
   )
+}
+
+function buildAgentGroups(vanGroups: VanGroup[]): AgentGroup[] {
+  const vanInfoByCode = new Map<
+    string,
+    { label: string; driver: string; plate: string; phone: string }
+  >()
+  for (const group of vanGroups) {
+    const label =
+      group.van !== null
+        ? `Van ${group.van}`
+        : group.id === 'no-transfer'
+          ? 'No transfer'
+          : '—'
+    const crew = displayVanCrew(group)
+    for (const row of group.rows) {
+      vanInfoByCode.set(row.booking.code, {
+        label,
+        driver: crew.driver,
+        plate: crew.plate,
+        phone: crew.phone,
+      })
+    }
+  }
+
+  const byAgent = new Map<string, { name: string; bookings: Booking[] }>()
+  for (const group of vanGroups) {
+    for (const { booking } of group.rows) {
+      const key = booking.agentSlug || booking.agentName
+      const existing = byAgent.get(key)
+      if (existing) existing.bookings.push(booking)
+      else byAgent.set(key, { name: booking.agentName, bookings: [booking] })
+    }
+  }
+
+  return [...byAgent.entries()]
+    .sort((a, b) => a[1].name.localeCompare(b[1].name) || a[0].localeCompare(b[0]))
+    .map(([slug, { name, bookings }]) => {
+      const sorted = bookings.slice().sort((a, b) => {
+        const vanA = vanInfoByCode.get(a.code)?.label ?? ''
+        const vanB = vanInfoByCode.get(b.code)?.label ?? ''
+        const byVan = vanA.localeCompare(vanB)
+        if (byVan !== 0) return byVan
+        return compareJobOrder(a, b, 'asc')
+      })
+      return {
+        id: slug,
+        agentSlug: slug,
+        agentName: name,
+        rows: sorted.map((booking, index) => {
+          const info = vanInfoByCode.get(booking.code)
+          return {
+            no: index + 1,
+            booking,
+            vanLabel: info?.label ?? '—',
+            driver: info?.driver ?? '—',
+            plate: info?.plate ?? '—',
+            phone: info?.phone ?? '—',
+            cashOnTour: displayCashOnTour(booking, index),
+          }
+        }),
+        totals: {
+          adults: sorted.reduce((sum, b) => sum + b.adults, 0),
+          children: sorted.reduce((sum, b) => sum + b.children, 0),
+          infants: sorted.reduce((sum, b) => sum + b.infants, 0),
+          tourLeaders: sorted.reduce((sum, b) => sum + b.tourLeaders, 0),
+          pax: sorted.reduce((sum, b) => sum + totalPassengers(b), 0),
+        },
+      }
+    })
 }
 
 function buildVanGroups(
@@ -968,10 +1547,11 @@ function blankIfZero(value: number) {
   return value > 0 ? value : ''
 }
 
-function jobOrderNumber(date: string, program: Program) {
+function jobOrderNumber(date: string, program: Program, agentView = false) {
   const compact = date.replaceAll('-', '').slice(2)
   const suffix = program === 'PP' ? 'PP' : 'JB'
-  return `JO-${compact}-${suffix}`
+  const prefix = agentView ? 'AJO' : 'JO'
+  return `${prefix}-${compact}-${suffix}`
 }
 
 function formatPickupTime(time: string) {
