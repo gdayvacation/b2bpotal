@@ -97,6 +97,8 @@ export type Booking = {
   roomNumber: string
   /** Free-text note for ops / pickup (optional). */
   note: string
+  /** Cash to collect on tour — amount or note (optional). */
+  cashOnTour: string
   /**
    * Snapshot of hotel Extra Charge Transfer note at booking time
    * (typically for Other-zone hotels). Shown on voucher.
@@ -167,8 +169,18 @@ export type VanSplit = {
 export type VanMeta = {
   /** Vehicle plate / fleet number for ops. */
   plate: string
-  /** Driver name or ID for ops. */
+  /** Driver name for ops. */
   driver: string
+  /** Driver telephone. */
+  phone: string
+}
+
+/** Remembered van roster — reused across days when day meta is empty. */
+export type FleetVan = {
+  vanNumber: number
+  plate: string
+  driver: string
+  phone: string
 }
 
 export type DayVehiclePlan = {
@@ -197,7 +209,7 @@ export function emptyDayVehiclePlan(date: string, program: Program): DayVehicleP
 }
 
 export function emptyVanMeta(): VanMeta {
-  return { plate: '', driver: '' }
+  return { plate: '', driver: '', phone: '' }
 }
 
 export type NewBookingDraft = {
@@ -214,6 +226,7 @@ export type NewBookingDraft = {
   pickupHotel: string
   roomNumber: string
   note: string
+  cashOnTour: string
 }
 
 export function totalPassengers(booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>) {

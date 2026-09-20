@@ -16,7 +16,14 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { formatShortDate } from '@/lib/format'
-import { isNoTransfer, totalPassengers, type Booking, type BookingActor } from '@/lib/types'
+import {
+  isNoTransfer,
+  totalPassengers,
+  type Booking,
+  type BookingActor,
+  type IncludeOption,
+} from '@/lib/types'
+import { cn } from '@/lib/utils'
 
 export function EditBookingDialog({
   booking,
@@ -40,7 +47,10 @@ export function EditBookingDialog({
   const [pickupHotel, setPickupHotel] = useState('')
   const [roomNumber, setRoomNumber] = useState('')
   const [note, setNote] = useState('')
+  const [cashOnTour, setCashOnTour] = useState('')
   const [agentRef, setAgentRef] = useState('')
+  const [parkFee, setParkFee] = useState<IncludeOption>('Included')
+  const [canoe, setCanoe] = useState<IncludeOption>('Included')
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -53,11 +63,15 @@ export function EditBookingDialog({
     setPickupHotel(booking.pickupHotel)
     setRoomNumber(booking.roomNumber)
     setNote(booking.note)
+    setCashOnTour(booking.cashOnTour)
     setAgentRef(booking.agentRef)
+    setParkFee(booking.parkFee)
+    setCanoe(booking.canoe ?? 'Included')
     setError('')
   }, [open, booking])
 
   const pax = adults + children + infants + tourLeaders
+  const isJamesBond = booking?.program === 'James Bond'
   const seatsHint = useMemo(() => {
     if (!booking) return null
     const caps = getCapacity(booking.date)
@@ -82,7 +96,10 @@ export function EditBookingDialog({
         pickupHotel,
         roomNumber,
         note,
+        cashOnTour,
         agentRef,
+        parkFee,
+        canoe: booking.program === 'James Bond' ? canoe : null,
       },
       { bypassCutoff, actor },
     )
@@ -165,7 +182,22 @@ export function EditBookingDialog({
                 className="h-10"
               />
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-cash-on-tour">Cash on tour</Label>
+              <Input
+                id="edit-cash-on-tour"
+                value={cashOnTour}
+                onChange={(event) => setCashOnTour(event.target.value)}
+                className="h-10"
+                placeholder="e.g. 2,000 THB"
+              />
+            </div>
           </div>
+
+          <IncludeOptionGroup title="Park fee" value={parkFee} onChange={setParkFee} />
+          {isJamesBond ? (
+            <IncludeOptionGroup title="Canoe" value={canoe} onChange={setCanoe} />
+          ) : null}
 
           <div className="space-y-1.5">
             <Label htmlFor="edit-note">Note</Label>
@@ -190,6 +222,39 @@ export function EditBookingDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+function IncludeOptionGroup({
+  title,
+  value,
+  onChange,
+}: {
+  title: string
+  value: IncludeOption
+  onChange: (value: IncludeOption) => void
+}) {
+  return (
+    <div>
+      <p className="mb-2 text-sm font-medium">{title}</p>
+      <div className="grid grid-cols-2 gap-3">
+        {(['Included', 'Not Included'] as IncludeOption[]).map((option) => (
+          <button
+            key={option}
+            type="button"
+            onClick={() => onChange(option)}
+            className={cn(
+              'rounded-xl border px-4 py-3 text-sm font-medium transition-colors',
+              value === option
+                ? 'border-teal-800 bg-teal-800 text-white'
+                : 'border-teal-900/10 text-teal-900/65 hover:border-teal-700/30',
+            )}
+          >
+            {option}
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }
 

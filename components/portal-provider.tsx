@@ -40,6 +40,7 @@ import {
   upsertBookingCutoffs,
   upsertHotel,
   upsertZone,
+  upsertFleetVan,
 } from '@/lib/supabase/portal-db'
 import type {
   Agent,
@@ -54,6 +55,7 @@ import type {
   BookingEventType,
   DayBoatPlan,
   DayVehiclePlan,
+  FleetVan,
   Hotel,
   PickupZone,
   PickupZoneName,
@@ -88,6 +90,7 @@ type PortalContextValue = {
   availability: Availability[]
   dayBoatPlans: Record<string, DayBoatPlan>
   dayVehiclePlans: Record<string, DayVehiclePlan>
+  fleetVans: FleetVan[]
   bookingCutoffs: BookingCutoffSettings
   updateBookingCutoffs: (patch: Partial<BookingCutoffSettings>) => void
   bookingClosures: BookingClosure[]
@@ -129,6 +132,7 @@ type PortalContextValue = {
       pickupHotel?: string
       roomNumber?: string
       note?: string
+      cashOnTour?: string
       agentRef?: string
       parkFee?: Booking['parkFee']
       canoe?: Booking['canoe']
@@ -202,6 +206,8 @@ type PortalContextValue = {
     legs: VanSplit[],
   ) => void
   setVanMeta: (date: string, program: Program, van: number, meta: Partial<VanMeta>) => void
+  getFleetVan: (van: number) => FleetVan | null
+  resolveVanMeta: (van: number, dayMeta?: VanMeta | null) => VanMeta & { fromFleet: boolean; incomplete: boolean }
   autoAssignDayVans: (date: string, program: Program) => void
   clearDayVanAssignments: (date: string, program: Program) => void
 }
@@ -218,6 +224,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [availability, setAvailability] = useState<Availability[]>([])
   const [dayBoatPlans, setDayBoatPlans] = useState<Record<string, DayBoatPlan>>({})
   const [dayVehiclePlans, setDayVehiclePlans] = useState<Record<string, DayVehiclePlan>>({})
+  const [fleetVans, setFleetVans] = useState<FleetVan[]>([])
   const [bookingCutoffs, setBookingCutoffs] = useState<BookingCutoffSettings>(DEFAULT_BOOKING_CUTOFFS)
   const [bookingClosures, setBookingClosures] = useState<BookingClosure[]>([])
   const [bookingEventsByCode, setBookingEventsByCode] = useState<Record<string, BookingEvent[]>>({})
@@ -235,6 +242,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         setAvailability(snapshot.availability)
         setDayBoatPlans(snapshot.dayBoatPlans)
         setDayVehiclePlans(snapshot.dayVehiclePlans)
+        setFleetVans(snapshot.fleetVans)
         setBookingCutoffs(snapshot.bookingCutoffs)
         setBookingClosures(snapshot.bookingClosures)
         setLoadError(null)
@@ -406,6 +414,23 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       })
     }
 
+    const getFleetVan = (van: number) =>
+      fleetVans.find((item) => item.vanNumber === van) ?? null
+
+    const resolveVanMeta = (van: number, dayMeta?: VanMeta | null) => {
+      const fleet = getFleetVan(van)
+      const plate = dayMeta?.plate?.trim() || fleet?.plate?.trim() || ''
+      const driver = dayMeta?.driver?.trim() || fleet?.driver?.trim() || ''
+      const phone = dayMeta?.phone?.trim() || fleet?.phone?.trim() || ''
+      return {
+        plate,
+        driver,
+        phone,
+        fromFleet: !dayMeta?.driver?.trim() && !dayMeta?.plate?.trim() && Boolean(fleet),
+        incomplete: !driver.trim() || !plate.trim(),
+      }
+    }
+
     return {
       hydrated,
       loadError,
@@ -416,6 +441,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       availability,
       dayBoatPlans,
       dayVehiclePlans,
+      fleetVans,
       bookingCutoffs,
       bookingClosures,
       getZoneTime,
@@ -423,6 +449,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       bookedPaxFor,
       getDayBoatPlan,
       getDayVehiclePlan,
+      getFleetVan,
+      resolveVanMeta,
       getBookingClosure,
       isProgramClosed,
       isBookingOpen: (travelDate) => isBookingOpenForDate(bookingCutoffs, travelDate),
@@ -540,6 +568,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           agentRef: input.agentRef?.trim() ?? '',
           roomNumber: input.roomNumber?.trim() ?? '',
           note: input.note?.trim() ?? '',
+          cashOnTour: input.cashOnTour?.trim() ?? '',
           transferExtraCharge,
           code,
           pickupTime,
@@ -769,6 +798,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           roomNumber:
             patch.roomNumber !== undefined ? patch.roomNumber.trim() : existing.roomNumber,
           note: patch.note !== undefined ? patch.note.trim() : existing.note,
+          cashOnTour:
+            patch.cashOnTour !== undefined ? patch.cashOnTour.trim() : existing.cashOnTour,
           agentRef: patch.agentRef !== undefined ? patch.agentRef.trim() : existing.agentRef,
           parkFee: patch.parkFee ?? existing.parkFee,
           canoe: patch.canoe !== undefined ? patch.canoe : existing.canoe,
@@ -816,6 +847,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         if (next.pickupHotel !== existing.pickupHotel) changes.push('hotel')
         if (next.roomNumber !== existing.roomNumber) changes.push('room')
         if (next.note !== existing.note) changes.push('note')
+        if (next.cashOnTour !== existing.cashOnTour) changes.push('cash on tour')
         if (next.agentRef !== existing.agentRef) changes.push('agent ref')
         if (next.parkFee !== existing.parkFee) changes.push('park fee')
         if (next.canoe !== existing.canoe) changes.push('canoe')
@@ -1185,17 +1217,44 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         })
       },
       setVanMeta: (date, program, van, meta) => {
-        upsertVehiclePlan(date, program, (plan) => {
-          const key = String(van)
-          const prev = plan.vanMeta[key] ?? emptyVanMeta()
-          return {
-            ...plan,
-            vanMeta: {
-              ...plan.vanMeta,
-              [key]: { ...prev, ...meta },
-            },
-          }
+        const planKey = dayVehiclePlanKey(date, program)
+        const plan = dayVehiclePlans[planKey] ?? emptyDayVehiclePlan(date, program)
+        const prev = plan.vanMeta[String(van)] ?? emptyVanMeta()
+        const fleet = fleetVans.find((item) => item.vanNumber === van)
+        const next: VanMeta = {
+          plate:
+            meta.plate !== undefined
+              ? meta.plate.trim()
+              : prev.plate.trim() || fleet?.plate?.trim() || '',
+          driver:
+            meta.driver !== undefined
+              ? meta.driver.trim()
+              : prev.driver.trim() || fleet?.driver?.trim() || '',
+          phone:
+            meta.phone !== undefined
+              ? meta.phone.trim()
+              : prev.phone.trim() || fleet?.phone?.trim() || '',
+        }
+
+        upsertVehiclePlan(date, program, (current) => ({
+          ...current,
+          vanMeta: {
+            ...current.vanMeta,
+            [String(van)]: next,
+          },
+        }))
+
+        const remembered: FleetVan = {
+          vanNumber: van,
+          plate: next.plate,
+          driver: next.driver,
+          phone: next.phone,
+        }
+        setFleetVans((current) => {
+          const without = current.filter((item) => item.vanNumber !== van)
+          return [...without, remembered].sort((a, b) => a.vanNumber - b.vanNumber)
         })
+        persistQuietly('upsertFleetVan', upsertFleetVan(remembered))
       },
       autoAssignDayVans: (date, program) => {
         const dayBookings = activeDayBookings(date, program)
@@ -1212,7 +1271,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }))
       },
     }
-  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
+  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, fleetVans, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }

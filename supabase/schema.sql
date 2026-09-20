@@ -106,6 +106,7 @@ create table if not exists public.bookings (
   pickup_hotel text not null default '',
   room_number text not null default '',
   note text not null default '',
+  cash_on_tour text not null default '',
   transfer_extra_charge text not null default '',
   pickup_time text not null default 'Awaiting pickup time',
   status text not null default 'Pending Pickup Time'
@@ -209,6 +210,7 @@ create table if not exists public.van_meta (
   van_number int not null check (van_number >= 1),
   plate text not null default '',
   driver text not null default '',
+  phone text not null default '',
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now()),
   primary key (date, program, van_number),
@@ -220,6 +222,21 @@ create table if not exists public.van_meta (
 drop trigger if exists van_meta_set_updated_at on public.van_meta;
 create trigger van_meta_set_updated_at
 before update on public.van_meta
+for each row execute function public.set_updated_at();
+
+-- Remembered van roster (same vans reused across days)
+create table if not exists public.fleet_vans (
+  van_number int primary key check (van_number >= 1),
+  plate text not null default '',
+  driver text not null default '',
+  phone text not null default '',
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+drop trigger if exists fleet_vans_set_updated_at on public.fleet_vans;
+create trigger fleet_vans_set_updated_at
+before update on public.fleet_vans
 for each row execute function public.set_updated_at();
 
 -- One booking can split across multiple vans (pax legs)
@@ -333,6 +350,7 @@ alter table public.boat_assignments enable row level security;
 alter table public.day_vehicle_plans enable row level security;
 alter table public.van_meta enable row level security;
 alter table public.van_assignments enable row level security;
+alter table public.fleet_vans enable row level security;
 alter table public.booking_cutoffs enable row level security;
 alter table public.booking_closures enable row level security;
 alter table public.booking_events enable row level security;
@@ -349,7 +367,7 @@ begin
       and tablename in (
         'agents', 'pickup_zones', 'hotels', 'bookings', 'availability',
         'day_boat_plans', 'boat_assignments',
-        'day_vehicle_plans', 'van_meta', 'van_assignments',
+        'day_vehicle_plans', 'van_meta', 'van_assignments', 'fleet_vans',
         'booking_cutoffs', 'booking_closures', 'booking_events'
       )
       and policyname like 'pilot_%'
@@ -386,6 +404,9 @@ create policy pilot_van_meta_all on public.van_meta
   for all to anon, authenticated using (true) with check (true);
 
 create policy pilot_van_assignments_all on public.van_assignments
+  for all to anon, authenticated using (true) with check (true);
+
+create policy pilot_fleet_vans_all on public.fleet_vans
   for all to anon, authenticated using (true) with check (true);
 
 create policy pilot_booking_cutoffs_all on public.booking_cutoffs

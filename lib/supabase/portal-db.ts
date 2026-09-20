@@ -17,6 +17,7 @@ import type {
   BookingActorRole,
   DayBoatPlan,
   DayVehiclePlan,
+  FleetVan,
   Hotel,
   PickupZone,
   Program,
@@ -66,6 +67,7 @@ type BookingRow = {
   pickup_hotel: string
   room_number: string
   note: string
+  cash_on_tour?: string | null
   transfer_extra_charge?: string | null
   pickup_time: string
   status: Booking['status']
@@ -104,6 +106,14 @@ type VanMetaRow = {
   van_number: number
   plate: string
   driver: string
+  phone?: string | null
+}
+
+type FleetVanRow = {
+  van_number: number
+  plate: string
+  driver: string
+  phone: string
 }
 
 type VanAssignmentRow = {
@@ -137,6 +147,7 @@ export type PortalSnapshot = {
   availability: Availability[]
   dayBoatPlans: Record<string, DayBoatPlan>
   dayVehiclePlans: Record<string, DayVehiclePlan>
+  fleetVans: FleetVan[]
   bookingCutoffs: BookingCutoffSettings
   bookingClosures: BookingClosure[]
 }
@@ -191,6 +202,7 @@ function mapBooking(row: BookingRow): Booking {
     pickupHotel: row.pickup_hotel,
     roomNumber: row.room_number ?? '',
     note: row.note ?? '',
+    cashOnTour: row.cash_on_tour ?? '',
     transferExtraCharge: row.transfer_extra_charge ?? '',
     pickupTime: row.pickup_time,
     status: row.status,
@@ -216,6 +228,7 @@ function bookingToRow(booking: Booking): BookingRow {
     pickup_hotel: booking.pickupHotel,
     room_number: booking.roomNumber ?? '',
     note: booking.note ?? '',
+    cash_on_tour: booking.cashOnTour ?? '',
     transfer_extra_charge: booking.transferExtraCharge ?? '',
     pickup_time: booking.pickupTime,
     status: booking.status,
@@ -301,6 +314,7 @@ function buildVehiclePlans(
     plan.vanMeta[String(meta.van_number)] = {
       plate: meta.plate ?? '',
       driver: meta.driver ?? '',
+      phone: meta.phone ?? '',
     }
     next[key] = plan
   }
@@ -335,6 +349,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     vehiclePlansRes,
     vanMetaRes,
     vanAssignRes,
+    fleetVansRes,
     cutoffsRes,
     closuresRes,
   ] = await Promise.all([
@@ -348,6 +363,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     supabase.from('day_vehicle_plans').select('*'),
     supabase.from('van_meta').select('*'),
     supabase.from('van_assignments').select('*'),
+    supabase.from('fleet_vans').select('*').order('van_number'),
     supabase.from('booking_cutoffs').select('*').eq('id', 'default').maybeSingle(),
     supabase.from('booking_closures').select('*').order('date'),
   ])
@@ -370,6 +386,21 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     )
   } else {
     hotels = (hotelsRes.data as HotelRow[]).map(mapHotel)
+  }
+
+  let fleetVans: FleetVan[] = []
+  if (fleetVansRes.error) {
+    console.warn(
+      '[supabase] fleet_vans table unavailable — run supabase/add-fleet-vans.sql',
+      fleetVansRes.error.message,
+    )
+  } else {
+    fleetVans = (fleetVansRes.data as FleetVanRow[]).map((row) => ({
+      vanNumber: row.van_number,
+      plate: row.plate ?? '',
+      driver: row.driver ?? '',
+      phone: row.phone ?? '',
+    }))
   }
 
   let bookingCutoffs = { ...DEFAULT_BOOKING_CUTOFFS }
@@ -407,6 +438,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
       vanMetaRes.data as VanMetaRow[],
       vanAssignRes.data as VanAssignmentRow[],
     ),
+    fleetVans,
     bookingCutoffs,
     bookingClosures,
   }
@@ -470,6 +502,7 @@ export async function updateBookingDetails(booking: Booking) {
       pickup_hotel: row.pickup_hotel,
       room_number: row.room_number,
       note: row.note,
+      cash_on_tour: row.cash_on_tour,
       transfer_extra_charge: row.transfer_extra_charge,
     })
     .eq('code', booking.code)
@@ -685,6 +718,7 @@ export async function saveDayVehiclePlan(plan: DayVehiclePlan) {
     van_number: Number(van),
     plate: (meta as VanMeta).plate ?? '',
     driver: (meta as VanMeta).driver ?? '',
+    phone: (meta as VanMeta).phone ?? '',
   }))
   if (metaRows.length > 0) {
     const { error } = await supabase.from('van_meta').insert(metaRows)
@@ -756,6 +790,17 @@ export async function deleteBookingClosures(rows: Array<{ date: string; program:
       .eq('program', row.program)
     if (error) throw new Error(`delete booking closure: ${error.message}`)
   }
+}
+
+export async function upsertFleetVan(van: FleetVan) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase.from('fleet_vans').upsert({
+    van_number: van.vanNumber,
+    plate: van.plate.trim(),
+    driver: van.driver.trim(),
+    phone: van.phone.trim(),
+  })
+  if (error) throw new Error(`upsert fleet van: ${error.message}`)
 }
 
 export function persistQuietly(label: string, task: Promise<unknown>) {

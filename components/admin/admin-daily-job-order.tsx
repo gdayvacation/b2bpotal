@@ -1,7 +1,8 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { ArrowLeft, CalendarIcon, ClipboardList, Printer, Ship } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowUp, CalendarIcon, ClipboardList, Pencil, Printer, Ship } from 'lucide-react'
+import { EditVanDetailsDialog } from '@/components/edit-van-details-dialog'
 import { usePortal } from '@/components/portal-provider'
 import { EmptyState, PageHeader, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
@@ -39,27 +40,21 @@ type VanGroup = {
   van: number | null
   driver: string
   plate: string
+  phone: string
   mockMeta: boolean
   rows: JobOrderRow[]
   totals: { adults: number; children: number; infants: number; tourLeaders: number; pax: number }
 }
 
-const MOCK_DRIVERS: VanMeta[] = [
-  { driver: 'Somchai · 081-234-5678', plate: 'กข 4521' },
-  { driver: 'Wichai · 089-111-2233', plate: 'กค 8890' },
-  { driver: 'Anan · 086-555-0199', plate: 'ขจ 3344' },
-  { driver: 'Prasert · 082-777-4410', plate: 'งน 1209' },
-  { driver: 'Nattapong · 088-303-6622', plate: 'บล 7781' },
-  { driver: 'Somsak · 083-909-1188', plate: 'พท 5602' },
-  { driver: 'Chaiwat · 087-222-3344', plate: 'รย 9915' },
-  { driver: 'Preecha · 085-444-7788', plate: 'สข 2147' },
-]
+type PickupSortDir = 'asc' | 'desc'
 
 export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
-  const { bookings, getDayVehiclePlan } = usePortal()
+  const { bookings, getDayVehiclePlan, resolveVanMeta } = usePortal()
   const [selectedDate, setSelectedDate] = useState(() => todayISO())
   const [program, setProgram] = useState<Program | null>(null)
   const [calendarOpen, setCalendarOpen] = useState(false)
+  const [pickupSortDir, setPickupSortDir] = useState<PickupSortDir>('asc')
+  const [editVan, setEditVan] = useState<number | null>(null)
 
   const selectedDateObj = new Date(`${selectedDate}T12:00:00`)
 
@@ -87,8 +82,8 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
     const programBookings = dayBookings
       .filter((booking) => booking.program === program)
       .slice()
-      .sort(compareJobOrder)
-    const built = buildVanGroups(programBookings, plan)
+      .sort((a, b) => compareJobOrder(a, b, pickupSortDir))
+    const built = buildVanGroups(programBookings, plan, pickupSortDir, resolveVanMeta)
     const allRows = built.groups.flatMap((group) => group.rows)
     return {
       groups: built.groups,
@@ -105,7 +100,7 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
         { adults: 0, children: 0, infants: 0, tourLeaders: 0 },
       ),
     }
-  }, [dayBookings, getDayVehiclePlan, program, selectedDate])
+  }, [dayBookings, getDayVehiclePlan, program, selectedDate, pickupSortDir, resolveVanMeta])
 
   const jobNumber = program ? jobOrderNumber(selectedDate, program) : ''
   const programLabel =
@@ -283,11 +278,31 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
               ) : (
                 <div className="divide-y divide-teal-900/8">
                   {groups.map((group) => (
-                    <VanGroupSection key={group.id} group={group} />
+                    <VanGroupSection
+                      key={group.id}
+                      group={group}
+                      pickupSortDir={pickupSortDir}
+                      onTogglePickupSort={() =>
+                        setPickupSortDir((current) => (current === 'asc' ? 'desc' : 'asc'))
+                      }
+                      onEditVan={setEditVan}
+                    />
                   ))}
                 </div>
               )}
             </Surface>
+
+            {program ? (
+              <EditVanDetailsDialog
+                open={editVan !== null}
+                onOpenChange={(open) => {
+                  if (!open) setEditVan(null)
+                }}
+                date={selectedDate}
+                program={program}
+                van={editVan}
+              />
+            ) : null}
           </>
         ) : null}
       </div>
@@ -366,8 +381,19 @@ export function AdminDailyJobOrder({ onBack }: { onBack: () => void }) {
   )
 }
 
-function VanGroupSection({ group }: { group: VanGroup }) {
+function VanGroupSection({
+  group,
+  pickupSortDir,
+  onTogglePickupSort,
+  onEditVan,
+}: {
+  group: VanGroup
+  pickupSortDir: PickupSortDir
+  onTogglePickupSort: () => void
+  onEditVan: (van: number) => void
+}) {
   const title = group.van === null ? 'No Transfer / Unassigned' : `Van ${group.van}`
+  const SortIcon = pickupSortDir === 'asc' ? ArrowUp : ArrowDown
 
   return (
     <div>
@@ -377,15 +403,32 @@ function VanGroupSection({ group }: { group: VanGroup }) {
             <p className="text-sm font-semibold text-teal-950">{title}</p>
             {group.mockMeta ? (
               <span className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
-                Mock driver
+                Needs details
               </span>
+            ) : null}
+            {group.van !== null ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-teal-800/70 transition-colors hover:bg-teal-100 hover:text-teal-950"
+                onClick={() => onEditVan(group.van!)}
+              >
+                <Pencil className="size-3" />
+                Edit van
+              </button>
             ) : null}
           </div>
           {group.van !== null ? (
             <p className="mt-0.5 text-xs text-teal-900/60">
-              Driver: <span className="font-medium text-teal-950">{group.driver}</span>
+              Driver:{' '}
+              <span className="font-medium text-teal-950">{group.driver || '—'}</span>
+              {group.phone ? (
+                <>
+                  <span className="mx-1.5 text-teal-900/25">·</span>
+                  Tel: <span className="font-medium text-teal-950">{group.phone}</span>
+                </>
+              ) : null}
               <span className="mx-1.5 text-teal-900/25">·</span>
-              Plate: <span className="font-medium text-teal-950">{group.plate}</span>
+              Plate: <span className="font-medium text-teal-950">{group.plate || '—'}</span>
             </p>
           ) : (
             <p className="mt-0.5 text-xs text-teal-900/55">No hotel transfer for these bookings.</p>
@@ -403,7 +446,7 @@ function VanGroupSection({ group }: { group: VanGroup }) {
               <TableHead className="w-10 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 No.
               </TableHead>
-              <TableHead className="w-[13rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+              <TableHead className="w-[12rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 Guest name
               </TableHead>
               <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
@@ -418,11 +461,26 @@ function VanGroupSection({ group }: { group: VanGroup }) {
               <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 TL
               </TableHead>
-              <TableHead className="w-[13rem] pr-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+              <TableHead className="w-[5.5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-0.5 rounded-md transition-colors hover:text-teal-950"
+                  onClick={onTogglePickupSort}
+                  aria-label={`Sort by pickup time, currently ${pickupSortDir === 'asc' ? 'earliest first' : 'latest first'}`}
+                  title="Sort by pickup time"
+                >
+                  P/U Time
+                  <SortIcon className="size-3 opacity-70" />
+                </button>
+              </TableHead>
+              <TableHead className="w-[12rem] pr-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 Hotel
               </TableHead>
               <TableHead className="w-16 pl-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 Room
+              </TableHead>
+              <TableHead className="w-[7rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                Cash on tour
               </TableHead>
               <TableHead className="text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 Remark
@@ -444,6 +502,9 @@ function VanGroupSection({ group }: { group: VanGroup }) {
                 <TableCell className="px-1 text-center tabular-nums">
                   {booking.tourLeaders || ''}
                 </TableCell>
+                <TableCell className="px-1 whitespace-nowrap tabular-nums text-teal-950">
+                  {formatPickupTime(booking.pickupTime)}
+                </TableCell>
                 <TableCell className="pr-1">
                   <div className="truncate" title={booking.pickupHotel}>
                     {booking.pickupHotel || '—'}
@@ -451,6 +512,11 @@ function VanGroupSection({ group }: { group: VanGroup }) {
                 </TableCell>
                 <TableCell className="pl-1 whitespace-nowrap tabular-nums">
                   {booking.roomNumber || ''}
+                </TableCell>
+                <TableCell>
+                  <div className="truncate font-medium text-teal-950" title={booking.cashOnTour}>
+                    {booking.cashOnTour || ''}
+                  </div>
                 </TableCell>
                 <TableCell>
                   <div className="truncate text-teal-900/60" title={booking.note}>
@@ -475,7 +541,7 @@ function VanGroupSection({ group }: { group: VanGroup }) {
               <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
                 {group.totals.tourLeaders}
               </TableCell>
-              <TableCell colSpan={3} />
+              <TableCell colSpan={5} />
             </TableRow>
           </TableBody>
         </Table>
@@ -589,8 +655,11 @@ function JobOrderPrintSheet({
                     {group.van === null ? 'NO TRANSFER / UNASSIGNED' : `VAN ${group.van}`}
                     {group.van !== null ? (
                       <span className="ml-2 font-normal text-neutral-700">
-                        Driver: {group.driver} · Plate: {group.plate}
-                        {group.mockMeta ? ' (mock)' : ''}
+                        Driver: {group.driver || '—'}
+                        {group.phone ? ` · Tel: ${group.phone}` : ''}
+                        {' · '}
+                        Plate: {group.plate || '—'}
+                        {group.mockMeta ? ' (needs details)' : ''}
                       </span>
                     ) : null}
                   </p>
@@ -617,11 +686,17 @@ function JobOrderPrintSheet({
                       <th className="w-8 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
                         TL
                       </th>
-                      <th className="w-[22%] border border-neutral-400 px-1 py-1 pr-0.5 font-semibold">
+                      <th className="w-12 border border-neutral-400 px-0.5 py-1 font-semibold">
+                        P/U TIME
+                      </th>
+                      <th className="w-[20%] border border-neutral-400 px-1 py-1 pr-0.5 font-semibold">
                         HOTEL
                       </th>
                       <th className="w-12 border border-neutral-400 px-0.5 py-1 pl-0.5 font-semibold">
                         ROOM
+                      </th>
+                      <th className="w-16 border border-neutral-400 px-1 py-1 font-semibold">
+                        CASH ON TOUR
                       </th>
                       <th className="border border-neutral-400 px-1 py-1 font-semibold">REMARK</th>
                     </tr>
@@ -645,8 +720,14 @@ function JobOrderPrintSheet({
                         <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
                           {blankIfZero(booking.tourLeaders)}
                         </td>
+                        <td className="border border-neutral-400 px-1 py-0.5 tabular-nums">
+                          {formatPickupTime(booking.pickupTime)}
+                        </td>
                         <td className="border border-neutral-400 px-1 py-0.5">{booking.pickupHotel}</td>
                         <td className="border border-neutral-400 px-1 py-0.5">{booking.roomNumber}</td>
+                        <td className="border border-neutral-400 px-1 py-0.5 font-medium">
+                          {booking.cashOnTour}
+                        </td>
                         <td className="border border-neutral-400 px-1 py-0.5">{booking.note}</td>
                       </tr>
                     ))}
@@ -666,7 +747,7 @@ function JobOrderPrintSheet({
                       <td className="border border-neutral-400 px-1 py-1 text-center tabular-nums">
                         {group.totals.tourLeaders}
                       </td>
-                      <td className="border border-neutral-400 px-1 py-1" colSpan={3} />
+                      <td className="border border-neutral-400 px-1 py-1" colSpan={5} />
                     </tr>
                   </tbody>
                 </table>
@@ -745,9 +826,18 @@ export function DailyJobOrderModeCard({ onClick }: { onClick: () => void }) {
   )
 }
 
-function buildVanGroups(bookings: Booking[], plan: DayVehiclePlan) {
+function buildVanGroups(
+  bookings: Booking[],
+  plan: DayVehiclePlan,
+  pickupSortDir: PickupSortDir = 'asc',
+  resolveMeta: (
+    van: number,
+    dayMeta?: VanMeta | null,
+  ) => VanMeta & { fromFleet: boolean; incomplete: boolean },
+) {
   const transferBookings = bookings.filter((booking) => !isNoTransfer(booking.pickupZone))
   const noTransferBookings = bookings.filter((booking) => isNoTransfer(booking.pickupZone))
+  const byPickup = (a: Booking, b: Booking) => compareJobOrder(a, b, pickupSortDir)
 
   const assignedCount = transferBookings.filter(
     (booking) => (plan.assignments[booking.code]?.length ?? 0) > 0,
@@ -767,11 +857,21 @@ function buildVanGroups(bookings: Booking[], plan: DayVehiclePlan) {
   for (const van of vanNumbers) {
     const vanBookings = transferBookings
       .filter((booking) => primaryVan(assignments[booking.code]) === van)
-      .sort(compareJobOrder)
+      .sort(byPickup)
     if (vanBookings.length === 0) continue
 
-    const meta = resolveVanMeta(van, plan.vanMeta[String(van)])
-    groups.push(makeGroup(`van-${van}`, van, meta.driver, meta.plate, meta.mockMeta, vanBookings))
+    const meta = resolveMeta(van, plan.vanMeta[String(van)])
+    groups.push(
+      makeGroup(
+        `van-${van}`,
+        van,
+        meta.driver,
+        meta.plate,
+        meta.phone,
+        meta.incomplete,
+        vanBookings,
+      ),
+    )
   }
 
   const leftover = transferBookings.filter((booking) => !primaryVan(assignments[booking.code]))
@@ -780,28 +880,56 @@ function buildVanGroups(bookings: Booking[], plan: DayVehiclePlan) {
     const mockAssign = autoAssignVans(leftover, plan.vanCapacity || DEFAULT_VAN_CAPACITY)
     const mockVans = listVanNumbers(mockAssign)
     if (mockVans.length === 0) {
-      groups.push(makeGroup('unassigned', null, '', '', false, leftover))
+      groups.push(makeGroup('unassigned', null, '', '', '', false, leftover.slice().sort(byPickup)))
     } else {
       usingMockAssignments = true
       for (const van of mockVans) {
         const displayVan = mockVanStart + van - 1
         const vanBookings = leftover
           .filter((booking) => primaryVan(mockAssign[booking.code]) === van)
-          .sort(compareJobOrder)
+          .sort(byPickup)
         if (vanBookings.length === 0) continue
-        const meta = resolveVanMeta(displayVan, undefined)
-        groups.push(makeGroup(`mock-van-${displayVan}`, displayVan, meta.driver, meta.plate, true, vanBookings))
+        const meta = resolveMeta(displayVan, undefined)
+        groups.push(
+          makeGroup(
+            `mock-van-${displayVan}`,
+            displayVan,
+            meta.driver,
+            meta.plate,
+            meta.phone,
+            meta.incomplete,
+            vanBookings,
+          ),
+        )
       }
       const stillLeft = leftover.filter((booking) => !primaryVan(mockAssign[booking.code]))
       if (stillLeft.length > 0) {
-        groups.push(makeGroup('unassigned-oversize', null, '', '', false, stillLeft))
+        groups.push(
+          makeGroup(
+            'unassigned-oversize',
+            null,
+            '',
+            '',
+            '',
+            false,
+            stillLeft.slice().sort(byPickup),
+          ),
+        )
       }
     }
   }
 
   if (noTransferBookings.length > 0) {
     groups.push(
-      makeGroup('no-transfer', null, '', '', false, noTransferBookings.sort(compareJobOrder)),
+      makeGroup(
+        'no-transfer',
+        null,
+        '',
+        '',
+        '',
+        false,
+        noTransferBookings.slice().sort(byPickup),
+      ),
     )
   }
 
@@ -813,6 +941,7 @@ function makeGroup(
   van: number | null,
   driver: string,
   plate: string,
+  phone: string,
   mockMeta: boolean,
   bookings: Booking[],
 ): VanGroup {
@@ -822,6 +951,7 @@ function makeGroup(
     van,
     driver,
     plate,
+    phone,
     mockMeta,
     rows,
     totals: {
@@ -834,14 +964,6 @@ function makeGroup(
   }
 }
 
-function resolveVanMeta(van: number, stored: VanMeta | undefined) {
-  const mock = MOCK_DRIVERS[(van - 1) % MOCK_DRIVERS.length] ?? MOCK_DRIVERS[0]
-  const driver = stored?.driver?.trim() || mock.driver
-  const plate = stored?.plate?.trim() || mock.plate
-  const mockMeta = !stored?.driver?.trim() || !stored?.plate?.trim()
-  return { driver, plate, mockMeta }
-}
-
 function blankIfZero(value: number) {
   return value > 0 ? value : ''
 }
@@ -852,15 +974,23 @@ function jobOrderNumber(date: string, program: Program) {
   return `JO-${compact}-${suffix}`
 }
 
+function formatPickupTime(time: string) {
+  const trimmed = time.trim()
+  if (!trimmed) return '—'
+  if (trimmed.toLowerCase().includes('awaiting')) return 'Awaiting'
+  if (trimmed.toLowerCase() === 'no transfer') return '—'
+  return trimmed
+}
+
 function pickupSortValue(time: string) {
   const trimmed = time.trim()
   if (/^\d{1,2}:\d{2}/.test(trimmed)) return trimmed.padStart(5, '0')
   return `~${trimmed}`
 }
 
-function compareJobOrder(a: Booking, b: Booking) {
+function compareJobOrder(a: Booking, b: Booking, dir: PickupSortDir = 'asc') {
   const byTime = pickupSortValue(a.pickupTime).localeCompare(pickupSortValue(b.pickupTime))
-  if (byTime !== 0) return byTime
+  if (byTime !== 0) return dir === 'asc' ? byTime : -byTime
   const byHotel = a.pickupHotel.localeCompare(b.pickupHotel)
   if (byHotel !== 0) return byHotel
   return a.code.localeCompare(b.code)

@@ -105,6 +105,7 @@ export function BookingWizard({
   const [infants, setInfants] = useState(0)
   const [tourLeaders, setTourLeaders] = useState(0)
   const [leadGuest, setLeadGuest] = useState('')
+  const [cashOnTour, setCashOnTour] = useState('')
   const [pickupZone, setPickupZone] = useState<PickupZoneName | null>(null)
   const [pickupHotel, setPickupHotel] = useState('')
   const [roomNumber, setRoomNumber] = useState('')
@@ -287,6 +288,7 @@ export function BookingWizard({
         pickupHotel: pickupHotel.trim(),
         roomNumber: roomNumber.trim(),
         note: note.trim(),
+        cashOnTour: cashOnTour.trim(),
       },
       { bypassCutoff: selectAgent },
     )
@@ -475,19 +477,6 @@ export function BookingWizard({
                 </p>
               </div>
             )}
-
-            <div className="max-w-md space-y-2 border-t border-teal-900/8 pt-5">
-              <Label htmlFor="agent-ref">Agent Ref / Agent Voucher Number</Label>
-              <Input
-                id="agent-ref"
-                value={agentRef}
-                onChange={(event) => setAgentRef(event.target.value)}
-                className="h-11"
-              />
-              <p className="text-xs text-neutral-500">
-                Optional — the agent’s own reference or voucher number for this booking.
-              </p>
-            </div>
           </div>
         )}
 
@@ -659,18 +648,18 @@ export function BookingWizard({
               </div>
             </div>
 
-            <div className="max-w-md space-y-5 border-t border-teal-900/8 pt-5">
-              <div className="space-y-2">
-                <Label htmlFor="lead-guest">Lead Guest Name</Label>
-                <Input
-                  id="lead-guest"
-                  value={leadGuest}
-                  onChange={(event) => setLeadGuest(event.target.value)}
-                  className="h-11"
-                />
-              </div>
-              {!selectAgent ? (
-                <div className="space-y-2">
+            <div className="max-w-2xl space-y-5 border-t border-teal-900/8 pt-5">
+              <div className="flex flex-col gap-4 sm:flex-row sm:gap-3">
+                <div className="min-w-0 flex-1 space-y-2">
+                  <Label htmlFor="lead-guest">Lead Guest Name</Label>
+                  <Input
+                    id="lead-guest"
+                    value={leadGuest}
+                    onChange={(event) => setLeadGuest(event.target.value)}
+                    className="h-11"
+                  />
+                </div>
+                <div className="min-w-0 flex-1 space-y-2">
                   <Label htmlFor="agent-ref-guest">Agent Ref / Agent Voucher Number</Label>
                   <Input
                     id="agent-ref-guest"
@@ -682,7 +671,20 @@ export function BookingWizard({
                     Optional — your own reference or voucher number for this booking.
                   </p>
                 </div>
-              ) : null}
+              </div>
+              <div className="max-w-md space-y-2">
+                <Label htmlFor="cash-on-tour">Cash on tour</Label>
+                <Input
+                  id="cash-on-tour"
+                  value={cashOnTour}
+                  onChange={(event) => setCashOnTour(event.target.value)}
+                  className="h-11"
+                  placeholder="e.g. 2,000 THB"
+                />
+                <p className="text-xs text-neutral-500">
+                  Optional — amount or note for cash to collect on tour.
+                </p>
+              </div>
             </div>
           </div>
         )}
@@ -833,6 +835,12 @@ export function BookingWizard({
                   <>
                     <span className="text-white/30">·</span>
                     <span>Ref {agentRef.trim()}</span>
+                  </>
+                ) : null}
+                {cashOnTour.trim() ? (
+                  <>
+                    <span className="text-white/30">·</span>
+                    <span>Cash on tour {cashOnTour.trim()}</span>
                   </>
                 ) : null}
                 <span className="text-white/30">·</span>

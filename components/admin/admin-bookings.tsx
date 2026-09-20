@@ -48,7 +48,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { formatShortDate, startOfToday, todayISO, toISODate } from '@/lib/format'
-import { isNoTransfer, totalPassengers, type Booking } from '@/lib/types'
+import { isNoTransfer, totalPassengers, type Booking, type Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 /** Search only looks from 7 days ago through all future trips (keeps lists fast). */
@@ -63,6 +63,7 @@ const RECENT_LIMIT = 200
 const PAGE_SIZE = 50
 
 type QuickFilter = 'all' | 'today'
+type ProgramFilter = 'all' | Program
 type SortKey = 'code' | 'agent' | 'zone'
 type SortDir = 'asc' | 'desc'
 
@@ -253,6 +254,7 @@ export function AdminBookings() {
   const searchParams = useSearchParams()
   const createdCode = searchParams.get('created')
   const [quick, setQuick] = useState<QuickFilter>('all')
+  const [program, setProgram] = useState<ProgramFilter>('all')
   const [range, setRange] = useState<DateRange | undefined>()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
@@ -272,7 +274,7 @@ export function AdminBookings() {
   const query = search.trim().toLowerCase()
   const isSearching = query.length > 0
   const hasRange = Boolean(range?.from)
-  const hasActiveFilter = quick === 'today' || hasRange || isSearching
+  const hasActiveFilter = quick === 'today' || hasRange || isSearching || program !== 'all'
   const today = todayISO()
   const searchFrom = searchFromISO()
 
@@ -283,6 +285,7 @@ export function AdminBookings() {
 
     return bookings
       .filter((booking) => {
+        if (program !== 'all' && booking.program !== program) return false
         if (isSearching) {
           if (booking.date < searchFrom) return false
           const haystack = [booking.agentName, booking.leadGuest, booking.pickupHotel]
@@ -317,7 +320,7 @@ export function AdminBookings() {
         }
         return b.date.localeCompare(a.date) || b.code.localeCompare(a.code)
       })
-  }, [bookings, quick, range, isSearching, query, sortKey, sortDir, today, searchFrom])
+  }, [bookings, program, quick, range, isSearching, query, sortKey, sortDir, today, searchFrom])
 
   const capped = !hasActiveFilter
   const list = capped ? filtered.slice(0, RECENT_LIMIT) : filtered
@@ -328,13 +331,20 @@ export function AdminBookings() {
 
   useEffect(() => {
     setPage(1)
-  }, [quick, range, query, sortKey, sortDir])
+  }, [quick, program, range, query, sortKey, sortDir])
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages)
   }, [page, totalPages])
 
   function clearFilters() {
+    setQuick('all')
+    setProgram('all')
+    setRange(undefined)
+    setSearch('')
+  }
+
+  function applyRecent() {
     setQuick('all')
     setRange(undefined)
     setSearch('')
@@ -403,7 +413,7 @@ export function AdminBookings() {
   return (
     <div className="mx-auto max-w-6xl">
       <PageHeader
-        title="Bookings"
+        title="Booking"
         description="Partner reservations — default view shows the latest 200. Use filters or search for older trips."
         actions={
           <Link href="/admin/bookings/new" className={cn(buttonVariants(), 'h-10 gap-1.5')}>
@@ -438,12 +448,27 @@ export function AdminBookings() {
               <SegmentedControl>
                 <Segment
                   active={quick === 'all' && !hasRange && !isSearching}
-                  onClick={() => clearFilters()}
+                  onClick={applyRecent}
                 >
-                  Recent
+                  New Booking
                 </Segment>
                 <Segment active={quick === 'today'} onClick={applyToday}>
-                  Today
+                  Today Booking
+                </Segment>
+              </SegmentedControl>
+
+              <SegmentedControl>
+                <Segment active={program === 'all'} onClick={() => setProgram('all')}>
+                  All
+                </Segment>
+                <Segment active={program === 'PP'} onClick={() => setProgram('PP')}>
+                  PP
+                </Segment>
+                <Segment
+                  active={program === 'James Bond'}
+                  onClick={() => setProgram('James Bond')}
+                >
+                  JB
                 </Segment>
               </SegmentedControl>
 
@@ -506,6 +531,8 @@ export function AdminBookings() {
                 ? ` · departing ${formatShortDate(today)}`
                 : null}
               {!isSearching && hasRange ? ' · by trip date' : null}
+              {program === 'PP' ? ' · PP only' : null}
+              {program === 'James Bond' ? ' · JB only' : null}
             </p>
           </div>
 

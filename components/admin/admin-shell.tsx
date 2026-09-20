@@ -31,7 +31,7 @@ const nav = [
   },
   {
     href: '/admin/bookings',
-    label: 'Bookings',
+    label: 'Booking',
     icon: ClipboardList,
     tone: 'bg-teal-100 text-teal-700 group-hover:bg-teal-200/80',
   },

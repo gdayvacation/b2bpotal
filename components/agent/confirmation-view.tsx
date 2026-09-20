@@ -53,6 +53,7 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
           {booking.transferExtraCharge?.trim() ? (
             <Item label="Extra Charge Transfer" value={booking.transferExtraCharge.trim()} />
           ) : null}
+          <Item label="Cash on tour" value={booking.cashOnTour || '—'} />
           <Item label="Note" value={booking.note || '—'} />
           <Item label="Agent" value={booking.agentName} />
         </dl>

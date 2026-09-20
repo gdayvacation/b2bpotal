@@ -293,10 +293,11 @@ function VehicleBoard({
   plan: DayVehiclePlan
   onAssign: (code: string, van: number | null) => void
   onSaveSplits: (code: string, legs: VanSplit[]) => void
-  onVanMeta: (van: number, meta: { plate?: string; driver?: string }) => void
+  onVanMeta: (van: number, meta: { plate?: string; driver?: string; phone?: string }) => void
   onAutoAssign: () => void
   onClear: () => void
 }) {
+  const { resolveVanMeta } = usePortal()
   const [openVan, setOpenVan] = useState<number | null>(null)
   const [splitCode, setSplitCode] = useState<string | null>(null)
   const [sheetQuery, setSheetQuery] = useState('')
@@ -380,7 +381,9 @@ function VehicleBoard({
 
   const openDetail = openVan !== null ? byVan.find((item) => item.van === openVan) : null
   const openMeta =
-    openVan !== null ? (plan.vanMeta[String(openVan)] ?? emptyVanMeta()) : emptyVanMeta()
+    openVan !== null
+      ? resolveVanMeta(openVan, plan.vanMeta[String(openVan)])
+      : { ...emptyVanMeta(), fromFleet: false, incomplete: true }
   const splitBooking = splitCode
     ? (bookings.find((booking) => booking.code === splitCode) ?? null)
     : null
@@ -709,9 +712,29 @@ function VehicleBoard({
                 </DialogDescription>
               </DialogHeader>
 
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
                 <div className="space-y-1.5">
-                  <Label htmlFor={`van-plate-${openVan}`}>Van / plate number</Label>
+                  <Label htmlFor={`van-driver-${openVan}`}>Driver name</Label>
+                  <Input
+                    id={`van-driver-${openVan}`}
+                    value={openMeta.driver}
+                    onChange={(event) => onVanMeta(openVan, { driver: event.target.value })}
+                    placeholder="e.g. Somchai"
+                    className="h-10"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`van-phone-${openVan}`}>Telephone</Label>
+                  <Input
+                    id={`van-phone-${openVan}`}
+                    value={openMeta.phone}
+                    onChange={(event) => onVanMeta(openVan, { phone: event.target.value })}
+                    placeholder="e.g. 081-234-5678"
+                    className="h-10"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`van-plate-${openVan}`}>Plate number</Label>
                   <Input
                     id={`van-plate-${openVan}`}
                     value={openMeta.plate}
@@ -720,17 +743,16 @@ function VehicleBoard({
                     className="h-10"
                   />
                 </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor={`van-driver-${openVan}`}>Driver number / name</Label>
-                  <Input
-                    id={`van-driver-${openVan}`}
-                    value={openMeta.driver}
-                    onChange={(event) => onVanMeta(openVan, { driver: event.target.value })}
-                    placeholder="e.g. Driver 07 / Somchai"
-                    className="h-10"
-                  />
-                </div>
               </div>
+              {openMeta.fromFleet ? (
+                <p className="mt-2 text-xs text-teal-800/55">
+                  Prefilling from remembered Van {openVan} details. Changes save for this day and for next time.
+                </p>
+              ) : (
+                <p className="mt-2 text-xs text-teal-800/55">
+                  Saved for this day and remembered for the same van number next time.
+                </p>
+              )}
 
               <div className="mt-4 overflow-hidden rounded-xl border border-teal-900/8">
                 <table className="w-full text-left text-[13px]">
@@ -805,6 +827,7 @@ function VehicleBoard({
           pax={openDetail.pax}
           plate={openMeta.plate}
           driver={openMeta.driver}
+          phone={openMeta.phone}
           items={openDetail.items}
         />
       ) : null}
@@ -1041,6 +1064,7 @@ function VanPrintSheet({
   pax,
   plate,
   driver,
+  phone,
   items,
 }: {
   date: string
@@ -1051,6 +1075,7 @@ function VanPrintSheet({
   pax: number
   plate: string
   driver: string
+  phone: string
   items: Array<{ booking: Booking; paxOnVan: number; legs: VanSplit[] }>
 }) {
   return (
@@ -1070,12 +1095,16 @@ function VanPrintSheet({
         </div>
         <div className="grid w-[42%] grid-cols-2 gap-x-4 gap-y-1 text-[12px]">
           <div className="col-span-2 flex items-end gap-2 border-b border-neutral-500 pb-0.5">
-            <span className="shrink-0 text-neutral-500">Van / plate</span>
-            <span className="min-w-0 flex-1 font-semibold">{plate || '____________________'}</span>
-          </div>
-          <div className="col-span-2 flex items-end gap-2 border-b border-neutral-500 pb-0.5">
             <span className="shrink-0 text-neutral-500">Driver</span>
             <span className="min-w-0 flex-1 font-semibold">{driver || '____________________'}</span>
+          </div>
+          <div className="col-span-2 flex items-end gap-2 border-b border-neutral-500 pb-0.5">
+            <span className="shrink-0 text-neutral-500">Telephone</span>
+            <span className="min-w-0 flex-1 font-semibold">{phone || '____________________'}</span>
+          </div>
+          <div className="col-span-2 flex items-end gap-2 border-b border-neutral-500 pb-0.5">
+            <span className="shrink-0 text-neutral-500">Plate</span>
+            <span className="min-w-0 flex-1 font-semibold">{plate || '____________________'}</span>
           </div>
         </div>
       </div>
