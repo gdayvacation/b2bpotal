@@ -30,6 +30,7 @@ import {
   type VanMeta,
 } from '@/lib/types'
 import { autoAssignVans, listVanNumbers, primaryVan, sortOrderOnVan } from '@/lib/vehicle-assign'
+import { BoatFleetBadge } from '@/components/boat-badge'
 import { cn } from '@/lib/utils'
 
 type JobOrderRow = {
@@ -74,7 +75,14 @@ type AgentGroup = {
   agentSlug: string
   agentName: string
   rows: AgentJobRow[]
-  totals: { adults: number; children: number; infants: number; tourLeaders: number; pax: number }
+  totals: {
+    adults: number
+    children: number
+    infants: number
+    tourLeaders: number
+    pax: number
+    collect: number
+  }
 }
 
 const MOCK_VAN_CREW = [
@@ -84,8 +92,6 @@ const MOCK_VAN_CREW = [
   { driver: 'Anan Chaiyaphum', plate: 'ฉช 3456 Phuket', phone: '082-999-0011' },
   { driver: 'Preecha Boonmee', plate: 'ฐฑ 7890 Phuket', phone: '088-444-5566' },
 ] as const
-
-const MOCK_CASH_SAMPLES = ['1,500 THB', '2,000 THB', '900 THB', '3,200 THB', '1,800 THB'] as const
 
 function mockCrewForVan(van: number | null) {
   if (van === null || van < 1) {
@@ -104,14 +110,6 @@ function displayVanCrew(group: VanGroup) {
     plate: group.plate.trim() || mock.plate,
     phone: group.phone.trim() || mock.phone,
   }
-}
-
-function displayCashOnTour(booking: Booking, index: number) {
-  const real = booking.cashOnTour?.trim() ?? ''
-  if (real) return real
-  // Preview mock so empty COT cells are visible while testing.
-  if (index % 3 === 0) return MOCK_CASH_SAMPLES[index % MOCK_CASH_SAMPLES.length]
-  return ''
 }
 
 /** rowspan for Detail: merge consecutive rows that share the same van. */
@@ -135,7 +133,7 @@ export function AdminDailyJobOrder({
   onBack: () => void
   audience?: JobAudience
 }) {
-  const { bookings, getDayVehiclePlan, getDayBoatPlan, resolveVanMeta, getCheckInAttendance, setCheckInAttendance } =
+  const { bookings, getDayVehiclePlan, getDayBoatPlan, resolveVanMeta, getCheckInAttendance, setCheckInAttendance, getCheckInEnrollments } =
     usePortal()
   const [selectedDate, setSelectedDate, portalToday] = usePortalDefaultDateISO()
   const [program, setProgram] = useState<Program | null>(null)
@@ -434,6 +432,14 @@ export function AdminDailyJobOrder({
                       getAttendance={
                         isCheckInView
                           ? (code) => getCheckInAttendance(selectedDate, program, code)
+                          : undefined
+                      }
+                      getQrSeats={
+                        isCheckInView
+                          ? (code) => {
+                              const enrolled = getCheckInEnrollments(selectedDate, program, code)
+                              return enrolled.reduce((sum, item) => sum + item.seats, 0)
+                            }
                           : undefined
                       }
                       onAttendanceChange={
@@ -832,6 +838,7 @@ function VanGroupSection({
   program,
   boatAssignments = {},
   getAttendance,
+  getQrSeats,
   onAttendanceChange,
   pickupSortDir,
   onTogglePickupSort,
@@ -842,6 +849,7 @@ function VanGroupSection({
   program: Program
   boatAssignments?: Record<string, number>
   getAttendance?: (bookingCode: string) => CheckInAttendance | null
+  getQrSeats?: (bookingCode: string) => number
   onAttendanceChange?: (bookingCode: string, status: CheckInAttendance | null) => void
   pickupSortDir: PickupSortDir
   onTogglePickupSort: () => void
@@ -899,8 +907,8 @@ function VanGroupSection({
       <div className={cn(!isCheckIn && 'overflow-x-auto')}>
         <Table
           className={cn(
-            'table-fixed',
-            isCheckIn && 'text-[13px] [&_th]:px-1 [&_td]:px-1',
+            'table-fixed text-[13px] [&_th]:px-1 [&_td]:px-1',
+            isCheckIn && '[&_th]:px-1 [&_td]:px-1',
           )}
           containerClassName={isCheckIn ? 'overflow-x-hidden' : undefined}
         >
@@ -974,13 +982,13 @@ function VanGroupSection({
                 </>
               ) : (
                 <>
-                  <TableHead className="w-[12rem] pr-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[22%] pr-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Hotel
                   </TableHead>
-                  <TableHead className="w-16 pl-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    Room
+                  <TableHead className="w-[18%] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Guest name
                   </TableHead>
-                  <TableHead className="w-[5.5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[4.5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     <button
                       type="button"
                       className="inline-flex items-center gap-0.5 rounded-md transition-colors hover:text-teal-950"
@@ -992,25 +1000,22 @@ function VanGroupSection({
                       <SortIcon className="size-3 opacity-70" />
                     </button>
                   </TableHead>
-                  <TableHead className="w-[6.5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[5.5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Zone
                   </TableHead>
-                  <TableHead className="w-[11rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    Guest name
-                  </TableHead>
-                  <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-9 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     AD
                   </TableHead>
-                  <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-9 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     CHD
                   </TableHead>
-                  <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-9 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     INF
                   </TableHead>
-                  <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-9 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     TL
                   </TableHead>
-                  <TableHead className="w-12 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-10 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Tot
                   </TableHead>
                 </>
@@ -1056,8 +1061,8 @@ function VanGroupSection({
                     <TableCell className="px-1 text-center tabular-nums">
                       {booking.tourLeaders || ''}
                     </TableCell>
-                    <TableCell className="px-1 text-center tabular-nums font-medium text-teal-950">
-                      {boatAssignments[booking.code] ?? '—'}
+                    <TableCell className="px-1 text-center">
+                      <BoatFleetBadge boat={boatAssignments[booking.code]} />
                     </TableCell>
                     <TableCell className="px-1 text-center text-xs whitespace-nowrap">
                       {formatIncludeLabel(booking.parkFee)}
@@ -1097,8 +1102,24 @@ function VanGroupSection({
                         {booking.note || ''}
                       </div>
                     </TableCell>
-                    <TableCell className="px-1 text-center text-xs text-teal-900/40">
-                      {/* Marina QR check-in status — wired later */}
+                    <TableCell className="px-1 text-center text-xs text-teal-900/70">
+                      {(() => {
+                        const qrSeats = getQrSeats?.(booking.code) ?? 0
+                        const pax = totalPassengers(booking)
+                        if (attendance === 'checked' || qrSeats >= pax) {
+                          return (
+                            <span className="font-semibold text-emerald-700">QR {pax}/{pax}</span>
+                          )
+                        }
+                        if (qrSeats > 0) {
+                          return (
+                            <span className="font-medium text-amber-700">
+                              QR {qrSeats}/{pax}
+                            </span>
+                          )
+                        }
+                        return <span className="text-teal-900/30">—</span>
+                      })()}
                     </TableCell>
                     <TableCell className="px-1 text-center">
                       {onAttendanceChange ? (
@@ -1118,8 +1139,10 @@ function VanGroupSection({
                         {booking.pickupHotel || '—'}
                       </div>
                     </TableCell>
-                    <TableCell className="pl-1 whitespace-nowrap tabular-nums">
-                      {booking.roomNumber || ''}
+                    <TableCell>
+                      <div className="truncate font-medium" title={booking.leadGuest}>
+                        {booking.leadGuest}
+                      </div>
                     </TableCell>
                     <TableCell className="px-1 whitespace-nowrap tabular-nums text-teal-950">
                       {formatPickupTime(booking.pickupTime)}
@@ -1129,18 +1152,13 @@ function VanGroupSection({
                         {booking.pickupZone || '—'}
                       </div>
                     </TableCell>
-                    <TableCell>
-                      <div className="truncate font-medium" title={booking.leadGuest}>
-                        {booking.leadGuest}
-                      </div>
-                    </TableCell>
-                    <TableCell className="px-1 text-center tabular-nums">{booking.adults || ''}</TableCell>
-                    <TableCell className="px-1 text-center tabular-nums">{booking.children || ''}</TableCell>
-                    <TableCell className="px-1 text-center tabular-nums">{booking.infants || ''}</TableCell>
-                    <TableCell className="px-1 text-center tabular-nums">
+                    <TableCell className="px-0.5 text-center tabular-nums">{booking.adults || ''}</TableCell>
+                    <TableCell className="px-0.5 text-center tabular-nums">{booking.children || ''}</TableCell>
+                    <TableCell className="px-0.5 text-center tabular-nums">{booking.infants || ''}</TableCell>
+                    <TableCell className="px-0.5 text-center tabular-nums">
                       {booking.tourLeaders || ''}
                     </TableCell>
-                    <TableCell className="px-1 text-center font-medium tabular-nums text-teal-950">
+                    <TableCell className="px-0.5 text-center font-medium tabular-nums text-teal-950">
                       {totalPassengers(booking)}
                     </TableCell>
                   </>
@@ -1176,7 +1194,7 @@ function VanGroupSection({
                 </>
               ) : (
                 <>
-                  <TableCell colSpan={6} className="text-xs font-semibold text-teal-900/70">
+                  <TableCell colSpan={5} className="text-xs font-semibold text-teal-900/70">
                     Group total
                   </TableCell>
                   <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
@@ -1232,7 +1250,7 @@ function AgentGroupSection({
         <Table className="table-fixed">
           <TableHeader>
             <TableRow className="border-b border-teal-900/15 bg-teal-950/[0.04] hover:bg-teal-950/[0.04]">
-              <TableHead className="w-9 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+              <TableHead className="w-8 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 No.
               </TableHead>
               <TableHead className="w-[6.2rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
@@ -1254,9 +1272,6 @@ function AgentGroupSection({
                 TL
               </TableHead>
               <TableHead className="w-[4rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                Zone
-              </TableHead>
-              <TableHead className="w-[4rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 P/U Time
               </TableHead>
               <TableHead className="w-[9rem] pr-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
@@ -1272,6 +1287,9 @@ function AgentGroupSection({
               ) : null}
               <TableHead className="w-[7rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 COT
+              </TableHead>
+              <TableHead className="w-[5.5rem] px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                Total
               </TableHead>
               <TableHead className="w-[11rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 Detail
@@ -1315,9 +1333,6 @@ function AgentGroupSection({
                   <TableCell className="px-0.5 text-center tabular-nums">
                     {booking.tourLeaders || ''}
                   </TableCell>
-                  <TableCell className="px-1 whitespace-nowrap text-teal-950">
-                    {booking.pickupZone}
-                  </TableCell>
                   <TableCell className="px-1 whitespace-nowrap tabular-nums text-teal-950">
                     {formatPickupTime(booking.pickupTime)}
                   </TableCell>
@@ -1334,10 +1349,22 @@ function AgentGroupSection({
                       {formatIncludeLabel(booking.canoe)}
                     </TableCell>
                   ) : null}
-                  <TableCell>
-                    <div className="truncate font-medium text-teal-950" title={cashOnTour}>
+                  <TableCell className="px-1 text-center">
+                    <div
+                      className="truncate text-xs font-medium text-teal-950"
+                      title={cashOnTour}
+                    >
                       {cashOnTour || ''}
                     </div>
+                  </TableCell>
+                  <TableCell className="px-1 text-center tabular-nums text-xs font-medium text-teal-950">
+                    {formatCollectTotal(
+                      booking.parkFee,
+                      program,
+                      booking.adults,
+                      booking.children,
+                      cashOnTour,
+                    )}
                   </TableCell>
                   {span > 0 ? (
                     <TableCell
@@ -1386,7 +1413,13 @@ function AgentGroupSection({
               <TableCell className="px-0.5 text-center tabular-nums text-xs font-semibold">
                 {group.totals.tourLeaders}
               </TableCell>
-              <TableCell colSpan={showCanoe ? 7 : 6} />
+              <TableCell colSpan={showCanoe ? 5 : 4} />
+              <TableCell className="px-1 text-center tabular-nums text-xs font-semibold text-teal-950">
+                {group.totals.collect > 0
+                  ? group.totals.collect.toLocaleString('en-US')
+                  : ''}
+              </TableCell>
+              <TableCell />
             </TableRow>
           </TableBody>
         </Table>
@@ -1481,7 +1514,6 @@ function AgentJobOrderPrintSheet({
                       <th className={cn(th, 'w-7 text-center')}>CHD</th>
                       <th className={cn(th, 'w-7 text-center')}>INF</th>
                       <th className={cn(th, 'w-7 text-center')}>TL</th>
-                      <th className={cn(th, 'w-14')}>Zone</th>
                       <th className={cn(th, 'w-12')}>P/U Time</th>
                       <th className={th}>Hotel</th>
                       <th className={cn(th, 'w-16 text-center')}>Nat. Park</th>
@@ -1489,6 +1521,7 @@ function AgentJobOrderPrintSheet({
                         <th className={cn(th, 'w-14 text-center')}>Canoe</th>
                       ) : null}
                       <th className={cn(th, 'w-14')}>COT</th>
+                      <th className={cn(th, 'w-14 text-center')}>Total</th>
                       <th className={th}>Detail</th>
                     </tr>
                   </thead>
@@ -1528,7 +1561,6 @@ function AgentJobOrderPrintSheet({
                             <td className={cn(td, 'text-center tabular-nums')}>
                               {blankIfZero(booking.tourLeaders)}
                             </td>
-                            <td className={td}>{booking.pickupZone}</td>
                             <td className={cn(td, 'tabular-nums')}>
                               {formatPickupTime(booking.pickupTime)}
                             </td>
@@ -1542,6 +1574,15 @@ function AgentJobOrderPrintSheet({
                               </td>
                             ) : null}
                             <td className={cn(td, 'font-medium')}>{cashOnTour}</td>
+                            <td className={cn(td, 'text-center tabular-nums font-medium')}>
+                              {formatCollectTotal(
+                                booking.parkFee,
+                                program,
+                                booking.adults,
+                                booking.children,
+                                cashOnTour,
+                              )}
+                            </td>
                             {span > 0 ? (
                               <td
                                 rowSpan={span}
@@ -1576,7 +1617,13 @@ function AgentJobOrderPrintSheet({
                       <td className={cn(td, 'text-center tabular-nums')}>
                         {group.totals.tourLeaders}
                       </td>
-                      <td className={td} colSpan={showCanoe ? 7 : 6} />
+                      <td className={td} colSpan={showCanoe ? 5 : 4} />
+                      <td className={cn(td, 'text-center tabular-nums')}>
+                        {group.totals.collect > 0
+                          ? group.totals.collect.toLocaleString('en-US')
+                          : ''}
+                      </td>
+                      <td className={td} />
                     </tr>
                   </tbody>
                 </table>
@@ -1657,7 +1704,7 @@ function JobOrderPrintSheet({
   const showCanoe = isCheckIn && program === 'James Bond'
   const trailingBeforeTotal = isCheckIn ? (showCanoe ? 5 : 4) : 0
   const trailingAfterTotal = isCheckIn ? 3 : 0
-  const leadingColSpan = isCheckIn ? 4 : 6
+  const leadingColSpan = isCheckIn ? 4 : 5
 
   return (
     <div className="job-order-print-sheet hidden print:block">
@@ -1746,20 +1793,17 @@ function JobOrderPrintSheet({
                         </>
                       ) : (
                         <>
-                          <th className="w-[20%] border border-teal-900/20 px-1 py-1 pr-0.5 font-semibold">
-                            HOTEL
+                          <th className="w-[22%] border border-teal-900/20 px-1 py-1 font-semibold">
+                            Hotel
                           </th>
-                          <th className="w-12 border border-teal-900/20 px-0.5 py-1 pl-0.5 font-semibold">
-                            ROOM
+                          <th className="w-[18%] border border-teal-900/20 px-1 py-1 font-semibold">
+                            Guest name
                           </th>
                           <th className="w-12 border border-teal-900/20 px-0.5 py-1 font-semibold">
-                            P/U TIME
+                            P/U Time
                           </th>
                           <th className="w-14 border border-teal-900/20 px-0.5 py-1 font-semibold">
-                            ZONE
-                          </th>
-                          <th className="w-[16%] border border-teal-900/20 px-1 py-1 font-semibold">
-                            GUEST NAME
+                            Zone
                           </th>
                         </>
                       )}
@@ -1835,17 +1879,14 @@ function JobOrderPrintSheet({
                             <td className="border border-teal-900/20 px-1 py-0.5">
                               {booking.pickupHotel}
                             </td>
-                            <td className="border border-teal-900/20 px-1 py-0.5">
-                              {booking.roomNumber}
+                            <td className="border border-teal-900/20 px-1 py-0.5 font-medium">
+                              {booking.leadGuest}
                             </td>
                             <td className="border border-teal-900/20 px-1 py-0.5 tabular-nums">
                               {formatPickupTime(booking.pickupTime)}
                             </td>
                             <td className="border border-teal-900/20 px-1 py-0.5">
                               {booking.pickupZone}
-                            </td>
-                            <td className="border border-teal-900/20 px-1 py-0.5">
-                              {booking.leadGuest}
                             </td>
                           </>
                         )}
@@ -1863,8 +1904,8 @@ function JobOrderPrintSheet({
                         </td>
                         {isCheckIn ? (
                           <>
-                            <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums font-semibold">
-                              {boatAssignments[booking.code] ?? '—'}
+                            <td className="border border-teal-900/20 px-1 py-0.5 text-center">
+                              <BoatFleetBadge boat={boatAssignments[booking.code]} />
                             </td>
                             <td className="border border-teal-900/20 px-1 py-0.5 text-center whitespace-nowrap">
                               {formatIncludeLabel(booking.parkFee)}
@@ -2092,7 +2133,7 @@ function buildAgentGroups(vanGroups: VanGroup[]): AgentGroup[] {
             driver: info?.driver ?? '—',
             plate: info?.plate ?? '—',
             phone: info?.phone ?? '—',
-            cashOnTour: displayCashOnTour(booking, index),
+            cashOnTour: booking.cashOnTour?.trim() ?? '',
           }
         }),
         totals: {
@@ -2101,6 +2142,11 @@ function buildAgentGroups(vanGroups: VanGroup[]): AgentGroup[] {
           infants: sorted.reduce((sum, b) => sum + b.infants, 0),
           tourLeaders: sorted.reduce((sum, b) => sum + b.tourLeaders, 0),
           pax: sorted.reduce((sum, b) => sum + totalPassengers(b), 0),
+          collect: sorted.reduce(
+            (sum, b) =>
+              sum + collectTotal(b.parkFee, b.program, b.adults, b.children, b.cashOnTour),
+            0,
+          ),
         },
       }
     })

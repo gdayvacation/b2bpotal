@@ -98,24 +98,12 @@ begin
     ('PP2609-0031', 'mumbai-holidays', 'Mumbai Holidays', 'MH-1243', 'PP', '2026-09-18', 'Not Included', null, 10, 2, 0, 1, 'Rahul Mehta', 'Karon', 'Centara Grand', '', '', '08:00', 'Confirmed'),
     ('JB2609-0013', 'delhi-travel', 'Delhi Travel Group', 'DT-1244', 'James Bond', '2026-09-18', 'Included', 'Not Included', 6, 1, 1, 0, 'Ananya Sharma', 'Patong', 'Holiday Inn Resort', '', '', '07:30', 'Confirmed'),
     ('PP2609-0032', 'abc-travel', 'ABC Travel India', 'ABC-1245', 'PP', '2026-09-19', 'Included', null, 12, 4, 0, 1, 'David Chen', 'Other', 'Laguna Phuket', '', '', 'Awaiting pickup time', 'Pending Pickup Time'),
-    ('JB2609-0014', 'golden-triangle', 'Golden Triangle Travel', 'GT-1246', 'James Bond', '2026-09-20', 'Included', 'Included', 4, 0, 0, 0, 'Michael Tan', 'Kata', 'The Shore Residences', '', '', '07:45', 'Confirmed'),
     ('PP2608-0001', 'abc-travel', 'ABC Travel India', 'ABC-1247', 'PP', '2026-08-15', 'Included', null, 6, 2, 0, 1, 'Arjun Patel', 'Patong', 'Burasari Resort', '', '', '07:30', 'Confirmed'),
     ('JB2608-0001', 'golden-triangle', 'Golden Triangle Travel', 'GT-1248', 'James Bond', '2026-08-16', 'Included', 'Included', 4, 1, 0, 0, 'Sana Kapoor', 'Kata', 'Kata Thani', '', '', '07:45', 'Confirmed'),
     ('PP2608-0002', 'mumbai-holidays', 'Mumbai Holidays', 'MH-1249', 'PP', '2026-08-22', 'Not Included', null, 8, 3, 1, 1, 'Neha Joshi', 'Karon', 'Hilton Phuket Arcadia', '', '', '08:00', 'Confirmed'),
     ('JB2608-0002', 'delhi-travel', 'Delhi Travel Group', 'DT-1250', 'James Bond', '2026-08-28', 'Included', 'Not Included', 7, 0, 0, 1, 'Vikram Singh', 'Patong', 'Amari Phuket', '', '', '07:30', 'Confirmed'),
     ('PP2609-0033', 'delhi-travel', 'Delhi Travel Group', 'DT-1251', 'PP', '2026-09-05', 'Included', null, 5, 1, 0, 0, 'Meera Iyer', 'Kata', 'Mom Tri''s Villa Royale', '', '', '07:45', 'Confirmed'),
-    ('JB2609-0015', 'mumbai-holidays', 'Mumbai Holidays', 'MH-1252', 'James Bond', '2026-09-10', 'Included', 'Included', 3, 2, 1, 0, 'Karan Malhotra', 'Other', 'Trisara Phuket', '', '', 'Awaiting pickup time', 'Pending Pickup Time'),
-    ('PP2609-0034', 'golden-triangle', 'Golden Triangle Travel', 'GT-1253', 'PP', '2026-09-25', 'Included', null, 9, 2, 0, 1, 'Anita Rao', 'Patong', 'Indigo Pearl', '', '', '07:30', 'Confirmed'),
-    ('JB2609-0016', 'abc-travel', 'ABC Travel India', 'ABC-1254', 'James Bond', '2026-09-28', 'Not Included', 'Included', 4, 0, 0, 0, 'Liam Wright', 'Karon', 'Movenpick Resort', '', '', '08:00', 'Confirmed'),
-    ('PP2610-0001', 'abc-travel', 'ABC Travel India', 'ABC-1255', 'PP', '2026-10-03', 'Included', null, 11, 3, 1, 1, 'Sophie Bennett', 'Patong', 'Holiday Inn Resort', '', '', '07:30', 'Confirmed'),
-    ('JB2610-0001', 'mumbai-holidays', 'Mumbai Holidays', 'MH-1256', 'James Bond', '2026-10-05', 'Included', 'Included', 6, 1, 0, 0, 'Ravi Desai', 'Kata', 'Sawasdee Village', '', '', '07:45', 'Confirmed'),
-    ('PP2610-0002', 'delhi-travel', 'Delhi Travel Group', 'DT-1257', 'PP', '2026-10-12', 'Not Included', null, 7, 2, 0, 1, 'Ishaan Gupta', 'Karon', 'Centara Karon', '', '', '08:00', 'Confirmed'),
-    ('JB2610-0002', 'golden-triangle', 'Golden Triangle Travel', 'GT-1258', 'James Bond', '2026-10-18', 'Included', 'Not Included', 5, 0, 0, 0, 'Elena Rossi', 'Patong', 'Novotel Phuket', '', '', '07:30', 'Confirmed'),
-    ('PP2610-0003', 'abc-travel', 'ABC Travel India', 'ABC-1259', 'PP', '2026-10-25', 'Included', null, 8, 1, 1, 0, 'Hannah Cole', 'Other', 'The Nai Harn', '', '', 'Awaiting pickup time', 'Pending Pickup Time'),
-    ('PP2611-0001', 'mumbai-holidays', 'Mumbai Holidays', 'MH-1260', 'PP', '2026-11-02', 'Included', null, 10, 4, 0, 1, 'Aisha Khan', 'Patong', 'Baan Yin Dee', '', '', '07:30', 'Confirmed'),
-    ('JB2611-0001', 'delhi-travel', 'Delhi Travel Group', 'DT-1261', 'James Bond', '2026-11-08', 'Included', 'Included', 4, 2, 0, 0, 'Rohan Mehta', 'Kata', 'Boathouse', '', '', '07:45', 'Confirmed'),
-    ('PP2611-0002', 'golden-triangle', 'Golden Triangle Travel', 'GT-1262', 'PP', '2026-11-15', 'Not Included', null, 6, 0, 0, 1, 'Claire Dubois', 'Karon', 'Beyond Resort Karon', '', '', '08:00', 'Confirmed'),
-    ('JB2611-0002', 'abc-travel', 'ABC Travel India', 'ABC-1263', 'James Bond', '2026-11-22', 'Included', 'Included', 8, 3, 1, 0, 'Tom Hughes', 'Patong', 'Impiana Patong', '', '', '07:30', 'Confirmed')
+    ('JB2609-0015', 'mumbai-holidays', 'Mumbai Holidays', 'MH-1252', 'James Bond', '2026-09-10', 'Included', 'Included', 3, 2, 1, 0, 'Karan Malhotra', 'Other', 'Trisara Phuket', '', '', 'Awaiting pickup time', 'Pending Pickup Time')
   on conflict (code) do update set
     agent_slug = excluded.agent_slug,
     agent_name = excluded.agent_name,
@@ -145,7 +133,7 @@ begin
     'agents', v_agents,
     'pickup_zones', v_zones,
     'bookings', v_bookings,
-    'seeded_booking_codes', 63
+    'seeded_booking_codes', 51
   );
 end;
 $$;

@@ -23,7 +23,7 @@ import type {
   VanMeta,
   VanSplit,
 } from '@/lib/types'
-import { dayBoatPlanKey, dayVehiclePlanKey, emptyDayBoatPlan, emptyDayVehiclePlan, normalizeBoatCapacities, normalizeBoatNames } from '@/lib/types'
+import { dayBoatPlanKey, dayVehiclePlanKey, emptyDayBoatPlan, emptyDayVehiclePlan, normalizeBoatCapacities, normalizeBoatGuides, normalizeBoatNames } from '@/lib/types'
 
 type AgentRow = {
   slug: string
@@ -68,6 +68,10 @@ type BookingRow = {
   note: string
   cash_on_tour?: string | null
   transfer_extra_charge?: string | null
+  private_transfer_vehicle?: string | null
+  private_transfer_price?: string | null
+  private_driver_name?: string | null
+  private_driver_phone?: string | null
   pickup_time: string
   status: Booking['status']
 }
@@ -86,6 +90,7 @@ type BoatPlanRow = {
   capacity_3: number
   capacities?: number[] | string | null
   boat_names?: string[] | string | null
+  boat_guides?: unknown
 }
 
 type BoatAssignmentRow = {
@@ -206,6 +211,13 @@ function mapBooking(row: BookingRow): Booking {
     note: row.note ?? '',
     cashOnTour: row.cash_on_tour ?? '',
     transferExtraCharge: row.transfer_extra_charge ?? '',
+    privateTransferVehicle:
+      row.private_transfer_vehicle === 'Car' || row.private_transfer_vehicle === 'Van'
+        ? row.private_transfer_vehicle
+        : '',
+    privateTransferPrice: row.private_transfer_price ?? '',
+    privateDriverName: row.private_driver_name ?? '',
+    privateDriverPhone: row.private_driver_phone ?? '',
     pickupTime: row.pickup_time,
     status: row.status,
   }
@@ -232,6 +244,10 @@ function bookingToRow(booking: Booking): BookingRow {
     note: booking.note ?? '',
     cash_on_tour: booking.cashOnTour ?? '',
     transfer_extra_charge: booking.transferExtraCharge ?? '',
+    private_transfer_vehicle: booking.privateTransferVehicle ?? '',
+    private_transfer_price: booking.privateTransferPrice ?? '',
+    private_driver_name: booking.privateDriverName ?? '',
+    private_driver_phone: booking.privateDriverPhone ?? '',
     pickup_time: booking.pickupTime,
     status: booking.status,
   }
@@ -300,6 +316,34 @@ function parseBoatNames(plan: BoatPlanRow, boatCount: number): string[] {
   return normalizeBoatNames(fromJson, boatCount)
 }
 
+function parseBoatGuides(plan: BoatPlanRow, boatCount: number) {
+  const raw = plan.boat_guides
+  let fromJson: unknown[] | null = null
+  if (Array.isArray(raw)) {
+    fromJson = raw
+  } else if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (Array.isArray(parsed)) fromJson = parsed
+    } catch {
+      fromJson = null
+    }
+  }
+  const mapped = (fromJson ?? []).map((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return { guideName: '', guidePhone: '', assistantName: '', assistantPhone: '' }
+    }
+    const row = entry as Record<string, unknown>
+    return {
+      guideName: String(row.guideName ?? row.guide_name ?? ''),
+      guidePhone: String(row.guidePhone ?? row.guide_phone ?? ''),
+      assistantName: String(row.assistantName ?? row.assistant_name ?? ''),
+      assistantPhone: String(row.assistantPhone ?? row.assistant_phone ?? ''),
+    }
+  })
+  return normalizeBoatGuides(mapped, boatCount)
+}
+
 function buildBoatPlans(
   plans: BoatPlanRow[],
   assignments: BoatAssignmentRow[],
@@ -314,6 +358,7 @@ function buildBoatPlans(
       program: plan.program,
       capacities,
       names: parseBoatNames(plan, capacities.length),
+      guides: parseBoatGuides(plan, capacities.length),
       assignments: {},
     }
   }
@@ -714,6 +759,7 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
   const supabase = getSupabaseBrowserClient()
   const capacities = normalizeBoatCapacities(plan.capacities)
   const boat_names = normalizeBoatNames(plan.names, capacities.length)
+  const boat_guides = normalizeBoatGuides(plan.guides, capacities.length)
   const { error: planError } = await supabase.from('day_boat_plans').upsert({
     date: plan.date,
     program: plan.program,
@@ -722,6 +768,7 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
     capacity_3: capacities[2] ?? capacities[0] ?? 44,
     capacities,
     boat_names,
+    boat_guides,
   })
   if (planError) throw new Error(`upsert boat plan: ${planError.message}`)
 

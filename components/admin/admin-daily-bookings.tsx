@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Bus,
   CalendarIcon,
+  ClipboardList,
   Minus,
   Plus,
   Printer,
@@ -33,15 +34,18 @@ import {
   MAX_DAY_BOATS,
   boatDisplayName,
   boatNumbersForPlan,
+  emptyBoatGuide,
   isActiveBooking,
   isNoTransfer,
   totalPassengers,
+  type BoatGuide,
   type BoatNumber,
   type Booking,
   type Program,
   type VanSplit,
 } from '@/lib/types'
 import { listVanNumbers, paxOnVan, primaryVan, sortOrderOnVan } from '@/lib/vehicle-assign'
+import { boatTheme } from '@/lib/boat-theme'
 import { cn } from '@/lib/utils'
 
 type BoardMode = 'vehicles' | 'boats'
@@ -136,7 +140,9 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
     clearDayBoatAssignments,
     resolveVanMeta,
     getCheckInAttendance,
+    getCheckInEnrollments,
     setBoatName,
+    setBoatGuide,
   } = usePortal()
 
   const [selectedDate, setSelectedDate] = usePortalDefaultDateISO()
@@ -303,10 +309,12 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
           vanMeta={vehiclePlan.vanMeta}
           resolveVanMeta={resolveVanMeta}
           isNoShow={(code) => getCheckInAttendance(selectedDate, program, code) === 'no-show'}
+          getEnrollments={(code) => getCheckInEnrollments(selectedDate, program, code)}
           onAssignBooking={(code, boat) => assignBookingToBoat(selectedDate, program, code, boat)}
           onAssignVan={(van, boat) => assignVanToBoat(selectedDate, program, van, boat)}
           onCapacity={(boat, capacity) => setBoatCapacity(selectedDate, program, boat, capacity)}
           onRename={(boat, name) => setBoatName(selectedDate, program, boat, name)}
+          onSetGuide={(boat, guide) => setBoatGuide(selectedDate, program, boat, guide)}
           onAddBoat={(capacity) => addDayBoat(selectedDate, program, capacity)}
           onRemoveBoat={(boat) => removeDayBoat(selectedDate, program, boat)}
           onResetCapacities={() => resetDayBoatCapacities(selectedDate, program)}
@@ -372,10 +380,12 @@ function BoatBoard({
   vanMeta,
   resolveVanMeta,
   isNoShow,
+  getEnrollments,
   onAssignBooking,
   onAssignVan,
   onCapacity,
   onRename,
+  onSetGuide,
   onAddBoat,
   onRemoveBoat,
   onResetCapacities,
@@ -392,10 +402,12 @@ function BoatBoard({
   vanMeta: Record<string, { plate: string; driver: string; phone: string }>
   resolveVanMeta: ReturnType<typeof usePortal>['resolveVanMeta']
   isNoShow: (bookingCode: string) => boolean
+  getEnrollments: (bookingCode: string) => ReturnType<ReturnType<typeof usePortal>['getCheckInEnrollments']>
   onAssignBooking: (code: string, boat: BoatNumber | null) => void
   onAssignVan: (van: number, boat: BoatNumber | null) => void
   onCapacity: (boat: BoatNumber, capacity: number) => void
   onRename: (boat: BoatNumber, name: string) => void
+  onSetGuide: (boat: BoatNumber, guide: Partial<BoatGuide>) => void
   onAddBoat: (capacity?: number) => void
   onRemoveBoat: (boat: BoatNumber) => void
   onResetCapacities: () => void
@@ -408,6 +420,10 @@ function BoatBoard({
   const [selectedGuest, setSelectedGuest] = useState<Booking | null>(null)
   const [dragVan, setDragVan] = useState<number | null>(null)
   const [dropTarget, setDropTarget] = useState<'pool' | BoatNumber | null>(null)
+  const [editingBoat, setEditingBoat] = useState<BoatNumber | null>(null)
+  const [editDraft, setEditDraft] = useState('')
+  const [printTarget, setPrintTarget] = useState<'board' | 'guide'>('board')
+  const [showAssistantFor, setShowAssistantFor] = useState<Record<number, boolean>>({})
 
   function clearDrag() {
     setDragVan(null)
@@ -418,6 +434,29 @@ function BoatBoard({
     if (dragVan === null) return
     onAssignVan(dragVan, target === 'pool' ? null : target)
     clearDrag()
+  }
+
+  function handlePrintGuide() {
+    setPrintTarget('guide')
+    window.setTimeout(() => {
+      const previous = document.title
+      const programShort = program === 'PP' ? 'PP' : 'JB'
+      document.title = `GuideJO-${date}-${programShort}`
+      document.body.classList.add('printing-guide-jo')
+      const restore = () => {
+        document.title = previous
+        document.body.classList.remove('printing-guide-jo')
+        window.removeEventListener('afterprint', restore)
+        setPrintTarget('board')
+      }
+      window.addEventListener('afterprint', restore)
+      window.print()
+    }, 50)
+  }
+
+  function handlePrintBoard() {
+    setPrintTarget('board')
+    window.setTimeout(() => onPrint(), 0)
   }
 
   const boatNumbers = boatNumbersForPlan(plan)
@@ -441,6 +480,10 @@ function BoatBoard({
               a.code.localeCompare(b.code),
           )
         const pax = items.reduce((sum, booking) => sum + totalPassengers(booking), 0)
+        const adults = items.reduce((sum, booking) => sum + booking.adults, 0)
+        const children = items.reduce((sum, booking) => sum + booking.children, 0)
+        const infants = items.reduce((sum, booking) => sum + booking.infants, 0)
+        const tourLeaders = items.reduce((sum, booking) => sum + booking.tourLeaders, 0)
         const zone =
           [...new Set(items.map((booking) => booking.pickupZone).filter(Boolean))].join(' · ') ||
           '—'
@@ -454,7 +497,19 @@ function BoatBoard({
         if (boatVotes.size === 1) assignedBoat = [...boatVotes.keys()][0]
         else if (boatVotes.size > 1) boatMixed = true
         const meta = resolveVanMeta(van, vanMeta[String(van)])
-        return { van, items, pax, zone, assignedBoat, boatMixed, meta }
+        return {
+          van,
+          items,
+          pax,
+          adults,
+          children,
+          infants,
+          tourLeaders,
+          zone,
+          assignedBoat,
+          boatMixed,
+          meta,
+        }
       })
       .filter((group) => group.items.length > 0)
       .sort((a, b) => a.van - b.van)
@@ -516,7 +571,7 @@ function BoatBoard({
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button type="button" variant="outline" size="sm" className="sm:hidden" onClick={onPrint}>
+              <Button type="button" variant="outline" size="sm" className="sm:hidden" onClick={handlePrintBoard}>
                 <Printer data-icon="inline-start" />
                 Print
               </Button>
@@ -696,36 +751,21 @@ function BoatBoard({
                       >
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div className="min-w-0">
-                            <p className="text-base font-semibold text-teal-950">Van {group.van}</p>
-                            <p className="mt-0.5 text-sm text-teal-900/55">
-                              {group.zone} · {group.items.length} guest
-                              {group.items.length === 1 ? '' : 's'} · {group.pax} pax
+                            <p className="text-base font-semibold text-teal-950">
+                              VAN {group.van}
                             </p>
-                            {group.meta.driver.trim() ? (
-                              <p className="mt-0.5 text-xs text-teal-900/45">
-                                {group.meta.driver}
-                                {group.meta.plate.trim() ? ` · ${group.meta.plate}` : ''}
-                              </p>
-                            ) : null}
+                            <p className="mt-1 text-sm tabular-nums text-teal-900/70">
+                              AD {group.adults}
+                              {group.children ? ` + CHD ${group.children}` : ''}
+                              {group.infants ? ` + INF ${group.infants}` : ''}
+                              {group.tourLeaders ? ` + TL ${group.tourLeaders}` : ''}
+                            </p>
+                            <p className="mt-0.5 text-xs text-teal-900/45">{group.zone}</p>
                           </div>
                           <span className="rounded-lg bg-teal-50 px-2.5 py-1 text-sm font-semibold tabular-nums text-teal-800">
                             {group.pax} pax
                           </span>
                         </div>
-                        <ul className="mt-2 space-y-1">
-                          {group.items.map((booking) => (
-                            <li
-                              key={booking.code}
-                              className="truncate text-sm text-teal-900/70"
-                              title={booking.leadGuest}
-                            >
-                              {booking.leadGuest}{' '}
-                              <span className="tabular-nums text-teal-900/40">
-                                · {totalPassengers(booking)}
-                              </span>
-                            </li>
-                          ))}
-                        </ul>
                         <div
                           className={cn(
                             'mt-3 grid gap-1.5',
@@ -737,7 +777,10 @@ function BoatBoard({
                               key={boat}
                               type="button"
                               onClick={() => onAssignVan(group.van, boat)}
-                              className="rounded-xl bg-teal-800 px-2 py-2 text-xs font-semibold text-white transition-colors hover:bg-teal-900"
+                              className={cn(
+                                'rounded-xl px-2 py-2 text-xs font-semibold transition-colors',
+                                boatTheme(boat).badge,
+                              )}
                             >
                               {boatDisplayName(plan, boat)}
                             </button>
@@ -761,7 +804,13 @@ function BoatBoard({
                     {mixedVans.map((group) => (
                       <li key={group.van} className="px-4 py-3 sm:px-5">
                         <p className="text-sm font-semibold text-teal-950">
-                          Van {group.van} · {group.pax} pax
+                          VAN {group.van} · {group.pax} pax
+                        </p>
+                        <p className="mt-0.5 text-xs tabular-nums text-teal-900/60">
+                          AD {group.adults}
+                          {group.children ? ` + CHD ${group.children}` : ''}
+                          {group.infants ? ` + INF ${group.infants}` : ''}
+                          {group.tourLeaders ? ` + TL ${group.tourLeaders}` : ''}
                         </p>
                         <div
                           className={cn(
@@ -774,7 +823,10 @@ function BoatBoard({
                               key={boat}
                               type="button"
                               onClick={() => onAssignVan(group.van, boat)}
-                              className="rounded-lg bg-amber-800 px-2 py-1.5 text-xs font-semibold text-white hover:bg-amber-900"
+                              className={cn(
+                                'rounded-lg px-2 py-1.5 text-xs font-semibold text-white',
+                                boatTheme(boat).badge,
+                              )}
                             >
                               {boatDisplayName(plan, boat)}
                             </button>
@@ -865,13 +917,15 @@ function BoatBoard({
                 const freeGuests = noTransferOnBoat(boat)
                 const bookingCount =
                   vansHere.reduce((sum, group) => sum + group.items.length, 0) + freeGuests.length
+                const theme = boatTheme(boat)
                 return (
                   <Surface
                     key={boat}
                     className={cn(
                       'flex min-h-0 flex-col overflow-hidden transition-colors',
-                      over && 'border-amber-500/40',
-                      dropTarget === boat && dragVan !== null && 'ring-2 ring-teal-600/50',
+                      theme.sheet,
+                      over && 'border-amber-500/50',
+                      dropTarget === boat && dragVan !== null && cn('ring-2', theme.ring),
                     )}
                     onDragOver={(event) => {
                       if (dragVan === null) return
@@ -886,23 +940,55 @@ function BoatBoard({
                       handleVanDrop(boat)
                     }}
                   >
-                    <div className="shrink-0 border-b border-teal-900/8 px-4 py-3.5">
+                    <div className={cn('shrink-0 border-b px-4 py-3.5', theme.headerBorder)}>
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0 flex-1">
-                          <input
-                            type="text"
-                            value={plan.names?.[boat - 1] ?? ''}
-                            placeholder={`Boat ${boat}`}
-                            maxLength={40}
-                            onChange={(event) => onRename(boat, event.target.value)}
-                            className="h-8 w-full min-w-0 rounded-lg border border-transparent bg-transparent px-1 text-lg font-semibold text-teal-950 outline-none placeholder:text-teal-950 focus:border-teal-900/15 focus:bg-white print:border-0"
-                            aria-label={`Boat ${boat} name`}
-                          />
-                          <p className="px-1 text-[10px] font-medium tracking-wide text-teal-800/45 uppercase">
-                            #{boat} · edit name
-                          </p>
+                          {editingBoat === boat ? (
+                            <input
+                              type="text"
+                              autoFocus
+                              value={editDraft}
+                              maxLength={40}
+                              onChange={(event) => setEditDraft(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  onRename(boat, editDraft)
+                                  setEditingBoat(null)
+                                }
+                                if (event.key === 'Escape') {
+                                  setEditingBoat(null)
+                                }
+                              }}
+                              onBlur={() => {
+                                onRename(boat, editDraft)
+                                setEditingBoat(null)
+                              }}
+                              className="h-8 w-full min-w-0 rounded-lg border border-teal-900/15 bg-white px-1 text-lg font-semibold text-teal-950 outline-none focus:border-teal-700/40 print:border-0"
+                              aria-label={`${boatDisplayName(plan, boat)} name`}
+                            />
+                          ) : (
+                            <div className="flex min-w-0 items-start gap-2 px-1">
+                              <span
+                                className={cn('mt-1.5 size-3 shrink-0 rounded-full', theme.swatch)}
+                                aria-hidden
+                              />
+                              <div className="min-w-0">
+                                <p className={cn('truncate text-lg font-semibold leading-tight', theme.title)}>
+                                  {boatDisplayName(plan, boat)}
+                                </p>
+                                <span
+                                  className={cn(
+                                    'mt-0.5 inline-flex rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                                    theme.softBadge,
+                                  )}
+                                >
+                                  {theme.colorName}
+                                </span>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                        <div className="flex shrink-0 items-center gap-2">
+                        <div className="flex shrink-0 items-center gap-1.5">
                           <span
                             className={cn(
                               'rounded-lg px-2.5 py-1 text-sm font-semibold tabular-nums',
@@ -911,6 +997,28 @@ function BoatBoard({
                           >
                             {loadPax}/{capacity}
                           </span>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 px-2 text-teal-800/70 print:hidden"
+                            onMouseDown={(event) => {
+                              if (editingBoat === boat) event.preventDefault()
+                            }}
+                            onClick={() => {
+                              if (editingBoat === boat) {
+                                onRename(boat, editDraft)
+                                setEditingBoat(null)
+                                return
+                              }
+                              setEditDraft(
+                                plan.names?.[boat - 1]?.trim() || boatDisplayName(plan, boat),
+                              )
+                              setEditingBoat(boat)
+                            }}
+                          >
+                            {editingBoat === boat ? 'Done' : 'Edit'}
+                          </Button>
                           <Button
                             type="button"
                             variant="ghost"
@@ -926,6 +1034,7 @@ function BoatBoard({
                               ) {
                                 return
                               }
+                              if (editingBoat === boat) setEditingBoat(null)
                               onRemoveBoat(boat)
                             }}
                           >
@@ -946,7 +1055,7 @@ function BoatBoard({
                           size="icon"
                           className="size-8"
                           onClick={() => onCapacity(boat, capacity - 1)}
-                          aria-label={`Decrease Boat ${boat} capacity`}
+                          aria-label={`Decrease ${boatDisplayName(plan, boat)} capacity`}
                         >
                           <Minus className="size-3.5" />
                         </Button>
@@ -966,7 +1075,7 @@ function BoatBoard({
                           size="icon"
                           className="size-8"
                           onClick={() => onCapacity(boat, capacity + 1)}
-                          aria-label={`Increase Boat ${boat} capacity`}
+                          aria-label={`Increase ${boatDisplayName(plan, boat)} capacity`}
                         >
                           <Plus className="size-3.5" />
                         </Button>
@@ -992,10 +1101,16 @@ function BoatBoard({
                             <div className="flex items-start justify-between gap-2">
                               <div>
                                 <p className="text-sm font-semibold text-teal-950">
-                                  Van {group.van}
+                                  VAN {group.van}
                                 </p>
-                                <p className="text-xs text-teal-900/50">
-                                  {group.zone} · {group.pax} pax · drag to move
+                                <p className="mt-1 text-sm tabular-nums text-teal-900/70">
+                                  AD {group.adults}
+                                  {group.children ? ` + CHD ${group.children}` : ''}
+                                  {group.infants ? ` + INF ${group.infants}` : ''}
+                                  {group.tourLeaders ? ` + TL ${group.tourLeaders}` : ''}
+                                </p>
+                                <p className="mt-0.5 text-xs text-teal-900/45">
+                                  Total {group.pax} pax · drag to move
                                 </p>
                               </div>
                               <Button
@@ -1008,16 +1123,6 @@ function BoatBoard({
                                 Unassign
                               </Button>
                             </div>
-                            <ul className="mt-2 space-y-0.5">
-                              {group.items.map((booking) => (
-                                <li key={booking.code} className="text-sm text-teal-900/75">
-                                  {booking.leadGuest}{' '}
-                                  <span className="tabular-nums text-teal-900/40">
-                                    · {totalPassengers(booking)}
-                                  </span>
-                                </li>
-                              ))}
-                            </ul>
                           </div>
                         ))}
 
@@ -1067,6 +1172,133 @@ function BoatBoard({
           </div>
         </div>
       )}
+
+      {bookings.length > 0 ? (
+        <Surface className="mt-5 p-5 print:hidden">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <div className="flex items-center gap-2">
+                <ClipboardList className="size-5 text-teal-700/50" />
+                <h2 className="font-display text-xl font-semibold text-teal-950">
+                  Guide Job Order
+                </h2>
+              </div>
+              <p className="mt-1.5 text-sm text-teal-900/55">
+                Add guide and assistant for each boat, then print the passenger list grouped by van
+                (guest names from check-in / booking).
+              </p>
+            </div>
+            <Button type="button" size="sm" onClick={handlePrintGuide}>
+              <Printer data-icon="inline-start" />
+              Print Guide Job Order
+            </Button>
+          </div>
+
+          <div
+            className={cn(
+              'mt-5 grid gap-4',
+              boatNumbers.length <= 2
+                ? 'lg:grid-cols-2'
+                : boatNumbers.length === 3
+                  ? 'lg:grid-cols-3'
+                  : 'lg:grid-cols-2 xl:grid-cols-4',
+            )}
+          >
+            {boatNumbers.map((boat) => {
+              const guide = plan.guides?.[boat - 1] ?? emptyBoatGuide()
+              const loadPax = boatLoad(boat)
+              const vansHere = assignedVansByBoat(boat)
+              const freeGuests = noTransferOnBoat(boat)
+              const theme = boatTheme(boat)
+              const hasAssistant =
+                Boolean(guide.assistantName.trim() || guide.assistantPhone.trim()) ||
+                showAssistantFor[boat] === true
+              return (
+                <div
+                  key={`guide-${boat}`}
+                  className={cn('rounded-2xl border p-4', theme.sheet)}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="flex items-start gap-2">
+                        <span className={cn('mt-1.5 size-2.5 shrink-0 rounded-full', theme.swatch)} aria-hidden />
+                        <div className="min-w-0">
+                          <p className={cn('text-base font-semibold leading-tight', theme.title)}>
+                            {boatDisplayName(plan, boat)}
+                          </p>
+                          <span
+                            className={cn(
+                              'mt-0.5 inline-flex rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                              theme.softBadge,
+                            )}
+                          >
+                            {theme.colorName}
+                          </span>
+                        </div>
+                      </div>
+                      <p className="mt-0.5 text-xs text-teal-900/50">
+                        {loadPax} pax · {vansHere.length} van
+                        {vansHere.length === 1 ? '' : 's'}
+                        {freeGuests.length > 0 ? ` · ${freeGuests.length} no transfer` : ''}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-2.5">
+                    <GuideField
+                      label="Guide name"
+                      value={guide.guideName}
+                      onChange={(value) => onSetGuide(boat, { guideName: value })}
+                      placeholder="Guide full name"
+                    />
+                    <GuideField
+                      label="Guide phone"
+                      value={guide.guidePhone}
+                      onChange={(value) => onSetGuide(boat, { guidePhone: value })}
+                      placeholder="Phone number"
+                    />
+                    {hasAssistant ? (
+                      <>
+                        <GuideField
+                          label="Assistant guide"
+                          value={guide.assistantName}
+                          onChange={(value) => onSetGuide(boat, { assistantName: value })}
+                          placeholder="Assistant name"
+                        />
+                        <GuideField
+                          label="Assistant phone"
+                          value={guide.assistantPhone}
+                          onChange={(value) => onSetGuide(boat, { assistantPhone: value })}
+                          placeholder="Phone number"
+                        />
+                        <button
+                          type="button"
+                          className="justify-self-start text-xs font-medium text-teal-800/55 transition-colors hover:text-red-700"
+                          onClick={() => {
+                            onSetGuide(boat, { assistantName: '', assistantPhone: '' })
+                            setShowAssistantFor((current) => ({ ...current, [boat]: false }))
+                          }}
+                        >
+                          Remove assistant
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="justify-self-start text-xs font-semibold text-teal-800/70 transition-colors hover:text-teal-950"
+                        onClick={() =>
+                          setShowAssistantFor((current) => ({ ...current, [boat]: true }))
+                        }
+                      >
+                        + Add assistant guide
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </Surface>
+      ) : null}
 
       <Dialog
         open={selectedGuest !== null}
@@ -1121,8 +1353,8 @@ function BoatBoard({
                       className={cn(
                         'rounded-xl px-3 py-3 text-sm font-semibold transition-colors',
                         plan.assignments[selectedGuest.code] === n
-                          ? 'bg-teal-800 text-white shadow-sm'
-                          : 'bg-teal-50 text-teal-800 hover:bg-teal-100',
+                          ? boatTheme(n).badge
+                          : boatTheme(n).softBadge,
                       )}
                     >
                       {boatDisplayName(plan, n)}
@@ -1154,7 +1386,12 @@ function BoatBoard({
         </DialogContent>
       </Dialog>
 
-      <div className="mt-6 hidden print:block">
+      <div
+        className={cn(
+          'mt-6 hidden',
+          printTarget === 'board' && 'print:block',
+        )}
+      >
         {boatNumbers.map((boat) => {
           const vansHere = assignedVansByBoat(boat)
           const freeGuests = noTransferOnBoat(boat)
@@ -1198,7 +1435,277 @@ function BoatBoard({
           )
         })}
       </div>
+
+      <div
+        className={cn(
+          'guide-job-order-print hidden',
+          printTarget === 'guide' && 'print:block',
+        )}
+      >
+        {boatNumbers.map((boat, boatIndex) => {
+          const guide = plan.guides?.[boat - 1] ?? emptyBoatGuide()
+          const vansHere = assignedVansByBoat(boat)
+          const freeGuests = noTransferOnBoat(boat)
+          const pax = boatLoad(boat)
+          const capacity = plan.capacities[boat - 1] ?? DEFAULT_BOAT_CAPACITY
+
+          const vanSections = vansHere.map((group) => ({
+            key: `print-van-${boat}-${group.van}`,
+            title: `Van ${group.van}${group.zone !== '—' ? ` · ${group.zone}` : ''} · ${group.pax} pax${group.meta.driver ? ` · Driver ${group.meta.driver}` : ''}`,
+            vanLabel: `Van ${group.van}`,
+            rows: group.items.flatMap((booking) =>
+              expandGuidePassengerRows(booking, getEnrollments(booking.code)),
+            ),
+          }))
+          const noTransferSection =
+            freeGuests.length > 0
+              ? {
+                  key: `print-nt-${boat}`,
+                  title: `No transfer · ${freeGuests.reduce((sum, b) => sum + totalPassengers(b), 0)} pax`,
+                  vanLabel: 'No transfer',
+                  rows: freeGuests.flatMap((booking) =>
+                    expandGuidePassengerRows(booking, getEnrollments(booking.code)),
+                  ),
+                }
+              : null
+
+          let rowNo = 0
+          const numberedSections = [
+            ...vanSections,
+            ...(noTransferSection ? [noTransferSection] : []),
+          ].map((section) => {
+            const startNo = rowNo
+            rowNo += section.rows.length
+            return { ...section, startNo }
+          })
+          const theme = boatTheme(boat)
+
+          return (
+            <div
+              key={`guide-print-${boat}`}
+              className={cn(
+                'guide-jo-boat mb-2',
+                boatIndex < boatNumbers.length - 1 && 'print:break-after-page',
+              )}
+            >
+              <div
+                className="guide-jo-color-bar mb-1.5 h-1.5 w-full rounded-sm"
+                style={{ backgroundColor: theme.printHex }}
+              />
+              <div className="guide-jo-header mb-1.5 flex items-end justify-between gap-3 border-b border-teal-900/25 pb-1.5">
+                <div>
+                  <p className="text-[8px] font-semibold tracking-[0.14em] text-teal-700/70 uppercase">
+                    G&apos;Day Tours Phuket · Guide Job Order
+                  </p>
+                  <h1 className="mt-0.5 text-[13px] leading-tight font-bold text-teal-950">
+                    <span
+                      className="mr-1.5 inline-block size-2.5 rounded-full align-middle"
+                      style={{ backgroundColor: theme.printHex }}
+                    />
+                    {boatDisplayName(plan, boat)} · {theme.colorName} ·{' '}
+                    {program === 'PP' ? 'PP' : 'JB'} ·{' '}
+                    {program === 'PP' ? 'Phi Phi Islands' : 'Phang Nga Bay'}
+                  </h1>
+                  <p className="mt-0.5 text-[9px] leading-tight text-teal-900/60">
+                    {formatLongDate(date)} · {pax} / {capacity} pax
+                  </p>
+                </div>
+                <div className="text-right text-[9px] leading-tight text-teal-900/70">
+                  <p>
+                    Guide:{' '}
+                    <span className="font-semibold text-teal-950">
+                      {guide.guideName || '—'}
+                    </span>
+                    {guide.guidePhone ? ` · ${guide.guidePhone}` : ''}
+                  </p>
+                  {guide.assistantName.trim() || guide.assistantPhone.trim() ? (
+                    <p className="mt-0.5">
+                      Assistant:{' '}
+                      <span className="font-semibold text-teal-950">
+                        {guide.assistantName || '—'}
+                      </span>
+                      {guide.assistantPhone ? ` · ${guide.assistantPhone}` : ''}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+
+              {numberedSections.length === 0 ? (
+                <p className="py-4 text-center text-[10px] text-neutral-500">No guests on this boat.</p>
+              ) : (
+                <div className="guide-jo-sections space-y-1.5">
+                  {numberedSections.map((section) => (
+                    <div key={section.key} className="guide-jo-van">
+                      <p className="guide-jo-van-title mb-0.5 text-[10px] leading-tight font-semibold text-teal-950">
+                        {section.title}
+                      </p>
+                      <GuidePassengerTable
+                        rows={section.rows}
+                        vanLabel={section.vanLabel}
+                        startNo={section.startNo}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <p className="guide-jo-footer mt-1 text-[8px] text-teal-900/50">
+                Total passengers on {boatDisplayName(plan, boat)}: {pax} / {capacity}
+              </p>
+            </div>
+          )
+        })}
+      </div>
+
+      <style>{`
+        @media print {
+          @page {
+            size: A4 portrait;
+            margin: 6mm;
+          }
+          body.printing-guide-jo * {
+            visibility: hidden !important;
+          }
+          body.printing-guide-jo .guide-job-order-print,
+          body.printing-guide-jo .guide-job-order-print * {
+            visibility: visible !important;
+          }
+          body.printing-guide-jo .guide-job-order-print {
+            display: block !important;
+            position: absolute !important;
+            left: 0 !important;
+            top: 0 !important;
+            width: 100% !important;
+            color: #042f2e !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          body.printing-guide-jo .guide-jo-table {
+            font-size: 8.5px !important;
+            line-height: 1.15 !important;
+          }
+          body.printing-guide-jo .guide-jo-table th,
+          body.printing-guide-jo .guide-jo-table td {
+            padding-top: 1px !important;
+            padding-bottom: 1px !important;
+          }
+        }
+      `}</style>
     </div>
+  )
+}
+
+function GuideField({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+}) {
+  return (
+    <label className="block">
+      <span className="text-[11px] font-semibold tracking-wide text-teal-800/55 uppercase">
+        {label}
+      </span>
+      <input
+        type="text"
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-1 h-9 w-full rounded-lg border border-teal-900/12 bg-white px-2.5 text-sm text-teal-950 outline-none placeholder:text-teal-900/30 focus:border-teal-700/40"
+      />
+    </label>
+  )
+}
+
+type GuidePassengerRow = {
+  bookingCode: string
+  slot: number
+  guestName: string
+  /** Shown only on lead guest row, e.g. "(2AD+2IF)". */
+  leadPaxTag: string
+  nationality: string
+  hotel: string
+}
+
+/** Compact booking mix for lead guest only — e.g. (2AD+1CHD+2IF). */
+function formatGuideLeadPaxTag(
+  booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>,
+) {
+  const parts: string[] = []
+  if (booking.adults > 0) parts.push(`${booking.adults}AD`)
+  if (booking.children > 0) parts.push(`${booking.children}CHD`)
+  if (booking.infants > 0) parts.push(`${booking.infants}IF`)
+  if (booking.tourLeaders > 0) parts.push(`${booking.tourLeaders}TL`)
+  return parts.length > 0 ? `(${parts.join('+')})` : ''
+}
+
+/** One print row per booking (lead guest). Extra seats are summarized in leadPaxTag. */
+function expandGuidePassengerRows(
+  booking: Booking,
+  enrollments: { firstName: string; lastName: string; nationality: string; seats: number }[] = [],
+): GuidePassengerRow[] {
+  const leadEnrollment = enrollments[0]
+  const enrolledName = leadEnrollment
+    ? [leadEnrollment.firstName, leadEnrollment.lastName].filter(Boolean).join(' ').trim()
+    : ''
+  return [
+    {
+      bookingCode: booking.code,
+      slot: 0,
+      guestName: enrolledName || booking.leadGuest,
+      leadPaxTag: formatGuideLeadPaxTag(booking),
+      nationality: leadEnrollment?.nationality || '',
+      hotel: booking.pickupHotel || '',
+    },
+  ]
+}
+
+function GuidePassengerTable({
+  rows,
+  vanLabel,
+  startNo,
+}: {
+  rows: GuidePassengerRow[]
+  vanLabel: string
+  startNo: number
+}) {
+  return (
+    <table className="guide-jo-table w-full border-collapse text-[10px] leading-tight">
+      <thead>
+        <tr className="border-b border-teal-900/20 text-left text-[8px] tracking-wide text-teal-900/60 uppercase">
+          <th className="w-6 py-0.5 pr-1.5 font-semibold">No.</th>
+          <th className="py-0.5 pr-1.5 font-semibold">Guest name</th>
+          <th className="w-[16%] py-0.5 pr-1.5 font-semibold">Nationality</th>
+          <th className="py-0.5 pr-1.5 font-semibold">Hotel</th>
+          <th className="w-[10%] py-0.5 font-semibold">Van</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row, index) => (
+          <tr key={`${row.bookingCode}-${row.slot}`} className="border-b border-teal-900/8">
+            <td className="py-0.5 pr-1.5 tabular-nums text-teal-900/50">{startNo + index + 1}</td>
+            <td className="py-0.5 pr-1.5 font-medium text-teal-950">
+              {row.guestName ? (
+                <>
+                  {row.guestName}
+                  {row.leadPaxTag ? (
+                    <span className="ml-1 font-normal text-teal-900/65">{row.leadPaxTag}</span>
+                  ) : null}
+                </>
+              ) : null}
+            </td>
+            <td className="py-0.5 pr-1.5 text-teal-900/70">{row.nationality || ''}</td>
+            <td className="py-0.5 pr-1.5 text-teal-900/80">{row.hotel || ''}</td>
+            <td className="py-0.5 text-teal-900/70">{vanLabel}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   )
 }
 
@@ -1231,9 +1738,7 @@ function GuestBoatChip({
             onClick={() => onAssign(boat)}
             className={cn(
               'rounded-md px-2 py-1 text-[11px] font-semibold',
-              assignedBoat === boat
-                ? 'bg-teal-800 text-white'
-                : 'bg-amber-100 text-amber-950 hover:bg-amber-200',
+              assignedBoat === boat ? boatTheme(boat).badge : boatTheme(boat).softBadge,
             )}
           >
             {labelForBoat(boat)}

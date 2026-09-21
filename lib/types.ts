@@ -42,12 +42,39 @@ export const CORE_PICKUP_ZONE_NAMES = ['Patong', 'Kata', 'Karon', 'Other'] as co
 export const NO_TRANSFER_ZONE = 'No Transfer' as const
 export const NO_TRANSFER_TIME = 'No transfer' as const
 
+/** Dedicated private car/van — billed to agent in back office only. */
+export const PRIVATE_TRANSFER_ZONE = 'Private' as const
+
+export type PrivateTransferVehicle = 'Car' | 'Van'
+
+export const PRIVATE_TRANSFER_OPTIONS: ReadonlyArray<{
+  vehicle: PrivateTransferVehicle
+  priceThb: number
+  label: string
+}> = [
+  { vehicle: 'Car', priceThb: 1400, label: 'Car · 1,400 THB' },
+  { vehicle: 'Van', priceThb: 1600, label: 'Van · 1,600 THB' },
+]
+
+export function formatPrivateTransferPrice(priceThb: number) {
+  return `${priceThb.toLocaleString('en-US')} THB`
+}
+
+export function privateTransferPriceFor(vehicle: PrivateTransferVehicle) {
+  const option = PRIVATE_TRANSFER_OPTIONS.find((item) => item.vehicle === vehicle)
+  return option ? formatPrivateTransferPrice(option.priceThb) : ''
+}
+
 export function isCorePickupZone(name: string) {
   return CORE_PICKUP_ZONE_NAMES.some((core) => core.toLowerCase() === name.trim().toLowerCase())
 }
 
 export function isNoTransfer(zone: string | null | undefined) {
   return (zone ?? '').trim().toLowerCase() === NO_TRANSFER_ZONE.toLowerCase()
+}
+
+export function isPrivateTransferZone(zone: string | null | undefined) {
+  return (zone ?? '').trim().toLowerCase() === PRIVATE_TRANSFER_ZONE.toLowerCase()
 }
 
 export type Agent = {
@@ -104,8 +131,45 @@ export type Booking = {
    * (typically for Other-zone hotels). Shown on voucher.
    */
   transferExtraCharge: string
+  /**
+   * Private transfer vehicle (Car/Van). Empty when not a private transfer.
+   * Price + driver are back-office / agent billing only — not shown on vouchers.
+   */
+  privateTransferVehicle: '' | PrivateTransferVehicle
+  privateTransferPrice: string
+  privateDriverName: string
+  privateDriverPhone: string
   pickupTime: string
   status: BookingStatus
+}
+
+export function isPrivateTransfer(
+  booking: Pick<Booking, 'pickupZone' | 'privateTransferVehicle'> | null | undefined,
+) {
+  if (!booking) return false
+  return (
+    Boolean(booking.privateTransferVehicle?.trim()) || isPrivateTransferZone(booking.pickupZone)
+  )
+}
+
+/** Shared join transfer (fleet vans) — not No Transfer and not Private. */
+export function isJoinTransfer(
+  booking: Pick<Booking, 'pickupZone' | 'privateTransferVehicle'> | null | undefined,
+) {
+  if (!booking) return false
+  return !isNoTransfer(booking.pickupZone) && !isPrivateTransfer(booking)
+}
+
+export function emptyPrivateTransferFields(): Pick<
+  Booking,
+  'privateTransferVehicle' | 'privateTransferPrice' | 'privateDriverName' | 'privateDriverPhone'
+> {
+  return {
+    privateTransferVehicle: '',
+    privateTransferPrice: '',
+    privateDriverName: '',
+    privateDriverPhone: '',
+  }
 }
 
 export type Availability = {
@@ -143,16 +207,32 @@ export type DayBoatPlan = {
   capacities: number[]
   /** Optional display names parallel to capacities (empty → "Boat N"). */
   names: string[]
+  /** Guide + assistant contact per boat (parallel to capacities). */
+  guides: BoatGuide[]
   /** booking code → boat number (1-based index into capacities) */
   assignments: Record<string, BoatNumber>
+}
+
+/** Guide job-order contacts for one boat on a day. */
+export type BoatGuide = {
+  guideName: string
+  guidePhone: string
+  assistantName: string
+  assistantPhone: string
 }
 
 export const DEFAULT_BOAT_CAPACITY = 44
 export const DEFAULT_BOAT_COUNT = 3
 export const MAX_DAY_BOATS = 8
+/** Display labels start at Boat 7 (fleet slot 1 → "Boat 7", 2 → "Boat 8", …). */
+export const DEFAULT_BOAT_LABEL_START = 7
 
 /** @deprecated Prefer {@link boatNumbersForPlan} — kept for call sites that assume the default 3. */
 export const BOAT_NUMBERS: BoatNumber[] = [1, 2, 3]
+
+export function defaultBoatLabel(boat: BoatNumber): string {
+  return `Boat ${DEFAULT_BOAT_LABEL_START + boat - 1}`
+}
 
 export function dayBoatPlanKey(date: string, program: Program) {
   return `${date}|${program}`
@@ -166,6 +246,33 @@ export function defaultBoatCapacities(count = DEFAULT_BOAT_COUNT): number[] {
 export function defaultBoatNames(count = DEFAULT_BOAT_COUNT): string[] {
   const n = Math.max(1, Math.min(MAX_DAY_BOATS, Math.floor(count) || DEFAULT_BOAT_COUNT))
   return Array.from({ length: n }, () => '')
+}
+
+export function emptyBoatGuide(): BoatGuide {
+  return { guideName: '', guidePhone: '', assistantName: '', assistantPhone: '' }
+}
+
+export function defaultBoatGuides(count = DEFAULT_BOAT_COUNT): BoatGuide[] {
+  const n = Math.max(1, Math.min(MAX_DAY_BOATS, Math.floor(count) || DEFAULT_BOAT_COUNT))
+  return Array.from({ length: n }, () => emptyBoatGuide())
+}
+
+export function normalizeBoatGuides(
+  guides: BoatGuide[] | null | undefined,
+  boatCount: number,
+): BoatGuide[] {
+  const count = Math.max(1, Math.min(MAX_DAY_BOATS, boatCount || DEFAULT_BOAT_COUNT))
+  const source = Array.isArray(guides) ? guides : []
+  return Array.from({ length: count }, (_, index) => {
+    const raw = source[index]
+    if (!raw || typeof raw !== 'object') return emptyBoatGuide()
+    return {
+      guideName: String(raw.guideName ?? '').trim().slice(0, 60),
+      guidePhone: String(raw.guidePhone ?? '').trim().slice(0, 30),
+      assistantName: String(raw.assistantName ?? '').trim().slice(0, 60),
+      assistantPhone: String(raw.assistantPhone ?? '').trim().slice(0, 30),
+    }
+  })
 }
 
 export function normalizeBoatCapacities(capacities: number[] | null | undefined): number[] {
@@ -201,7 +308,7 @@ export function boatDisplayName(
   const caps = normalizeBoatCapacities(plan.capacities)
   const names = normalizeBoatNames(plan.names, caps.length)
   const custom = names[boat - 1]?.trim()
-  return custom || `Boat ${boat}`
+  return custom || defaultBoatLabel(boat)
 }
 
 export function emptyDayBoatPlan(date: string, program: Program): DayBoatPlan {
@@ -211,6 +318,7 @@ export function emptyDayBoatPlan(date: string, program: Program): DayBoatPlan {
     program,
     capacities,
     names: defaultBoatNames(capacities.length),
+    guides: defaultBoatGuides(capacities.length),
     assignments: {},
   }
 }

@@ -108,6 +108,11 @@ create table if not exists public.bookings (
   note text not null default '',
   cash_on_tour text not null default '',
   transfer_extra_charge text not null default '',
+  private_transfer_vehicle text not null default ''
+    check (private_transfer_vehicle in ('', 'Car', 'Van')),
+  private_transfer_price text not null default '',
+  private_driver_name text not null default '',
+  private_driver_phone text not null default '',
   pickup_time text not null default 'Awaiting pickup time',
   status text not null default 'Pending Pickup Time'
     check (status in ('Confirmed', 'Pending Pickup Time', 'Cancelled')),
@@ -159,6 +164,7 @@ create table if not exists public.day_boat_plans (
   /** Source of truth for boat count + per-boat seats (e.g. [44,44,60]). */
   capacities jsonb not null default '[44, 44, 44]'::jsonb,
   boat_names jsonb not null default '["","",""]'::jsonb,
+  boat_guides jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now()),
   primary key (date, program)

@@ -1,11 +1,12 @@
 import type { Booking, VanSplit } from '@/lib/types'
-import { isNoTransfer, totalPassengers } from '@/lib/types'
+import { isNoTransfer, isPrivateTransfer, totalPassengers } from '@/lib/types'
 
 /**
  * Auto-assign vans by pickup zone. Same zone stays together.
  * Bookings always stay intact — never auto-split.
  * Oversized bookings (pax > capacity) are left unassigned so admin
- * can separate them manually. No Transfer bookings are skipped.
+ * can separate them manually. No Transfer and Private Transfer are skipped
+ * (private has its own driver).
  * Within a van, order is hotel → pickup time → booking code (pickup route).
  */
 export function autoAssignVans(
@@ -14,7 +15,7 @@ export function autoAssignVans(
 ): Record<string, VanSplit[]> {
   const byZone = new Map<string, Booking[]>()
   for (const booking of bookings) {
-    if (isNoTransfer(booking.pickupZone)) continue
+    if (isNoTransfer(booking.pickupZone) || isPrivateTransfer(booking)) continue
     const zone = booking.pickupZone || 'Other'
     const list = byZone.get(zone) ?? []
     list.push(booking)

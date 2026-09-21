@@ -29,10 +29,12 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
+import { boatTheme } from '@/lib/boat-theme'
 import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
 import {
   DEFAULT_BOAT_CAPACITY,
   DEFAULT_VAN_CAPACITY,
+  boatDisplayName,
   boatNumbersForPlan,
   emptyVanMeta,
   formatPaxBreakdown,
@@ -1296,22 +1298,37 @@ function VehicleBoard({
                 </div>
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                {byBoat.map(({ boat, capacity: boatCap, pax, items, over }) => (
+                {byBoat.map(({ boat, capacity: boatCap, pax, items, over }) => {
+                  const theme = boatTheme(boat)
+                  return (
                   <div
                     key={boat}
                     className={cn(
                       'rounded-xl border px-3 py-3',
-                      over
-                        ? 'border-amber-400 bg-amber-50/50'
-                        : 'border-teal-900/8 bg-teal-950/[0.02]',
+                      over ? 'border-amber-400 bg-amber-50/50' : theme.sheet,
                     )}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-semibold text-teal-950">Boat {boat}</p>
+                      <div className="flex min-w-0 items-start gap-1.5">
+                        <span className={cn('mt-1 size-2.5 shrink-0 rounded-full', theme.swatch)} />
+                        <div className="min-w-0">
+                          <p className={cn('truncate text-sm font-semibold leading-tight', theme.title)}>
+                            {boatDisplayName(boatPlan, boat)}
+                          </p>
+                          <span
+                            className={cn(
+                              'mt-0.5 inline-flex rounded px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide',
+                              theme.softBadge,
+                            )}
+                          >
+                            {theme.colorName}
+                          </span>
+                        </div>
+                      </div>
                       <span
                         className={cn(
                           'rounded-md px-2 py-0.5 text-xs font-semibold tabular-nums',
-                          over ? 'bg-amber-100 text-amber-900' : 'bg-white text-teal-800',
+                          over ? 'bg-amber-100 text-amber-900' : 'bg-white/80 text-teal-800',
                         )}
                       >
                         {pax}/{boatCap}
@@ -1321,7 +1338,8 @@ function VehicleBoard({
                       {items.length} booking{items.length === 1 ? '' : 's'}
                     </p>
                   </div>
-                ))}
+                  )
+                })}
               </div>
               {boatUnassignedPax > 0 ? (
                 <p className="mt-3 text-sm text-amber-900/80">

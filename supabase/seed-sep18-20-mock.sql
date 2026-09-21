@@ -1,20 +1,21 @@
--- Rich mock boards for 18–20 Sept 2026 (transfer + No Transfer).
+-- Rich mock boards for 18–19 Sept 2026 (transfer + No Transfer).
 -- Run in Supabase SQL Editor. Safe to re-run (deletes then re-inserts these dates).
+-- Does NOT seed 20 Sept or later — use real bookings from that date onward.
 
 delete from public.boat_assignments
 where booking_code in (
   select code from public.bookings
-  where date in ('2026-09-18', '2026-09-19', '2026-09-20')
+  where date in ('2026-09-18', '2026-09-19')
 );
 
 delete from public.van_assignments
 where booking_code in (
   select code from public.bookings
-  where date in ('2026-09-18', '2026-09-19', '2026-09-20')
+  where date in ('2026-09-18', '2026-09-19')
 );
 
 delete from public.bookings
-where date in ('2026-09-18', '2026-09-19', '2026-09-20');
+where date in ('2026-09-18', '2026-09-19');
 
 insert into public.bookings (
   code, agent_slug, agent_name, agent_ref, program, date,
@@ -65,26 +66,4 @@ insert into public.bookings (
   ('JB2609-0193', 'abc-travel', 'ABC Travel India', 'ABC-1300', 'James Bond', '2026-09-19', 'Included', 'Included', 2, 0, 0, 0, 'Alex Kim', 'Patong', 'ABC Hotel', '', '', '07:30', 'Confirmed'),
   ('JB2609-0194', 'mumbai-holidays', 'Mumbai Holidays', 'MH-1301', 'James Bond', '2026-09-19', 'Included', 'Included', 4, 0, 0, 0, 'Pier Only', 'No Transfer', '', '', 'Join boat directly', 'No transfer', 'Confirmed'),
   ('JB2609-0195', 'golden-triangle', 'Golden Triangle Travel', 'GT-1302', 'James Bond', '2026-09-19', 'Included', 'Included', 2, 0, 0, 0, 'Nadia Costa', 'Kata', 'Boathouse', '', '', '07:45', 'Confirmed'),
-  ('JB2609-0196', 'delhi-travel', 'Delhi Travel Group', 'DT-1303', 'James Bond', '2026-09-19', 'Included', 'Not Included', 1, 0, 0, 0, 'Ethan Brooks', 'Karon', 'Beyond Resort Karon', '', '', '08:00', 'Confirmed'),
-  -- ── 20 Sept PP ──
-  ('PP2609-0205', 'golden-triangle', 'Golden Triangle Travel', 'GT-1304', 'PP', '2026-09-20', 'Included', null, 2, 0, 0, 0, 'Anita Rao', 'Patong', 'Indigo Pearl', '', '', '07:30', 'Confirmed'),
-  ('PP2609-0206', 'abc-travel', 'ABC Travel India', 'ABC-1305', 'PP', '2026-09-20', 'Included', null, 2, 1, 0, 0, 'Liam Wright', 'Karon', 'Movenpick Resort', '', '', '08:00', 'Confirmed'),
-  ('PP2609-0207', 'mumbai-holidays', 'Mumbai Holidays', 'MH-1306', 'PP', '2026-09-20', 'Not Included', null, 2, 0, 0, 0, 'Own Transport 1', 'No Transfer', '', '', '', 'No transfer', 'Confirmed'),
-  ('PP2609-0208', 'delhi-travel', 'Delhi Travel Group', 'DT-1307', 'PP', '2026-09-20', 'Included', null, 1, 0, 0, 0, 'Sora Nakamura', 'Kata', 'Kata Palm Resort', '', '', '07:45', 'Confirmed'),
-  ('PP2609-0209', 'abc-travel', 'ABC Travel India', 'ABC-1308', 'PP', '2026-09-20', 'Included', null, 2, 0, 0, 0, 'Mia Andersson', 'Patong', 'Holiday Inn Resort', '', '', '07:30', 'Confirmed'),
-  ('PP2609-0210', 'golden-triangle', 'Golden Triangle Travel', 'GT-1309', 'PP', '2026-09-20', 'Included', null, 2, 0, 0, 0, 'Diego Ruiz', 'Karon', 'Centara Grand', '', '', '08:00', 'Confirmed'),
-  ('PP2609-0211', 'delhi-travel', 'Delhi Travel Group', 'DT-1310', 'PP', '2026-09-20', 'Included', null, 3, 0, 0, 0, 'Own Transport 2', 'No Transfer', '', '', 'Rental scooter', 'No transfer', 'Confirmed'),
-  ('PP2609-0212', 'mumbai-holidays', 'Mumbai Holidays', 'MH-1311', 'PP', '2026-09-20', 'Included', null, 1, 1, 0, 0, 'Fatima Zahra', 'Kata', 'Boathouse', '', '', '07:45', 'Confirmed'),
-  ('PP2609-0213', 'abc-travel', 'ABC Travel India', 'ABC-1312', 'PP', '2026-09-20', 'Not Included', null, 2, 0, 0, 0, 'Chris Evans', 'Patong', 'Impiana Patong', '', '', '07:30', 'Confirmed'),
-  ('PP2609-0214', 'golden-triangle', 'Golden Triangle Travel', 'GT-1313', 'PP', '2026-09-20', 'Included', null, 2, 0, 0, 0, 'Pending Other', 'Other', 'Trisara Phuket', '', '', 'Awaiting pickup time', 'Pending Pickup Time'),
-  ('PP2609-0215', 'mumbai-holidays', 'Mumbai Holidays', 'MH-1314', 'PP', '2026-09-20', 'Included', null, 2, 0, 1, 0, 'Olivia Green', 'Karon', 'Beyond Resort Karon', '', '', '08:00', 'Confirmed'),
-  ('PP2609-0216', 'delhi-travel', 'Delhi Travel Group', 'DT-1315', 'PP', '2026-09-20', 'Included', null, 2, 0, 0, 1, 'Own Transport 3', 'No Transfer', '', '', '', 'No transfer', 'Confirmed'),
-  -- ── 20 Sept JB ──
-  ('JB2609-0197', 'mumbai-holidays', 'Mumbai Holidays', 'MH-1316', 'James Bond', '2026-09-20', 'Included', 'Included', 2, 1, 0, 0, 'Karan Malhotra', 'Patong', 'Novotel Phuket', '', '', '07:30', 'Confirmed'),
-  ('JB2609-0198', 'abc-travel', 'ABC Travel India', 'ABC-1317', 'James Bond', '2026-09-20', 'Included', 'Included', 2, 0, 0, 0, 'Isabelle Moreau', 'Kata', 'Kata Palm Resort', '', '', '07:45', 'Confirmed'),
-  ('JB2609-0199', 'golden-triangle', 'Golden Triangle Travel', 'GT-1318', 'James Bond', '2026-09-20', 'Included', 'Not Included', 2, 0, 0, 0, 'Self Drive JB', 'No Transfer', '', '', '', 'No transfer', 'Confirmed'),
-  ('JB2609-0200', 'delhi-travel', 'Delhi Travel Group', 'DT-1319', 'James Bond', '2026-09-20', 'Included', 'Included', 1, 0, 0, 0, 'Noah Clark', 'Karon', 'Centara Grand', '', '', '08:00', 'Confirmed'),
-  ('JB2609-0201', 'mumbai-holidays', 'Mumbai Holidays', 'MH-1320', 'James Bond', '2026-09-20', 'Included', 'Included', 2, 0, 0, 0, 'Ava Patel', 'Patong', 'ABC Hotel', '', '', '07:30', 'Confirmed'),
-  ('JB2609-0202', 'abc-travel', 'ABC Travel India', 'ABC-1321', 'James Bond', '2026-09-20', 'Included', 'Included', 3, 0, 0, 0, 'Meet At Pier JB', 'No Transfer', '', '', 'Guide already there', 'No transfer', 'Confirmed'),
-  ('JB2609-0203', 'golden-triangle', 'Golden Triangle Travel', 'GT-1322', 'James Bond', '2026-09-20', 'Included', 'Not Included', 2, 0, 0, 0, 'Leo Schmidt', 'Kata', 'Boathouse', '', '', '07:45', 'Confirmed'),
-  ('JB2609-0204', 'delhi-travel', 'Delhi Travel Group', 'DT-1323', 'James Bond', '2026-09-20', 'Included', 'Included', 1, 1, 0, 0, 'Zoe Nguyen', 'Karon', 'Beyond Resort Karon', '', '', '08:00', 'Confirmed');
+  ('JB2609-0196', 'delhi-travel', 'Delhi Travel Group', 'DT-1303', 'James Bond', '2026-09-19', 'Included', 'Not Included', 1, 0, 0, 0, 'Ethan Brooks', 'Karon', 'Beyond Resort Karon', '', '', '08:00', 'Confirmed');

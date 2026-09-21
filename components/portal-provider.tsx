@@ -9,6 +9,18 @@ import {
   saveCheckInAttendanceMap,
   withCheckInAttendance,
 } from '@/lib/check-in-attendance'
+import {
+  enrolledSeatCount,
+  getCheckInEnrollments,
+  loadCheckInEnrollmentMap,
+  newEnrollmentId,
+  saveCheckInEnrollmentMap,
+  withCheckInEnrollment,
+  type CheckInEnrollment,
+  type CheckInScope,
+  type DayCheckInEnrollmentMap,
+} from '@/lib/check-in-enrollment'
+import { matchNationality } from '@/lib/nationalities'
 import { autoAssignVans, nextSortOrderForVan, normalizeAssignments, paxOnVan, reorderVanAssignments } from '@/lib/vehicle-assign'
 import {
   bookingClosedMessage,
@@ -52,6 +64,7 @@ import type {
   Agent,
   AgentStatus,
   Availability,
+  BoatGuide,
   BoatNumber,
   Booking,
   BookingActionOptions,
@@ -78,19 +91,27 @@ import {
   DEFAULT_PP_CAPACITY,
   MAX_DAY_BOATS,
   NO_TRANSFER_TIME,
+  PRIVATE_TRANSFER_ZONE,
   bookingClosureKey,
   dayBoatPlanKey,
   dayVehiclePlanKey,
   defaultBoatCapacities,
+  defaultBoatGuides,
   defaultBoatNames,
+  emptyBoatGuide,
   emptyDayBoatPlan,
   emptyDayVehiclePlan,
+  emptyPrivateTransferFields,
   emptyVanMeta,
   isActiveBooking,
   isCorePickupZone,
   isNoTransfer,
+  isPrivateTransfer,
+  isPrivateTransferZone,
   normalizeBoatCapacities,
+  normalizeBoatGuides,
   normalizeBoatNames,
+  privateTransferPriceFor,
   totalPassengers,
 } from '@/lib/types'
 
@@ -115,7 +136,17 @@ type PortalContextValue = {
   isBookingOpen: (travelDate: string) => boolean
   isCancelOpen: (travelDate: string) => boolean
   addBooking: (
-    booking: Omit<Booking, 'code' | 'status' | 'pickupTime' | 'transferExtraCharge'> & {
+    booking: Omit<
+      Booking,
+      | 'code'
+      | 'status'
+      | 'pickupTime'
+      | 'transferExtraCharge'
+      | 'privateTransferVehicle'
+      | 'privateTransferPrice'
+      | 'privateDriverName'
+      | 'privateDriverPhone'
+    > & {
       pickupTime?: string
       transferExtraCharge?: string
     },
@@ -152,6 +183,11 @@ type PortalContextValue = {
       parkFee?: Booking['parkFee']
       canoe?: Booking['canoe']
       transferExtraCharge?: string
+      pickupTime?: string
+      privateTransferVehicle?: Booking['privateTransferVehicle']
+      privateTransferPrice?: string
+      privateDriverName?: string
+      privateDriverPhone?: string
     },
     options?: BookingActionOptions,
   ) => { ok: true; booking: Booking } | { ok: false; error: string }
@@ -204,6 +240,35 @@ type PortalContextValue = {
     bookingCode: string,
     status: CheckInAttendance | null,
   ) => void
+  getCheckInEnrollments: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+  ) => CheckInEnrollment[]
+  recordGuestCheckIn: (input: {
+    date: string
+    program: Program
+    bookingCode: string
+    scope: CheckInScope
+    firstName: string
+    lastName: string
+    nationality: string
+    birthday: string
+    passportNumber: string
+  }) => { ok: true; enrollment: CheckInEnrollment } | { ok: false; error: string }
+  recordGuestCheckIns: (input: {
+    date: string
+    program: Program
+    bookingCode: string
+    scope: CheckInScope
+    guests: Array<{
+      firstName: string
+      lastName: string
+      nationality: string
+      birthday: string
+      passportNumber: string
+    }>
+  }) => { ok: true; count: number } | { ok: false; error: string }
   assignBookingToBoat: (
     date: string,
     program: Program,
@@ -218,6 +283,8 @@ type PortalContextValue = {
   ) => void
   /** Rename a boat for this day (empty resets to "Boat N"). */
   setBoatName: (date: string, program: Program, boat: BoatNumber, name: string) => void
+  /** Set guide / assistant contacts for a boat on this day. */
+  setBoatGuide: (date: string, program: Program, boat: BoatNumber, guide: Partial<BoatGuide>) => void
   /** Append a boat for this day (default capacity 44, or a custom rental size). */
   addDayBoat: (date: string, program: Program, capacity?: number) => void
   /** Remove a boat; guests on it become unassigned; higher boat numbers shift down. */
@@ -281,6 +348,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [dayVehiclePlans, setDayVehiclePlans] = useState<Record<string, DayVehiclePlan>>({})
   const [checkInAttendance, setCheckInAttendanceMap] =
     useState<DayCheckInAttendanceMap>({})
+  const [checkInEnrollment, setCheckInEnrollmentMap] =
+    useState<DayCheckInEnrollmentMap>({})
   const [fleetVans, setFleetVans] = useState<FleetVan[]>([])
   const [bookingCutoffs, setBookingCutoffs] = useState<BookingCutoffSettings>(DEFAULT_BOOKING_CUTOFFS)
   const [bookingClosures, setBookingClosures] = useState<BookingClosure[]>([])
@@ -288,6 +357,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     setCheckInAttendanceMap(loadCheckInAttendanceMap())
+    setCheckInEnrollmentMap(loadCheckInEnrollmentMap())
   }, [])
 
   useEffect(() => {
@@ -435,13 +505,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       const key = dayBoatPlanKey(date, program)
       const stored = dayBoatPlans[key]
       if (!stored) return emptyDayBoatPlan(date, program)
+      const capacities = normalizeBoatCapacities(stored.capacities)
       return {
         ...stored,
-        capacities: normalizeBoatCapacities(stored.capacities),
-        names: normalizeBoatNames(
-          stored.names,
-          normalizeBoatCapacities(stored.capacities).length,
-        ),
+        capacities,
+        names: normalizeBoatNames(stored.names, capacities.length),
+        guides: normalizeBoatGuides(stored.guides, capacities.length),
       }
     }
 
@@ -519,6 +588,115 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    const recordGuestCheckInsInternal = (input: {
+      date: string
+      program: Program
+      bookingCode: string
+      scope: CheckInScope
+      guests: Array<{
+        firstName: string
+        lastName: string
+        nationality: string
+        birthday: string
+        passportNumber: string
+      }>
+    }): { ok: true; count: number } | { ok: false; error: string } => {
+      if (!input.guests.length) return { ok: false, error: 'Add at least one guest.' }
+
+      const cleaned: CheckInEnrollment[] = []
+      for (let index = 0; index < input.guests.length; index += 1) {
+        const guest = input.guests[index]!
+        const firstName = guest.firstName.trim()
+        const lastName = guest.lastName.trim()
+        const nationality = guest.nationality.trim()
+        const birthday = guest.birthday.trim()
+        const passportNumber = guest.passportNumber.trim()
+        const label = input.guests.length > 1 ? `Guest ${index + 1}: ` : ''
+        if (!firstName) return { ok: false, error: `${label}Enter first name.` }
+        if (!lastName) return { ok: false, error: `${label}Enter last name.` }
+        const nationalityMatched = matchNationality(nationality)
+        if (!nationalityMatched) {
+          return { ok: false, error: `${label}Select a nationality from the list.` }
+        }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(birthday)) {
+          return { ok: false, error: `${label}Select birthday.` }
+        }
+        if (!passportNumber) return { ok: false, error: `${label}Enter passport number.` }
+        cleaned.push({
+          id: newEnrollmentId(),
+          firstName,
+          lastName,
+          nationality: nationalityMatched,
+          birthday,
+          passportNumber,
+          scope: input.scope,
+          seats: 1,
+          checkedInAt: new Date().toISOString(),
+        })
+      }
+
+      const booking = bookings.find(
+        (item) =>
+          item.code === input.bookingCode &&
+          isActiveBooking(item) &&
+          item.date === input.date &&
+          item.program === input.program,
+      )
+      if (!booking) {
+        return { ok: false, error: 'Booking not found for this date and program.' }
+      }
+
+      const existing = getCheckInEnrollments(
+        checkInEnrollment,
+        input.date,
+        input.program,
+        input.bookingCode,
+      )
+      const already = enrolledSeatCount(existing)
+      const seatsTotal = totalPassengers(booking)
+      if (already >= seatsTotal) {
+        return { ok: false, error: 'This booking is already fully checked in.' }
+      }
+      const remaining = Math.max(0, seatsTotal - already)
+      if (cleaned.length > remaining) {
+        return {
+          ok: false,
+          error: `Only ${remaining} seat${remaining === 1 ? '' : 's'} left to check in.`,
+        }
+      }
+
+      setCheckInEnrollmentMap((current) => {
+        let next = current
+        for (const enrollment of cleaned) {
+          next = withCheckInEnrollment(
+            next,
+            input.date,
+            input.program,
+            input.bookingCode,
+            enrollment,
+          )
+        }
+        saveCheckInEnrollmentMap(next)
+        return next
+      })
+
+      if (already + cleaned.length >= seatsTotal) {
+        setCheckInAttendanceMap((current) => {
+          const next = withCheckInAttendance(
+            current,
+            input.date,
+            input.program,
+            input.bookingCode,
+            'checked',
+          )
+          saveCheckInAttendanceMap(next)
+          return next
+        })
+      }
+
+      return { ok: true, count: cleaned.length }
+    }
+
     return {
       hydrated,
       loadError,
@@ -554,6 +732,41 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           })
         }
       },
+      getCheckInEnrollments: (date, program, bookingCode) =>
+        getCheckInEnrollments(checkInEnrollment, date, program, bookingCode),
+      recordGuestCheckIn: (input) => {
+        const batch = recordGuestCheckInsInternal({
+          date: input.date,
+          program: input.program,
+          bookingCode: input.bookingCode,
+          scope: input.scope,
+          guests: [
+            {
+              firstName: input.firstName,
+              lastName: input.lastName,
+              nationality: input.nationality,
+              birthday: input.birthday,
+              passportNumber: input.passportNumber,
+            },
+          ],
+        })
+        if (!batch.ok) return batch
+        return {
+          ok: true,
+          enrollment: {
+            id: newEnrollmentId(),
+            firstName: input.firstName.trim(),
+            lastName: input.lastName.trim(),
+            nationality: input.nationality.trim(),
+            birthday: input.birthday.trim(),
+            passportNumber: input.passportNumber.trim(),
+            scope: input.scope,
+            seats: 1,
+            checkedInAt: new Date().toISOString(),
+          },
+        }
+      },
+      recordGuestCheckIns: (input) => recordGuestCheckInsInternal(input),
       getDayVehiclePlan,
       getFleetVan,
       resolveVanMeta,
@@ -676,6 +889,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           note: input.note?.trim() ?? '',
           cashOnTour: input.cashOnTour?.trim() ?? '',
           transferExtraCharge,
+          ...emptyPrivateTransferFields(),
           code,
           pickupTime,
           status: pending ? 'Pending Pickup Time' : 'Confirmed',
@@ -915,16 +1129,58 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             patch.transferExtraCharge !== undefined
               ? patch.transferExtraCharge.trim()
               : existing.transferExtraCharge,
+          privateTransferVehicle:
+            patch.privateTransferVehicle !== undefined
+              ? patch.privateTransferVehicle
+              : existing.privateTransferVehicle,
+          privateTransferPrice:
+            patch.privateTransferPrice !== undefined
+              ? patch.privateTransferPrice.trim()
+              : existing.privateTransferPrice,
+          privateDriverName:
+            patch.privateDriverName !== undefined
+              ? patch.privateDriverName.trim()
+              : existing.privateDriverName,
+          privateDriverPhone:
+            patch.privateDriverPhone !== undefined
+              ? patch.privateDriverPhone.trim()
+              : existing.privateDriverPhone,
         }
 
         const noTransfer = isNoTransfer(next.pickupZone)
+        const privateTransfer = isPrivateTransfer(next)
+
         if (noTransfer) {
           next.pickupHotel = ''
           next.roomNumber = ''
           next.pickupTime = NO_TRANSFER_TIME
           next.transferExtraCharge = ''
+          Object.assign(next, emptyPrivateTransferFields())
+          next.status = 'Confirmed'
+        } else if (privateTransfer) {
+          next.pickupZone = PRIVATE_TRANSFER_ZONE
+          if (!next.pickupHotel) {
+            return { ok: false, error: 'Enter the pickup hotel.' }
+          }
+          const vehicle =
+            next.privateTransferVehicle === 'Car' || next.privateTransferVehicle === 'Van'
+              ? next.privateTransferVehicle
+              : null
+          if (!vehicle) {
+            return { ok: false, error: 'Choose Car (1,400 THB) or Van (1,600 THB).' }
+          }
+          next.privateTransferVehicle = vehicle
+          next.privateTransferPrice = privateTransferPriceFor(vehicle)
+          const pickupOverride =
+            patch.pickupTime !== undefined ? patch.pickupTime.trim() : next.pickupTime.trim()
+          if (!pickupOverride || pickupOverride.toLowerCase().includes('awaiting')) {
+            return { ok: false, error: 'Set the private transfer pickup time.' }
+          }
+          next.pickupTime = pickupOverride
+          next.transferExtraCharge = ''
           next.status = 'Confirmed'
         } else {
+          Object.assign(next, emptyPrivateTransferFields())
           if (!zones.some((zone) => zone.name === next.pickupZone)) {
             return { ok: false, error: 'Choose a valid pickup zone.' }
           }
@@ -936,14 +1192,20 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             !next.pickupTime ||
             next.pickupTime.toLowerCase().includes('awaiting') ||
             isNoTransfer(existing.pickupZone) ||
+            isPrivateTransfer(existing) ||
             next.pickupZone !== existing.pickupZone
           const pending = zone?.pending ?? next.pickupZone === 'Other'
-          if (awaiting || next.pickupZone !== existing.pickupZone) {
+          if (patch.pickupTime !== undefined && patch.pickupTime.trim()) {
+            next.pickupTime = patch.pickupTime.trim()
+          } else if (awaiting || next.pickupZone !== existing.pickupZone) {
             next.pickupTime = pending
               ? 'Awaiting pickup time'
               : getZoneTime(next.pickupZone)
           }
-          next.status = pending ? 'Pending Pickup Time' : 'Confirmed'
+          next.status =
+            next.pickupTime.toLowerCase().includes('awaiting') || pending
+              ? 'Pending Pickup Time'
+              : 'Confirmed'
           if (patch.transferExtraCharge === undefined) {
             const matchedHotel = hotels.find(
               (hotel) => hotel.name.toLowerCase() === next.pickupHotel.toLowerCase(),
@@ -982,13 +1244,20 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           changes.push(
             isNoTransfer(next.pickupZone)
               ? 'no transfer'
-              : isNoTransfer(existing.pickupZone)
-                ? 'add transfer'
-                : 'pickup zone',
+              : isPrivateTransfer(next)
+                ? 'private transfer'
+                : isNoTransfer(existing.pickupZone) || isPrivateTransfer(existing)
+                  ? 'add transfer'
+                  : 'pickup zone',
           )
         }
         if (next.pickupHotel !== existing.pickupHotel) changes.push('hotel')
         if (next.roomNumber !== existing.roomNumber) changes.push('room')
+        if (next.pickupTime !== existing.pickupTime) changes.push('pickup time')
+        if (next.privateTransferVehicle !== existing.privateTransferVehicle) {
+          changes.push('private vehicle')
+        }
+        if (next.privateDriverName !== existing.privateDriverName) changes.push('private driver')
         if (next.note !== existing.note) changes.push('note')
         if (next.cashOnTour !== existing.cashOnTour) changes.push('cash on tour')
         if (next.agentRef !== existing.agentRef) changes.push('voucher number')
@@ -1015,6 +1284,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
         if (isNoTransfer(existing.pickupZone)) {
           return { ok: false, error: 'No Transfer bookings do not need a pickup time.' }
+        }
+        if (isPrivateTransferZone(existing.pickupZone) || isPrivateTransfer(existing)) {
+          // private pickup time is edited via booking details (with vehicle/driver)
         }
         const trimmed = pickupTime.trim()
         if (!trimmed) return { ok: false, error: 'Enter a pickup time.' }
@@ -1328,26 +1600,58 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         upsertPlan(date, program, (plan) => {
           const capacities = normalizeBoatCapacities(plan.capacities)
           const names = normalizeBoatNames(plan.names, capacities.length)
+          const guides = normalizeBoatGuides(plan.guides, capacities.length)
           const index = boat - 1
           if (index < 0 || index >= capacities.length) return plan
           capacities[index] = Math.max(1, Math.floor(capacity) || 1)
-          return { ...plan, capacities, names }
+          return { ...plan, capacities, names, guides }
         })
       },
       setBoatName: (date, program, boat, name) => {
         upsertPlan(date, program, (plan) => {
           const capacities = normalizeBoatCapacities(plan.capacities)
           const names = normalizeBoatNames(plan.names, capacities.length)
+          const guides = normalizeBoatGuides(plan.guides, capacities.length)
           const index = boat - 1
           if (index < 0 || index >= names.length) return plan
           names[index] = name.trim().slice(0, 40)
-          return { ...plan, capacities, names }
+          return { ...plan, capacities, names, guides }
+        })
+      },
+      setBoatGuide: (date, program, boat, guide) => {
+        upsertPlan(date, program, (plan) => {
+          const capacities = normalizeBoatCapacities(plan.capacities)
+          const names = normalizeBoatNames(plan.names, capacities.length)
+          const guides = normalizeBoatGuides(plan.guides, capacities.length)
+          const index = boat - 1
+          if (index < 0 || index >= guides.length) return plan
+          const prev = guides[index] ?? emptyBoatGuide()
+          guides[index] = {
+            guideName:
+              guide.guideName !== undefined
+                ? guide.guideName.trim().slice(0, 60)
+                : prev.guideName,
+            guidePhone:
+              guide.guidePhone !== undefined
+                ? guide.guidePhone.trim().slice(0, 30)
+                : prev.guidePhone,
+            assistantName:
+              guide.assistantName !== undefined
+                ? guide.assistantName.trim().slice(0, 60)
+                : prev.assistantName,
+            assistantPhone:
+              guide.assistantPhone !== undefined
+                ? guide.assistantPhone.trim().slice(0, 30)
+                : prev.assistantPhone,
+          }
+          return { ...plan, capacities, names, guides }
         })
       },
       addDayBoat: (date, program, capacity) => {
         upsertPlan(date, program, (plan) => {
           const capacities = normalizeBoatCapacities(plan.capacities)
           const names = normalizeBoatNames(plan.names, capacities.length)
+          const guides = normalizeBoatGuides(plan.guides, capacities.length)
           if (capacities.length >= MAX_DAY_BOATS) return plan
           const nextCap = Math.max(
             1,
@@ -1357,6 +1661,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             ...plan,
             capacities: [...capacities, nextCap],
             names: [...names, ''],
+            guides: [...guides, emptyBoatGuide()],
           }
         })
       },
@@ -1364,18 +1669,26 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         upsertPlan(date, program, (plan) => {
           const capacities = normalizeBoatCapacities(plan.capacities)
           const names = normalizeBoatNames(plan.names, capacities.length)
+          const guides = normalizeBoatGuides(plan.guides, capacities.length)
           if (capacities.length <= 1) return plan
           const index = boat - 1
           if (index < 0 || index >= capacities.length) return plan
           const nextCaps = capacities.filter((_, i) => i !== index)
           const nextNames = names.filter((_, i) => i !== index)
+          const nextGuides = guides.filter((_, i) => i !== index)
           const assignments: Record<string, BoatNumber> = {}
           for (const [code, assigned] of Object.entries(plan.assignments)) {
             if (assigned === boat) continue
             if (assigned > boat) assignments[code] = assigned - 1
             else assignments[code] = assigned
           }
-          return { ...plan, capacities: nextCaps, names: nextNames, assignments }
+          return {
+            ...plan,
+            capacities: nextCaps,
+            names: nextNames,
+            guides: nextGuides,
+            assignments,
+          }
         })
       },
       resetDayBoatCapacities: (date, program) => {
@@ -1387,6 +1700,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             ...plan,
             capacities,
             names: normalizeBoatNames(plan.names, capacities.length),
+            guides: normalizeBoatGuides(plan.guides, capacities.length),
           }
         })
       },
@@ -1403,6 +1717,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             ...plan,
             capacities,
             names: defaultBoatNames(capacities.length),
+            guides: defaultBoatGuides(capacities.length),
             assignments,
           }
         })
@@ -1573,7 +1888,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }))
       },
     }
-  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, fleetVans, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
+  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, fleetVans, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }

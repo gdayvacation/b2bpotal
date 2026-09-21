@@ -48,7 +48,7 @@ import {
 } from '@/components/ui/table'
 import { formatShortDate, startOfToday, toISODate } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
-import { isNoTransfer, totalPassengers, type Booking, type Program } from '@/lib/types'
+import { isNoTransfer, isPrivateTransfer, totalPassengers, type Booking, type Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 /** Search only looks from 7 days ago through all future trips (keeps lists fast). */
@@ -111,19 +111,62 @@ function toTimeInputValue(pickupTime: string) {
 function BookingPickupCell({
   booking,
   onSetPickup,
+  onAddTransfer,
+  onEditPrivate,
 }: {
   booking: Booking
   onSetPickup: (booking: Booking) => void
+  onAddTransfer: (booking: Booking) => void
+  onEditPrivate: (booking: Booking) => void
 }) {
   const cancelled = booking.status === 'Cancelled'
-  const canEdit = !cancelled && !isNoTransfer(booking.pickupZone)
+  const noTransfer = isNoTransfer(booking.pickupZone)
+  const privateTransfer = isPrivateTransfer(booking)
   const awaiting = booking.status === 'Pending Pickup Time'
 
-  if (!canEdit) {
+  if (cancelled) {
     return (
       <span>
         {booking.pickupZone} · {booking.pickupTime}
       </span>
+    )
+  }
+
+  if (noTransfer) {
+    return (
+      <button
+        type="button"
+        className="inline-flex max-w-full items-center gap-1 rounded-md text-left text-teal-900 transition-colors hover:bg-teal-50 focus-visible:ring-2 focus-visible:ring-teal-700/25"
+        onClick={() => onAddTransfer(booking)}
+        aria-label={`Add transfer for ${booking.code}`}
+      >
+        <span className="truncate">
+          {booking.pickupZone}
+          {' · '}
+          <span className="font-medium underline decoration-teal-400/80 underline-offset-2">
+            Add transfer
+          </span>
+        </span>
+      </button>
+    )
+  }
+
+  if (privateTransfer) {
+    const vehicle = booking.privateTransferVehicle || 'Private'
+    const price = booking.privateTransferPrice.trim()
+    return (
+      <button
+        type="button"
+        className="inline-flex max-w-full items-center gap-1 rounded-md text-left text-teal-900 transition-colors hover:bg-teal-50 focus-visible:ring-2 focus-visible:ring-teal-700/25"
+        onClick={() => onEditPrivate(booking)}
+        aria-label={`Edit private transfer for ${booking.code}`}
+      >
+        <span className="truncate">
+          Private · {booking.pickupTime}
+          {vehicle ? ` · ${vehicle}` : ''}
+          {price ? ` · ${price}` : ''}
+        </span>
+      </button>
     )
   }
 
@@ -267,6 +310,7 @@ export function AdminBookings() {
   const [dateTarget, setDateTarget] = useState<Booking | null>(null)
   const [rebookTarget, setRebookTarget] = useState<Booking | null>(null)
   const [editTarget, setEditTarget] = useState<Booking | null>(null)
+  const [editStartWithTransfer, setEditStartWithTransfer] = useState(false)
   const [historyTarget, setHistoryTarget] = useState<Booking | null>(null)
 
   const adminActor = { role: 'admin' as const, name: 'Admin' }
@@ -331,6 +375,15 @@ export function AdminBookings() {
   const safePage = Math.min(page, totalPages)
   const pageStart = (safePage - 1) * PAGE_SIZE
   const pageRows = list.slice(pageStart, pageStart + PAGE_SIZE)
+  const totalPax = useMemo(
+    () =>
+      list.reduce(
+        (sum, booking) =>
+          booking.status === 'Cancelled' ? sum : sum + totalPassengers(booking),
+        0,
+      ),
+    [list],
+  )
 
   useEffect(() => {
     setPage(1)
@@ -387,6 +440,16 @@ export function AdminBookings() {
     setPickupTarget(booking)
     setPickupTime(toTimeInputValue(booking.pickupTime))
     setPickupError('')
+  }
+
+  function openAddTransfer(booking: Booking) {
+    setEditStartWithTransfer(true)
+    setEditTarget(booking)
+  }
+
+  function openEditDetails(booking: Booking) {
+    setEditStartWithTransfer(false)
+    setEditTarget(booking)
   }
 
   function handleSavePickup() {
@@ -521,6 +584,7 @@ export function AdminBookings() {
               {list.length === 0
                 ? '0 bookings'
                 : `${showingFrom}–${showingTo} of ${list.length}`}
+              {list.length > 0 ? ` · ${totalPax} pax` : null}
               {capped && filtered.length > RECENT_LIMIT
                 ? ` · latest ${RECENT_LIMIT}`
                 : null}
@@ -627,7 +691,12 @@ export function AdminBookings() {
                     <TableCell>{booking.leadGuest}</TableCell>
                     <TableCell>{totalPassengers(booking)}</TableCell>
                     <TableCell>
-                      <BookingPickupCell booking={booking} onSetPickup={openPickupDialog} />
+                      <BookingPickupCell
+                        booking={booking}
+                        onSetPickup={openPickupDialog}
+                        onAddTransfer={openAddTransfer}
+                        onEditPrivate={openEditDetails}
+                      />
                     </TableCell>
                     <TableCell className="px-4">
                       <BookingStatusMenu
@@ -635,7 +704,7 @@ export function AdminBookings() {
                         onCancel={handleCancel}
                         onChangeDate={setDateTarget}
                         onRebook={setRebookTarget}
-                        onEdit={setEditTarget}
+                        onEdit={openEditDetails}
                         onHistory={setHistoryTarget}
                       />
                     </TableCell>
@@ -754,10 +823,15 @@ export function AdminBookings() {
         booking={editTarget}
         open={editTarget !== null}
         onOpenChange={(open) => {
-          if (!open) setEditTarget(null)
+          if (!open) {
+            setEditTarget(null)
+            setEditStartWithTransfer(false)
+          }
         }}
         bypassCutoff
         actor={adminActor}
+        startWithTransfer={editStartWithTransfer}
+        allowPrivateTransfer
       />
 
       <BookingHistoryDialog

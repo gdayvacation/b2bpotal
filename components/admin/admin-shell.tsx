@@ -11,6 +11,7 @@ import {
   LogOut,
   MapPin,
   Menu,
+  QrCode,
   Ship,
   Users,
 } from 'lucide-react'
@@ -46,6 +47,12 @@ const nav = [
     label: 'Daily Board',
     icon: Ship,
     tone: 'bg-cyan-100 text-cyan-700 group-hover:bg-cyan-200/80',
+  },
+  {
+    href: '/admin/check-in',
+    label: 'Check-in',
+    icon: QrCode,
+    tone: 'bg-violet-100 text-violet-700 group-hover:bg-violet-200/80',
   },
   {
     href: '/admin/availability',
