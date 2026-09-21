@@ -20,7 +20,9 @@ export type CheckInEnrollment = {
 /** date|program → booking code → enrollments */
 export type DayCheckInEnrollmentMap = Record<string, Record<string, CheckInEnrollment[]>>
 
-const STORAGE_KEY = 'gday-check-in-enrollment'
+export const CHECK_IN_ENROLLMENT_STORAGE_KEY = 'gday-check-in-enrollment'
+
+const STORAGE_KEY = CHECK_IN_ENROLLMENT_STORAGE_KEY
 
 function isScope(value: unknown): value is CheckInScope {
   return value === 'one' || value === 'group'
@@ -111,6 +113,54 @@ export function withCheckInEnrollment(
   const existing = day[bookingCode] ?? []
   day[bookingCode] = [...existing, enrollment]
   return { ...map, [key]: day }
+}
+
+export function withoutCheckInEnrollment(
+  map: DayCheckInEnrollmentMap,
+  date: string,
+  program: Program,
+  bookingCode: string,
+  enrollmentId: string,
+): DayCheckInEnrollmentMap {
+  const key = dayBoatPlanKey(date, program)
+  const day = { ...(map[key] ?? {}) }
+  const existing = day[bookingCode] ?? []
+  const nextList = existing.filter((item) => item.id !== enrollmentId)
+  if (nextList.length === 0) delete day[bookingCode]
+  else day[bookingCode] = nextList
+  const next = { ...map }
+  if (Object.keys(day).length === 0) delete next[key]
+  else next[key] = day
+  return next
+}
+
+/** Keep at most `maxSeats` enrolled seats (drops from the end). */
+export function trimCheckInEnrollmentsToSeats(
+  map: DayCheckInEnrollmentMap,
+  date: string,
+  program: Program,
+  bookingCode: string,
+  maxSeats: number,
+): DayCheckInEnrollmentMap {
+  const key = dayBoatPlanKey(date, program)
+  const existing = map[key]?.[bookingCode] ?? []
+  if (existing.length === 0) return map
+  const kept: CheckInEnrollment[] = []
+  let seats = 0
+  for (const enrollment of existing) {
+    if (seats >= maxSeats) break
+    const take = Math.min(enrollment.seats, maxSeats - seats)
+    if (take <= 0) break
+    kept.push(take === enrollment.seats ? enrollment : { ...enrollment, seats: take })
+    seats += take
+  }
+  const day = { ...(map[key] ?? {}) }
+  if (kept.length === 0) delete day[bookingCode]
+  else day[bookingCode] = kept
+  const next = { ...map }
+  if (Object.keys(day).length === 0) delete next[key]
+  else next[key] = day
+  return next
 }
 
 export function guestDisplayName(enrollment: Pick<CheckInEnrollment, 'firstName' | 'lastName'>) {

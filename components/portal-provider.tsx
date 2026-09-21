@@ -4,17 +4,30 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import { nextBookingCode, uniqueAgentSlug } from '@/lib/format'
 import { autoAssignBoats } from '@/lib/boat-assign'
 import {
+  CHECK_IN_ATTENDANCE_STORAGE_KEY,
   getCheckInAttendance,
   loadCheckInAttendanceMap,
   saveCheckInAttendanceMap,
   withCheckInAttendance,
 } from '@/lib/check-in-attendance'
 import {
+  CHECK_IN_PAYMENT_STORAGE_KEY,
+  getCheckInPayment,
+  loadCheckInPaymentMap,
+  saveCheckInPaymentMap,
+  withCheckInPayment,
+  type CheckInPaymentStatus,
+  type DayCheckInPaymentMap,
+} from '@/lib/check-in-payment'
+import {
+  CHECK_IN_ENROLLMENT_STORAGE_KEY,
   enrolledSeatCount,
   getCheckInEnrollments,
   loadCheckInEnrollmentMap,
   newEnrollmentId,
   saveCheckInEnrollmentMap,
+  trimCheckInEnrollmentsToSeats,
+  withoutCheckInEnrollment,
   withCheckInEnrollment,
   type CheckInEnrollment,
   type CheckInScope,
@@ -240,11 +253,35 @@ type PortalContextValue = {
     bookingCode: string,
     status: CheckInAttendance | null,
   ) => void
+  getCheckInPayment: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+  ) => CheckInPaymentStatus | null
+  setCheckInPayment: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    status: CheckInPaymentStatus | null,
+  ) => void
   getCheckInEnrollments: (
     date: string,
     program: Program,
     bookingCode: string,
   ) => CheckInEnrollment[]
+  removeCheckInEnrollment: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    enrollmentId: string,
+  ) => void
+  /** Drop checked-in seats that no longer fit after pax was reduced. */
+  trimCheckInEnrollments: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    maxSeats: number,
+  ) => void
   recordGuestCheckIn: (input: {
     date: string
     program: Program
@@ -350,6 +387,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     useState<DayCheckInAttendanceMap>({})
   const [checkInEnrollment, setCheckInEnrollmentMap] =
     useState<DayCheckInEnrollmentMap>({})
+  const [checkInPayment, setCheckInPaymentMap] = useState<DayCheckInPaymentMap>({})
   const [fleetVans, setFleetVans] = useState<FleetVan[]>([])
   const [bookingCutoffs, setBookingCutoffs] = useState<BookingCutoffSettings>(DEFAULT_BOOKING_CUTOFFS)
   const [bookingClosures, setBookingClosures] = useState<BookingClosure[]>([])
@@ -358,6 +396,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setCheckInAttendanceMap(loadCheckInAttendanceMap())
     setCheckInEnrollmentMap(loadCheckInEnrollmentMap())
+    setCheckInPaymentMap(loadCheckInPaymentMap())
   }, [])
 
   useEffect(() => {
@@ -418,6 +457,43 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     return () => {
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
+    }
+  }, [hydrated])
+
+  /** Keep marina check-in board in sync across tabs (guest QR + admin live board). */
+  useEffect(() => {
+    if (!hydrated) return
+
+    function reloadCheckInMaps() {
+      setCheckInAttendanceMap(loadCheckInAttendanceMap())
+      setCheckInEnrollmentMap(loadCheckInEnrollmentMap())
+      setCheckInPaymentMap(loadCheckInPaymentMap())
+    }
+
+    function onStorage(event: StorageEvent) {
+      if (
+        event.key === CHECK_IN_ENROLLMENT_STORAGE_KEY ||
+        event.key === CHECK_IN_ATTENDANCE_STORAGE_KEY ||
+        event.key === CHECK_IN_PAYMENT_STORAGE_KEY
+      ) {
+        reloadCheckInMaps()
+      }
+    }
+
+    function onVisible() {
+      if (document.visibilityState === 'visible') reloadCheckInMaps()
+    }
+
+    window.addEventListener('storage', onStorage)
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    const poll = window.setInterval(reloadCheckInMaps, 4000)
+
+    return () => {
+      window.removeEventListener('storage', onStorage)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+      window.clearInterval(poll)
     }
   }, [hydrated])
 
@@ -732,8 +808,68 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           })
         }
       },
+      getCheckInPayment: (date, program, bookingCode) =>
+        getCheckInPayment(checkInPayment, date, program, bookingCode),
+      setCheckInPayment: (date, program, bookingCode, status) => {
+        setCheckInPaymentMap((current) => {
+          const next = withCheckInPayment(current, date, program, bookingCode, status)
+          saveCheckInPaymentMap(next)
+          return next
+        })
+      },
       getCheckInEnrollments: (date, program, bookingCode) =>
         getCheckInEnrollments(checkInEnrollment, date, program, bookingCode),
+      removeCheckInEnrollment: (date, program, bookingCode, enrollmentId) => {
+        setCheckInEnrollmentMap((current) => {
+          const next = withoutCheckInEnrollment(
+            current,
+            date,
+            program,
+            bookingCode,
+            enrollmentId,
+          )
+          saveCheckInEnrollmentMap(next)
+          return next
+        })
+        setCheckInAttendanceMap((current) => {
+          if (getCheckInAttendance(current, date, program, bookingCode) !== 'checked') {
+            return current
+          }
+          const booking = bookings.find((item) => item.code === bookingCode)
+          const remaining = enrolledSeatCount(
+            getCheckInEnrollments(checkInEnrollment, date, program, bookingCode).filter(
+              (item) => item.id !== enrollmentId,
+            ),
+          )
+          if (booking && remaining >= totalPassengers(booking)) return current
+          const next = withCheckInAttendance(current, date, program, bookingCode, null)
+          saveCheckInAttendanceMap(next)
+          return next
+        })
+      },
+      trimCheckInEnrollments: (date, program, bookingCode, maxSeats) => {
+        setCheckInEnrollmentMap((current) => {
+          const next = trimCheckInEnrollmentsToSeats(
+            current,
+            date,
+            program,
+            bookingCode,
+            Math.max(0, maxSeats),
+          )
+          saveCheckInEnrollmentMap(next)
+          return next
+        })
+        setCheckInAttendanceMap((current) => {
+          if (getCheckInAttendance(current, date, program, bookingCode) !== 'checked') {
+            return current
+          }
+          const booking = bookings.find((item) => item.code === bookingCode)
+          if (!booking || Math.max(0, maxSeats) >= totalPassengers(booking)) return current
+          const next = withCheckInAttendance(current, date, program, bookingCode, null)
+          saveCheckInAttendanceMap(next)
+          return next
+        })
+      },
       recordGuestCheckIn: (input) => {
         const batch = recordGuestCheckInsInternal({
           date: input.date,
@@ -1888,7 +2024,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }))
       },
     }
-  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, fleetVans, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
+  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, fleetVans, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }

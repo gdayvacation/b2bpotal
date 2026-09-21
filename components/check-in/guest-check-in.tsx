@@ -4,15 +4,16 @@ import { useMemo, useState, type ReactNode } from 'react'
 import {
   Building2,
   Bus,
-  Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Search,
   Ship,
   UserRound,
   Users,
   AlertTriangle,
 } from 'lucide-react'
+import { BoatFleetBadge } from '@/components/boat-badge'
 import { usePortal } from '@/components/portal-provider'
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
@@ -20,6 +21,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NationalityCombobox } from '@/components/check-in/nationality-combobox'
 import { enrolledSeatCount, guestDisplayName } from '@/lib/check-in-enrollment'
+import { boatTheme } from '@/lib/boat-theme'
 import { matchNationality } from '@/lib/nationalities'
 import {
   collectTotal,
@@ -33,9 +35,9 @@ import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { listVanNumbers, primaryVan } from '@/lib/vehicle-assign'
 import { cn } from '@/lib/utils'
 import {
-  formatPaxBreakdown,
   isActiveBooking,
   isNoTransfer,
+  boatDisplayName,
   totalPassengers,
   type Booking,
   type Program,
@@ -120,6 +122,8 @@ export function GuestCheckIn() {
   const {
     bookings,
     getDayVehiclePlan,
+    getDayBoatPlan,
+    resolveVanMeta,
     getCheckInEnrollments,
     getCheckInAttendance,
     recordGuestCheckIns,
@@ -130,6 +134,7 @@ export function GuestCheckIn() {
   const [step, setStep] = useState<Step>('welcome')
   const [program, setProgram] = useState<Program | null>(null)
   const [findMode, setFindMode] = useState<FindMode>('van')
+  const [findQuery, setFindQuery] = useState('')
   const [selectedVan, setSelectedVan] = useState<number | null>(null)
   const [selectedHotel, setSelectedHotel] = useState<string | null>(null)
   const [bookingCode, setBookingCode] = useState<string | null>(null)
@@ -159,6 +164,16 @@ export function GuestCheckIn() {
 
   const vehiclePlan = program ? getDayVehiclePlan(today, program) : null
   const vanNumbers = vehiclePlan ? listVanNumbers(vehiclePlan.assignments) : []
+  const vanOptions = useMemo(() => {
+    if (!vehiclePlan) return [] as Array<{ van: number; plate: string }>
+    return vanNumbers.map((van) => {
+      const meta = resolveVanMeta(van, vehiclePlan.vanMeta[String(van)])
+      return {
+        van,
+        plate: meta.plate.trim() || `Van ${van}`,
+      }
+    })
+  }, [resolveVanMeta, vanNumbers, vehiclePlan])
 
   const hotels = useMemo(() => {
     const names = new Set<string>()
@@ -169,8 +184,18 @@ export function GuestCheckIn() {
     return [...names].sort((a, b) => a.localeCompare(b))
   }, [dayBookings])
 
+  const normalizedFindQuery = findQuery.trim().toLowerCase()
+  const isSearching = normalizedFindQuery.length > 0
+
+  const searchedBookings = useMemo(() => {
+    if (!isSearching) return [] as Booking[]
+    return dayBookings.filter((b) => bookingMatchesFindQuery(b, normalizedFindQuery))
+  }, [dayBookings, isSearching, normalizedFindQuery])
+
   const filteredBookings = useMemo(() => {
-    if (!program || !vehiclePlan) return [] as Booking[]
+    if (!program) return [] as Booking[]
+    if (isSearching) return searchedBookings
+    if (!vehiclePlan) return [] as Booking[]
     if (findMode === 'van') {
       if (selectedVan === null) return []
       return dayBookings.filter(
@@ -182,7 +207,16 @@ export function GuestCheckIn() {
       const hotel = b.pickupHotel.trim() || (isNoTransfer(b.pickupZone) ? 'No Transfer' : '—')
       return hotel === selectedHotel
     })
-  }, [dayBookings, findMode, program, selectedHotel, selectedVan, vehiclePlan])
+  }, [
+    dayBookings,
+    findMode,
+    isSearching,
+    program,
+    searchedBookings,
+    selectedHotel,
+    selectedVan,
+    vehiclePlan,
+  ])
 
   const selectedBooking = useMemo(
     () => dayBookings.find((b) => b.code === bookingCode) ?? null,
@@ -201,6 +235,7 @@ export function GuestCheckIn() {
     : false
 
   function resetFind() {
+    setFindQuery('')
     setSelectedVan(null)
     setSelectedHotel(null)
     setBookingCode(null)
@@ -250,6 +285,24 @@ export function GuestCheckIn() {
     setDetailsAttempted(false)
     setError('')
     setStep('details')
+  }
+
+  function openBooking(code: string) {
+    const booking = dayBookings.find((item) => item.code === code)
+    if (!booking) return
+    const seats = totalPassengers(booking)
+    const enrolled = enrolledSeatCount(
+      getCheckInEnrollments(today, booking.program, booking.code),
+    )
+    const attendance = getCheckInAttendance(today, booking.program, booking.code)
+    const alreadyDone = attendance === 'checked' || enrolled >= seats
+    setBookingCode(code)
+    if (alreadyDone) {
+      setDoneNeedsPayment(paymentDue(booking).needsStaff)
+      setStep('done')
+      return
+    }
+    setStep('scope')
   }
 
   function submitCheckIn() {
@@ -320,23 +373,13 @@ export function GuestCheckIn() {
               Welcome — let&apos;s check you in
             </h1>
             <p className="text-sm leading-relaxed text-teal-950/60">
-              Tour date is <span className="font-semibold text-teal-950">{formatLongDate(today)}</span>.
-              Pick your program, find your van or hotel, then confirm your details.
+              Tour date:{' '}
+              <span className="font-semibold text-teal-950">{formatLongDate(today)}</span>
             </p>
-            <ul className="space-y-2 text-sm text-teal-900/65">
-              <li className="flex gap-2">
-                <Check className="mt-0.5 size-4 shrink-0 text-teal-700" />
-                Have your leader / guest name ready
-              </li>
-              <li className="flex gap-2">
-                <Check className="mt-0.5 size-4 shrink-0 text-teal-700" />
-                Check park fee, canoe, and any cash on tour
-              </li>
-              <li className="flex gap-2">
-                <Check className="mt-0.5 size-4 shrink-0 text-teal-700" />
-                Staff will help if payment is due
-              </li>
-            </ul>
+            <p className="rounded-2xl bg-teal-950/[0.04] px-4 py-3.5 text-sm leading-relaxed text-teal-900/70">
+              Please enter your details exactly as on your passport — this is used for travel
+              insurance.
+            </p>
             <Button className="h-12 w-full text-base" onClick={() => setStep('program')}>
               Start check-in
               <ChevronRight data-icon="inline-end" />
@@ -380,13 +423,29 @@ export function GuestCheckIn() {
               title="Find your booking"
               subtitle={`${programLabel(program)} · ${formatLongDate(today)}`}
             />
+            <div className="relative">
+              <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-teal-900/35" />
+              <Input
+                value={findQuery}
+                onChange={(event) => {
+                  setFindQuery(event.target.value)
+                  setSelectedVan(null)
+                  setSelectedHotel(null)
+                  setBookingCode(null)
+                }}
+                placeholder="Search name, hotel, or voucher…"
+                autoComplete="off"
+                className="h-11 pl-10"
+              />
+            </div>
             <div className="grid grid-cols-2 gap-2 rounded-2xl bg-teal-950/[0.04] p-1">
               <ModeTab
                 active={findMode === 'van'}
-                label="Van number"
+                label="Van plate"
                 icon={<Bus className="size-3.5" />}
                 onClick={() => {
                   setFindMode('van')
+                  setFindQuery('')
                   setSelectedHotel(null)
                   setBookingCode(null)
                 }}
@@ -397,127 +456,115 @@ export function GuestCheckIn() {
                 icon={<Building2 className="size-3.5" />}
                 onClick={() => {
                   setFindMode('hotel')
+                  setFindQuery('')
                   setSelectedVan(null)
                   setBookingCode(null)
                 }}
               />
             </div>
 
-            {findMode === 'van' ? (
+            {isSearching ? (
               <div className="space-y-2">
                 <p className="text-xs font-semibold tracking-wide text-teal-800/55 uppercase">
-                  Select van
+                  Search results
                 </p>
-                {vanNumbers.length === 0 ? (
-                  <EmptyNote text="No vans assigned yet for this program. Try hotel search, or ask staff." />
+                {filteredBookings.length === 0 ? (
+                  <EmptyNote text="No bookings match that name, hotel, or voucher today." />
                 ) : (
-                  <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-                    {vanNumbers.map((van) => (
-                      <button
-                        key={van}
-                        type="button"
-                        onClick={() => {
-                          setSelectedVan(van)
-                          setBookingCode(null)
-                        }}
-                        className={cn(
-                          'rounded-xl px-3 py-3 text-sm font-semibold ring-1 transition-all',
-                          selectedVan === van
-                            ? 'bg-teal-800 text-white ring-teal-800'
-                            : 'bg-white/80 text-teal-950 ring-teal-900/10 hover:bg-white',
-                        )}
-                      >
-                        Van {van}
-                      </button>
-                    ))}
-                  </div>
+                  <BookingPickList
+                    bookings={filteredBookings}
+                    today={today}
+                    getCheckInEnrollments={getCheckInEnrollments}
+                    getCheckInAttendance={getCheckInAttendance}
+                    onPick={openBooking}
+                  />
                 )}
               </div>
             ) : (
-              <div className="space-y-2">
-                <p className="text-xs font-semibold tracking-wide text-teal-800/55 uppercase">
-                  Select hotel
-                </p>
-                {hotels.length === 0 ? (
-                  <EmptyNote text="No bookings found for this program today." />
-                ) : (
-                  <div className="max-h-48 space-y-1.5 overflow-y-auto rounded-2xl ring-1 ring-teal-900/8">
-                    {hotels.map((hotel) => (
-                      <button
-                        key={hotel}
-                        type="button"
-                        onClick={() => {
-                          setSelectedHotel(hotel)
-                          setBookingCode(null)
-                        }}
-                        className={cn(
-                          'flex w-full items-center px-3.5 py-3 text-left text-sm font-medium transition-colors',
-                          selectedHotel === hotel
-                            ? 'bg-teal-800 text-white'
-                            : 'bg-white/80 text-teal-950 hover:bg-teal-50',
-                        )}
-                      >
-                        {hotel}
-                      </button>
-                    ))}
+              <>
+                {findMode === 'van' ? (
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold tracking-wide text-teal-800/55 uppercase">
+                      Select van plate
+                    </p>
+                    {vanOptions.length === 0 ? (
+                      <EmptyNote text="No vans assigned yet for this program. Try hotel search, or ask staff." />
+                    ) : (
+                      <div className="grid grid-cols-2 gap-2">
+                        {vanOptions.map(({ van, plate }) => (
+                          <button
+                            key={van}
+                            type="button"
+                            onClick={() => {
+                              setSelectedVan(van)
+                              setBookingCode(null)
+                            }}
+                            className={cn(
+                              'rounded-xl px-3 py-3 text-sm font-semibold leading-snug ring-1 transition-all',
+                              selectedVan === van
+                                ? 'bg-teal-800 text-white ring-teal-800'
+                                : 'bg-white/80 text-teal-950 ring-teal-900/10 hover:bg-white',
+                            )}
+                          >
+                            {plate}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            )}
-
-            {(findMode === 'van' && selectedVan !== null) ||
-            (findMode === 'hotel' && selectedHotel) ? (
-              <div className="space-y-2">
-                <p className="text-xs font-semibold tracking-wide text-teal-800/55 uppercase">
-                  Guest / leader name
-                </p>
-                {filteredBookings.length === 0 ? (
-                  <EmptyNote text="No bookings on this van or hotel. Try the other filter." />
                 ) : (
                   <div className="space-y-2">
-                    {filteredBookings.map((booking) => {
-                      const done =
-                        enrolledSeatCount(
-                          getCheckInEnrollments(today, booking.program, booking.code),
-                        ) >= totalPassengers(booking) ||
-                        getCheckInAttendance(today, booking.program, booking.code) === 'checked'
-                      return (
-                        <button
-                          key={booking.code}
-                          type="button"
-                          disabled={done}
-                          onClick={() => {
-                            setBookingCode(booking.code)
-                            setStep('scope')
-                          }}
-                          className={cn(
-                            'flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3.5 text-left ring-1 transition-all',
-                            done
-                              ? 'cursor-not-allowed bg-teal-50/60 text-teal-900/40 ring-teal-900/6'
-                              : 'bg-white/90 text-teal-950 ring-teal-900/10 hover:ring-teal-700/30',
-                          )}
-                        >
-                          <div className="min-w-0">
-                            <p className="truncate font-semibold">{booking.leadGuest}</p>
-                            <p className="mt-0.5 truncate text-xs text-teal-900/50">
-                              {booking.code} · {formatPaxBreakdown(booking)} ·{' '}
-                              {booking.pickupHotel || booking.pickupZone}
-                            </p>
-                          </div>
-                          {done ? (
-                            <span className="shrink-0 text-[11px] font-semibold text-emerald-700">
-                              Done
-                            </span>
-                          ) : (
-                            <ChevronRight className="size-4 shrink-0 text-teal-900/30" />
-                          )}
-                        </button>
-                      )
-                    })}
+                    <p className="text-xs font-semibold tracking-wide text-teal-800/55 uppercase">
+                      Select hotel
+                    </p>
+                    {hotels.length === 0 ? (
+                      <EmptyNote text="No bookings found for this program today." />
+                    ) : (
+                      <div className="max-h-48 space-y-1.5 overflow-y-auto rounded-2xl ring-1 ring-teal-900/8">
+                        {hotels.map((hotel) => (
+                          <button
+                            key={hotel}
+                            type="button"
+                            onClick={() => {
+                              setSelectedHotel(hotel)
+                              setBookingCode(null)
+                            }}
+                            className={cn(
+                              'flex w-full items-center px-3.5 py-3 text-left text-sm font-medium transition-colors',
+                              selectedHotel === hotel
+                                ? 'bg-teal-800 text-white'
+                                : 'bg-white/80 text-teal-950 hover:bg-teal-50',
+                            )}
+                          >
+                            {hotel}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
-            ) : null}
+
+                {(findMode === 'van' && selectedVan !== null) ||
+                (findMode === 'hotel' && selectedHotel) ? (
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold tracking-wide text-teal-800/55 uppercase">
+                      Guest / leader name
+                    </p>
+                    {filteredBookings.length === 0 ? (
+                      <EmptyNote text="No bookings on this van or hotel. Try the other filter." />
+                    ) : (
+                      <BookingPickList
+                        bookings={filteredBookings}
+                        today={today}
+                        getCheckInEnrollments={getCheckInEnrollments}
+                        getCheckInAttendance={getCheckInAttendance}
+                        onPick={openBooking}
+                      />
+                    )}
+                  </div>
+                ) : null}
+              </>
+            )}
           </section>
         ) : null}
 
@@ -528,7 +575,19 @@ export function GuestCheckIn() {
               subtitle={`${selectedBooking.leadGuest} · ${remainingSeats} of ${seatsTotal} left`}
             />
             {fullyCheckedIn ? (
-              <EmptyNote text="This booking is already fully checked in." />
+              <div className="space-y-3">
+                <EmptyNote text="This booking is already fully checked in." />
+                <Button
+                  className="h-12 w-full text-base"
+                  onClick={() => {
+                    setDoneNeedsPayment(paymentDue(selectedBooking).needsStaff)
+                    setStep('done')
+                  }}
+                >
+                  View check-in status
+                  <ChevronRight data-icon="inline-end" />
+                </Button>
+              </div>
             ) : (
               <div className="grid gap-3">
                 <ChoiceCard
@@ -678,7 +737,32 @@ export function GuestCheckIn() {
         ) : null}
 
         {step === 'done' ? (
-          <DoneStep needsPayment={doneNeedsPayment} onAgain={startOver} />
+          <DoneStep
+            needsPayment={doneNeedsPayment}
+            booking={selectedBooking}
+            guestNames={
+              guests.some((guest) => guest.firstName.trim() || guest.lastName.trim())
+                ? guests.map((guest) => guestDisplayName(guest)).filter(Boolean)
+                : selectedBooking
+                  ? getCheckInEnrollments(
+                      today,
+                      selectedBooking.program,
+                      selectedBooking.code,
+                    ).map((item) => guestDisplayName(item))
+                  : []
+            }
+            boat={
+              selectedBooking
+                ? (getDayBoatPlan(today, selectedBooking.program).assignments[
+                    selectedBooking.code
+                  ] ?? null)
+                : null
+            }
+            boatPlan={
+              selectedBooking ? getDayBoatPlan(today, selectedBooking.program) : null
+            }
+            onAgain={startOver}
+          />
         ) : null}
       </main>
     </div>
@@ -721,7 +805,7 @@ function ConfirmStep({
         <DetailRow label="Hotel" value={booking.pickupHotel || booking.pickupZone || '—'} />
         <DetailRow
           label="Total Pax in Booking"
-          value={`${totalPassengers(booking)} · ${formatPaxBreakdown(booking)}`}
+          value={formatGuestPaxLabel(booking)}
         />
         <DetailRow label="National park" value={formatIncludeLabel(booking.parkFee)} />
         {booking.program === 'James Bond' ? (
@@ -813,26 +897,90 @@ function ConfirmStep({
   )
 }
 
-function DoneStep({ needsPayment, onAgain }: { needsPayment: boolean; onAgain: () => void }) {
+function DoneStep({
+  needsPayment,
+  booking,
+  guestNames,
+  boat,
+  boatPlan,
+  onAgain,
+}: {
+  needsPayment: boolean
+  booking: Booking | null
+  guestNames: string[]
+  boat: number | null
+  boatPlan: ReturnType<ReturnType<typeof usePortal>['getDayBoatPlan']> | null
+  onAgain: () => void
+}) {
+  const due = booking ? paymentDue(booking) : null
+  const parkExcluded = Boolean(due && due.parkFeeAmount > 0)
+  const showParkNote = parkExcluded && booking?.program === 'PP'
+  const displayNames =
+    guestNames.length > 0
+      ? guestNames
+      : booking?.leadGuest
+        ? [booking.leadGuest]
+        : []
+
+  const boarding = (
+    <BoardingSummary
+      names={displayNames}
+      boat={boat}
+      boatLabel={
+        boat && boatPlan ? boatDisplayName(boatPlan, boat) : boat ? `Boat ${boat}` : null
+      }
+    />
+  )
+
   if (needsPayment) {
     return (
-      <section className="gday-sheet space-y-5 rounded-[1.5rem] border border-orange-200/80 bg-gradient-to-br from-orange-50 via-white to-amber-50 p-6 text-center">
-        <div className="mx-auto flex size-16 items-center justify-center rounded-full bg-orange-500 text-white shadow-lg shadow-orange-500/30">
-          <AlertTriangle className="size-8" />
-        </div>
-        <div>
-          <h1 className="font-display text-2xl font-semibold text-orange-950">
-            Checked in — payment needed
-          </h1>
-          <p className="mt-2 text-sm leading-relaxed text-orange-950/70">
-            Please contact staff at the marina desk to make your payment (park fee, cash on tour,
-            or transfer extra). Keep this screen open if helpful.
-          </p>
-        </div>
-        <Button variant="outline" className="h-11 w-full" onClick={onAgain}>
-          Check in another guest
-        </Button>
-      </section>
+      <div className="space-y-4">
+        <section className="gday-sheet space-y-5 rounded-[1.5rem] border border-orange-200/80 bg-gradient-to-br from-orange-50 via-white to-amber-50 p-6 text-center">
+          <div className="mx-auto flex size-16 items-center justify-center rounded-full bg-orange-500 text-white shadow-lg shadow-orange-500/30">
+            <AlertTriangle className="size-8" />
+          </div>
+          <div>
+            <h1 className="font-display text-2xl font-semibold text-orange-950">
+              Checked in — payment needed
+            </h1>
+            <p className="mt-2 text-sm leading-relaxed text-orange-950/70">
+              {parkExcluded
+                ? 'Your booking does not include the National Park fee. Please see marina staff to complete payment.'
+                : 'Please see marina staff to complete your payment.'}
+            </p>
+          </div>
+          {boarding}
+          <Button variant="outline" className="h-11 w-full" onClick={onAgain}>
+            Check in another guest
+          </Button>
+        </section>
+
+        {showParkNote ? (
+          <section className="rounded-[1.5rem] border border-teal-900/10 bg-white/80 px-4 py-4 text-left text-sm leading-relaxed text-teal-950/75">
+            <p className="font-semibold tracking-wide text-teal-950 uppercase">
+              National Park Fee Note
+            </p>
+            <p className="mt-2">
+              Entry to Phi Phi Island, Maya Bay, and the other islands on this trip is not free for
+              foreigners. A mandatory fee of{' '}
+              <span className="font-semibold text-teal-950">400 THB per adult</span> and{' '}
+              <span className="font-semibold text-teal-950">200 THB per child</span> applies for
+              foreign visitors, paid in cash when visiting Maya Bay.
+            </p>
+            <p className="mt-2 font-medium text-teal-950">
+              This is not optional. Failure to pay this fee will result in forfeiture of your trip,
+              with no refunds.
+            </p>
+            <p className="mt-2">
+              Please confirm with your booking agent whether your package includes the National Park
+              fee. Thank you.
+            </p>
+            <p className="mt-3 text-xs font-semibold tracking-wide text-teal-900/55 uppercase">
+              Management
+            </p>
+          </section>
+        ) : null}
+      </div>
     )
   }
 
@@ -849,10 +997,79 @@ function DoneStep({ needsPayment, onAgain }: { needsPayment: boolean; onAgain: (
           You&apos;re all set — no cash on tour to pay. Have a great day on the water!
         </p>
       </div>
+      {boarding}
       <Button variant="outline" className="h-11 w-full" onClick={onAgain}>
         Check in another guest
       </Button>
     </section>
+  )
+}
+
+function BoardingSummary({
+  names,
+  boat,
+  boatLabel,
+}: {
+  names: string[]
+  boat: number | null
+  boatLabel: string | null
+}) {
+  const theme = boat && boat > 0 ? boatTheme(boat) : null
+
+  return (
+    <div className="space-y-3 text-left">
+      <div className="rounded-2xl bg-white/80 px-4 py-3.5 ring-1 ring-teal-900/8">
+        <p className="text-[11px] font-semibold tracking-wide text-teal-800/50 uppercase">
+          Guest{names.length === 1 ? '' : 's'}
+        </p>
+        {names.length === 0 ? (
+          <p className="mt-1 text-sm font-semibold text-teal-950">—</p>
+        ) : (
+          <ul className="mt-1 space-y-0.5">
+            {names.map((name, index) => (
+              <li key={`${name}-${index}`} className="text-base font-semibold text-teal-950">
+                {name}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {theme && boatLabel ? (
+        <div
+          className={cn(
+            'rounded-2xl px-4 py-4 ring-1',
+            theme.sheet,
+            theme.ring.replace('ring-', 'ring-'),
+          )}
+        >
+          <p className="text-[11px] font-semibold tracking-wide uppercase opacity-70">Your boat</p>
+          <div className="mt-2 flex items-center gap-3">
+            <span className={cn('size-10 shrink-0 rounded-xl shadow-sm', theme.swatch)} />
+            <div className="min-w-0">
+              <p className={cn('font-display text-xl font-semibold tracking-tight', theme.title)}>
+                {boatLabel}
+              </p>
+              <p className={cn('mt-0.5 text-sm font-semibold', theme.title)}>
+                {theme.colorName}
+                <span className="mx-1.5 opacity-40">·</span>
+                Boat {theme.fleetNumber}
+              </p>
+            </div>
+            <BoatFleetBadge boat={boat} showColorName className="ml-auto text-sm" />
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-2xl bg-white/80 px-4 py-3.5 ring-1 ring-teal-900/8">
+          <p className="text-[11px] font-semibold tracking-wide text-teal-800/50 uppercase">
+            Your boat
+          </p>
+          <p className="mt-1 text-sm font-medium text-teal-900/55">
+            Boat not assigned yet — please ask marina staff.
+          </p>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -933,6 +1150,71 @@ function ModeTab({
       {label}
     </button>
   )
+}
+
+function BookingPickList({
+  bookings,
+  today,
+  getCheckInEnrollments,
+  getCheckInAttendance,
+  onPick,
+}: {
+  bookings: Booking[]
+  today: string
+  getCheckInEnrollments: ReturnType<typeof usePortal>['getCheckInEnrollments']
+  getCheckInAttendance: ReturnType<typeof usePortal>['getCheckInAttendance']
+  onPick: (code: string) => void
+}) {
+  return (
+    <div className="space-y-2">
+      {bookings.map((booking) => {
+        const done =
+          enrolledSeatCount(getCheckInEnrollments(today, booking.program, booking.code)) >=
+            totalPassengers(booking) ||
+          getCheckInAttendance(today, booking.program, booking.code) === 'checked'
+        const total = totalPassengers(booking)
+        return (
+          <button
+            key={booking.code}
+            type="button"
+            onClick={() => onPick(booking.code)}
+            className={cn(
+              'flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3.5 text-left ring-1 transition-all',
+              done
+                ? 'bg-teal-50/80 text-teal-950 ring-teal-900/8 hover:ring-teal-700/25'
+                : 'bg-white/90 text-teal-950 ring-teal-900/10 hover:ring-teal-700/30',
+            )}
+          >
+            <div className="min-w-0">
+              <p className="truncate font-semibold">{booking.leadGuest}</p>
+              <p className="mt-0.5 truncate text-xs text-teal-900/50">
+                {total} guest{total === 1 ? '' : 's'} ·{' '}
+                {booking.pickupHotel || booking.pickupZone || '—'}
+              </p>
+            </div>
+            {done ? (
+              <span className="shrink-0 text-[11px] font-semibold text-emerald-700">Checked in</span>
+            ) : (
+              <ChevronRight className="size-4 shrink-0 text-teal-900/30" />
+            )}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function bookingMatchesFindQuery(booking: Booking, query: string) {
+  const hotel =
+    booking.pickupHotel.trim() ||
+    (isNoTransfer(booking.pickupZone) ? 'No Transfer' : booking.pickupZone)
+  const haystacks = [
+    booking.leadGuest,
+    hotel,
+    booking.code,
+    booking.agentRef,
+  ]
+  return haystacks.some((value) => value.toLowerCase().includes(query))
 }
 
 function Field({
@@ -1145,6 +1427,15 @@ function EmptyNote({ text }: { text: string }) {
       {text}
     </p>
   )
+}
+
+function formatGuestPaxLabel(booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>) {
+  const parts: string[] = []
+  if (booking.adults > 0) parts.push(`${booking.adults}AD`)
+  if (booking.children > 0) parts.push(`${booking.children}CH`)
+  if (booking.infants > 0) parts.push(`${booking.infants}INF`)
+  if (booking.tourLeaders > 0) parts.push(`${booking.tourLeaders}TL`)
+  return parts.length > 0 ? parts.join(' + ') : '0'
 }
 
 function normalizeName(value: string) {

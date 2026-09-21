@@ -59,7 +59,7 @@ export function NationalityCombobox({
         aria-invalid={invalid || undefined}
         autoComplete="off"
         value={value}
-        placeholder="Type to search — e.g. Thai, Australian"
+        placeholder="Type to search — e.g. Indian, Thai"
         className={cn('h-11', invalid && 'border-rose-400 focus-visible:border-rose-500')}
         onFocus={() => {
           clearBlurTimer()

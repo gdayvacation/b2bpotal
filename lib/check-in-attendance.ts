@@ -1,7 +1,9 @@
 import type { CheckInAttendance, DayCheckInAttendanceMap, Program } from '@/lib/types'
 import { dayBoatPlanKey } from '@/lib/types'
 
-const STORAGE_KEY = 'gday-check-in-attendance'
+export const CHECK_IN_ATTENDANCE_STORAGE_KEY = 'gday-check-in-attendance'
+
+const STORAGE_KEY = CHECK_IN_ATTENDANCE_STORAGE_KEY
 
 function isAttendance(value: unknown): value is CheckInAttendance {
   return value === 'checked' || value === 'no-show'
