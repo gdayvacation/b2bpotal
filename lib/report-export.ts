@@ -2,12 +2,11 @@ import type { Booking } from '@/lib/types'
 import { formatPaxBreakdown, totalPassengers } from '@/lib/types'
 
 export type ReportExportRow = {
-  Code: string
+  'VC No.': string
   Date: string
   Program: string
   Agent: string
   'Agent slug': string
-  Ref: string
   Guest: string
   Adults: number
   Children: number
@@ -15,10 +14,8 @@ export type ReportExportRow = {
   'Tour leaders': number
   'Total pax': number
   Breakdown: string
-  Zone: string
   Time: string
   Hotel: string
-  Room: string
   'Park fee': string
   Canoe: string
   Note: string
@@ -27,12 +24,11 @@ export type ReportExportRow = {
 }
 
 const HEADERS = [
-  'Code',
+  'VC No.',
   'Date',
   'Program',
   'Agent',
   'Agent slug',
-  'Ref',
   'Guest',
   'Adults',
   'Children',
@@ -40,10 +36,8 @@ const HEADERS = [
   'Tour leaders',
   'Total pax',
   'Breakdown',
-  'Zone',
   'Time',
   'Hotel',
-  'Room',
   'Park fee',
   'Canoe',
   'Note',
@@ -53,12 +47,11 @@ const HEADERS = [
 
 export function bookingsToReportRows(bookings: Booking[]): ReportExportRow[] {
   return bookings.map((booking) => ({
-    Code: booking.code,
+    'VC No.': booking.agentRef,
     Date: booking.date,
     Program: booking.program === 'PP' ? 'Phi Phi' : 'James Bond',
     Agent: booking.agentName,
     'Agent slug': booking.agentSlug,
-    Ref: booking.agentRef,
     Guest: booking.leadGuest,
     Adults: booking.adults,
     Children: booking.children,
@@ -66,10 +59,8 @@ export function bookingsToReportRows(bookings: Booking[]): ReportExportRow[] {
     'Tour leaders': booking.tourLeaders,
     'Total pax': totalPassengers(booking),
     Breakdown: formatPaxBreakdown(booking),
-    Zone: booking.pickupZone,
     Time: booking.pickupTime,
     Hotel: booking.pickupHotel,
-    Room: booking.roomNumber,
     'Park fee': booking.parkFee,
     Canoe: booking.canoe ?? '',
     Note: booking.note,

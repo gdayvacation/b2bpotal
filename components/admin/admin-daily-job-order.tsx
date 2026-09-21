@@ -16,7 +16,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatLongDate, formatShortDate, todayISO, toISODate } from '@/lib/format'
+import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
+import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
 import {
   DEFAULT_VAN_CAPACITY,
   isActiveBooking,
@@ -24,10 +25,11 @@ import {
   totalPassengers,
   type Booking,
   type DayVehiclePlan,
+  type IncludeOption,
   type Program,
   type VanMeta,
 } from '@/lib/types'
-import { autoAssignVans, listVanNumbers, primaryVan } from '@/lib/vehicle-assign'
+import { autoAssignVans, listVanNumbers, primaryVan, sortOrderOnVan } from '@/lib/vehicle-assign'
 import { cn } from '@/lib/utils'
 
 type JobOrderRow = {
@@ -47,7 +49,7 @@ type VanGroup = {
 }
 
 type PickupSortDir = 'asc' | 'desc'
-type JobAudience = 'ops' | 'agent'
+type JobAudience = 'ops' | 'agent' | 'check-in'
 
 type AgentJobRow = {
   no: number
@@ -126,8 +128,8 @@ export function AdminDailyJobOrder({
   onBack: () => void
   audience?: JobAudience
 }) {
-  const { bookings, getDayVehiclePlan, resolveVanMeta } = usePortal()
-  const [selectedDate, setSelectedDate] = useState(() => todayISO())
+  const { bookings, getDayVehiclePlan, getDayBoatPlan, resolveVanMeta } = usePortal()
+  const [selectedDate, setSelectedDate, portalToday] = usePortalDefaultDateISO()
   const [program, setProgram] = useState<Program | null>(null)
   const [calendarOpen, setCalendarOpen] = useState(false)
   const [pickupSortDir, setPickupSortDir] = useState<PickupSortDir>('asc')
@@ -136,6 +138,13 @@ export function AdminDailyJobOrder({
 
   const selectedDateObj = new Date(`${selectedDate}T12:00:00`)
   const isAgentView = audience === 'agent'
+  const isCheckInView = audience === 'check-in'
+  const sheetVariant: 'driver' | 'check-in' = isCheckInView ? 'check-in' : 'driver'
+
+  const boatAssignments = useMemo(() => {
+    if (!program || !isCheckInView) return {} as Record<string, number>
+    return getDayBoatPlan(selectedDate, program).assignments
+  }, [getDayBoatPlan, isCheckInView, program, selectedDate])
 
   const dayBookings = useMemo(
     () =>
@@ -188,7 +197,9 @@ export function AdminDailyJobOrder({
     return agentGroups.filter((group) => group.agentSlug === agentFilter)
   }, [agentGroups, agentFilter])
 
-  const jobNumber = program ? jobOrderNumber(selectedDate, program, isAgentView) : ''
+  const jobNumber = program
+    ? jobOrderNumber(selectedDate, program, isAgentView ? 'agent' : isCheckInView ? 'check-in' : 'ops')
+    : ''
   const programLabel =
     program === 'PP' ? 'PP · Phi Phi Islands' : program === 'James Bond' ? 'James Bond · Phang Nga Bay' : ''
 
@@ -204,7 +215,7 @@ export function AdminDailyJobOrder({
     if (!program) return
     const previousTitle = document.title
     const programTag = program === 'PP' ? 'PP' : 'JB'
-    const kind = isAgentView ? 'AgentJO' : 'JobOrder'
+    const kind = isAgentView ? 'AgentJO' : isCheckInView ? 'CheckIn' : 'JobOrder'
     document.title = `${programTag} ${kind} ${formatShortDate(selectedDate)}`
     let restored = false
     const restoreTitle = () => {
@@ -229,11 +240,19 @@ export function AdminDailyJobOrder({
         </div>
 
         <PageHeader
-          title={isAgentView ? 'Agent Job Order' : 'OP Job Order'}
+          title={
+            isAgentView
+              ? 'Agent Job Order'
+              : isCheckInView
+                ? 'Check in Report'
+                : 'Driver Job Order'
+          }
           description={
             isAgentView
               ? 'Grouped by agency with van number for each pickup — filter one agent, then print to send.'
-              : 'Pick a date and program, then print the ops day sheet grouped by van with driver details.'
+              : isCheckInView
+                ? 'Pick a date and program, then print the check-in sheet (same layout as Driver Job Order for now).'
+                : 'Pick a date and program, then print the ops day sheet grouped by van with driver details.'
           }
           actions={
             program ? (
@@ -303,7 +322,7 @@ export function AdminDailyJobOrder({
                       variant="ghost"
                       size="sm"
                       onClick={() => {
-                        setSelectedDate(todayISO())
+                        setSelectedDate(portalToday)
                         setProgram(null)
                         setAgentFilter('all')
                       }}
@@ -357,45 +376,66 @@ export function AdminDailyJobOrder({
                 </div>
                 <p className="text-xs text-teal-800/55 sm:max-w-[18rem] sm:text-right">
                   {usingMockAssignments
-                    ? 'No van plan yet — showing mock van groups & drivers for preview.'
-                    : 'Grouped from Arrange vehicles. Missing driver/plate uses mock details.'}
+                    ? 'No van plan yet — showing mock van groups from Arrange vehicles for preview.'
+                    : isCheckInView
+                      ? 'Van groups from Arrange vehicles. Boat column from Arrange boats. For marina check-in staff.'
+                      : 'Grouped from Arrange vehicles. Missing driver/plate uses mock details.'}
                 </p>
               </div>
             </Surface>
 
-            <Surface className="overflow-hidden">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-900/8 px-4 py-3 sm:px-5">
-                <div>
-                  <p className="text-sm font-semibold text-teal-950">Preview</p>
-                  <p className="text-xs text-teal-900/45">{programLabel} · grouped by van</p>
+            {bookingCount === 0 ? (
+              <Surface className="overflow-hidden">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-900/8 px-4 py-3 sm:px-5">
+                  <div>
+                    <p className="text-sm font-semibold text-teal-950">Preview</p>
+                    <p className="text-xs text-teal-900/45">{programLabel} · grouped by van</p>
+                  </div>
+                  <p className="text-xs font-medium text-teal-800/55">
+                    AD {totals.adults} · CHD {totals.children} · INF {totals.infants} · TL{' '}
+                    {totals.tourLeaders}
+                  </p>
                 </div>
-                <p className="text-xs font-medium text-teal-800/55">
-                  AD {totals.adults} · CHD {totals.children} · INF {totals.infants} · TL{' '}
-                  {totals.tourLeaders}
-                </p>
-              </div>
-
-              {bookingCount === 0 ? (
                 <EmptyState>No active bookings for this program on this date.</EmptyState>
-              ) : (
-                <div className="divide-y divide-teal-900/8">
-                  {groups.map((group) => (
+              </Surface>
+            ) : (
+              <div className="space-y-4">
+                <Surface className="overflow-hidden">
+                  <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 sm:px-5">
+                    <div>
+                      <p className="text-sm font-semibold text-teal-950">Preview</p>
+                      <p className="text-xs text-teal-900/45">
+                        {programLabel} · {groups.length} van card
+                        {groups.length === 1 ? '' : 's'}
+                        {isCheckInView ? ' · marina check-in' : ''}
+                      </p>
+                    </div>
+                    <p className="text-xs font-medium text-teal-800/55">
+                      AD {totals.adults} · CHD {totals.children} · INF {totals.infants} · TL{' '}
+                      {totals.tourLeaders}
+                    </p>
+                  </div>
+                </Surface>
+                {groups.map((group) => (
+                  <Surface key={group.id} className="overflow-hidden">
                     <VanGroupSection
-                      key={group.id}
                       group={group}
+                      variant={sheetVariant}
+                      program={program}
+                      boatAssignments={boatAssignments}
                       pickupSortDir={pickupSortDir}
                       onTogglePickupSort={() =>
                         setPickupSortDir((current) => (current === 'asc' ? 'desc' : 'asc'))
                       }
-                      onEditVan={setEditVan}
+                      onEditVan={isCheckInView ? undefined : setEditVan}
                     />
-                  ))}
-                </div>
-              )}
-            </Surface>
+                  </Surface>
+                ))}
+              </div>
+            )}
 
             <EditVanDetailsDialog
-              open={editVan !== null}
+              open={!isCheckInView && editVan !== null}
               onOpenChange={(open) => {
                 if (!open) setEditVan(null)
               }}
@@ -483,6 +523,8 @@ export function AdminDailyJobOrder({
           groups={groups}
           totals={totals}
           usingMockAssignments={usingMockAssignments}
+          variant={sheetVariant}
+          boatAssignments={boatAssignments}
         />
       ) : null}
 
@@ -569,17 +611,25 @@ export function AdminDailyJobOrder({
 
 function VanGroupSection({
   group,
+  variant = 'driver',
+  program,
+  boatAssignments = {},
   pickupSortDir,
   onTogglePickupSort,
   onEditVan,
 }: {
   group: VanGroup
+  variant?: 'driver' | 'check-in'
+  program: Program
+  boatAssignments?: Record<string, number>
   pickupSortDir: PickupSortDir
   onTogglePickupSort: () => void
-  onEditVan: (van: number) => void
+  onEditVan?: (van: number) => void
 }) {
   const title = group.van === null ? 'No Transfer / Unassigned' : `Van ${group.van}`
   const SortIcon = pickupSortDir === 'asc' ? ArrowUp : ArrowDown
+  const isCheckIn = variant === 'check-in'
+  const showCanoe = isCheckIn && program === 'James Bond'
 
   return (
     <div>
@@ -592,7 +642,7 @@ function VanGroupSection({
                 Needs details
               </span>
             ) : null}
-            {group.van !== null ? (
+            {group.van !== null && onEditVan ? (
               <button
                 type="button"
                 className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-teal-800/70 transition-colors hover:bg-teal-100 hover:text-teal-950"
@@ -632,7 +682,7 @@ function VanGroupSection({
               <TableHead className="w-10 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 No.
               </TableHead>
-              <TableHead className="w-[12rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+              <TableHead className="w-[11rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 Guest name
               </TableHead>
               <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
@@ -647,30 +697,60 @@ function VanGroupSection({
               <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 TL
               </TableHead>
-              <TableHead className="w-[5.5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-0.5 rounded-md transition-colors hover:text-teal-950"
-                  onClick={onTogglePickupSort}
-                  aria-label={`Sort by pickup time, currently ${pickupSortDir === 'asc' ? 'earliest first' : 'latest first'}`}
-                  title="Sort by pickup time"
-                >
-                  P/U Time
-                  <SortIcon className="size-3 opacity-70" />
-                </button>
-              </TableHead>
-              <TableHead className="w-[12rem] pr-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                Hotel
-              </TableHead>
-              <TableHead className="w-16 pl-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                Room
-              </TableHead>
-              <TableHead className="w-[7rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                Cash on tour
-              </TableHead>
-              <TableHead className="text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                Remark
-              </TableHead>
+              {isCheckIn ? (
+                <>
+                  <TableHead className="w-[6.5rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    VC No.
+                  </TableHead>
+                  <TableHead className="w-12 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Boat
+                  </TableHead>
+                  <TableHead className="w-[7rem] px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Park
+                  </TableHead>
+                  <TableHead className="w-12 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Fee
+                  </TableHead>
+                  {showCanoe ? (
+                    <TableHead className="w-[7.5rem] px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                      Canoe
+                    </TableHead>
+                  ) : null}
+                  <TableHead className="text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Remark
+                  </TableHead>
+                  <TableHead className="w-12 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    ✓
+                  </TableHead>
+                </>
+              ) : (
+                <>
+                  <TableHead className="w-[6.5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Zone
+                  </TableHead>
+                  <TableHead className="w-[5.5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-0.5 rounded-md transition-colors hover:text-teal-950"
+                      onClick={onTogglePickupSort}
+                      aria-label={`Sort by pickup time, currently ${pickupSortDir === 'asc' ? 'earliest first' : 'latest first'}`}
+                      title="Sort by pickup time"
+                    >
+                      P/U Time
+                      <SortIcon className="size-3 opacity-70" />
+                    </button>
+                  </TableHead>
+                  <TableHead className="w-[12rem] pr-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Hotel
+                  </TableHead>
+                  <TableHead className="w-16 pl-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Room
+                  </TableHead>
+                  <TableHead className="text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Remark
+                  </TableHead>
+                </>
+              )}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -688,27 +768,61 @@ function VanGroupSection({
                 <TableCell className="px-1 text-center tabular-nums">
                   {booking.tourLeaders || ''}
                 </TableCell>
-                <TableCell className="px-1 whitespace-nowrap tabular-nums text-teal-950">
-                  {formatPickupTime(booking.pickupTime)}
-                </TableCell>
-                <TableCell className="pr-1">
-                  <div className="truncate" title={booking.pickupHotel}>
-                    {booking.pickupHotel || '—'}
-                  </div>
-                </TableCell>
-                <TableCell className="pl-1 whitespace-nowrap tabular-nums">
-                  {booking.roomNumber || ''}
-                </TableCell>
-                <TableCell>
-                  <div className="truncate font-medium text-teal-950" title={booking.cashOnTour}>
-                    {booking.cashOnTour || ''}
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <div className="truncate text-teal-900/60" title={booking.note}>
-                    {booking.note || ''}
-                  </div>
-                </TableCell>
+                {isCheckIn ? (
+                  <>
+                    <TableCell className="text-teal-900/55">
+                      <div className="truncate" title={booking.agentRef}>
+                        {booking.agentRef || '—'}
+                      </div>
+                    </TableCell>
+                    <TableCell className="px-1 text-center tabular-nums font-medium text-teal-950">
+                      {boatAssignments[booking.code] ?? '—'}
+                    </TableCell>
+                    <TableCell className="px-1 text-center text-xs whitespace-nowrap">
+                      {booking.parkFee}
+                    </TableCell>
+                    <TableCell className="px-1 text-center tabular-nums text-xs font-medium text-teal-950">
+                      {parkFeeAmount(booking.parkFee, program)}
+                    </TableCell>
+                    {showCanoe ? (
+                      <TableCell className="px-1 text-center text-xs whitespace-nowrap">
+                        {booking.canoe ?? '—'}
+                      </TableCell>
+                    ) : null}
+                    <TableCell>
+                      <div className="truncate text-teal-900/60" title={booking.note}>
+                        {booking.note || ''}
+                      </div>
+                    </TableCell>
+                    <TableCell className="px-1 text-center">
+                      <span className="inline-block size-3.5 rounded-sm border border-teal-900/35" />
+                    </TableCell>
+                  </>
+                ) : (
+                  <>
+                    <TableCell className="px-1">
+                      <div className="truncate" title={booking.pickupZone}>
+                        {booking.pickupZone || '—'}
+                      </div>
+                    </TableCell>
+                    <TableCell className="px-1 whitespace-nowrap tabular-nums text-teal-950">
+                      {formatPickupTime(booking.pickupTime)}
+                    </TableCell>
+                    <TableCell className="pr-1">
+                      <div className="truncate" title={booking.pickupHotel}>
+                        {booking.pickupHotel || '—'}
+                      </div>
+                    </TableCell>
+                    <TableCell className="pl-1 whitespace-nowrap tabular-nums">
+                      {booking.roomNumber || ''}
+                    </TableCell>
+                    <TableCell>
+                      <div className="truncate text-teal-900/60" title={booking.note}>
+                        {booking.note || ''}
+                      </div>
+                    </TableCell>
+                  </>
+                )}
               </TableRow>
             ))}
             <TableRow className="bg-teal-50/40 hover:bg-teal-50/40">
@@ -727,7 +841,7 @@ function VanGroupSection({
               <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
                 {group.totals.tourLeaders}
               </TableCell>
-              <TableCell colSpan={5} />
+              <TableCell colSpan={isCheckIn ? (showCanoe ? 6 : 5) : 5} />
             </TableRow>
           </TableBody>
         </Table>
@@ -1100,6 +1214,8 @@ function JobOrderPrintSheet({
   groups,
   totals,
   usingMockAssignments,
+  variant = 'driver',
+  boatAssignments = {},
 }: {
   date: string
   program: Program
@@ -1108,18 +1224,25 @@ function JobOrderPrintSheet({
   groups: VanGroup[]
   totals: { adults: number; children: number; infants: number; tourLeaders: number }
   usingMockAssignments: boolean
+  variant?: 'driver' | 'check-in'
+  boatAssignments?: Record<string, number>
 }) {
+  const isCheckIn = variant === 'check-in'
+  const showCanoe = isCheckIn && program === 'James Bond'
+  const trailingColSpan = isCheckIn ? (showCanoe ? 6 : 5) : 5
+
   return (
     <div className="job-order-print-sheet hidden print:block">
       <div className="mb-2 flex items-start justify-between gap-4 border-b-2 border-neutral-900 pb-2">
         <div>
           <p className="text-base font-bold tracking-wide text-neutral-900">G&apos;DAY TOURS PHUKET</p>
           <p className="mt-0.5 text-sm font-semibold text-neutral-800">
-            Daily Job Order · {program === 'PP' ? 'PP' : 'JB'}
+            {isCheckIn ? 'Check in Report' : 'Daily Job Order'} · {program === 'PP' ? 'PP' : 'JB'}
           </p>
           <p className="mt-0.5 text-[11px] text-neutral-600">
             {programLabel}
             {usingMockAssignments ? ' · mock van groups' : ''}
+            {isCheckIn ? ' · marina check-in' : ''}
           </p>
         </div>
         <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[11px] text-neutral-800">
@@ -1172,7 +1295,7 @@ function JobOrderPrintSheet({
                   <thead>
                     <tr className="bg-neutral-50">
                       <th className="w-8 border border-neutral-400 px-1 py-1 font-semibold">NO.</th>
-                      <th className="w-[18%] border border-neutral-400 px-1 py-1 font-semibold">
+                      <th className="w-[16%] border border-neutral-400 px-1 py-1 font-semibold">
                         GUEST NAME
                       </th>
                       <th className="w-8 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
@@ -1187,19 +1310,47 @@ function JobOrderPrintSheet({
                       <th className="w-8 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
                         TL
                       </th>
-                      <th className="w-12 border border-neutral-400 px-0.5 py-1 font-semibold">
-                        P/U TIME
-                      </th>
-                      <th className="w-[20%] border border-neutral-400 px-1 py-1 pr-0.5 font-semibold">
-                        HOTEL
-                      </th>
-                      <th className="w-12 border border-neutral-400 px-0.5 py-1 pl-0.5 font-semibold">
-                        ROOM
-                      </th>
-                      <th className="w-16 border border-neutral-400 px-1 py-1 font-semibold">
-                        CASH ON TOUR
-                      </th>
-                      <th className="border border-neutral-400 px-1 py-1 font-semibold">REMARK</th>
+                      {isCheckIn ? (
+                        <>
+                          <th className="w-[10%] border border-neutral-400 px-1 py-1 font-semibold">
+                            VC NO.
+                          </th>
+                          <th className="w-10 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
+                            BOAT
+                          </th>
+                          <th className="w-16 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
+                            PARK
+                          </th>
+                          <th className="w-10 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
+                            FEE
+                          </th>
+                          {showCanoe ? (
+                            <th className="w-16 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
+                              CANOE
+                            </th>
+                          ) : null}
+                          <th className="border border-neutral-400 px-1 py-1 font-semibold">REMARK</th>
+                          <th className="w-8 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
+                            ✓
+                          </th>
+                        </>
+                      ) : (
+                        <>
+                          <th className="w-14 border border-neutral-400 px-0.5 py-1 font-semibold">
+                            ZONE
+                          </th>
+                          <th className="w-12 border border-neutral-400 px-0.5 py-1 font-semibold">
+                            P/U TIME
+                          </th>
+                          <th className="w-[20%] border border-neutral-400 px-1 py-1 pr-0.5 font-semibold">
+                            HOTEL
+                          </th>
+                          <th className="w-12 border border-neutral-400 px-0.5 py-1 pl-0.5 font-semibold">
+                            ROOM
+                          </th>
+                          <th className="border border-neutral-400 px-1 py-1 font-semibold">REMARK</th>
+                        </>
+                      )}
                     </tr>
                   </thead>
                   <tbody>
@@ -1221,15 +1372,41 @@ function JobOrderPrintSheet({
                         <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
                           {blankIfZero(booking.tourLeaders)}
                         </td>
-                        <td className="border border-neutral-400 px-1 py-0.5 tabular-nums">
-                          {formatPickupTime(booking.pickupTime)}
-                        </td>
-                        <td className="border border-neutral-400 px-1 py-0.5">{booking.pickupHotel}</td>
-                        <td className="border border-neutral-400 px-1 py-0.5">{booking.roomNumber}</td>
-                        <td className="border border-neutral-400 px-1 py-0.5 font-medium">
-                          {booking.cashOnTour}
-                        </td>
-                        <td className="border border-neutral-400 px-1 py-0.5">{booking.note}</td>
+                        {isCheckIn ? (
+                          <>
+                            <td className="border border-neutral-400 px-1 py-0.5">
+                              {booking.agentRef || '—'}
+                            </td>
+                            <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums font-semibold">
+                              {boatAssignments[booking.code] ?? '—'}
+                            </td>
+                            <td className="border border-neutral-400 px-1 py-0.5 text-center whitespace-nowrap">
+                              {booking.parkFee}
+                            </td>
+                            <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
+                              {parkFeeAmount(booking.parkFee, program)}
+                            </td>
+                            {showCanoe ? (
+                              <td className="border border-neutral-400 px-1 py-0.5 text-center whitespace-nowrap">
+                                {booking.canoe ?? '—'}
+                              </td>
+                            ) : null}
+                            <td className="border border-neutral-400 px-1 py-0.5">{booking.note}</td>
+                            <td className="border border-neutral-400 px-1 py-0.5 text-center">□</td>
+                          </>
+                        ) : (
+                          <>
+                            <td className="border border-neutral-400 px-1 py-0.5">{booking.pickupZone}</td>
+                            <td className="border border-neutral-400 px-1 py-0.5 tabular-nums">
+                              {formatPickupTime(booking.pickupTime)}
+                            </td>
+                            <td className="border border-neutral-400 px-1 py-0.5">
+                              {booking.pickupHotel}
+                            </td>
+                            <td className="border border-neutral-400 px-1 py-0.5">{booking.roomNumber}</td>
+                            <td className="border border-neutral-400 px-1 py-0.5">{booking.note}</td>
+                          </>
+                        )}
                       </tr>
                     ))}
                     <tr className="bg-neutral-50 font-semibold">
@@ -1248,7 +1425,7 @@ function JobOrderPrintSheet({
                       <td className="border border-neutral-400 px-1 py-1 text-center tabular-nums">
                         {group.totals.tourLeaders}
                       </td>
-                      <td className="border border-neutral-400 px-1 py-1" colSpan={5} />
+                      <td className="border border-neutral-400 px-1 py-1" colSpan={trailingColSpan} />
                     </tr>
                   </tbody>
                 </table>
@@ -1303,7 +1480,7 @@ function JobOrderPrintSheet({
 
 export function DailyJobOrderModeCard({
   onClick,
-  title = 'OP Job Order',
+  title = 'Driver Job Order',
   subtitle = 'Ops day sheet grouped by van with driver details.',
   meta = 'For operations',
 }: {
@@ -1436,7 +1613,12 @@ function buildVanGroups(
   for (const van of vanNumbers) {
     const vanBookings = transferBookings
       .filter((booking) => primaryVan(assignments[booking.code]) === van)
-      .sort(byPickup)
+      .sort((a, b) => {
+        const orderA = sortOrderOnVan(assignments[a.code], van)
+        const orderB = sortOrderOnVan(assignments[b.code], van)
+        if (orderA !== orderB) return orderA - orderB
+        return byPickup(a, b)
+      })
     if (vanBookings.length === 0) continue
 
     const meta = resolveMeta(van, plan.vanMeta[String(van)])
@@ -1466,7 +1648,12 @@ function buildVanGroups(
         const displayVan = mockVanStart + van - 1
         const vanBookings = leftover
           .filter((booking) => primaryVan(mockAssign[booking.code]) === van)
-          .sort(byPickup)
+          .sort((a, b) => {
+            const orderA = sortOrderOnVan(mockAssign[a.code], van)
+            const orderB = sortOrderOnVan(mockAssign[b.code], van)
+            if (orderA !== orderB) return orderA - orderB
+            return byPickup(a, b)
+          })
         if (vanBookings.length === 0) continue
         const meta = resolveMeta(displayVan, undefined)
         groups.push(
@@ -1547,10 +1734,20 @@ function blankIfZero(value: number) {
   return value > 0 ? value : ''
 }
 
-function jobOrderNumber(date: string, program: Program, agentView = false) {
+/** National park cash fee (AD/CH) for marina check-in when park is not included. */
+function parkFeeAmount(parkFee: IncludeOption, program: Program) {
+  if (parkFee !== 'Not Included') return ''
+  return program === 'James Bond' ? '300/150' : '400/200'
+}
+
+function jobOrderNumber(
+  date: string,
+  program: Program,
+  kind: 'ops' | 'agent' | 'check-in' = 'ops',
+) {
   const compact = date.replaceAll('-', '').slice(2)
   const suffix = program === 'PP' ? 'PP' : 'JB'
-  const prefix = agentView ? 'AJO' : 'JO'
+  const prefix = kind === 'agent' ? 'AJO' : kind === 'check-in' ? 'CIR' : 'JO'
   return `${prefix}-${compact}-${suffix}`
 }
 

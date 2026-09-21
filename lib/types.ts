@@ -130,29 +130,55 @@ export const DEFAULT_PP_CAPACITY = 44
 export const DEFAULT_JB_CAPACITY = 40
 
 /** Boat assignment for a single departure day + program. */
-export type BoatNumber = 1 | 2 | 3
+export type BoatNumber = number
 
 export type DayBoatPlan = {
   date: string
   program: Program
-  /** Seats per boat — admin can raise/lower from the ~44 default. */
-  capacities: [number, number, number]
-  /** booking code → boat number */
+  /**
+   * Seats per boat for this day (length = boat count).
+   * Default is 3 × {@link DEFAULT_BOAT_CAPACITY}; admin can add/remove boats
+   * and set each boat’s capacity (e.g. a larger rental boat).
+   */
+  capacities: number[]
+  /** booking code → boat number (1-based index into capacities) */
   assignments: Record<string, BoatNumber>
 }
 
 export const DEFAULT_BOAT_CAPACITY = 44
+export const DEFAULT_BOAT_COUNT = 3
+export const MAX_DAY_BOATS = 8
+
+/** @deprecated Prefer {@link boatNumbersForPlan} — kept for call sites that assume the default 3. */
 export const BOAT_NUMBERS: BoatNumber[] = [1, 2, 3]
 
 export function dayBoatPlanKey(date: string, program: Program) {
   return `${date}|${program}`
 }
 
+export function defaultBoatCapacities(count = DEFAULT_BOAT_COUNT): number[] {
+  const n = Math.max(1, Math.min(MAX_DAY_BOATS, Math.floor(count) || DEFAULT_BOAT_COUNT))
+  return Array.from({ length: n }, () => DEFAULT_BOAT_CAPACITY)
+}
+
+export function normalizeBoatCapacities(capacities: number[] | null | undefined): number[] {
+  const cleaned = (capacities ?? [])
+    .map((value) => Math.max(1, Math.floor(Number(value) || 0)))
+    .filter((value) => Number.isFinite(value) && value >= 1)
+  if (cleaned.length === 0) return defaultBoatCapacities()
+  return cleaned.slice(0, MAX_DAY_BOATS)
+}
+
+export function boatNumbersForPlan(plan: Pick<DayBoatPlan, 'capacities'>): BoatNumber[] {
+  const caps = normalizeBoatCapacities(plan.capacities)
+  return caps.map((_, index) => index + 1)
+}
+
 export function emptyDayBoatPlan(date: string, program: Program): DayBoatPlan {
   return {
     date,
     program,
-    capacities: [DEFAULT_BOAT_CAPACITY, DEFAULT_BOAT_CAPACITY, DEFAULT_BOAT_CAPACITY],
+    capacities: defaultBoatCapacities(),
     assignments: {},
   }
 }
@@ -164,6 +190,8 @@ export const DEFAULT_VAN_CAPACITY = 12
 export type VanSplit = {
   van: number
   pax: number
+  /** Pickup stop order within this van (0 = first hotel). */
+  sortOrder: number
 }
 
 export type VanMeta = {

@@ -148,7 +148,7 @@ before update on public.availability
 for each row execute function public.set_updated_at();
 
 -- -----------------------------------------------------------------------------
--- Boat plans (3 boats per date + program)
+-- Boat plans (flexible boat count per date + program; default 3 × 44)
 -- -----------------------------------------------------------------------------
 create table if not exists public.day_boat_plans (
   date date not null,
@@ -156,6 +156,8 @@ create table if not exists public.day_boat_plans (
   capacity_1 int not null default 44 check (capacity_1 >= 1),
   capacity_2 int not null default 44 check (capacity_2 >= 1),
   capacity_3 int not null default 44 check (capacity_3 >= 1),
+  /** Source of truth for boat count + per-boat seats (e.g. [44,44,60]). */
+  capacities jsonb not null default '[44, 44, 44]'::jsonb,
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now()),
   primary key (date, program)
@@ -170,7 +172,7 @@ create table if not exists public.boat_assignments (
   date date not null,
   program text not null check (program in ('PP', 'James Bond')),
   booking_code text not null references public.bookings (code) on delete cascade,
-  boat_number int not null check (boat_number between 1 and 3),
+  boat_number int not null check (boat_number >= 1),
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now()),
   primary key (date, program, booking_code),
@@ -247,6 +249,7 @@ create table if not exists public.van_assignments (
   booking_code text not null references public.bookings (code) on delete cascade,
   van_number int not null check (van_number >= 1),
   pax int not null check (pax >= 1),
+  sort_order int not null default 0,
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now()),
   unique (date, program, booking_code, van_number),
@@ -260,6 +263,9 @@ create index if not exists van_assignments_booking_idx
 
 create index if not exists van_assignments_day_idx
   on public.van_assignments (date, program, van_number);
+
+create index if not exists van_assignments_van_order_idx
+  on public.van_assignments (date, program, van_number, sort_order);
 
 drop trigger if exists van_assignments_set_updated_at on public.van_assignments;
 create trigger van_assignments_set_updated_at

@@ -26,10 +26,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { formatLongDate, formatShortDate, todayISO, toISODate } from '@/lib/format'
+import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
+import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
 import {
-  BOAT_NUMBERS,
   DEFAULT_BOAT_CAPACITY,
+  MAX_DAY_BOATS,
+  boatNumbersForPlan,
   isActiveBooking,
   isNoTransfer,
   totalPassengers,
@@ -125,11 +127,15 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
     getDayVehiclePlan,
     assignBookingToBoat,
     setBoatCapacity,
+    addDayBoat,
+    removeDayBoat,
+    resetDayBoatCapacities,
+    resetDayBoatFleet,
     autoAssignDayBoats,
     clearDayBoatAssignments,
   } = usePortal()
 
-  const [selectedDate, setSelectedDate] = useState(() => todayISO())
+  const [selectedDate, setSelectedDate] = usePortalDefaultDateISO()
   const [program, setProgram] = useState<Program | null>(null)
   const [calendarOpen, setCalendarOpen] = useState(false)
 
@@ -179,7 +185,7 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
         </div>
         <PageHeader
           title="Arrange boats"
-          description="Uses van groups from Step 1 when possible — same van stays on the same boat. Filter for guests still missing a van, or no-transfer bookings to place freely."
+          description="Default fleet is 3 boats × 44. Add or remove boats for the day, set rental capacity, then assign by van group."
           actions={
             program ? (
               <div className="flex flex-wrap gap-2">
@@ -292,6 +298,10 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
           vanAssignments={vehiclePlan.assignments}
           onAssign={(code, boat) => assignBookingToBoat(selectedDate, program, code, boat)}
           onCapacity={(boat, capacity) => setBoatCapacity(selectedDate, program, boat, capacity)}
+          onAddBoat={(capacity) => addDayBoat(selectedDate, program, capacity)}
+          onRemoveBoat={(boat) => removeDayBoat(selectedDate, program, boat)}
+          onResetCapacities={() => resetDayBoatCapacities(selectedDate, program)}
+          onResetFleet={() => resetDayBoatFleet(selectedDate, program)}
           onAutoAssign={() => autoAssignDayBoats(selectedDate, program)}
           onClear={() => clearDayBoatAssignments(selectedDate, program)}
           onPrint={handlePrint}
@@ -352,6 +362,10 @@ function BoatBoard({
   vanAssignments,
   onAssign,
   onCapacity,
+  onAddBoat,
+  onRemoveBoat,
+  onResetCapacities,
+  onResetFleet,
   onAutoAssign,
   onClear,
   onPrint,
@@ -363,12 +377,17 @@ function BoatBoard({
   vanAssignments: Record<string, VanSplit[]>
   onAssign: (code: string, boat: BoatNumber | null) => void
   onCapacity: (boat: BoatNumber, capacity: number) => void
+  onAddBoat: (capacity?: number) => void
+  onRemoveBoat: (boat: BoatNumber) => void
+  onResetCapacities: () => void
+  onResetFleet: () => void
   onAutoAssign: () => void
   onClear: () => void
   onPrint: () => void
 }) {
   const [selectedCode, setSelectedCode] = useState<string | null>(null)
   const [guestFilter, setGuestFilter] = useState<BoatGuestFilter>('all')
+  const [rentalCapacity, setRentalCapacity] = useState(60)
 
   function vanLabel(booking: Booking): string {
     if (isNoTransfer(booking.pickupZone)) return 'No transfer'
@@ -378,17 +397,17 @@ function BoatBoard({
   function matchesFilter(booking: Booking): boolean {
     if (guestFilter === 'all') return true
     if (guestFilter === 'no-transfer') return isNoTransfer(booking.pickupZone)
-    // no-van: needs transfer but has no van yet
     return !isNoTransfer(booking.pickupZone) && primaryVan(vanAssignments[booking.code]) === null
   }
 
+  const boatNumbers = boatNumbersForPlan(plan)
   const visible = bookings.filter(matchesFilter)
   const unassigned = visible.filter((booking) => !plan.assignments[booking.code])
-  const byBoat = BOAT_NUMBERS.map((boat) => {
+  const byBoat = boatNumbers.map((boat) => {
     const allOnBoat = bookings.filter((booking) => plan.assignments[booking.code] === boat)
     return {
       boat,
-      capacity: plan.capacities[boat - 1],
+      capacity: plan.capacities[boat - 1] ?? DEFAULT_BOAT_CAPACITY,
       items: allOnBoat.filter(matchesFilter),
       loadPax: allOnBoat.reduce((sum, b) => sum + totalPassengers(b), 0),
       loadCount: allOnBoat.length,
@@ -396,6 +415,7 @@ function BoatBoard({
   })
 
   const totalPax = bookings.reduce((sum, b) => sum + totalPassengers(b), 0)
+  const totalSeats = plan.capacities.reduce((sum, cap) => sum + cap, 0)
   const unassignedPax = unassigned.reduce((sum, b) => sum + totalPassengers(b), 0)
   const noVanCount = bookings.filter(
     (b) => !isNoTransfer(b.pickupZone) && primaryVan(vanAssignments[b.code]) === null,
@@ -405,6 +425,8 @@ function BoatBoard({
     ? (bookings.find((booking) => booking.code === selectedCode) ?? null)
     : null
   const selectedBoat = selected ? (plan.assignments[selected.code] ?? null) : null
+  const canAddBoat = boatNumbers.length < MAX_DAY_BOATS
+  const canRemoveBoat = boatNumbers.length > 1
 
   return (
     <div>
@@ -413,7 +435,7 @@ function BoatBoard({
           Daily Board · {program} · {formatLongDate(date)}
         </h1>
         <p className="text-sm text-neutral-600">
-          {bookings.length} bookings · {totalPax} pax
+          {bookings.length} bookings · {totalPax} pax · {boatNumbers.length} boats
         </p>
       </div>
 
@@ -428,10 +450,12 @@ function BoatBoard({
                 {program === 'PP' ? 'PP · Phi Phi Islands' : 'James Bond · Phang Nga Bay'}
               </h2>
               <p className="mt-1.5 text-base text-teal-900/55">
-                {bookings.length} bookings · {totalPax} pax · boat capacity ~{DEFAULT_BOAT_CAPACITY}
+                {bookings.length} bookings · {totalPax} pax · {boatNumbers.length} boat
+                {boatNumbers.length === 1 ? '' : 's'} · {totalSeats} seats
               </p>
               <p className="mt-1 text-sm text-teal-900/45">
-                Auto-assign keeps same-van guests on the same boat. Click a booking to move it.
+                Default is 3 boats × {DEFAULT_BOAT_CAPACITY}. Add a rental boat with a larger
+                capacity when needed, or drop unused boats for the day.
               </p>
             </div>
             <div className="flex flex-wrap gap-2 sm:hidden">
@@ -446,6 +470,58 @@ function BoatBoard({
                 <Sparkles data-icon="inline-start" />
                 Auto-assign by van
               </Button>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-teal-900/10 bg-teal-950/[0.03] p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-teal-950">Day boat fleet</p>
+                <p className="mt-0.5 text-xs text-teal-900/50">
+                  Edit seats per boat below. Reset capacities keeps boat count; reset fleet restores
+                  3 × {DEFAULT_BOAT_CAPACITY}.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!canAddBoat}
+                  onClick={() => onAddBoat(DEFAULT_BOAT_CAPACITY)}
+                >
+                  <Plus data-icon="inline-start" />
+                  Add boat
+                </Button>
+                <div className="flex items-center gap-1.5 rounded-xl border border-teal-900/12 bg-white px-2 py-1">
+                  <input
+                    type="number"
+                    min={1}
+                    value={rentalCapacity}
+                    onChange={(event) => {
+                      const next = Number(event.target.value)
+                      if (Number.isFinite(next)) setRentalCapacity(Math.max(1, next))
+                    }}
+                    className="h-7 w-14 border-0 bg-transparent text-center text-sm font-medium text-teal-950 outline-none"
+                    aria-label="Rental boat capacity"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7"
+                    disabled={!canAddBoat}
+                    onClick={() => onAddBoat(rentalCapacity)}
+                  >
+                    Add rental
+                  </Button>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={onResetCapacities}>
+                  Reset capacities
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={onResetFleet}>
+                  Reset to 3 × {DEFAULT_BOAT_CAPACITY}
+                </Button>
+              </div>
             </div>
           </div>
 
@@ -521,7 +597,16 @@ function BoatBoard({
             )}
           </Surface>
 
-          <div className="grid gap-4 lg:grid-cols-3">
+          <div
+            className={cn(
+              'grid gap-4',
+              boatNumbers.length <= 2
+                ? 'lg:grid-cols-2'
+                : boatNumbers.length === 3
+                  ? 'lg:grid-cols-3'
+                  : 'lg:grid-cols-2 xl:grid-cols-4',
+            )}
+          >
             {byBoat.map(({ boat, capacity, items, loadPax, loadCount }) => {
               const over = loadPax > capacity
               return (
@@ -535,16 +620,38 @@ function BoatBoard({
                   <div className="shrink-0 border-b border-teal-900/8 px-4 py-3.5">
                     <div className="flex items-center justify-between gap-2">
                       <h3 className="text-lg font-semibold text-teal-950">Boat {boat}</h3>
-                      <span
-                        className={cn(
-                          'rounded-lg px-2.5 py-1 text-sm font-semibold tabular-nums',
-                          over
-                            ? 'bg-amber-50 text-amber-800'
-                            : 'bg-teal-50 text-teal-800',
-                        )}
-                      >
-                        {loadPax}/{capacity}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={cn(
+                            'rounded-lg px-2.5 py-1 text-sm font-semibold tabular-nums',
+                            over
+                              ? 'bg-amber-50 text-amber-800'
+                              : 'bg-teal-50 text-teal-800',
+                          )}
+                        >
+                          {loadPax}/{capacity}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 px-2 text-teal-800/60 hover:text-red-700"
+                          disabled={!canRemoveBoat}
+                          onClick={() => {
+                            if (
+                              loadCount > 0 &&
+                              !window.confirm(
+                                `Remove Boat ${boat}? ${loadCount} booking(s) will become unassigned.`,
+                              )
+                            ) {
+                              return
+                            }
+                            onRemoveBoat(boat)
+                          }}
+                        >
+                          Remove
+                        </Button>
+                      </div>
                     </div>
                     <p className="mt-1 text-sm text-teal-900/50">
                       {loadCount} booking{loadCount === 1 ? '' : 's'}
@@ -668,8 +775,13 @@ function BoatBoard({
 
               <div className="space-y-2">
                 <p className="text-sm font-medium text-teal-950">Assign to</p>
-                <div className="grid grid-cols-3 gap-2">
-                  {BOAT_NUMBERS.map((n) => (
+                <div
+                  className={cn(
+                    'grid gap-2',
+                    boatNumbers.length <= 3 ? 'grid-cols-3' : 'grid-cols-4',
+                  )}
+                >
+                  {boatNumbers.map((n) => (
                     <button
                       key={n}
                       type="button"
@@ -715,14 +827,14 @@ function BoatBoard({
       </Dialog>
 
       <div className="mt-6 hidden print:block">
-        {BOAT_NUMBERS.map((boat) => {
+        {boatNumbers.map((boat) => {
           const items = bookings.filter((b) => plan.assignments[b.code] === boat)
           const pax = items.reduce((sum, b) => sum + totalPassengers(b), 0)
           return (
             <div key={boat} className="mb-6 break-inside-avoid">
               <h2 className="mb-2 text-base font-semibold">
-                Boat {boat} — {items.length} bookings · {pax} pax / {plan.capacities[boat - 1]}{' '}
-                capacity
+                Boat {boat} — {items.length} bookings · {pax} pax /{' '}
+                {plan.capacities[boat - 1] ?? DEFAULT_BOAT_CAPACITY} capacity
               </h2>
               <table className="w-full border-collapse text-sm">
                 <thead>
@@ -781,6 +893,7 @@ function BoatBoard({
     </div>
   )
 }
+
 
 function DetailRow({
   label,

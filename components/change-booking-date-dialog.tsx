@@ -12,13 +12,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { formatLongDate, startOfToday, toISODate } from '@/lib/format'
+import { dateFromISO, formatLongDate, startOfToday, toISODate, todayISO } from '@/lib/format'
 import { totalPassengers, type Booking, type BookingActor } from '@/lib/types'
-
-function dateFromISO(isoDate: string) {
-  const [y, m, d] = isoDate.split('-').map(Number)
-  return new Date(y!, (m ?? 1) - 1, d ?? 1)
-}
 
 export function ChangeBookingDateDialog({
   booking,
@@ -48,7 +43,7 @@ export function ChangeBookingDateDialog({
   const [error, setError] = useState('')
   const isRebook = mode === 'rebook'
   const today = startOfToday()
-  const todayIso = toISODate(today)
+  const todayIso = todayISO()
   const pax = booking ? totalPassengers(booking) : 0
 
   useEffect(() => {
@@ -163,6 +158,12 @@ export function ChangeBookingDateDialog({
                 <span className="text-teal-900/40"> · {selectedInfo.booked} booked</span>
               </p>
             )
+          ) : null}
+          {!bypassCutoff ? (
+            <p className="w-full rounded-xl border border-amber-200/80 bg-amber-50/90 px-3 py-2 text-xs leading-relaxed text-amber-950/80">
+              After midnight Thailand time, for any adding or modifying bookings please contact land
+              service offline.
+            </p>
           ) : null}
         </div>
         {error ? <p className="text-sm text-red-600">{error}</p> : null}

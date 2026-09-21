@@ -6,7 +6,8 @@ import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
 import { PageHeader, Segment, SegmentedControl, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
-import { formatLongDate, formatShortDate, startOfThisMonth, todayISO, toISODate } from '@/lib/format'
+import { formatLongDate, formatShortDate, startOfThisMonth, toISODate } from '@/lib/format'
+import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { totalPassengers, isActiveBooking, type Booking, type Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -22,7 +23,7 @@ export function AdminDashboard() {
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
   const [program, setProgram] = useState<ProgramFilter>('all')
   const [agentSlug, setAgentSlug] = useState('all')
-  const today = todayISO()
+  const today = usePortalTodayISO()
   const thisMonth = startOfThisMonth()
 
   const agentOptions = useMemo(() => {

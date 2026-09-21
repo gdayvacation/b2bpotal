@@ -42,6 +42,13 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
           <Item label="Guest Name" value={booking.leadGuest} />
           <Item label="Voucher Number" value={booking.agentRef || '—'} />
           <Item label="Total Passengers" value={`${formatPaxBreakdown(booking)} (${total})`} />
+          <Item label="National Park" value={booking.parkFee || '—'} />
+          <Item
+            label="Canoe"
+            value={
+              booking.program === 'James Bond' ? booking.canoe || '—' : 'N/A'
+            }
+          />
           <Item
             label="Pickup"
             value={

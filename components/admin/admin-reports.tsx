@@ -1,19 +1,21 @@
 'use client'
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowLeft,
+  Bus,
   CalendarIcon,
+  ClipboardCheck,
   Download,
   FileSpreadsheet,
-  FileText,
+  Handshake,
   Printer,
 } from 'lucide-react'
 import type { DateRange } from 'react-day-picker'
 import {
   AdminDailyJobOrder,
-  DailyJobOrderModeCard,
 } from '@/components/admin/admin-daily-job-order'
+import { AdminCheckInReport } from '@/components/admin/admin-check-in-report'
 import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
 import {
@@ -35,7 +37,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatLongDate, formatShortDate, startOfToday, todayISO, toISODate } from '@/lib/format'
+import { dateFromISO, formatLongDate, formatShortDate, startOfToday, toISODate } from '@/lib/format'
+import { usePortalTodayISO } from '@/lib/use-portal-today'
 import {
   bookingsToReportRows,
   downloadReportCsv,
@@ -43,7 +46,6 @@ import {
   reportExportFilename,
 } from '@/lib/report-export'
 import {
-  formatPaxBreakdown,
   isActiveBooking,
   totalPassengers,
   type Booking,
@@ -51,9 +53,61 @@ import {
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
-type ReportMode = 'bookings' | 'job-order-ops' | 'job-order-agent'
+type ReportMode = 'bookings' | 'job-order-ops' | 'job-order-agent' | 'check-in'
 type ProgramFilter = 'all' | Program
 type SortKey = 'pickup' | 'zone' | 'agent' | 'code' | 'guest'
+
+type ReportTone = 'teal' | 'amber' | 'sky' | 'slate'
+
+const REPORT_TONES: Record<
+  ReportTone,
+  {
+    card: string
+    icon: string
+    meta: string
+    title: string
+    body: string
+    cta: string
+    wash: string
+  }
+> = {
+  teal: {
+    card: 'border-teal-900/10 bg-gradient-to-br from-teal-50/90 via-white to-cyan-50/40 hover:border-teal-600/30 hover:shadow-lg hover:shadow-teal-900/8',
+    icon: 'bg-gradient-to-br from-teal-600 to-cyan-700 text-white shadow-md shadow-teal-700/25',
+    meta: 'bg-teal-950/6 text-teal-800',
+    title: 'text-teal-950',
+    body: 'text-teal-900/55',
+    cta: 'text-teal-800',
+    wash: 'from-teal-500/10 via-transparent to-transparent',
+  },
+  amber: {
+    card: 'border-amber-900/10 bg-gradient-to-br from-amber-50/90 via-white to-orange-50/35 hover:border-amber-600/30 hover:shadow-lg hover:shadow-amber-900/8',
+    icon: 'bg-gradient-to-br from-amber-500 to-orange-700 text-white shadow-md shadow-amber-700/25',
+    meta: 'bg-amber-950/6 text-amber-900',
+    title: 'text-amber-950',
+    body: 'text-amber-950/55',
+    cta: 'text-amber-800',
+    wash: 'from-amber-500/12 via-transparent to-transparent',
+  },
+  sky: {
+    card: 'border-sky-900/10 bg-gradient-to-br from-sky-50/95 via-white to-blue-50/40 hover:border-sky-600/30 hover:shadow-lg hover:shadow-sky-900/8',
+    icon: 'bg-gradient-to-br from-sky-500 to-blue-700 text-white shadow-md shadow-sky-700/25',
+    meta: 'bg-sky-950/6 text-sky-900',
+    title: 'text-sky-950',
+    body: 'text-sky-950/55',
+    cta: 'text-sky-800',
+    wash: 'from-sky-500/12 via-transparent to-transparent',
+  },
+  slate: {
+    card: 'border-slate-900/10 bg-gradient-to-br from-slate-50/95 via-white to-emerald-50/30 hover:border-slate-600/25 hover:shadow-lg hover:shadow-slate-900/8',
+    icon: 'bg-gradient-to-br from-slate-600 to-emerald-800 text-white shadow-md shadow-slate-700/20',
+    meta: 'bg-slate-950/6 text-slate-800',
+    title: 'text-slate-950',
+    body: 'text-slate-800/55',
+    cta: 'text-slate-800',
+    wash: 'from-slate-500/10 via-transparent to-transparent',
+  },
+}
 
 const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: 'pickup', label: 'Pickup time' },
@@ -68,30 +122,43 @@ export function AdminReports() {
 
   if (!mode) {
     return (
-      <div className="mx-auto max-w-7xl">
+      <div className="mx-auto max-w-5xl">
         <PageHeader
           title="Report"
-          description="Booking exports for partners, OP job order by van, or agent job order sorted by agency."
+          description="Pick a sheet — booking export, driver vans, marina check-in, or agent day order."
         />
 
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <ModeCard
-            title="Booking report"
+        <div className="grid gap-4 sm:grid-cols-2 sm:gap-5">
+          <ReportModeCard
+            tone="teal"
+            title="OP and Booking Report"
             subtitle="Filter by date, program, and agent — then print or download CSV / Excel."
             meta="Export & print"
-            icon={<FileText className="size-7" />}
+            icon={<FileSpreadsheet className="size-7" strokeWidth={1.75} />}
             onClick={() => setMode('bookings')}
           />
-          <DailyJobOrderModeCard
-            title="OP Job Order"
-            meta="For operations"
-            subtitle="Day sheet grouped by van with driver and plate — for ops / drivers."
+          <ReportModeCard
+            tone="amber"
+            title="Driver Job Order"
+            subtitle="Day sheet grouped by van with driver and plate — from Arrange vehicles."
+            meta="For drivers"
+            icon={<Bus className="size-7" strokeWidth={1.75} />}
             onClick={() => setMode('job-order-ops')}
           />
-          <DailyJobOrderModeCard
+          <ReportModeCard
+            tone="sky"
+            title="Check in Report"
+            subtitle="Marina staff sheet by van — guest, boat, park & tick box from van / boat plans."
+            meta="For marina"
+            icon={<ClipboardCheck className="size-7" strokeWidth={1.75} />}
+            onClick={() => setMode('check-in')}
+          />
+          <ReportModeCard
+            tone="slate"
             title="Agent Job Order"
+            subtitle="Same bookings sorted by agency, with van number for each pickup — print per agent."
             meta="For partners"
-            subtitle="Same bookings sorted by agency, with van number for each pickup — print and send per agent."
+            icon={<Handshake className="size-7" strokeWidth={1.75} />}
             onClick={() => setMode('job-order-agent')}
           />
         </div>
@@ -103,6 +170,10 @@ export function AdminReports() {
     return <AdminDailyJobOrder audience="ops" onBack={() => setMode(null)} />
   }
 
+  if (mode === 'check-in') {
+    return <AdminCheckInReport onBack={() => setMode(null)} />
+  }
+
   if (mode === 'job-order-agent') {
     return <AdminDailyJobOrder audience="agent" onBack={() => setMode(null)} />
   }
@@ -110,44 +181,74 @@ export function AdminReports() {
   return <BookingReport onBack={() => setMode(null)} />
 }
 
-function ModeCard({
+function ReportModeCard({
   title,
   subtitle,
   meta,
   icon,
+  tone,
   onClick,
 }: {
   title: string
   subtitle: string
   meta: string
   icon: ReactNode
+  tone: ReportTone
   onClick: () => void
 }) {
+  const t = REPORT_TONES[tone]
+
   return (
     <button
       type="button"
       onClick={onClick}
-      className="gday-sheet rounded-[1.4rem] p-6 text-left transition-all hover:border-teal-700/25 hover:bg-white active:scale-[0.99] sm:p-7"
+      className={cn(
+        'group relative overflow-hidden rounded-[1.45rem] border p-6 text-left transition-all duration-200 active:scale-[0.985] sm:p-7',
+        t.card,
+      )}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex size-14 items-center justify-center rounded-2xl bg-gradient-to-br from-teal-500 to-cyan-700 text-white shadow-sm shadow-teal-700/20">
-          {icon}
+      <div
+        className={cn('pointer-events-none absolute inset-0 bg-gradient-to-br opacity-80', t.wash)}
+        aria-hidden
+      />
+      <div className="relative">
+        <div className="flex items-start justify-between gap-3">
+          <div
+            className={cn(
+              'flex size-14 items-center justify-center rounded-2xl transition-transform duration-200 group-hover:scale-105',
+              t.icon,
+            )}
+          >
+            {icon}
+          </div>
+          <p className={cn('rounded-lg px-2.5 py-1 text-[11px] font-semibold', t.meta)}>{meta}</p>
         </div>
-        <p className="rounded-lg bg-teal-950/[0.05] px-2.5 py-1 text-[11px] font-semibold text-teal-800/70">
-          {meta}
+        <p
+          className={cn(
+            'font-display mt-6 text-2xl font-semibold tracking-tight sm:text-[1.7rem]',
+            t.title,
+          )}
+        >
+          {title}
+        </p>
+        <p className={cn('mt-2 text-[15px] leading-relaxed', t.body)}>{subtitle}</p>
+        <p
+          className={cn(
+            'mt-6 text-sm font-semibold tracking-wide transition-transform duration-200 group-hover:translate-x-0.5',
+            t.cta,
+          )}
+        >
+          Continue →
         </p>
       </div>
-      <p className="font-display mt-6 text-2xl font-semibold tracking-tight text-teal-950 sm:text-3xl">
-        {title}
-      </p>
-      <p className="mt-2 text-base leading-relaxed text-teal-900/55">{subtitle}</p>
-      <p className="mt-6 text-base font-semibold text-teal-800">Continue →</p>
     </button>
   )
 }
 
 function BookingReport({ onBack }: { onBack: () => void }) {
   const { bookings, agents } = usePortal()
+  const portalToday = usePortalTodayISO()
+  const prevTodayRef = useRef(portalToday)
   const [range, setRange] = useState<DateRange | undefined>(() => {
     const today = startOfToday()
     return { from: today, to: today }
@@ -158,6 +259,25 @@ function BookingReport({ onBack }: { onBack: () => void }) {
   const [sortKey, setSortKey] = useState<SortKey>('pickup')
   const [exporting, setExporting] = useState<'csv' | 'xlsx' | null>(null)
 
+  useEffect(() => {
+    if (portalToday === prevTodayRef.current) return
+    const previousToday = prevTodayRef.current
+    prevTodayRef.current = portalToday
+    setRange((current) => {
+      if (!current?.from) {
+        const next = dateFromISO(portalToday)
+        return { from: next, to: next }
+      }
+      const fromIso = toISODate(current.from)
+      const toIso = current.to ? toISODate(current.to) : fromIso
+      if (fromIso === previousToday && toIso === previousToday) {
+        const next = dateFromISO(portalToday)
+        return { from: next, to: next }
+      }
+      return current
+    })
+  }, [portalToday])
+
   const agentOptions = useMemo(() => {
     const map = new Map<string, string>()
     for (const agent of agents) map.set(agent.slug, agent.name)
@@ -167,7 +287,7 @@ function BookingReport({ onBack }: { onBack: () => void }) {
     return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]))
   }, [agents, bookings])
 
-  const today = todayISO()
+  const today = portalToday
   const fromIso = range?.from ? toISODate(range.from) : today
   const toIso = range?.to ? toISODate(range.to) : fromIso
 
@@ -192,7 +312,11 @@ function BookingReport({ onBack }: { onBack: () => void }) {
       ? formatLongDate(fromIso)
       : `${formatShortDate(fromIso)} – ${formatShortDate(toIso)}`
   const programLabel =
-    program === 'PP' ? 'Phi Phi Islands' : program === 'James Bond' ? 'Phang Nga Bay' : 'All programs'
+    program === 'PP'
+      ? 'PP · Phi Phi Islands'
+      : program === 'James Bond'
+        ? 'James Bond · Phang Nga Bay'
+        : 'All programs'
   const agentLabel =
     agentSlug === 'all'
       ? 'All agents'
@@ -207,8 +331,8 @@ function BookingReport({ onBack }: { onBack: () => void }) {
   })()
 
   function setToday() {
-    const today = startOfToday()
-    setRange({ from: today, to: today })
+    const next = dateFromISO(portalToday)
+    setRange({ from: next, to: next })
   }
 
   function handlePrint() {
@@ -242,7 +366,7 @@ function BookingReport({ onBack }: { onBack: () => void }) {
           </Button>
         </div>
         <PageHeader
-          title="Booking report"
+          title="OP and Booking Report"
           description="Filter bookings by date, program, and agent — then print or download CSV / Excel."
           actions={
             <div className="flex flex-wrap items-center gap-2">
@@ -388,9 +512,12 @@ function BookingReport({ onBack }: { onBack: () => void }) {
                 {includeCancelled ? ' · includes cancelled' : ''}
               </p>
             </div>
-            <p className="text-xs font-medium text-teal-800/55">
-              {agentLabel} · {programLabel}
-            </p>
+            <div className="text-right">
+              <p className="text-sm font-semibold text-teal-950">{dateLabel}</p>
+              <p className="text-xs font-medium text-teal-800/55">
+                {agentLabel} · {programLabel}
+              </p>
+            </div>
           </div>
 
           {rows.length === 0 ? (
@@ -400,18 +527,18 @@ function BookingReport({ onBack }: { onBack: () => void }) {
               <Table>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
-                    <TableHead>Code</TableHead>
-                    <TableHead>Date</TableHead>
-                    <TableHead>Program</TableHead>
+                    <TableHead>VC No.</TableHead>
                     <TableHead>Agent</TableHead>
-                    <TableHead>Ref</TableHead>
                     <TableHead>Guest</TableHead>
-                    <TableHead>Pax</TableHead>
-                    <TableHead>Zone / Time</TableHead>
+                    <TableHead className="text-center">AD</TableHead>
+                    <TableHead className="text-center">CH</TableHead>
+                    <TableHead className="text-center">IF</TableHead>
+                    <TableHead className="text-center">TL</TableHead>
+                    <TableHead className="text-center">Total</TableHead>
+                    <TableHead>Time</TableHead>
                     <TableHead>Hotel</TableHead>
-                    <TableHead>Room</TableHead>
                     <TableHead>Park</TableHead>
-                    <TableHead>Canoe</TableHead>
+                    {program === 'James Bond' ? <TableHead>Canoe</TableHead> : null}
                     <TableHead>Note</TableHead>
                     <TableHead>Status</TableHead>
                   </TableRow>
@@ -422,35 +549,25 @@ function BookingReport({ onBack }: { onBack: () => void }) {
                       key={booking.code}
                       className={cn(!isActiveBooking(booking) && 'opacity-55')}
                     >
-                      <TableCell className="font-medium text-teal-950">{booking.code}</TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        {formatShortDate(booking.date)}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        {programShort(booking.program)}
-                      </TableCell>
+                      <TableCell className="text-teal-900/55">{booking.agentRef || '—'}</TableCell>
                       <TableCell>
                         <div className="max-w-[9rem] truncate" title={booking.agentName}>
                           {booking.agentName}
                         </div>
                       </TableCell>
-                      <TableCell className="text-teal-900/55">{booking.agentRef || '—'}</TableCell>
                       <TableCell>
                         <div className="max-w-[8rem] truncate" title={booking.leadGuest}>
                           {booking.leadGuest}
                         </div>
                       </TableCell>
-                      <TableCell className="whitespace-nowrap tabular-nums">
-                        <span className="font-medium text-teal-950">
-                          {totalPassengers(booking)}
-                        </span>
-                        <span className="ml-1 text-xs text-teal-900/40">
-                          {formatPaxBreakdown(booking)}
-                        </span>
+                      <TableCell className="text-center tabular-nums">{booking.adults}</TableCell>
+                      <TableCell className="text-center tabular-nums">{booking.children}</TableCell>
+                      <TableCell className="text-center tabular-nums">{booking.infants}</TableCell>
+                      <TableCell className="text-center tabular-nums">{booking.tourLeaders}</TableCell>
+                      <TableCell className="text-center font-medium tabular-nums text-teal-950">
+                        {totalPassengers(booking)}
                       </TableCell>
-                      <TableCell className="whitespace-nowrap text-sm">
-                        {booking.pickupZone}
-                        <span className="text-teal-900/35"> · </span>
+                      <TableCell className="whitespace-nowrap tabular-nums text-sm">
                         {booking.pickupTime}
                       </TableCell>
                       <TableCell>
@@ -458,11 +575,10 @@ function BookingReport({ onBack }: { onBack: () => void }) {
                           {booking.pickupHotel || '—'}
                         </div>
                       </TableCell>
-                      <TableCell>{booking.roomNumber || '—'}</TableCell>
                       <TableCell className="text-xs">{booking.parkFee}</TableCell>
-                      <TableCell className="text-xs">
-                        {booking.program === 'James Bond' ? (booking.canoe ?? '—') : '—'}
-                      </TableCell>
+                      {program === 'James Bond' ? (
+                        <TableCell className="text-xs">{booking.canoe ?? '—'}</TableCell>
+                      ) : null}
                       <TableCell>
                         <div className="max-w-[8rem] truncate text-xs text-teal-900/55" title={booking.note}>
                           {booking.note || '—'}
@@ -579,11 +695,12 @@ function ReportPrintSheet({
       <div className="mb-3 flex items-end justify-between gap-4 border-b border-neutral-300 pb-2">
         <div>
           <p className="text-[10px] font-semibold tracking-[0.14em] text-neutral-500 uppercase">
-            Gday B2B Portal · Booking report
+            Gday B2B Portal · OP and Booking Report
           </p>
           <h1 className="mt-0.5 text-lg font-bold text-neutral-900">{dateLabel}</h1>
+          <p className="mt-0.5 text-sm font-semibold text-neutral-800">{programLabel}</p>
           <p className="mt-0.5 text-xs text-neutral-600">
-            {programLabel} · {agentLabel}
+            {agentLabel}
             {includeCancelled ? ' · includes cancelled' : ''} · sorted by {sortLabel.toLowerCase()}
           </p>
         </div>
@@ -607,20 +724,18 @@ function ReportPrintSheet({
         <table className="w-full text-left text-[9.5px] leading-tight">
           <thead>
             <tr className="border-b-2 border-neutral-800">
-              <th className="py-1 pr-1.5 font-semibold">Code</th>
-              <th className="py-1 pr-1.5 font-semibold">Date</th>
-              <th className="py-1 pr-1.5 font-semibold">Prog</th>
+              <th className="py-1 pr-1.5 font-semibold">VC No.</th>
               <th className="py-1 pr-1.5 font-semibold">Agent</th>
-              <th className="py-1 pr-1.5 font-semibold">Ref</th>
               <th className="py-1 pr-1.5 font-semibold">Guest</th>
-              <th className="py-1 pr-1.5 font-semibold">Pax</th>
-              <th className="py-1 pr-1.5 font-semibold">Breakdown</th>
-              <th className="py-1 pr-1.5 font-semibold">Zone</th>
+              <th className="py-1 pr-1.5 text-center font-semibold">AD</th>
+              <th className="py-1 pr-1.5 text-center font-semibold">CH</th>
+              <th className="py-1 pr-1.5 text-center font-semibold">IF</th>
+              <th className="py-1 pr-1.5 text-center font-semibold">TL</th>
+              <th className="py-1 pr-1.5 text-center font-semibold">Total</th>
               <th className="py-1 pr-1.5 font-semibold">Time</th>
               <th className="py-1 pr-1.5 font-semibold">Hotel</th>
-              <th className="py-1 pr-1.5 font-semibold">Room</th>
               <th className="py-1 pr-1.5 font-semibold">Park</th>
-              <th className="py-1 pr-1.5 font-semibold">Canoe</th>
+              {program === 'James Bond' ? <th className="py-1 pr-1.5 font-semibold">Canoe</th> : null}
               <th className="py-1 pr-1.5 font-semibold">Note</th>
               <th className="py-1 font-semibold">Status</th>
             </tr>
@@ -634,34 +749,30 @@ function ReportPrintSheet({
                   !isActiveBooking(booking) && 'text-neutral-400',
                 )}
               >
-                <td className="py-1 pr-1.5 font-medium whitespace-nowrap">{booking.code}</td>
-                <td className="py-1 pr-1.5 whitespace-nowrap">{formatShortDate(booking.date)}</td>
-                <td className="py-1 pr-1.5 whitespace-nowrap">{programShort(booking.program)}</td>
-                <td className="max-w-[6.5rem] truncate py-1 pr-1.5">{booking.agentName}</td>
                 <td className="max-w-[4rem] truncate py-1 pr-1.5">{booking.agentRef || '—'}</td>
+                <td className="max-w-[6.5rem] truncate py-1 pr-1.5">{booking.agentName}</td>
                 <td className="max-w-[5.5rem] truncate py-1 pr-1.5">{booking.leadGuest}</td>
-                <td className="py-1 pr-1.5 font-semibold tabular-nums">
+                <td className="py-1 pr-1.5 text-center tabular-nums">{booking.adults}</td>
+                <td className="py-1 pr-1.5 text-center tabular-nums">{booking.children}</td>
+                <td className="py-1 pr-1.5 text-center tabular-nums">{booking.infants}</td>
+                <td className="py-1 pr-1.5 text-center tabular-nums">{booking.tourLeaders}</td>
+                <td className="py-1 pr-1.5 text-center font-semibold tabular-nums">
                   {totalPassengers(booking)}
                 </td>
-                <td className="py-1 pr-1.5 whitespace-nowrap tabular-nums">
-                  {formatPaxBreakdown(booking)}
-                </td>
-                <td className="py-1 pr-1.5 whitespace-nowrap">{booking.pickupZone}</td>
                 <td className="py-1 pr-1.5 whitespace-nowrap">{booking.pickupTime}</td>
                 <td className="max-w-[6rem] truncate py-1 pr-1.5">{booking.pickupHotel || '—'}</td>
-                <td className="py-1 pr-1.5 whitespace-nowrap">{booking.roomNumber || '—'}</td>
                 <td className="py-1 pr-1.5 whitespace-nowrap">
                   {booking.parkFee === 'Included' ? 'Inc' : 'Not'}
                 </td>
-                <td className="py-1 pr-1.5 whitespace-nowrap">
-                  {booking.program === 'James Bond'
-                    ? booking.canoe === 'Included'
+                {program === 'James Bond' ? (
+                  <td className="py-1 pr-1.5 whitespace-nowrap">
+                    {booking.canoe === 'Included'
                       ? 'Inc'
                       : booking.canoe === 'Not Included'
                         ? 'Not'
-                        : '—'
-                    : '—'}
-                </td>
+                        : '—'}
+                  </td>
+                ) : null}
                 <td className="max-w-[5rem] truncate py-1 pr-1.5">{booking.note || '—'}</td>
                 <td className="py-1 whitespace-nowrap">{statusShort(booking.status)}</td>
               </tr>
@@ -691,10 +802,6 @@ function SummaryCard({
       <p className="mt-0.5 truncate text-xs text-teal-900/45">{detail}</p>
     </div>
   )
-}
-
-function programShort(program: Program) {
-  return program === 'PP' ? 'PP' : 'JB'
 }
 
 function statusShort(status: Booking['status']) {

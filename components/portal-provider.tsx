@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { nextBookingCode, uniqueAgentSlug } from '@/lib/format'
 import { autoAssignBoats } from '@/lib/boat-assign'
-import { autoAssignVans, normalizeAssignments, paxOnVan } from '@/lib/vehicle-assign'
+import { autoAssignVans, nextSortOrderForVan, normalizeAssignments, paxOnVan, reorderVanAssignments } from '@/lib/vehicle-assign'
 import {
   bookingClosedMessage,
   cancelClosedMessage,
@@ -65,18 +65,22 @@ import type {
 } from '@/lib/types'
 import { HOTEL_CATALOG } from '@/lib/hotel-catalog'
 import {
+  DEFAULT_BOAT_CAPACITY,
   DEFAULT_JB_CAPACITY,
   DEFAULT_PP_CAPACITY,
+  MAX_DAY_BOATS,
   NO_TRANSFER_TIME,
   bookingClosureKey,
   dayBoatPlanKey,
   dayVehiclePlanKey,
+  defaultBoatCapacities,
   emptyDayBoatPlan,
   emptyDayVehiclePlan,
   emptyVanMeta,
   isActiveBooking,
   isCorePickupZone,
   isNoTransfer,
+  normalizeBoatCapacities,
   totalPassengers,
 } from '@/lib/types'
 
@@ -191,6 +195,14 @@ type PortalContextValue = {
     boat: BoatNumber,
     capacity: number,
   ) => void
+  /** Append a boat for this day (default capacity 44, or a custom rental size). */
+  addDayBoat: (date: string, program: Program, capacity?: number) => void
+  /** Remove a boat; guests on it become unassigned; higher boat numbers shift down. */
+  removeDayBoat: (date: string, program: Program, boat: BoatNumber) => void
+  /** Set every boat on this day back to the default capacity (keeps boat count). */
+  resetDayBoatCapacities: (date: string, program: Program) => void
+  /** Restore the default fleet: 3 boats × 44 pax (clears assignments beyond boat 3). */
+  resetDayBoatFleet: (date: string, program: Program) => void
   autoAssignDayBoats: (date: string, program: Program) => void
   clearDayBoatAssignments: (date: string, program: Program) => void
   /** Assign every booking currently on this van to one boat (whole van group). */
@@ -218,6 +230,12 @@ type PortalContextValue = {
     program: Program,
     bookingCode: string,
     legs: VanSplit[],
+  ) => void
+  reorderVanBookings: (
+    date: string,
+    program: Program,
+    van: number,
+    orderedCodes: string[],
   ) => void
   setVanMeta: (date: string, program: Program, van: number, meta: Partial<VanMeta>) => void
   getFleetVan: (van: number) => FleetVan | null
@@ -386,7 +404,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
     const getDayBoatPlan = (date: string, program: Program) => {
       const key = dayBoatPlanKey(date, program)
-      return dayBoatPlans[key] ?? emptyDayBoatPlan(date, program)
+      const stored = dayBoatPlans[key]
+      if (!stored) return emptyDayBoatPlan(date, program)
+      return {
+        ...stored,
+        capacities: normalizeBoatCapacities(stored.capacities),
+      }
     }
 
     const upsertPlan = (
@@ -1246,9 +1269,58 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       },
       setBoatCapacity: (date, program, boat, capacity) => {
         upsertPlan(date, program, (plan) => {
-          const capacities = [...plan.capacities] as DayBoatPlan['capacities']
-          capacities[boat - 1] = Math.max(1, capacity)
+          const capacities = normalizeBoatCapacities(plan.capacities)
+          const index = boat - 1
+          if (index < 0 || index >= capacities.length) return plan
+          capacities[index] = Math.max(1, Math.floor(capacity) || 1)
           return { ...plan, capacities }
+        })
+      },
+      addDayBoat: (date, program, capacity) => {
+        upsertPlan(date, program, (plan) => {
+          const capacities = normalizeBoatCapacities(plan.capacities)
+          if (capacities.length >= MAX_DAY_BOATS) return plan
+          const nextCap = Math.max(
+            1,
+            Math.floor(capacity ?? DEFAULT_BOAT_CAPACITY) || DEFAULT_BOAT_CAPACITY,
+          )
+          return { ...plan, capacities: [...capacities, nextCap] }
+        })
+      },
+      removeDayBoat: (date, program, boat) => {
+        upsertPlan(date, program, (plan) => {
+          const capacities = normalizeBoatCapacities(plan.capacities)
+          if (capacities.length <= 1) return plan
+          const index = boat - 1
+          if (index < 0 || index >= capacities.length) return plan
+          const nextCaps = capacities.filter((_, i) => i !== index)
+          const assignments: Record<string, BoatNumber> = {}
+          for (const [code, assigned] of Object.entries(plan.assignments)) {
+            if (assigned === boat) continue
+            if (assigned > boat) assignments[code] = assigned - 1
+            else assignments[code] = assigned
+          }
+          return { ...plan, capacities: nextCaps, assignments }
+        })
+      },
+      resetDayBoatCapacities: (date, program) => {
+        upsertPlan(date, program, (plan) => {
+          const capacities = normalizeBoatCapacities(plan.capacities).map(
+            () => DEFAULT_BOAT_CAPACITY,
+          )
+          return { ...plan, capacities }
+        })
+      },
+      resetDayBoatFleet: (date, program) => {
+        upsertPlan(date, program, (plan) => {
+          const capacities = defaultBoatCapacities()
+          const assignments: Record<string, BoatNumber> = {}
+          for (const [code, assigned] of Object.entries(plan.assignments)) {
+            if (assigned >= 1 && assigned <= capacities.length) {
+              assignments[code] = assigned
+            }
+          }
+          return { ...plan, capacities, assignments }
         })
       },
       autoAssignDayBoats: (date, program) => {
@@ -1256,6 +1328,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const vehiclePlan = getDayVehiclePlan(date, program)
         upsertPlan(date, program, (plan) => ({
           ...plan,
+          capacities: normalizeBoatCapacities(plan.capacities),
           assignments: autoAssignBoats(dayBookings, plan.capacities, vehiclePlan.assignments),
         }))
       },
@@ -1283,7 +1356,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         upsertVehiclePlan(date, program, (plan) => {
           const assignments = { ...plan.assignments }
           if (van === null) delete assignments[bookingCode]
-          else assignments[bookingCode] = [{ van, pax }]
+          else {
+            assignments[bookingCode] = [
+              { van, pax, sortOrder: nextSortOrderForVan(assignments, van) },
+            ]
+          }
           return { ...plan, assignments }
         })
       },
@@ -1303,24 +1380,37 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             }
             const pax = paxByCode.get(code)
             if (pax === undefined) continue
-            assignments[code] = [{ van, pax }]
+            assignments[code] = [
+              { van, pax, sortOrder: nextSortOrderForVan(assignments, van) },
+            ]
           }
           return { ...plan, assignments }
         })
       },
       setBookingVanSplits: (date, program, bookingCode, legs) => {
-        const cleaned = legs
-          .map((leg) => ({
-            van: Math.max(1, Math.floor(Number(leg.van) || 0)),
-            pax: Math.max(0, Math.floor(Number(leg.pax) || 0)),
-          }))
-          .filter((leg) => leg.van > 0 && leg.pax > 0)
         upsertVehiclePlan(date, program, (plan) => {
+          const cleaned = legs
+            .map((leg) => ({
+              van: Math.max(1, Math.floor(Number(leg.van) || 0)),
+              pax: Math.max(0, Math.floor(Number(leg.pax) || 0)),
+              sortOrder:
+                typeof leg.sortOrder === 'number' && Number.isFinite(leg.sortOrder)
+                  ? leg.sortOrder
+                  : nextSortOrderForVan(plan.assignments, Math.max(1, Math.floor(Number(leg.van) || 0))),
+            }))
+            .filter((leg) => leg.van > 0 && leg.pax > 0)
           const assignments = { ...plan.assignments }
           if (cleaned.length === 0) delete assignments[bookingCode]
           else assignments[bookingCode] = cleaned
           return { ...plan, assignments }
         })
+      },
+      reorderVanBookings: (date, program, van, orderedCodes) => {
+        if (orderedCodes.length === 0) return
+        upsertVehiclePlan(date, program, (plan) => ({
+          ...plan,
+          assignments: reorderVanAssignments(plan.assignments, van, orderedCodes),
+        }))
       },
       setVanMeta: (date, program, van, meta) => {
         const planKey = dayVehiclePlanKey(date, program)

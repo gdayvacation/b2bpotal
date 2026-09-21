@@ -19,7 +19,6 @@ import {
   Search,
   X,
 } from 'lucide-react'
-import type { DateRange } from 'react-day-picker'
 import { BookingHistoryDialog } from '@/components/booking-history-dialog'
 import { ChangeBookingDateDialog } from '@/components/change-booking-date-dialog'
 import { EditBookingDialog } from '@/components/edit-booking-dialog'
@@ -47,7 +46,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatShortDate, startOfToday, todayISO, toISODate } from '@/lib/format'
+import { formatShortDate, startOfToday, toISODate } from '@/lib/format'
+import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { isNoTransfer, totalPassengers, type Booking, type Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -255,7 +255,7 @@ export function AdminBookings() {
   const createdCode = searchParams.get('created')
   const [quick, setQuick] = useState<QuickFilter>('all')
   const [program, setProgram] = useState<ProgramFilter>('all')
-  const [range, setRange] = useState<DateRange | undefined>()
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [dismissCreated, setDismissCreated] = useState(false)
@@ -273,14 +273,13 @@ export function AdminBookings() {
 
   const query = search.trim().toLowerCase()
   const isSearching = query.length > 0
-  const hasRange = Boolean(range?.from)
-  const hasActiveFilter = quick === 'today' || hasRange || isSearching || program !== 'all'
-  const today = todayISO()
+  const hasSelectedDate = Boolean(selectedDate)
+  const hasActiveFilter = quick === 'today' || hasSelectedDate || isSearching || program !== 'all'
+  const today = usePortalTodayISO()
   const searchFrom = searchFromISO()
 
   const filtered = useMemo(() => {
-    const fromIso = range?.from ? toISODate(range.from) : null
-    const toIso = range?.to ? toISODate(range.to) : fromIso
+    const dateIso = selectedDate ? toISODate(selectedDate) : null
     const dir = sortDir === 'asc' ? 1 : -1
 
     return bookings
@@ -288,14 +287,18 @@ export function AdminBookings() {
         if (program !== 'all' && booking.program !== program) return false
         if (isSearching) {
           if (booking.date < searchFrom) return false
-          const haystack = [booking.agentName, booking.leadGuest, booking.pickupHotel]
+          const haystack = [
+            booking.agentName,
+            booking.leadGuest,
+            booking.agentRef,
+            booking.pickupHotel,
+          ]
             .join(' ')
             .toLowerCase()
           if (!haystack.includes(query)) return false
         }
         if (quick === 'today' && booking.date !== today) return false
-        if (fromIso && booking.date < fromIso) return false
-        if (toIso && booking.date > toIso) return false
+        if (dateIso && booking.date !== dateIso) return false
         return true
       })
       .slice()
@@ -320,7 +323,7 @@ export function AdminBookings() {
         }
         return b.date.localeCompare(a.date) || b.code.localeCompare(a.code)
       })
-  }, [bookings, program, quick, range, isSearching, query, sortKey, sortDir, today, searchFrom])
+  }, [bookings, program, quick, selectedDate, isSearching, query, sortKey, sortDir, today, searchFrom])
 
   const capped = !hasActiveFilter
   const list = capped ? filtered.slice(0, RECENT_LIMIT) : filtered
@@ -331,7 +334,7 @@ export function AdminBookings() {
 
   useEffect(() => {
     setPage(1)
-  }, [quick, program, range, query, sortKey, sortDir])
+  }, [quick, program, selectedDate, query, sortKey, sortDir])
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages)
@@ -340,13 +343,13 @@ export function AdminBookings() {
   function clearFilters() {
     setQuick('all')
     setProgram('all')
-    setRange(undefined)
+    setSelectedDate(undefined)
     setSearch('')
   }
 
   function applyRecent() {
     setQuick('all')
-    setRange(undefined)
+    setSelectedDate(undefined)
     setSearch('')
   }
 
@@ -361,12 +364,12 @@ export function AdminBookings() {
 
   function applyToday() {
     setQuick('today')
-    setRange(undefined)
+    setSelectedDate(undefined)
   }
 
-  function applyRange(next: DateRange | undefined) {
-    setRange(next)
-    if (next?.from) setQuick('all')
+  function applySelectedDate(next: Date | undefined) {
+    setSelectedDate(next)
+    if (next) setQuick('all')
   }
 
   function handleCancel(code: string) {
@@ -399,12 +402,7 @@ export function AdminBookings() {
     setPickupError('')
   }
 
-  const rangeLabel = (() => {
-    if (!range?.from) return 'Trip date range'
-    const from = formatShortDate(toISODate(range.from))
-    if (!range.to || toISODate(range.from) === toISODate(range.to)) return from
-    return `${from} – ${formatShortDate(toISODate(range.to))}`
-  })()
+  const dateLabel = selectedDate ? formatShortDate(toISODate(selectedDate)) : 'Trip date'
 
   const showCreated = Boolean(createdCode) && !dismissCreated
   const showingFrom = list.length === 0 ? 0 : pageStart + 1
@@ -447,7 +445,7 @@ export function AdminBookings() {
               <SoftLabel>Filter</SoftLabel>
               <SegmentedControl>
                 <Segment
-                  active={quick === 'all' && !hasRange && !isSearching}
+                  active={quick === 'all' && !hasSelectedDate && !isSearching}
                   onClick={applyRecent}
                 >
                   New Booking
@@ -479,32 +477,32 @@ export function AdminBookings() {
                       variant="outline"
                       className={cn(
                         'h-10 justify-start gap-2 rounded-xl font-normal',
-                        hasRange && 'border-teal-700/40 bg-teal-50 text-teal-950',
+                        hasSelectedDate && 'border-teal-700/40 bg-teal-50 text-teal-950',
                       )}
                     />
                   }
                 >
                   <CalendarIcon className="size-4 text-teal-900/35" />
-                  <span className="truncate">{rangeLabel}</span>
+                  <span className="truncate">{dateLabel}</span>
                 </PopoverTrigger>
                 <PopoverContent align="start" className="w-auto p-2">
                   <Calendar
-                    mode="range"
-                    selected={range}
-                    onSelect={applyRange}
-                    defaultMonth={range?.from ?? startOfToday()}
+                    mode="single"
+                    selected={selectedDate}
+                    onSelect={applySelectedDate}
+                    defaultMonth={selectedDate ?? startOfToday()}
                     numberOfMonths={1}
                   />
-                  {hasRange ? (
+                  {hasSelectedDate ? (
                     <div className="border-t border-teal-900/8 px-2 pt-2">
                       <Button
                         type="button"
                         variant="ghost"
                         size="sm"
                         className="w-full"
-                        onClick={() => setRange(undefined)}
+                        onClick={() => setSelectedDate(undefined)}
                       >
-                        Clear range
+                        Clear date
                       </Button>
                     </div>
                   ) : null}
@@ -530,7 +528,7 @@ export function AdminBookings() {
               {!isSearching && quick === 'today'
                 ? ` · departing ${formatShortDate(today)}`
                 : null}
-              {!isSearching && hasRange ? ' · by trip date' : null}
+              {!isSearching && hasSelectedDate ? ' · by trip date' : null}
               {program === 'PP' ? ' · PP only' : null}
               {program === 'James Bond' ? ' · JB only' : null}
             </p>
@@ -541,9 +539,9 @@ export function AdminBookings() {
             <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search agent, guest, or hotel…"
+              placeholder="Search agent, guest, voucher number, or hotel…"
               className="h-10 rounded-xl pr-9 pl-9"
-              aria-label="Search bookings by agent, guest, or hotel"
+              aria-label="Search bookings by agent, guest, voucher number, or hotel"
             />
             {isSearching ? (
               <button

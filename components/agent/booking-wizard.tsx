@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   CalendarIcon,
@@ -32,7 +32,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
-import { formatLongDate, slugifyAgentName, startOfToday, toISODate } from '@/lib/format'
+import { dateFromISO, formatLongDate, slugifyAgentName, startOfToday, toISODate, todayISO } from '@/lib/format'
+import { addCalendarDays } from '@/lib/booking-cutoffs'
+import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { cn } from '@/lib/utils'
 import { formatPaxBreakdown, isNoTransfer, NO_TRANSFER_ZONE, type Agent, type Booking, type Hotel, type IncludeOption, type PickupZoneName, type Program } from '@/lib/types'
 
@@ -43,6 +45,13 @@ const CORE_STEPS = [
   'Pickup',
   'Review',
 ] as const
+
+/** Thailand today when bookable; otherwise next day (after cutoff). Admin always gets today. */
+function defaultTourDate(isOpen: (iso: string) => boolean, allowClosedToday: boolean): Date {
+  const today = startOfToday()
+  if (allowClosedToday || isOpen(toISODate(today))) return today
+  return dateFromISO(addCalendarDays(todayISO(), 1))
+}
 
 type ResolvedAgent = { slug: string; name: string }
 
@@ -99,7 +108,23 @@ export function BookingWizard({
   const [pendingProgram, setPendingProgram] = useState<Program | null>(null)
   const [draftParkFee, setDraftParkFee] = useState<IncludeOption>('Included')
   const [draftCanoe, setDraftCanoe] = useState<IncludeOption>('Included')
-  const [date, setDate] = useState<Date | undefined>(() => startOfToday())
+  const portalToday = usePortalTodayISO()
+  const prevTodayRef = useRef(portalToday)
+  const [date, setDate] = useState<Date | undefined>(() =>
+    defaultTourDate(isBookingOpen, selectAgent),
+  )
+
+  useEffect(() => {
+    if (portalToday === prevTodayRef.current) return
+    const previousToday = prevTodayRef.current
+    prevTodayRef.current = portalToday
+    setDate((current) => {
+      if (!current) return defaultTourDate(isBookingOpen, selectAgent)
+      if (toISODate(current) !== previousToday) return current
+      return defaultTourDate(isBookingOpen, selectAgent)
+    })
+  }, [portalToday, isBookingOpen, selectAgent])
+
   const [adults, setAdults] = useState(2)
   const [children, setChildren] = useState(0)
   const [infants, setInfants] = useState(0)
@@ -532,7 +557,7 @@ export function BookingWizard({
                   selected={date}
                   onSelect={setDate}
                   disabled={(day) => {
-                    if (toISODate(day) < toISODate(startOfToday())) return true
+                    if (toISODate(day) < todayISO()) return true
                     if (selectAgent) return false
                     const dayIso = toISODate(day)
                     if (!isBookingOpen(dayIso)) return true
@@ -543,6 +568,12 @@ export function BookingWizard({
                 />
               </PopoverContent>
             </Popover>
+            {!selectAgent ? (
+              <p className="rounded-xl border border-amber-200/80 bg-amber-50/90 px-3.5 py-2.5 text-xs leading-relaxed text-amber-950/80">
+                After midnight Thailand time, for any adding or modifying bookings please contact
+                land service offline.
+              </p>
+            ) : null}
             {program && capacityInfo ? (
               !bookingOpen ? (
                 <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
@@ -654,8 +685,10 @@ export function BookingWizard({
                   <Label htmlFor="lead-guest">Guest Name</Label>
                   <Input
                     id="lead-guest"
+                    name="lead-guest"
                     value={leadGuest}
                     onChange={(event) => setLeadGuest(event.target.value)}
+                    autoComplete="off"
                     className="h-11"
                   />
                 </div>

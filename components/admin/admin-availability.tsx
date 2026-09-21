@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, Minus, Plus } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
 import { PageHeader, Segment, SegmentedControl, SoftLabel, Surface } from '@/components/ui-primitives'
@@ -14,7 +14,8 @@ import {
   isCancelOpenForDate,
   summarizeCutoffRule,
 } from '@/lib/booking-cutoffs'
-import { formatLongDate, formatShortDate, startOfThisMonth, todayISO, toISODate } from '@/lib/format'
+import { formatLongDate, formatShortDate, startOfThisMonth, toISODate } from '@/lib/format'
+import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { DEFAULT_JB_CAPACITY, DEFAULT_PP_CAPACITY, type Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -37,14 +38,26 @@ export function AdminAvailability() {
     closeBookingForDates,
     openBookingForDates,
   } = usePortal()
+  const portalToday = usePortalTodayISO()
+  const prevTodayRef = useRef(portalToday)
   const [tab, setTab] = useState<Tab>('capacity')
   const [month, setMonth] = useState(() => startOfThisMonth())
-  const [selected, setSelected] = useState(() => [todayISO()])
+  const [selected, setSelected] = useState(() => [portalToday])
   const [programFilter, setProgramFilter] = useState<ProgramFilter>('all')
   const [closePrograms, setClosePrograms] = useState<Program[]>(['PP', 'James Bond'])
   const [closureReason, setClosureReason] = useState('')
   const showPP = programFilter === 'all' || programFilter === 'PP'
   const showJB = programFilter === 'all' || programFilter === 'James Bond'
+
+  useEffect(() => {
+    if (portalToday === prevTodayRef.current) return
+    const previousToday = prevTodayRef.current
+    prevTodayRef.current = portalToday
+    setSelected((current) => {
+      if (current.length === 1 && current[0] === previousToday) return [portalToday]
+      return current
+    })
+  }, [portalToday])
 
   const days = useMemo(() => buildMonth(month), [month])
   const monthLabel = month.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })

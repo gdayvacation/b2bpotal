@@ -117,6 +117,17 @@ export function VoucherView({ booking, slug }: { booking: Booking; slug: string 
               className="col-span-2 sm:col-span-1"
             />
           </div>
+          <div className="mt-2 grid grid-cols-2 gap-2 border-t border-white/10 pt-2">
+            <HeroFact label="National Park" value={live.parkFee || '—'} />
+            <HeroFact
+              label="Canoe"
+              value={
+                live.program === 'James Bond'
+                  ? live.canoe || '—'
+                  : 'N/A'
+              }
+            />
+          </div>
         </div>
 
         <div className="space-y-2.5 px-3.5 py-3.5 sm:px-4">
@@ -157,8 +168,13 @@ export function VoucherView({ booking, slug }: { booking: Booking; slug: string 
 
           <Section title="Tour options" icon={<Ship className="size-3.5" />}>
             <dl className="grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-3">
-              <DetailCell label="Park fee" value={live.parkFee} />
-              <DetailCell label="Canoe" value={live.canoe ?? '—'} />
+              <DetailCell label="National Park" value={live.parkFee || '—'} />
+              <DetailCell
+                label="Canoe"
+                value={
+                  live.program === 'James Bond' ? live.canoe || '—' : 'N/A'
+                }
+              />
               <DetailCell
                 label="Voucher number"
                 value={live.agentRef || '—'}

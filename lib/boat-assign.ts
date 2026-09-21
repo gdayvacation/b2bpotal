@@ -1,5 +1,5 @@
 import type { BoatNumber, Booking, DayBoatPlan, VanSplit } from '@/lib/types'
-import { BOAT_NUMBERS, isNoTransfer, totalPassengers } from '@/lib/types'
+import { boatNumbersForPlan, isNoTransfer, normalizeBoatCapacities, totalPassengers } from '@/lib/types'
 import { primaryVan } from '@/lib/vehicle-assign'
 
 type AssignableGroup = {
@@ -20,17 +20,20 @@ export function autoAssignBoats(
   capacities: DayBoatPlan['capacities'],
   vanAssignments: Record<string, VanSplit[]> = {},
 ): Record<string, BoatNumber> {
+  const caps = normalizeBoatCapacities(capacities)
+  const boats = boatNumbersForPlan({ capacities: caps })
   const groups = buildGroups(bookings, vanAssignments)
   // Larger groups first so van cohorts stay together when capacity allows.
   const sorted = groups.slice().sort(
     (a, b) => b.pax - a.pax || (a.van ?? 999) - (b.van ?? 999) || a.id.localeCompare(b.id),
   )
 
-  const load: Record<BoatNumber, number> = { 1: 0, 2: 0, 3: 0 }
+  const load: Record<number, number> = {}
+  for (const boat of boats) load[boat] = 0
   const assignments: Record<string, BoatNumber> = {}
 
   for (const group of sorted) {
-    const boat = pickBoat(group.pax, load, capacities)
+    const boat = pickBoat(group.pax, load, caps, boats)
     for (const booking of group.bookings) {
       assignments[booking.code] = boat
     }
@@ -88,14 +91,15 @@ function buildGroups(
 
 function pickBoat(
   pax: number,
-  load: Record<BoatNumber, number>,
-  capacities: DayBoatPlan['capacities'],
+  load: Record<number, number>,
+  capacities: number[],
+  boats: BoatNumber[],
 ): BoatNumber {
-  const fitting = BOAT_NUMBERS.filter((boat) => load[boat] + pax <= capacities[boat - 1]).sort(
+  const fitting = boats.filter((boat) => load[boat] + pax <= capacities[boat - 1]).sort(
     (a, b) => load[a] - load[b] || a - b,
   )
   return (
     fitting[0] ??
-    BOAT_NUMBERS.slice().sort((a, b) => load[a] - load[b] || a - b)[0]
+    boats.slice().sort((a, b) => load[a] - load[b] || a - b)[0]
   )
 }

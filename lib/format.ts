@@ -14,6 +14,9 @@ export function formatShortDate(isoDate: string) {
   })
 }
 
+/** Portal ops calendar — matches booking cutoffs. */
+export const PORTAL_TIMEZONE = 'Asia/Bangkok' as const
+
 export function toISODate(date: Date) {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -21,19 +24,35 @@ export function toISODate(date: Date) {
   return `${year}-${month}-${day}`
 }
 
-/** Local calendar date at midnight (no time-of-day). */
-export function startOfToday(): Date {
-  const now = new Date()
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate())
+/** Parse YYYY-MM-DD into a local Date at midnight (no UTC shift). */
+export function dateFromISO(isoDate: string): Date {
+  const [y, m, d] = isoDate.split('-').map(Number)
+  return new Date(y!, (m ?? 1) - 1, d ?? 1)
 }
 
-export function todayISO(): string {
-  return toISODate(startOfToday())
+/**
+ * Portal ops / check-in calendar date in Thailand time.
+ * Rolls at midnight Asia/Bangkok (not the browser's local TZ, not UTC).
+ * Example: 23:50 on 20 Sep → "20 Sep"; 00:10 on 21 Sep → "21 Sep".
+ */
+export function todayISO(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: PORTAL_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now)
 }
 
-export function startOfThisMonth(): Date {
-  const now = new Date()
-  return new Date(now.getFullYear(), now.getMonth(), 1)
+/** Thailand calendar date at local midnight (no time-of-day). */
+export function startOfToday(now: Date = new Date()): Date {
+  return dateFromISO(todayISO(now))
+}
+
+/** First day of the Thailand calendar month containing `now`. */
+export function startOfThisMonth(now: Date = new Date()): Date {
+  const [y, m] = todayISO(now).split('-').map(Number)
+  return new Date(y!, (m ?? 1) - 1, 1)
 }
 
 export function bookingPrefix(program: 'PP' | 'James Bond') {

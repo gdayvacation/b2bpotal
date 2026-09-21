@@ -1,8 +1,8 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { CalendarDays, ChevronDown, History, Pencil, X } from 'lucide-react'
+import { CalendarDays, ChevronDown, History, Pencil, Search, X } from 'lucide-react'
 import { BookingHistoryDialog } from '@/components/booking-history-dialog'
 import { ChangeBookingDateDialog } from '@/components/change-booking-date-dialog'
 import { EditBookingDialog } from '@/components/edit-booking-dialog'
@@ -17,6 +17,7 @@ import {
 } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
+import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   Table,
@@ -27,7 +28,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { VoucherShareActions } from '@/components/voucher-share-actions'
-import { formatShortDate, toISODate, todayISO } from '@/lib/format'
+import { formatShortDate, startOfToday, toISODate } from '@/lib/format'
+import { usePortalTodayISO } from '@/lib/use-portal-today'
 import {
   totalPassengers,
   type Booking,
@@ -37,6 +39,15 @@ import {
 import { cn } from '@/lib/utils'
 
 type ProgramFilter = 'all' | Program
+
+/** Search looks back 30 days and through all future trips (keeps lists fast). */
+const SEARCH_HISTORY_DAYS = 30
+
+function searchFromISO() {
+  const d = startOfToday()
+  d.setDate(d.getDate() - SEARCH_HISTORY_DAYS)
+  return toISODate(d)
+}
 
 function AgentStatusMenu({
   booking,
@@ -161,9 +172,19 @@ export function BookingsTable({
   const [rebookTarget, setRebookTarget] = useState<Booking | null>(null)
   const [editTarget, setEditTarget] = useState<Booking | null>(null)
   const [historyTarget, setHistoryTarget] = useState<Booking | null>(null)
-  const [dayFilter, setDayFilter] = useState<string | null>(() => todayISO())
+  const portalToday = usePortalTodayISO()
+  const prevTodayRef = useRef(portalToday)
+  const [dayFilter, setDayFilter] = useState<string | null>(() => portalToday)
   const [programFilter, setProgramFilter] = useState<ProgramFilter>('all')
   const [calendarOpen, setCalendarOpen] = useState(false)
+  const [search, setSearch] = useState('')
+
+  useEffect(() => {
+    if (portalToday === prevTodayRef.current) return
+    const previousToday = prevTodayRef.current
+    prevTodayRef.current = portalToday
+    setDayFilter((current) => (current === previousToday ? portalToday : current))
+  }, [portalToday])
 
   const actor: BookingActor | undefined = useMemo(() => {
     if (!slug) return undefined
@@ -176,27 +197,37 @@ export function BookingsTable({
   }, [agents, slug])
 
   const nearbyDays = useMemo(() => {
-    const centerIso = dayFilter ?? todayISO()
+    const centerIso = dayFilter ?? portalToday
     const center = new Date(`${centerIso}T12:00:00`)
     return Array.from({ length: 7 }, (_, index) => {
       const date = new Date(center)
       date.setDate(center.getDate() + (index - 3))
       return toISODate(date)
     })
-  }, [dayFilter])
+  }, [dayFilter, portalToday])
+
+  const query = search.trim().toLowerCase()
+  const isSearching = query.length > 0
+  const searchFrom = searchFromISO()
 
   const filtered = useMemo(() => {
     return bookings
       .filter((booking) => {
-        if (dayFilter && booking.date !== dayFilter) return false
         if (programFilter !== 'all' && booking.program !== programFilter) return false
+        if (isSearching) {
+          if (booking.date < searchFrom) return false
+          const haystack = [booking.leadGuest, booking.agentRef].join(' ').toLowerCase()
+          if (!haystack.includes(query)) return false
+          return true
+        }
+        if (dayFilter && booking.date !== dayFilter) return false
         return true
       })
       .sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code))
-  }, [bookings, dayFilter, programFilter])
+  }, [bookings, dayFilter, programFilter, isSearching, query, searchFrom])
 
-  const today = todayISO()
-  const filtersActive = dayFilter !== today || programFilter !== 'all'
+  const today = portalToday
+  const filtersActive = isSearching || dayFilter !== today || programFilter !== 'all'
   const dayFilterObj = dayFilter ? new Date(`${dayFilter}T12:00:00`) : undefined
 
   function handleCancel(code: string, travelDate: string, program: Booking['program']) {
@@ -221,140 +252,185 @@ export function BookingsTable({
 
   function selectDay(date: Date | undefined) {
     if (!date) return
+    setSearch('')
     setDayFilter(toISODate(date))
     setCalendarOpen(false)
   }
 
   function clearFilters() {
-    setDayFilter(todayISO())
+    setDayFilter(portalToday)
     setProgramFilter('all')
+    setSearch('')
   }
 
   return (
     <>
       <PageHeader
         title="My Bookings"
-        description="Confirmed, pending, and cancelled bookings for this agency. Filter by day and program to review departure details."
+        description="Confirmed, pending, and cancelled bookings for this agency. Search by guest name or voucher number, or filter by day and program."
       />
 
       <Surface className="mb-4 p-4 sm:p-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
-            <div className="space-y-1.5">
-              <p className="text-xs font-semibold tracking-[0.12em] text-teal-700/55 uppercase">
-                Day
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
-                  <PopoverTrigger
-                    render={
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-10 min-w-[10.5rem] justify-start gap-2 rounded-xl border-teal-900/12 bg-white/80 font-normal"
-                      />
-                    }
-                  >
-                    <CalendarDays className="size-4 text-teal-800/45" />
-                    <span>{dayFilter ? formatShortDate(dayFilter) : 'All days'}</span>
-                  </PopoverTrigger>
-                  <PopoverContent align="start" className="w-auto p-2">
-                    <Calendar
-                      mode="single"
-                      selected={dayFilterObj}
-                      onSelect={selectDay}
-                      defaultMonth={dayFilterObj ?? new Date(`${today}T12:00:00`)}
-                    />
-                    <div className="mt-1 flex flex-col gap-0.5">
-                      {dayFilter !== today ? (
+        <div className="flex flex-col gap-4">
+          <div className="relative max-w-md">
+            <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-teal-900/35" />
+            <Input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search guest name or voucher number…"
+              className="h-10 rounded-xl pr-9 pl-9"
+              aria-label="Search bookings by guest name or voucher number"
+            />
+            {isSearching ? (
+              <button
+                type="button"
+                className="absolute top-1/2 right-2.5 -translate-y-1/2 rounded-md p-1 text-teal-900/40 hover:bg-teal-950/5 hover:text-teal-950"
+                aria-label="Clear search"
+                onClick={() => setSearch('')}
+              >
+                <X className="size-3.5" />
+              </button>
+            ) : null}
+          </div>
+
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
+              <div className="space-y-1.5">
+                <p className="text-xs font-semibold tracking-[0.12em] text-teal-700/55 uppercase">
+                  Day
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
+                    <PopoverTrigger
+                      render={
                         <Button
                           type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="w-full"
-                          onClick={() => {
-                            setDayFilter(today)
-                            setCalendarOpen(false)
-                          }}
-                        >
-                          Today
-                        </Button>
-                      ) : null}
-                      {dayFilter !== null ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="w-full"
-                          onClick={() => {
-                            setDayFilter(null)
-                            setCalendarOpen(false)
-                          }}
-                        >
-                          Show all days
-                        </Button>
-                      ) : null}
-                    </div>
-                  </PopoverContent>
-                </Popover>
-                <div className="flex max-w-full flex-wrap gap-1.5">
-                  {nearbyDays.map((date) => (
-                    <button
-                      key={date}
-                      type="button"
-                      onClick={() => setDayFilter(date)}
-                      className={cn(
-                        'rounded-full px-2.5 py-1 text-xs font-medium transition-colors',
-                        dayFilter === date
-                          ? 'bg-teal-800 text-white'
-                          : 'bg-teal-950/[0.05] text-teal-900/65 hover:bg-teal-950/[0.09]',
-                      )}
+                          variant="outline"
+                          className="h-10 min-w-[10.5rem] justify-start gap-2 rounded-xl border-teal-900/12 bg-white/80 font-normal"
+                        />
+                      }
                     >
-                      {formatShortDate(date)}
-                    </button>
-                  ))}
+                      <CalendarDays className="size-4 text-teal-800/45" />
+                      <span>
+                        {isSearching
+                          ? 'All matching days'
+                          : dayFilter
+                            ? formatShortDate(dayFilter)
+                            : 'All days'}
+                      </span>
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-auto p-2">
+                      <Calendar
+                        mode="single"
+                        selected={isSearching ? undefined : dayFilterObj}
+                        onSelect={selectDay}
+                        defaultMonth={dayFilterObj ?? new Date(`${today}T12:00:00`)}
+                      />
+                      <div className="mt-1 flex flex-col gap-0.5">
+                        {dayFilter !== today || isSearching ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="w-full"
+                            onClick={() => {
+                              setSearch('')
+                              setDayFilter(today)
+                              setCalendarOpen(false)
+                            }}
+                          >
+                            Today
+                          </Button>
+                        ) : null}
+                        {dayFilter !== null || isSearching ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="w-full"
+                            onClick={() => {
+                              setSearch('')
+                              setDayFilter(null)
+                              setCalendarOpen(false)
+                            }}
+                          >
+                            Show all days
+                          </Button>
+                        ) : null}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                  {!isSearching ? (
+                    <div className="flex max-w-full flex-wrap gap-1.5">
+                      {nearbyDays.map((date) => (
+                        <button
+                          key={date}
+                          type="button"
+                          onClick={() => {
+                            setSearch('')
+                            setDayFilter(date)
+                          }}
+                          className={cn(
+                            'rounded-full px-2.5 py-1 text-xs font-medium transition-colors',
+                            dayFilter === date
+                              ? 'bg-teal-800 text-white'
+                              : 'bg-teal-950/[0.05] text-teal-900/65 hover:bg-teal-950/[0.09]',
+                          )}
+                        >
+                          {formatShortDate(date)}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <p className="text-xs font-semibold tracking-[0.12em] text-teal-700/55 uppercase">
+                  Program
+                </p>
+                <SegmentedControl>
+                  <Segment
+                    active={programFilter === 'all'}
+                    onClick={() => setProgramFilter('all')}
+                  >
+                    All
+                  </Segment>
+                  <Segment active={programFilter === 'PP'} onClick={() => setProgramFilter('PP')}>
+                    PP
+                  </Segment>
+                  <Segment
+                    active={programFilter === 'James Bond'}
+                    onClick={() => setProgramFilter('James Bond')}
+                  >
+                    James Bond
+                  </Segment>
+                </SegmentedControl>
               </div>
             </div>
 
-            <div className="space-y-1.5">
-              <p className="text-xs font-semibold tracking-[0.12em] text-teal-700/55 uppercase">
-                Program
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="text-sm text-teal-900/55">
+                {filtered.length} booking{filtered.length === 1 ? '' : 's'}
+                {isSearching
+                  ? ` · search from ${formatShortDate(searchFrom)} onward`
+                  : filtersActive
+                    ? ' matching filters'
+                    : ''}
               </p>
-              <SegmentedControl>
-                <Segment active={programFilter === 'all'} onClick={() => setProgramFilter('all')}>
-                  All
-                </Segment>
-                <Segment active={programFilter === 'PP'} onClick={() => setProgramFilter('PP')}>
-                  PP
-                </Segment>
-                <Segment
-                  active={programFilter === 'James Bond'}
-                  onClick={() => setProgramFilter('James Bond')}
+              {filtersActive ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={clearFilters}
                 >
-                  James Bond
-                </Segment>
-              </SegmentedControl>
+                  <X className="size-3.5" />
+                  Clear
+                </Button>
+              ) : null}
             </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <p className="text-sm text-teal-900/55">
-              {filtered.length} booking{filtered.length === 1 ? '' : 's'}
-              {filtersActive ? ' matching filters' : ''}
-            </p>
-            {filtersActive ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="gap-1.5"
-                onClick={clearFilters}
-              >
-                <X className="size-3.5" />
-                Clear
-              </Button>
-            ) : null}
           </div>
         </div>
       </Surface>
@@ -365,7 +441,9 @@ export function BookingsTable({
             <EmptyState>
               {bookings.length === 0
                 ? 'No bookings yet.'
-                : 'No bookings match these filters.'}
+                : isSearching
+                  ? 'No bookings match this search (last 30 days + future).'
+                  : 'No bookings match these filters.'}
             </EmptyState>
           </Surface>
         ) : (
@@ -573,7 +651,9 @@ export function BookingsTable({
                 >
                   {bookings.length === 0
                     ? 'No bookings yet.'
-                    : 'No bookings match these filters.'}
+                    : isSearching
+                      ? 'No bookings match this search (last 30 days + future).'
+                      : 'No bookings match these filters.'}
                 </TableCell>
               </TableRow>
             ) : (

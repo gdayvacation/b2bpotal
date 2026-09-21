@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, Bus, CalendarIcon, Plus, Printer, Search, Sparkles, SplitSquareVertical, Trash2 } from 'lucide-react'
+import { ArrowLeft, Bus, CalendarIcon, GripVertical, Plus, Search, Sparkles, SplitSquareVertical, Trash2 } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
 import { PageHeader, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
@@ -25,12 +25,12 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatLongDate, formatShortDate, todayISO, toISODate } from '@/lib/format'
-import { BRAND_LEGAL } from '@/lib/brand'
+import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
+import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
 import {
-  BOAT_NUMBERS,
   DEFAULT_BOAT_CAPACITY,
   DEFAULT_VAN_CAPACITY,
+  boatNumbersForPlan,
   emptyVanMeta,
   formatPaxBreakdown,
   isActiveBooking,
@@ -48,6 +48,7 @@ import {
   listVanNumbers,
   paxOnVan,
   primaryVan,
+  sortOrderOnVan,
   suggestVanSplit,
 } from '@/lib/vehicle-assign'
 import { cn } from '@/lib/utils'
@@ -64,11 +65,12 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
     clearDayBoatAssignments,
     setBookingVanSplits,
     setVanMeta,
+    reorderVanBookings,
     autoAssignDayVans,
     clearDayVanAssignments,
   } = usePortal()
 
-  const [selectedDate, setSelectedDate] = useState(() => todayISO())
+  const [selectedDate, setSelectedDate] = usePortalDefaultDateISO()
   const [program, setProgram] = useState<Program | null>(null)
   const [calendarOpen, setCalendarOpen] = useState(false)
 
@@ -242,6 +244,9 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
           onClearBoats={() => clearDayBoatAssignments(selectedDate, program)}
           onSaveSplits={(code, legs) => setBookingVanSplits(selectedDate, program, code, legs)}
           onVanMeta={(van, meta) => setVanMeta(selectedDate, program, van, meta)}
+          onReorderVan={(van, orderedCodes) =>
+            reorderVanBookings(selectedDate, program, van, orderedCodes)
+          }
           onAutoAssign={() => autoAssignDayVans(selectedDate, program)}
           onClear={() => clearDayVanAssignments(selectedDate, program)}
         />
@@ -307,6 +312,7 @@ function VehicleBoard({
   onClearBoats,
   onSaveSplits,
   onVanMeta,
+  onReorderVan,
   onAutoAssign,
   onClear,
 }: {
@@ -323,6 +329,7 @@ function VehicleBoard({
   onClearBoats: () => void
   onSaveSplits: (code: string, legs: VanSplit[]) => void
   onVanMeta: (van: number, meta: { plate?: string; driver?: string; phone?: string }) => void
+  onReorderVan: (van: number, orderedCodes: string[]) => void
   onAutoAssign: () => void
   onClear: () => void
 }) {
@@ -332,6 +339,8 @@ function VehicleBoard({
   const [sheetQuery, setSheetQuery] = useState('')
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(() => new Set())
   const [bulkVan, setBulkVan] = useState('')
+  const [dragCode, setDragCode] = useState<string | null>(null)
+  const [dragOverCode, setDragOverCode] = useState<string | null>(null)
   const capacity = plan.vanCapacity || DEFAULT_VAN_CAPACITY
   const vanNumbers = listVanNumbers(plan.assignments)
   const maxVan = vanNumbers.length > 0 ? Math.max(...vanNumbers) : 0
@@ -459,6 +468,12 @@ function VehicleBoard({
         return { booking, paxOnVan: onThis, legs: plan.assignments[booking.code] }
       })
       .filter((item): item is { booking: Booking; paxOnVan: number; legs: VanSplit[] } => item !== null)
+      .sort(
+        (a, b) =>
+          sortOrderOnVan(a.legs, van) - sortOrderOnVan(b.legs, van) ||
+          a.booking.pickupHotel.localeCompare(b.booking.pickupHotel) ||
+          a.booking.code.localeCompare(b.booking.code),
+      )
     const pax = items.reduce((sum, item) => sum + item.paxOnVan, 0)
     const zone =
       items.length > 0
@@ -479,7 +494,8 @@ function VehicleBoard({
     return { van, items, pax, zone, over: pax > capacity, assignedBoat, boatMixed }
   })
 
-  const byBoat = BOAT_NUMBERS.map((boat) => {
+  const boatNumbers = boatNumbersForPlan(boatPlan)
+  const byBoat = boatNumbers.map((boat) => {
     const capacityBoat = boatPlan.capacities[boat - 1] || DEFAULT_BOAT_CAPACITY
     const items = bookings.filter((booking) => boatPlan.assignments[booking.code] === boat)
     const pax = items.reduce((sum, b) => sum + totalPassengers(b), 0)
@@ -518,8 +534,8 @@ function VehicleBoard({
                 : ''}
             </p>
             <p className="mt-1 text-sm text-teal-900/45">
-              Assign vans first, then tap Boat 1–3 on each van card (or Auto-assign boats). Each boat
-              defaults to {DEFAULT_BOAT_CAPACITY} pax.
+              Assign vans first, then tap a boat on each van card (or Auto-assign boats). Default
+              fleet is 3 × {DEFAULT_BOAT_CAPACITY} pax — edit boats on Arrange boats.
             </p>
           </div>
           <div className="flex flex-wrap gap-2 sm:hidden">
@@ -602,8 +618,13 @@ function VehicleBoard({
                       Put on boat
                       {assignedBoat ? ` · Boat ${assignedBoat}` : boatMixed ? ' · mixed' : ''}
                     </p>
-                    <div className="grid grid-cols-3 gap-1.5">
-                      {BOAT_NUMBERS.map((boat) => (
+                    <div
+                      className={cn(
+                        'grid gap-1.5',
+                        boatNumbers.length <= 3 ? 'grid-cols-3' : 'grid-cols-4',
+                      )}
+                    >
+                      {boatNumbers.map((boat) => (
                         <button
                           key={boat}
                           type="button"
@@ -1051,11 +1072,17 @@ function VehicleBoard({
               )}
 
               <div className="mt-4 overflow-hidden rounded-xl border border-teal-900/8">
+                <div className="flex items-center justify-between gap-2 border-b border-teal-900/8 bg-teal-950/[0.03] px-3 py-2">
+                  <p className="text-xs font-medium text-teal-900/60">
+                    Pickup order — drag rows to set hotel stop sequence
+                  </p>
+                </div>
                 <table className="w-full text-left text-[13px]">
-                  <thead className="bg-teal-950/[0.03] text-teal-900/60">
+                  <thead className="bg-teal-950/[0.02] text-teal-900/60">
                     <tr>
+                      <th className="w-16 px-2 py-2 font-medium">#</th>
                       <th className="px-3 py-2 font-medium">Guest</th>
-                      <th className="px-3 py-2 font-medium">Ref</th>
+                      <th className="px-3 py-2 font-medium">VC No.</th>
                       <th className="px-3 py-2 font-medium">Pax</th>
                       <th className="px-3 py-2 font-medium">Hotel / room</th>
                       <th className="px-3 py-2 font-medium">Time</th>
@@ -1063,38 +1090,96 @@ function VehicleBoard({
                     </tr>
                   </thead>
                   <tbody>
-                    {openDetail.items.map(({ booking, paxOnVan: legPax, legs }) => (
-                      <tr key={booking.code} className="border-t border-teal-900/6">
-                        <td className="px-3 py-2">
-                          <p className="font-medium text-teal-950">{booking.leadGuest}</p>
-                          <p className="font-mono text-xs text-teal-900/45">{booking.code}</p>
-                        </td>
-                        <td className="px-3 py-2 font-mono text-xs text-teal-900/70">
-                          {booking.agentRef?.trim() || '—'}
-                        </td>
-                        <td className="px-3 py-2 tabular-nums text-teal-950">
-                          <span className="font-semibold">{legPax}</span>
-                          {(legs?.length ?? 0) > 1 ? (
-                            <span className="ml-1 text-xs text-teal-900/45">
-                              / {totalPassengers(booking)} split
-                            </span>
-                          ) : null}
-                          <p className="font-mono text-[11px] text-teal-900/40">
-                            {formatPaxBreakdown(booking)}
-                          </p>
-                        </td>
-                        <td className="px-3 py-2 text-teal-900/80">
-                          {booking.pickupHotel}
-                          {booking.roomNumber ? ` · Rm ${booking.roomNumber}` : ''}
-                        </td>
-                        <td className="px-3 py-2 tabular-nums text-teal-950">
-                          {booking.pickupTime}
-                        </td>
-                        <td className="max-w-[10rem] truncate px-3 py-2 text-teal-900/55">
-                          {booking.note || '—'}
-                        </td>
-                      </tr>
-                    ))}
+                    {openDetail.items.map(({ booking, paxOnVan: legPax, legs }, index) => {
+                      const codes = openDetail.items.map((item) => item.booking.code)
+                      const isDragging = dragCode === booking.code
+                      const isDragOver = dragOverCode === booking.code && dragCode !== booking.code
+
+                      return (
+                        <tr
+                          key={booking.code}
+                          draggable
+                          onDragStart={(event) => {
+                            setDragCode(booking.code)
+                            event.dataTransfer.effectAllowed = 'move'
+                            event.dataTransfer.setData('text/plain', booking.code)
+                          }}
+                          onDragOver={(event) => {
+                            event.preventDefault()
+                            event.dataTransfer.dropEffect = 'move'
+                            if (dragOverCode !== booking.code) setDragOverCode(booking.code)
+                          }}
+                          onDragLeave={() => {
+                            if (dragOverCode === booking.code) setDragOverCode(null)
+                          }}
+                          onDrop={(event) => {
+                            event.preventDefault()
+                            const fromCode = event.dataTransfer.getData('text/plain') || dragCode
+                            setDragCode(null)
+                            setDragOverCode(null)
+                            if (!fromCode || fromCode === booking.code) return
+                            const fromIndex = codes.indexOf(fromCode)
+                            if (fromIndex < 0) return
+                            const next = [...codes]
+                            const [moved] = next.splice(fromIndex, 1)
+                            next.splice(index, 0, moved!)
+                            onReorderVan(openVan, next)
+                          }}
+                          onDragEnd={() => {
+                            setDragCode(null)
+                            setDragOverCode(null)
+                          }}
+                          className={cn(
+                            'border-t border-teal-900/6 transition-colors',
+                            isDragging && 'opacity-40',
+                            isDragOver && 'bg-teal-50 ring-1 ring-inset ring-teal-600/30',
+                          )}
+                        >
+                          <td className="px-2 py-2">
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                className="flex size-8 cursor-grab items-center justify-center rounded-lg border border-teal-900/10 bg-white text-teal-800/45 active:cursor-grabbing"
+                                title="Drag to reorder"
+                                aria-hidden
+                              >
+                                <GripVertical className="size-4" />
+                              </span>
+                              <span className="w-5 text-center text-xs font-semibold tabular-nums text-teal-900/50">
+                                {index + 1}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2">
+                            <p className="font-medium text-teal-950">{booking.leadGuest}</p>
+                            <p className="font-mono text-xs text-teal-900/45">{booking.code}</p>
+                          </td>
+                          <td className="px-3 py-2 font-mono text-xs text-teal-900/70">
+                            {booking.agentRef?.trim() || '—'}
+                          </td>
+                          <td className="px-3 py-2 tabular-nums text-teal-950">
+                            <span className="font-semibold">{legPax}</span>
+                            {(legs?.length ?? 0) > 1 ? (
+                              <span className="ml-1 text-xs text-teal-900/45">
+                                / {totalPassengers(booking)} split
+                              </span>
+                            ) : null}
+                            <p className="font-mono text-[11px] text-teal-900/40">
+                              {formatPaxBreakdown(booking)}
+                            </p>
+                          </td>
+                          <td className="px-3 py-2 text-teal-900/80">
+                            {booking.pickupHotel}
+                            {booking.roomNumber ? ` · Rm ${booking.roomNumber}` : ''}
+                          </td>
+                          <td className="px-3 py-2 tabular-nums text-teal-950">
+                            {booking.pickupTime}
+                          </td>
+                          <td className="max-w-[10rem] truncate px-3 py-2 text-teal-900/55">
+                            {booking.note || '—'}
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1103,30 +1188,11 @@ function VehicleBoard({
                 <Button type="button" variant="outline" onClick={() => setOpenVan(null)}>
                   Close
                 </Button>
-                <Button type="button" onClick={() => window.print()}>
-                  <Printer data-icon="inline-start" />
-                  Print A4 landscape
-                </Button>
               </DialogFooter>
             </div>
           ) : null}
         </DialogContent>
       </Dialog>
-
-      {openDetail && openVan !== null ? (
-        <VanPrintSheet
-          date={date}
-          program={program}
-          van={openVan}
-          capacity={capacity}
-          zone={openDetail.zone}
-          pax={openDetail.pax}
-          plate={openMeta.plate}
-          driver={openMeta.driver}
-          phone={openMeta.phone}
-          items={openDetail.items}
-        />
-      ) : null}
 
       <style>{`
         @media print {
@@ -1223,9 +1289,10 @@ function SeparateVanDialog({
   function handleSave() {
     if (!booking) return
     const cleaned = legs
-      .map((leg) => ({
+      .map((leg, index) => ({
         van: Math.max(1, Math.floor(Number(leg.van) || 0)),
         pax: Math.max(0, Math.floor(Number(leg.pax) || 0)),
+        sortOrder: typeof leg.sortOrder === 'number' ? leg.sortOrder : index,
       }))
       .filter((leg) => leg.van > 0 && leg.pax > 0)
 
@@ -1310,7 +1377,10 @@ function SeparateVanDialog({
                   const used = new Set(legs.map((leg) => leg.van))
                   let van = Math.max(1, nextVanHint)
                   while (used.has(van)) van += 1
-                  setLegs((current) => [...current, { van, pax: Math.max(0, remaining) || 1 }])
+                  setLegs((current) => [
+                    ...current,
+                    { van, pax: Math.max(0, remaining) || 1, sortOrder: current.length },
+                  ])
                   setError('')
                 }}
               >
@@ -1348,118 +1418,5 @@ function SeparateVanDialog({
         ) : null}
       </DialogContent>
     </Dialog>
-  )
-}
-
-function VanPrintSheet({
-  date,
-  program,
-  van,
-  capacity,
-  zone,
-  pax,
-  plate,
-  driver,
-  phone,
-  items,
-}: {
-  date: string
-  program: Program
-  van: number
-  capacity: number
-  zone: string
-  pax: number
-  plate: string
-  driver: string
-  phone: string
-  items: Array<{ booking: Booking; paxOnVan: number; legs: VanSplit[] }>
-}) {
-  return (
-    <div className="van-print-sheet hidden print:block">
-      <div className="mb-2 flex items-end justify-between gap-6 border-b border-neutral-800 pb-2">
-        <div className="min-w-0 flex-1">
-          <p className="text-[10px] font-semibold tracking-[0.14em] text-neutral-500 uppercase">
-            {BRAND_LEGAL} · Vehicle run sheet
-          </p>
-          <h1 className="mt-0.5 text-xl font-semibold leading-tight text-neutral-900">
-            Van {van} · {program} · {formatLongDate(date)}
-          </h1>
-          <p className="mt-0.5 text-[12px] text-neutral-600">
-            {zone} · {pax}/{capacity} pax · {items.length} booking
-            {items.length === 1 ? '' : 's'}
-          </p>
-        </div>
-        <div className="grid w-[42%] grid-cols-2 gap-x-4 gap-y-1 text-[12px]">
-          <div className="col-span-2 flex items-end gap-2 border-b border-neutral-500 pb-0.5">
-            <span className="shrink-0 text-neutral-500">Driver</span>
-            <span className="min-w-0 flex-1 font-semibold">{driver || '____________________'}</span>
-          </div>
-          <div className="col-span-2 flex items-end gap-2 border-b border-neutral-500 pb-0.5">
-            <span className="shrink-0 text-neutral-500">Telephone</span>
-            <span className="min-w-0 flex-1 font-semibold">{phone || '____________________'}</span>
-          </div>
-          <div className="col-span-2 flex items-end gap-2 border-b border-neutral-500 pb-0.5">
-            <span className="shrink-0 text-neutral-500">Plate</span>
-            <span className="min-w-0 flex-1 font-semibold">{plate || '____________________'}</span>
-          </div>
-        </div>
-      </div>
-
-      <table className="w-full border-collapse text-[11px]">
-        <colgroup>
-          <col style={{ width: '3%' }} />
-          <col style={{ width: '10%' }} />
-          <col style={{ width: '14%' }} />
-          <col style={{ width: '9%' }} />
-          <col style={{ width: '5%' }} />
-          <col style={{ width: '9%' }} />
-          <col style={{ width: '16%' }} />
-          <col style={{ width: '6%' }} />
-          <col style={{ width: '6%' }} />
-          <col style={{ width: '22%' }} />
-        </colgroup>
-        <thead>
-          <tr className="border-b-2 border-neutral-800 text-left">
-            <th className="py-1 pr-1 font-semibold">#</th>
-            <th className="py-1 pr-1 font-semibold">Code</th>
-            <th className="py-1 pr-1 font-semibold">Guest name</th>
-            <th className="py-1 pr-1 font-semibold">Voucher number</th>
-            <th className="py-1 pr-1 text-center font-semibold">Pax</th>
-            <th className="py-1 pr-1 font-semibold">AD+CH+IF+TL</th>
-            <th className="py-1 pr-1 font-semibold">Hotel</th>
-            <th className="py-1 pr-1 font-semibold">Room</th>
-            <th className="py-1 pr-1 font-semibold">Time</th>
-            <th className="py-1 font-semibold">Note</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map(({ booking, paxOnVan: legPax, legs }, index) => (
-            <tr key={booking.code} className="border-b border-neutral-300 align-top">
-              <td className="py-1 pr-1 tabular-nums">{index + 1}</td>
-              <td className="py-1 pr-1 font-mono text-[10px]">{booking.code}</td>
-              <td className="py-1 pr-1 font-medium">{booking.leadGuest}</td>
-              <td className="py-1 pr-1 font-mono text-[10px]">
-                {booking.agentRef?.trim() || '—'}
-              </td>
-              <td className="py-1 pr-1 text-center font-semibold tabular-nums">
-                {legPax}
-                {(legs?.length ?? 0) > 1 ? `/${totalPassengers(booking)}` : ''}
-              </td>
-              <td className="py-1 pr-1 font-mono tabular-nums">{formatPaxBreakdown(booking)}</td>
-              <td className="py-1 pr-1">{booking.pickupHotel}</td>
-              <td className="py-1 pr-1">{booking.roomNumber || '—'}</td>
-              <td className="py-1 pr-1 tabular-nums">{booking.pickupTime}</td>
-              <td className="py-1">{booking.note || '—'}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      <div className="mt-3 grid grid-cols-3 gap-8 text-[12px] text-neutral-600">
-        <div className="border-b border-neutral-400 pb-5">Dispatcher sign</div>
-        <div className="border-b border-neutral-400 pb-5">Driver sign</div>
-        <div className="border-b border-neutral-400 pb-5">Time out</div>
-      </div>
-    </div>
   )
 }

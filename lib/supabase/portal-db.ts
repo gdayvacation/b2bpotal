@@ -9,7 +9,6 @@ import type {
   Agent,
   AgentStatus,
   Availability,
-  BoatNumber,
   Booking,
   BookingClosure,
   BookingEvent,
@@ -24,7 +23,7 @@ import type {
   VanMeta,
   VanSplit,
 } from '@/lib/types'
-import { dayBoatPlanKey, dayVehiclePlanKey, emptyDayBoatPlan, emptyDayVehiclePlan } from '@/lib/types'
+import { dayBoatPlanKey, dayVehiclePlanKey, emptyDayBoatPlan, emptyDayVehiclePlan, normalizeBoatCapacities } from '@/lib/types'
 
 type AgentRow = {
   slug: string
@@ -85,6 +84,7 @@ type BoatPlanRow = {
   capacity_1: number
   capacity_2: number
   capacity_3: number
+  capacities?: number[] | string | null
 }
 
 type BoatAssignmentRow = {
@@ -122,6 +122,7 @@ type VanAssignmentRow = {
   booking_code: string
   van_number: number
   pax: number
+  sort_order?: number | null
 }
 
 type BookingCutoffRow = {
@@ -265,6 +266,23 @@ function mapBookingClosure(row: BookingClosureRow): BookingClosure {
   }
 }
 
+function parseBoatCapacities(plan: BoatPlanRow): number[] {
+  const raw = plan.capacities
+  let fromJson: number[] | null = null
+  if (Array.isArray(raw)) {
+    fromJson = raw.map((value) => Number(value))
+  } else if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (Array.isArray(parsed)) fromJson = parsed.map((value) => Number(value))
+    } catch {
+      fromJson = null
+    }
+  }
+  if (fromJson && fromJson.length > 0) return normalizeBoatCapacities(fromJson)
+  return normalizeBoatCapacities([plan.capacity_1, plan.capacity_2, plan.capacity_3])
+}
+
 function buildBoatPlans(
   plans: BoatPlanRow[],
   assignments: BoatAssignmentRow[],
@@ -276,7 +294,7 @@ function buildBoatPlans(
     next[key] = {
       date,
       program: plan.program,
-      capacities: [plan.capacity_1, plan.capacity_2, plan.capacity_3],
+      capacities: parseBoatCapacities(plan),
       assignments: {},
     }
   }
@@ -284,7 +302,8 @@ function buildBoatPlans(
     const date = asDateString(row.date)
     const key = dayBoatPlanKey(date, row.program)
     const plan = next[key] ?? emptyDayBoatPlan(date, row.program)
-    plan.assignments[row.booking_code] = row.boat_number as BoatNumber
+    const boat = Math.max(1, Math.floor(Number(row.boat_number) || 0))
+    if (boat >= 1) plan.assignments[row.booking_code] = boat
     next[key] = plan
   }
   return next
@@ -323,7 +342,17 @@ function buildVehiclePlans(
     const key = dayVehiclePlanKey(date, row.program)
     const plan = next[key] ?? emptyDayVehiclePlan(date, row.program)
     const legs = plan.assignments[row.booking_code] ?? []
-    legs.push({ van: row.van_number, pax: row.pax })
+    const vanLegCount = Object.values(plan.assignments)
+      .flat()
+      .filter((leg) => leg.van === row.van_number).length
+    legs.push({
+      van: row.van_number,
+      pax: row.pax,
+      sortOrder:
+        typeof row.sort_order === 'number' && Number.isFinite(row.sort_order)
+          ? row.sort_order
+          : vanLegCount,
+    })
     plan.assignments[row.booking_code] = legs
     next[key] = plan
   }
@@ -664,12 +693,14 @@ export async function upsertAvailabilityRows(rows: Availability[]) {
 
 export async function saveDayBoatPlan(plan: DayBoatPlan) {
   const supabase = getSupabaseBrowserClient()
+  const capacities = normalizeBoatCapacities(plan.capacities)
   const { error: planError } = await supabase.from('day_boat_plans').upsert({
     date: plan.date,
     program: plan.program,
-    capacity_1: plan.capacities[0],
-    capacity_2: plan.capacities[1],
-    capacity_3: plan.capacities[2],
+    capacity_1: capacities[0] ?? 44,
+    capacity_2: capacities[1] ?? capacities[0] ?? 44,
+    capacity_3: capacities[2] ?? capacities[0] ?? 44,
+    capacities,
   })
   if (planError) throw new Error(`upsert boat plan: ${planError.message}`)
 
@@ -680,12 +711,15 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
     .eq('program', plan.program)
   if (delError) throw new Error(`clear boat assignments: ${delError.message}`)
 
-  const rows = Object.entries(plan.assignments).map(([booking_code, boat_number]) => ({
-    date: plan.date,
-    program: plan.program,
-    booking_code,
-    boat_number,
-  }))
+  const maxBoat = capacities.length
+  const rows = Object.entries(plan.assignments)
+    .map(([booking_code, boat_number]) => ({
+      date: plan.date,
+      program: plan.program,
+      booking_code,
+      boat_number: Math.max(1, Math.floor(Number(boat_number) || 0)),
+    }))
+    .filter((row) => row.boat_number >= 1 && row.boat_number <= maxBoat)
   if (rows.length === 0) return
 
   const { error: insertError } = await supabase.from('boat_assignments').insert(rows)
@@ -734,6 +768,7 @@ export async function saveDayVehiclePlan(plan: DayVehiclePlan) {
     booking_code: string
     van_number: number
     pax: number
+    sort_order: number
   }> = []
   for (const [booking_code, legs] of Object.entries(plan.assignments ?? {})) {
     for (const leg of legs as VanSplit[]) {
@@ -743,6 +778,7 @@ export async function saveDayVehiclePlan(plan: DayVehiclePlan) {
         booking_code,
         van_number: leg.van,
         pax: leg.pax,
+        sort_order: leg.sortOrder ?? 0,
       })
     }
   }
