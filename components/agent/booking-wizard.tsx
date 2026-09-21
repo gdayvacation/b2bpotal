@@ -649,14 +649,14 @@ export function BookingWizard({
               />
               <GuestRow
                 label="Children"
-                hint="2–11 years"
+                hint="3–11 years"
                 value={children}
                 max={seatsLeft === null ? undefined : Math.max(0, seatsLeft - adults - infants - tourLeaders)}
                 onChange={setChildren}
               />
               <GuestRow
                 label="Infants"
-                hint="Under 2 years"
+                hint="Under 3 years"
                 value={infants}
                 max={seatsLeft === null ? undefined : Math.max(0, seatsLeft - adults - children - tourLeaders)}
                 onChange={setInfants}

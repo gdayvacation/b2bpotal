@@ -1,12 +1,13 @@
 import type { Booking } from '@/lib/types'
 import { formatPaxBreakdown, totalPassengers } from '@/lib/types'
+import { formatIncludeLabel, formatCollectTotal } from '@/lib/format'
 
 export type ReportExportRow = {
+  Agent: string
+  'Agent slug': string
   'VC No.': string
   Date: string
   Program: string
-  Agent: string
-  'Agent slug': string
   Guest: string
   Adults: number
   Children: number
@@ -14,21 +15,21 @@ export type ReportExportRow = {
   'Tour leaders': number
   'Total pax': number
   Breakdown: string
-  Time: string
   Hotel: string
-  'Park fee': string
+  COT: string
+  Park: string
+  Total: string
   Canoe: string
   Note: string
   'Transfer extra': string
-  Status: string
 }
 
 const HEADERS = [
+  'Agent',
+  'Agent slug',
   'VC No.',
   'Date',
   'Program',
-  'Agent',
-  'Agent slug',
   'Guest',
   'Adults',
   'Children',
@@ -36,22 +37,22 @@ const HEADERS = [
   'Tour leaders',
   'Total pax',
   'Breakdown',
-  'Time',
   'Hotel',
-  'Park fee',
+  'COT',
+  'Park',
+  'Total',
   'Canoe',
   'Note',
   'Transfer extra',
-  'Status',
 ] as const satisfies readonly (keyof ReportExportRow)[]
 
 export function bookingsToReportRows(bookings: Booking[]): ReportExportRow[] {
   return bookings.map((booking) => ({
+    Agent: booking.agentName,
+    'Agent slug': booking.agentSlug,
     'VC No.': booking.agentRef,
     Date: booking.date,
     Program: booking.program === 'PP' ? 'Phi Phi' : 'James Bond',
-    Agent: booking.agentName,
-    'Agent slug': booking.agentSlug,
     Guest: booking.leadGuest,
     Adults: booking.adults,
     Children: booking.children,
@@ -59,13 +60,19 @@ export function bookingsToReportRows(bookings: Booking[]): ReportExportRow[] {
     'Tour leaders': booking.tourLeaders,
     'Total pax': totalPassengers(booking),
     Breakdown: formatPaxBreakdown(booking),
-    Time: booking.pickupTime,
     Hotel: booking.pickupHotel,
-    'Park fee': booking.parkFee,
-    Canoe: booking.canoe ?? '',
+    COT: booking.cashOnTour.trim(),
+    Park: formatIncludeLabel(booking.parkFee),
+    Total: formatCollectTotal(
+      booking.parkFee,
+      booking.program,
+      booking.adults,
+      booking.children,
+      booking.cashOnTour,
+    ),
+    Canoe: booking.canoe ? formatIncludeLabel(booking.canoe) : '',
     Note: booking.note,
     'Transfer extra': booking.transferExtraCharge,
-    Status: booking.status,
   }))
 }
 

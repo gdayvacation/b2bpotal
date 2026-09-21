@@ -105,3 +105,86 @@ export function uniqueAgentSlug(name: string, existingSlugs: string[]) {
   while (existingSlugs.includes(`${base}-${index}`)) index += 1
   return `${base}-${index}`
 }
+
+/** Report display label — stored value stays "Not Included". */
+export function formatIncludeLabel(value: string | null | undefined) {
+  if (!value) return '—'
+  if (value === 'Not Included') return 'Excluded'
+  return value
+}
+
+/** Compact print label for park / canoe. */
+export function formatIncludeShort(value: string | null | undefined) {
+  if (!value) return '—'
+  if (value === 'Included') return 'Inc'
+  if (value === 'Not Included') return 'Excl'
+  return value
+}
+
+/** National park AD/CH rates (THB) by program. */
+export function parkFeeRates(program: 'PP' | 'James Bond') {
+  return program === 'James Bond'
+    ? { adult: 300, child: 150 }
+    : { adult: 400, child: 200 }
+}
+
+export function parkFeeRateLabel(program: 'PP' | 'James Bond') {
+  const rates = parkFeeRates(program)
+  return `${rates.adult}/${rates.child}`
+}
+
+/** Total national park fee for a booking when park is not included. */
+export function parkFeeTotal(
+  parkFee: string,
+  program: 'PP' | 'James Bond',
+  adults: number,
+  children: number,
+) {
+  if (parkFee !== 'Not Included') return 0
+  const rates = parkFeeRates(program)
+  return adults * rates.adult + children * rates.child
+}
+
+export function formatParkFeeTotal(
+  parkFee: string,
+  program: 'PP' | 'James Bond',
+  adults: number,
+  children: number,
+) {
+  const total = parkFeeTotal(parkFee, program, adults, children)
+  return total > 0 ? total.toLocaleString('en-US') : ''
+}
+
+/** Parse a cash-on-tour string like "1,800 THB" into a number. */
+export function parseCashOnTourAmount(cashOnTour: string | null | undefined) {
+  const raw = cashOnTour?.trim() ?? ''
+  if (!raw) return 0
+  const match = raw.replace(/,/g, '').match(/(\d+(?:\.\d+)?)/)
+  if (!match) return 0
+  const value = Number(match[1])
+  return Number.isFinite(value) ? value : 0
+}
+
+/** Park fee (AD + CH) + cash on tour. */
+export function collectTotal(
+  parkFee: string,
+  program: 'PP' | 'James Bond',
+  adults: number,
+  children: number,
+  cashOnTour: string | null | undefined,
+) {
+  return (
+    parkFeeTotal(parkFee, program, adults, children) + parseCashOnTourAmount(cashOnTour)
+  )
+}
+
+export function formatCollectTotal(
+  parkFee: string,
+  program: 'PP' | 'James Bond',
+  adults: number,
+  children: number,
+  cashOnTour: string | null | undefined,
+) {
+  const total = collectTotal(parkFee, program, adults, children, cashOnTour)
+  return total > 0 ? total.toLocaleString('en-US') : ''
+}

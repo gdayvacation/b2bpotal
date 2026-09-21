@@ -409,7 +409,7 @@ export function AdminBookings() {
   const showingTo = Math.min(pageStart + PAGE_SIZE, list.length)
 
   return (
-    <div className="mx-auto max-w-6xl">
+    <div className="w-full">
       <PageHeader
         title="Booking"
         description="Partner reservations — default view shows the latest 200. Use filters or search for older trips."

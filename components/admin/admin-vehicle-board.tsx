@@ -1,7 +1,18 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, Bus, CalendarIcon, GripVertical, Plus, Search, Sparkles, SplitSquareVertical, Trash2 } from 'lucide-react'
+import {
+  ArrowLeft,
+  Bus,
+  CalendarIcon,
+  GripVertical,
+  Plus,
+  Search,
+  Sparkles,
+  SplitSquareVertical,
+  Trash2,
+  Users,
+} from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
 import { PageHeader, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
@@ -17,14 +28,6 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
 import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
 import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
 import {
@@ -44,21 +47,40 @@ import {
   type VanSplit,
 } from '@/lib/types'
 import {
-  formatVanLegs,
   listVanNumbers,
   paxOnVan,
-  primaryVan,
   sortOrderOnVan,
   suggestVanSplit,
 } from '@/lib/vehicle-assign'
 import { cn } from '@/lib/utils'
+
+const DRAG_MIME = 'application/x-gday-van-codes'
+/** Always show this many van cards ready to receive guests. */
+const DEFAULT_DAY_VAN_COUNT = 4
+
+function readDragCodes(event: React.DragEvent, fallback: string[] | null): string[] {
+  const raw =
+    event.dataTransfer.getData(DRAG_MIME) ||
+    event.dataTransfer.getData('text/plain') ||
+    ''
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')) {
+        return parsed
+      }
+    } catch {
+      if (raw.trim()) return [raw.trim()]
+    }
+  }
+  return fallback ?? []
+}
 
 export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
   const {
     bookings,
     getDayVehiclePlan,
     getDayBoatPlan,
-    assignBookingToVan,
     assignBookingsToVan,
     assignVanToBoat,
     autoAssignDayBoats,
@@ -115,7 +137,7 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
   }
 
   return (
-    <div className="mx-auto max-w-7xl">
+    <div className="mx-auto max-w-[96rem]">
       <div className="print:hidden">
         <div className="mb-4">
           <Button type="button" variant="ghost" size="sm" className="gap-1.5" onClick={onBack}>
@@ -125,7 +147,7 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
         </div>
         <PageHeader
           title="Arrange vehicles"
-          description="Step 1 — assign vans. Step 2 — put each van on a boat (default 44 pax). Same-van guests stay together."
+          description="Drag guests into vans. Same-van groups stay together on boats (default 44 pax)."
           actions={
             program ? (
               <div className="flex flex-wrap gap-2">
@@ -233,7 +255,6 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
           noTransferBookings={noTransferBookings}
           plan={plan}
           boatPlan={boatPlan}
-          onAssign={(code, van) => assignBookingToVan(selectedDate, program, code, van)}
           onAssignMany={(codes, van) =>
             assignBookingsToVan(selectedDate, program, codes, van)
           }
@@ -305,7 +326,6 @@ function VehicleBoard({
   noTransferBookings = [],
   plan,
   boatPlan,
-  onAssign,
   onAssignMany,
   onAssignVanToBoat,
   onAutoAssignBoats,
@@ -322,7 +342,6 @@ function VehicleBoard({
   noTransferBookings?: Booking[]
   plan: DayVehiclePlan
   boatPlan: DayBoatPlan
-  onAssign: (code: string, van: number | null) => void
   onAssignMany: (codes: string[], van: number | null) => void
   onAssignVanToBoat: (van: number, boat: BoatNumber | null) => void
   onAutoAssignBoats: () => void
@@ -338,46 +357,53 @@ function VehicleBoard({
   const [splitCode, setSplitCode] = useState<string | null>(null)
   const [sheetQuery, setSheetQuery] = useState('')
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(() => new Set())
-  const [bulkVan, setBulkVan] = useState('')
+  const [dragCodes, setDragCodes] = useState<string[] | null>(null)
+  const [dropTarget, setDropTarget] = useState<'pool' | number | null>(null)
   const [dragCode, setDragCode] = useState<string | null>(null)
   const [dragOverCode, setDragOverCode] = useState<string | null>(null)
+
   const capacity = plan.vanCapacity || DEFAULT_VAN_CAPACITY
   const vanNumbers = listVanNumbers(plan.assignments)
   const maxVan = vanNumbers.length > 0 ? Math.max(...vanNumbers) : 0
-  const vanOptions = Array.from({ length: Math.max(maxVan + 1, 1) }, (_, i) => i + 1)
+  const nextEmptyVan = Math.max(maxVan, DEFAULT_DAY_VAN_COUNT) + 1
+  const boardVans = Array.from(
+    { length: Math.max(DEFAULT_DAY_VAN_COUNT, maxVan) },
+    (_, i) => i + 1,
+  ).concat(nextEmptyVan)
 
   useEffect(() => {
     setSheetQuery('')
     setSelectedCodes(new Set())
-    setBulkVan('')
+    setDragCodes(null)
+    setDropTarget(null)
   }, [date, program])
 
-  const sorted = useMemo(() => {
-    return [...bookings].sort((a, b) => {
-      const needsA = totalPassengers(a) > capacity && (plan.assignments[a.code]?.length ?? 0) <= 1 ? 0 : 1
-      const needsB = totalPassengers(b) > capacity && (plan.assignments[b.code]?.length ?? 0) <= 1 ? 0 : 1
-      const vanA = primaryVan(plan.assignments[a.code]) ?? 9999
-      const vanB = primaryVan(plan.assignments[b.code]) ?? 9999
-      return (
-        needsA - needsB ||
-        a.pickupZone.localeCompare(b.pickupZone) ||
-        a.pickupTime.localeCompare(b.pickupTime) ||
-        vanA - vanB ||
-        a.pickupHotel.localeCompare(b.pickupHotel) ||
-        a.code.localeCompare(b.code)
-      )
-    })
+  const poolBookings = useMemo(() => {
+    return [...bookings]
+      .filter((booking) => {
+        const legs = plan.assignments[booking.code]
+        return !legs?.length
+      })
+      .sort((a, b) => {
+        const needsA = totalPassengers(a) > capacity ? 0 : 1
+        const needsB = totalPassengers(b) > capacity ? 0 : 1
+        return (
+          needsA - needsB ||
+          a.pickupZone.localeCompare(b.pickupZone) ||
+          a.pickupTime.localeCompare(b.pickupTime) ||
+          a.pickupHotel.localeCompare(b.pickupHotel) ||
+          a.code.localeCompare(b.code)
+        )
+      })
   }, [bookings, plan.assignments, capacity])
 
   const sheetRows = useMemo(() => {
     const q = sheetQuery.trim().toLowerCase()
-    if (!q) return sorted
-    return sorted.filter((booking) => {
+    if (!q) return poolBookings
+    return poolBookings.filter((booking) => {
       const haystack = [
-        booking.code,
         booking.leadGuest,
         booking.agentName,
-        booking.agentRef,
         booking.pickupHotel,
         booking.pickupZone,
         booking.roomNumber,
@@ -388,17 +414,11 @@ function VehicleBoard({
         .toLowerCase()
       return haystack.includes(q)
     })
-  }, [sorted, sheetQuery])
+  }, [poolBookings, sheetQuery])
 
   const selectableSheetRows = useMemo(
-    () =>
-      sheetRows.filter((booking) => {
-        const pax = totalPassengers(booking)
-        const legs = plan.assignments[booking.code]
-        const needsSplit = pax > capacity && (legs?.length ?? 0) <= 1
-        return !needsSplit
-      }),
-    [sheetRows, plan.assignments, capacity],
+    () => sheetRows.filter((booking) => totalPassengers(booking) <= capacity),
+    [sheetRows, capacity],
   )
 
   const selectedList = useMemo(
@@ -411,6 +431,34 @@ function VehicleBoard({
       return sum + (booking ? totalPassengers(booking) : 0)
     }, 0)
   }, [selectedList, bookings])
+
+  const zoneGroups = useMemo(() => {
+    const map = new Map<string, Booking[]>()
+    for (const booking of sheetRows) {
+      const zone = booking.pickupZone?.trim() || 'Other'
+      const list = map.get(zone) ?? []
+      list.push(booking)
+      map.set(zone, list)
+    }
+    return [...map.entries()]
+      .map(([zone, items]) => {
+        const selectable = items.filter((b) => totalPassengers(b) <= capacity)
+        const pax = items.reduce((sum, b) => sum + totalPassengers(b), 0)
+        const selectedInZone = selectable.filter((b) => selectedCodes.has(b.code)).length
+        const allSelected =
+          selectable.length > 0 && selectable.every((b) => selectedCodes.has(b.code))
+        return {
+          zone,
+          items,
+          selectable,
+          pax,
+          selectedInZone,
+          allSelected,
+          someSelected: selectedInZone > 0 && !allSelected,
+        }
+      })
+      .sort((a, b) => a.zone.localeCompare(b.zone))
+  }, [sheetRows, capacity, selectedCodes])
 
   const allVisibleSelected =
     selectableSheetRows.length > 0 &&
@@ -438,29 +486,58 @@ function VehicleBoard({
     })
   }
 
-  function applyBulkVan(van: number | null) {
-    if (selectedList.length === 0) return
-    onAssignMany(selectedList, van)
+  function toggleSelectZone(codes: string[], allSelected: boolean) {
+    setSelectedCodes((current) => {
+      const next = new Set(current)
+      if (allSelected) {
+        for (const code of codes) next.delete(code)
+      } else {
+        for (const code of codes) next.add(code)
+      }
+      return next
+    })
+  }
+
+  function codesForDrag(code: string): string[] {
+    if (selectedCodes.has(code) && selectedList.length > 0) return selectedList
+    return [code]
+  }
+
+  function beginDrag(event: React.DragEvent, codes: string[]) {
+    const payload = JSON.stringify(codes)
+    event.dataTransfer.setData(DRAG_MIME, payload)
+    event.dataTransfer.setData('text/plain', payload)
+    event.dataTransfer.effectAllowed = 'move'
+    setDragCodes(codes)
+  }
+
+  function assignDropped(codes: string[], van: number | null) {
+    const unique = [...new Set(codes)].filter((code) => {
+      const booking = bookings.find((b) => b.code === code)
+      if (!booking) return false
+      if (van === null) return true
+      const legs = plan.assignments[code]
+      const needsSplit = totalPassengers(booking) > capacity && (legs?.length ?? 0) <= 1
+      return !needsSplit
+    })
+    if (unique.length === 0) return
+    onAssignMany(unique, van)
     setSelectedCodes(new Set())
-    setBulkVan('')
   }
 
   const totalPax = bookings.reduce((sum, b) => sum + totalPassengers(b), 0)
   const assignedCount = bookings.filter((b) => (plan.assignments[b.code]?.length ?? 0) > 0).length
-  const unassignedPax = bookings
-    .filter((b) => !plan.assignments[b.code]?.length)
-    .reduce((sum, b) => sum + totalPassengers(b), 0)
+  const unassignedPax = poolBookings.reduce((sum, b) => sum + totalPassengers(b), 0)
   const noTransferPax = noTransferBookings.reduce((sum, b) => sum + totalPassengers(b), 0)
 
   const needsSeparate = bookings.filter((booking) => {
     const pax = totalPassengers(booking)
     const legs = plan.assignments[booking.code]
     if (pax <= capacity) return false
-    // Still needs admin split if unassigned or sitting on one overfull van
     return !legs?.length || legs.length === 1
   })
 
-  const byVan = vanNumbers.map((van) => {
+  const byVan = boardVans.map((van) => {
     const items = bookings
       .map((booking) => {
         const onThis = paxOnVan(plan.assignments[booking.code], van)
@@ -478,7 +555,7 @@ function VehicleBoard({
     const zone =
       items.length > 0
         ? [...new Set(items.map((item) => item.booking.pickupZone))].join(', ')
-        : '—'
+        : 'Drop guests here'
     const boatVotes = new Map<BoatNumber, number>()
     for (const item of items) {
       const boat = boatPlan.assignments[item.booking.code]
@@ -487,11 +564,20 @@ function VehicleBoard({
     let assignedBoat: BoatNumber | null = null
     if (boatVotes.size === 1) {
       assignedBoat = [...boatVotes.keys()][0]
-    } else if (boatVotes.size > 1) {
-      assignedBoat = null // mixed
     }
     const boatMixed = boatVotes.size > 1
-    return { van, items, pax, zone, over: pax > capacity, assignedBoat, boatMixed }
+    const isExtraSlot = van === nextEmptyVan
+    return {
+      van,
+      items,
+      pax,
+      zone: items.length > 0 ? zone : isExtraSlot ? 'Drop guests here' : `Van ${van} ready`,
+      over: pax > capacity,
+      assignedBoat,
+      boatMixed,
+      isEmptySlot: isExtraSlot && items.length === 0,
+      isPreparedEmpty: !isExtraSlot && items.length === 0,
+    }
   })
 
   const boatNumbers = boatNumbersForPlan(boatPlan)
@@ -515,6 +601,11 @@ function VehicleBoard({
     ? (bookings.find((booking) => booking.code === splitCode) ?? null)
     : null
 
+  const draggingPax = (dragCodes ?? []).reduce((sum, code) => {
+    const booking = bookings.find((b) => b.code === code)
+    return sum + (booking ? totalPassengers(booking) : 0)
+  }, 0)
+
   return (
     <div>
       <Surface className="mb-5 p-5 print:hidden">
@@ -527,15 +618,15 @@ function VehicleBoard({
               {program === 'PP' ? 'PP · Phi Phi Islands' : 'James Bond · Phang Nga Bay'}
             </h2>
             <p className="mt-1.5 text-base text-teal-900/55">
-              {bookings.length} bookings · {totalPax} pax · {assignedCount} assigned · van ≤{' '}
+              {bookings.length} bookings · {totalPax} pax · {assignedCount} on vans · van ≤{' '}
               {capacity}
               {noTransferBookings.length > 0
                 ? ` · ${noTransferBookings.length} no transfer (${noTransferPax} pax)`
                 : ''}
             </p>
             <p className="mt-1 text-sm text-teal-900/45">
-              Assign vans first, then tap a boat on each van card (or Auto-assign boats). Default
-              fleet is 3 × {DEFAULT_BOAT_CAPACITY} pax — edit boats on Arrange boats.
+              Select guests on the left, drag into a van card — or tap a van while guests are
+              selected.
             </p>
           </div>
           <div className="flex flex-wrap gap-2 sm:hidden">
@@ -557,7 +648,7 @@ function VehicleBoard({
             {needsSeparate.length === 1 ? '' : 's'} over {capacity} pax
           </p>
           <p className="mt-1 text-sm text-amber-900/70">
-            AI left these unassigned. Open Separate Van and choose how many guests go on each van.
+            Open Separate Van and choose how many guests go on each van before dragging.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             {needsSeparate.map((booking) => (
@@ -582,77 +673,504 @@ function VehicleBoard({
         </Surface>
       ) : (
         <div className="flex flex-col gap-5 print:hidden">
-          {byVan.length > 0 || unassignedPax > 0 ? (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {byVan.map(({ van, pax, zone, items, over, assignedBoat, boatMixed }) => (
-                <div
-                  key={van}
-                  className={cn(
-                    'rounded-2xl border bg-white/90 p-4 shadow-[0_12px_40px_-28px_rgba(15,118,110,0.35)]',
-                    over ? 'border-amber-500/40' : 'border-teal-900/8',
-                  )}
-                >
-                  <button
-                    type="button"
-                    onClick={() => setOpenVan(van)}
-                    className="w-full text-left transition-colors hover:opacity-90"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-semibold text-teal-950">Van {van}</p>
-                      <span
-                        className={cn(
-                          'rounded-lg px-2 py-0.5 text-xs font-semibold tabular-nums',
-                          over ? 'bg-amber-50 text-amber-800' : 'bg-teal-50 text-teal-800',
-                        )}
-                      >
-                        {pax}/{capacity}
-                      </span>
-                    </div>
-                    <p className="mt-1 truncate text-sm text-teal-900/55">{zone}</p>
-                    <p className="mt-0.5 text-xs text-teal-900/40">
-                      {items.length} booking{items.length === 1 ? '' : 's'} · Details →
+          <div className="grid gap-4 xl:grid-cols-[minmax(280px,22rem)_minmax(0,1fr)]">
+            {/* Left — guest pool */}
+            <Surface className="flex max-h-[min(78vh,52rem)] flex-col overflow-hidden">
+              <div className="border-b border-teal-900/8 px-4 py-3 sm:px-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h3 className="text-base font-semibold text-teal-950">Guest list</h3>
+                    <p className="mt-0.5 text-xs text-teal-900/55">
+                      Grouped by zone · {poolBookings.length} waiting · {unassignedPax} pax
                     </p>
-                  </button>
-                  <div className="mt-3 border-t border-teal-900/8 pt-3">
-                    <p className="mb-1.5 text-[10px] font-semibold tracking-wide text-teal-800/55 uppercase">
-                      Put on boat
-                      {assignedBoat ? ` · Boat ${assignedBoat}` : boatMixed ? ' · mixed' : ''}
-                    </p>
-                    <div
-                      className={cn(
-                        'grid gap-1.5',
-                        boatNumbers.length <= 3 ? 'grid-cols-3' : 'grid-cols-4',
-                      )}
-                    >
-                      {boatNumbers.map((boat) => (
-                        <button
-                          key={boat}
-                          type="button"
-                          onClick={() => onAssignVanToBoat(van, boat)}
-                          className={cn(
-                            'rounded-lg px-1.5 py-1.5 text-xs font-semibold transition-colors',
-                            assignedBoat === boat && !boatMixed
-                              ? 'bg-teal-800 text-white'
-                              : 'bg-teal-50 text-teal-800 hover:bg-teal-100',
-                          )}
-                        >
-                          {boat}
-                        </button>
-                      ))}
-                    </div>
                   </div>
+                  <label className="flex items-center gap-1.5 text-xs text-teal-900/60">
+                    <input
+                      type="checkbox"
+                      className="size-3.5 rounded border-teal-900/25 accent-teal-700"
+                      checked={allVisibleSelected}
+                      ref={(el) => {
+                        if (!el) return
+                        el.indeterminate = selectedList.length > 0 && !allVisibleSelected
+                      }}
+                      onChange={toggleSelectAllVisible}
+                      aria-label="Select all visible guests"
+                      disabled={selectableSheetRows.length === 0}
+                    />
+                    All
+                  </label>
                 </div>
-              ))}
-              {unassignedPax > 0 ? (
-                <Surface className="border-dashed border-amber-300/60 bg-amber-50/40 p-4">
-                  <p className="text-sm font-semibold text-teal-950">Unassigned vans</p>
-                  <p className="mt-1 text-sm text-teal-900/55">{unassignedPax} pax waiting</p>
-                </Surface>
-              ) : null}
-            </div>
-          ) : null}
+                <div className="relative mt-2.5">
+                  <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-teal-900/35" />
+                  <Input
+                    value={sheetQuery}
+                    onChange={(event) => setSheetQuery(event.target.value)}
+                    placeholder="Search guest, hotel, zone…"
+                    className="h-9 pl-8 text-sm"
+                    aria-label="Search unassigned guests"
+                  />
+                </div>
+                {selectedList.length > 0 ? (
+                  <div className="mt-2.5 flex items-center justify-between gap-2 rounded-xl border border-teal-700/20 bg-teal-50/80 px-2.5 py-2">
+                    <p className="text-xs font-medium text-teal-950">
+                      {selectedList.length} selected · {selectedPax} pax
+                    </p>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => setSelectedCodes(new Set())}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
 
-          {byVan.length > 0 || boatAssignedCount > 0 ? (
+              <div
+                className={cn(
+                  'min-h-0 flex-1 space-y-2 overflow-y-auto p-3 transition-colors',
+                  dropTarget === 'pool' && dragCodes
+                    ? 'bg-amber-50/50 ring-2 ring-inset ring-amber-400/40'
+                    : '',
+                )}
+                onDragOver={(event) => {
+                  if (!dragCodes?.length) return
+                  event.preventDefault()
+                  event.dataTransfer.dropEffect = 'move'
+                  if (dropTarget !== 'pool') setDropTarget('pool')
+                }}
+                onDragLeave={() => {
+                  if (dropTarget === 'pool') setDropTarget(null)
+                }}
+                onDrop={(event) => {
+                  event.preventDefault()
+                  const codes = readDragCodes(event, dragCodes)
+                  setDragCodes(null)
+                  setDropTarget(null)
+                  assignDropped(codes, null)
+                }}
+              >
+                {sheetRows.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-teal-900/12 px-3 py-10 text-center text-sm text-teal-900/45">
+                    {sheetQuery.trim()
+                      ? `No guests match “${sheetQuery.trim()}”.`
+                      : unassignedPax === 0
+                        ? 'All guests are on vans. Drag anyone back here to unassign.'
+                        : 'No unassigned guests.'}
+                  </div>
+                ) : (
+                  zoneGroups.map(
+                    ({
+                      zone,
+                      items,
+                      selectable,
+                      pax: zonePax,
+                      allSelected,
+                      someSelected,
+                    }) => (
+                      <div key={zone} className="space-y-1.5">
+                        <div className="sticky top-0 z-[1] flex items-center justify-between gap-2 rounded-lg bg-[#f7faf9]/95 px-2 py-1.5 backdrop-blur-sm">
+                          <label className="flex min-w-0 cursor-pointer items-center gap-2">
+                            <input
+                              type="checkbox"
+                              className="size-3.5 shrink-0 rounded border-teal-900/25 accent-teal-700"
+                              checked={allSelected}
+                              ref={(el) => {
+                                if (!el) return
+                                el.indeterminate = someSelected
+                              }}
+                              disabled={selectable.length === 0}
+                              onChange={() =>
+                                toggleSelectZone(
+                                  selectable.map((b) => b.code),
+                                  allSelected,
+                                )
+                              }
+                              aria-label={`Select all in ${zone}`}
+                            />
+                            <span className="truncate text-xs font-semibold tracking-wide text-teal-900 uppercase">
+                              {zone}
+                            </span>
+                          </label>
+                          <span className="shrink-0 text-[11px] tabular-nums text-teal-900/50">
+                            {items.length} · {zonePax} pax
+                          </span>
+                        </div>
+
+                        {items.map((booking) => {
+                          const pax = totalPassengers(booking)
+                          const needsSplit = pax > capacity
+                          const checked = selectedCodes.has(booking.code)
+                          const isDragging = dragCodes?.includes(booking.code)
+
+                          return (
+                            <div
+                              key={booking.code}
+                              draggable={!needsSplit}
+                              onDragStart={(event) => {
+                                if (needsSplit) {
+                                  event.preventDefault()
+                                  return
+                                }
+                                beginDrag(event, codesForDrag(booking.code))
+                              }}
+                              onDragEnd={() => {
+                                setDragCodes(null)
+                                setDropTarget(null)
+                              }}
+                              onClick={() => {
+                                if (!needsSplit) toggleCode(booking.code)
+                              }}
+                              className={cn(
+                                'rounded-xl border px-3 py-2.5 transition-all select-none',
+                                needsSplit
+                                  ? 'cursor-default border-amber-300 bg-amber-50'
+                                  : 'cursor-grab border-teal-900/8 bg-white active:cursor-grabbing',
+                                checked &&
+                                  !needsSplit &&
+                                  'border-teal-600/40 bg-teal-50 shadow-sm',
+                                isDragging && 'opacity-40',
+                                !needsSplit &&
+                                  !checked &&
+                                  'hover:border-teal-700/25 hover:bg-teal-50/40',
+                              )}
+                            >
+                              <div className="flex items-start gap-2">
+                                {!needsSplit ? (
+                                  <input
+                                    type="checkbox"
+                                    className="mt-0.5 size-3.5 shrink-0 rounded border-teal-900/25 accent-teal-700"
+                                    checked={checked}
+                                    onClick={(event) => event.stopPropagation()}
+                                    onChange={() => toggleCode(booking.code)}
+                                    aria-label={`Select ${booking.leadGuest}`}
+                                  />
+                                ) : (
+                                  <span className="mt-0.5 size-3.5 shrink-0" />
+                                )}
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-start justify-between gap-2">
+                                    <p className="truncate text-sm font-semibold text-teal-950">
+                                      {booking.leadGuest}
+                                    </p>
+                                    <span
+                                      className={cn(
+                                        'shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold tabular-nums',
+                                        needsSplit
+                                          ? 'bg-amber-200/80 text-amber-950'
+                                          : 'bg-teal-950/[0.06] text-teal-900',
+                                      )}
+                                    >
+                                      {pax}
+                                    </span>
+                                  </div>
+                                  <p className="mt-0.5 text-[11px] tabular-nums text-teal-900/50">
+                                    {formatPaxBreakdown(booking)}
+                                  </p>
+                                  <p className="mt-1 truncate text-xs text-teal-900/70">
+                                    {booking.pickupHotel}
+                                    {booking.roomNumber ? ` · Rm ${booking.roomNumber}` : ''}
+                                  </p>
+                                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-teal-900/50">
+                                    <span className="tabular-nums">{booking.pickupTime}</span>
+                                    {booking.note ? (
+                                      <span className="truncate">· {booking.note}</span>
+                                    ) : null}
+                                  </div>
+                                  {needsSplit ? (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      className="mt-2 h-7 border-amber-400 bg-amber-100 px-2 text-[11px] text-amber-950 hover:bg-amber-200"
+                                      onClick={(event) => {
+                                        event.stopPropagation()
+                                        setSplitCode(booking.code)
+                                      }}
+                                    >
+                                      <SplitSquareVertical className="size-3" />
+                                      Separate Van
+                                    </Button>
+                                  ) : null}
+                                </div>
+                                {!needsSplit ? (
+                                  <GripVertical className="mt-0.5 size-4 shrink-0 text-teal-800/30" />
+                                ) : null}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    ),
+                  )
+                )}
+              </div>
+            </Surface>
+
+            {/* Right — van cards */}
+            <div className="min-w-0 space-y-3">
+              <div className="flex items-end justify-between gap-3 px-0.5">
+                <div>
+                  <h3 className="text-base font-semibold text-teal-950">Vans</h3>
+                  <p className="mt-0.5 text-xs text-teal-900/55">
+                    {DEFAULT_DAY_VAN_COUNT} vans ready · drop guests onto a card
+                    {dragCodes?.length
+                      ? ` · dragging ${dragCodes.length} · ${draggingPax} pax`
+                      : ''}
+                  </p>
+                </div>
+                {selectedList.length > 0 ? (
+                  <p className="text-xs font-medium text-teal-800">
+                    Tap a van to seat {selectedList.length} guest
+                    {selectedList.length === 1 ? '' : 's'}
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+                {byVan.map(
+                  ({
+                    van,
+                    pax,
+                    zone,
+                    items,
+                    over,
+                    assignedBoat,
+                    boatMixed,
+                    isEmptySlot,
+                    isPreparedEmpty,
+                  }) => {
+                    const isDrop = dropTarget === van && !!dragCodes?.length
+                    const projected = isDrop ? pax + draggingPax : pax
+                    const projectedOver = projected > capacity
+                    const isVacant = items.length === 0
+
+                    return (
+                      <div
+                        key={van}
+                        onDragOver={(event) => {
+                          if (!dragCodes?.length) return
+                          event.preventDefault()
+                          event.dataTransfer.dropEffect = 'move'
+                          if (dropTarget !== van) setDropTarget(van)
+                        }}
+                        onDragLeave={() => {
+                          if (dropTarget === van) setDropTarget(null)
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault()
+                          const codes = readDragCodes(event, dragCodes)
+                          setDragCodes(null)
+                          setDropTarget(null)
+                          assignDropped(codes, van)
+                        }}
+                        className={cn(
+                          'flex min-h-[14rem] flex-col rounded-2xl border bg-white/95 shadow-[0_12px_40px_-28px_rgba(15,118,110,0.35)] transition-all',
+                          over || projectedOver
+                            ? 'border-amber-500/45'
+                            : isDrop
+                              ? 'border-teal-600/50 ring-2 ring-teal-600/25'
+                              : isEmptySlot
+                                ? 'border-dashed border-teal-900/18'
+                                : isPreparedEmpty
+                                  ? 'border-dashed border-teal-900/14'
+                                  : 'border-teal-900/8',
+                          selectedList.length > 0 && 'cursor-pointer',
+                          selectedList.length > 0 &&
+                            isVacant &&
+                            'hover:border-teal-700/35 hover:bg-teal-50/30',
+                        )}
+                        onClick={() => {
+                          if (selectedList.length === 0) return
+                          assignDropped(selectedList, van)
+                        }}
+                      >
+                        <div className="border-b border-teal-900/6 px-3.5 py-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={cn(
+                                  'flex size-9 items-center justify-center rounded-xl text-sm font-bold',
+                                  isEmptySlot
+                                    ? 'bg-teal-950/[0.04] text-teal-800/50'
+                                    : isPreparedEmpty
+                                      ? 'bg-teal-800/80 text-white'
+                                      : 'bg-teal-800 text-white',
+                                )}
+                              >
+                                {isEmptySlot ? <Plus className="size-4" /> : van}
+                              </span>
+                              <div>
+                                <p className="text-sm font-semibold text-teal-950">
+                                  {isEmptySlot ? `New van ${van}` : `Van ${van}`}
+                                </p>
+                                <p className="truncate text-[11px] text-teal-900/50">{zone}</p>
+                              </div>
+                            </div>
+                            <span
+                              className={cn(
+                                'rounded-lg px-2 py-1 text-xs font-semibold tabular-nums',
+                                projectedOver
+                                  ? 'bg-amber-50 text-amber-900'
+                                  : 'bg-teal-50 text-teal-800',
+                              )}
+                            >
+                              {isDrop ? `${pax}→${projected}` : pax}/{capacity}
+                            </span>
+                          </div>
+                          {!isEmptySlot ? (
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-7 px-2 text-[11px]"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  setOpenVan(van)
+                                }}
+                              >
+                                Details
+                              </Button>
+                              {items.some(
+                                (item) => totalPassengers(item.booking) > capacity,
+                              ) ? (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 px-2 text-[11px]"
+                                  onClick={(event) => {
+                                    event.stopPropagation()
+                                    const oversized = items.find(
+                                      (item) => totalPassengers(item.booking) > capacity,
+                                    )
+                                    if (oversized) setSplitCode(oversized.booking.code)
+                                  }}
+                                >
+                                  <SplitSquareVertical className="size-3" />
+                                  Split
+                                </Button>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        <div className="flex min-h-0 flex-1 flex-col gap-1.5 p-2.5">
+                          {items.length === 0 ? (
+                            <div
+                              className={cn(
+                                'flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed px-3 py-6 text-center',
+                                isDrop
+                                  ? 'border-teal-600/40 bg-teal-50/60 text-teal-800'
+                                  : 'border-teal-900/10 text-teal-900/40',
+                              )}
+                            >
+                              <Users className="mb-2 size-5 opacity-50" />
+                              <p className="text-xs font-medium">
+                                {isDrop ? 'Drop to seat here' : 'Empty — drop guests'}
+                              </p>
+                            </div>
+                          ) : (
+                            items.map(({ booking, paxOnVan: legPax, legs }) => {
+                              const split = (legs?.length ?? 0) > 1
+                              const isDragging = dragCodes?.includes(booking.code)
+                              return (
+                                <div
+                                  key={`${van}-${booking.code}`}
+                                  draggable
+                                  onDragStart={(event) => {
+                                    event.stopPropagation()
+                                    beginDrag(event, [booking.code])
+                                  }}
+                                  onDragEnd={() => {
+                                    setDragCodes(null)
+                                    setDropTarget(null)
+                                  }}
+                                  onClick={(event) => event.stopPropagation()}
+                                  className={cn(
+                                    'cursor-grab rounded-lg border border-teal-900/8 bg-teal-950/[0.02] px-2.5 py-2 active:cursor-grabbing',
+                                    isDragging && 'opacity-40',
+                                  )}
+                                >
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0">
+                                      <p className="truncate text-sm font-medium text-teal-950">
+                                        {booking.leadGuest}
+                                      </p>
+                                      <p className="mt-0.5 truncate text-[11px] text-teal-900/55">
+                                        {booking.pickupZone} · {booking.pickupHotel}
+                                        {booking.roomNumber ? ` · ${booking.roomNumber}` : ''}
+                                      </p>
+                                    </div>
+                                    <div className="shrink-0 text-right">
+                                      <p className="text-xs font-semibold tabular-nums text-teal-900">
+                                        {legPax}
+                                        {split ? (
+                                          <span className="ml-1 font-normal text-teal-900/45">
+                                            split
+                                          </span>
+                                        ) : null}
+                                      </p>
+                                      <p className="text-[10px] tabular-nums text-teal-900/45">
+                                        {booking.pickupTime}
+                                      </p>
+                                    </div>
+                                  </div>
+                                </div>
+                              )
+                            })
+                          )}
+                        </div>
+
+                        {!isEmptySlot && items.length > 0 ? (
+                          <div
+                            className="border-t border-teal-900/6 px-3 py-2.5"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <p className="mb-1.5 text-[10px] font-semibold tracking-wide text-teal-800/55 uppercase">
+                              Boat
+                              {assignedBoat
+                                ? ` · ${assignedBoat}`
+                                : boatMixed
+                                  ? ' · mixed'
+                                  : ''}
+                            </p>
+                            <div
+                              className={cn(
+                                'grid gap-1.5',
+                                boatNumbers.length <= 3 ? 'grid-cols-3' : 'grid-cols-4',
+                              )}
+                            >
+                              {boatNumbers.map((boat) => (
+                                <button
+                                  key={boat}
+                                  type="button"
+                                  onClick={() => onAssignVanToBoat(van, boat)}
+                                  className={cn(
+                                    'rounded-lg px-1.5 py-1.5 text-xs font-semibold transition-colors',
+                                    assignedBoat === boat && !boatMixed
+                                      ? 'bg-teal-800 text-white'
+                                      : 'bg-teal-50 text-teal-800 hover:bg-teal-100',
+                                  )}
+                                >
+                                  {boat}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    )
+                  },
+                )}
+              </div>
+            </div>
+          </div>
+
+          {byVan.some((v) => v.items.length > 0) || boatAssignedCount > 0 ? (
             <Surface className="p-4 sm:p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0">
@@ -663,7 +1181,7 @@ function VehicleBoard({
                     Assign vans to boats
                   </h3>
                   <p className="mt-1 text-sm text-teal-900/55">
-                    Tap a boat number on each van above, or auto-assign so each van stays together.
+                    Tap a boat number on each van card, or auto-assign so each van stays together.
                     Default {DEFAULT_BOAT_CAPACITY} pax per boat.
                     {noTransferBookings.length > 0
                       ? ` ${noTransferBookings.length} no-transfer booking${noTransferBookings.length === 1 ? '' : 's'} — use จัดการเรือ to place them freely.`
@@ -718,283 +1236,6 @@ function VehicleBoard({
               ) : null}
             </Surface>
           ) : null}
-
-          <Surface className="overflow-hidden">
-            <div className="border-b border-teal-900/8 px-4 py-3 sm:px-5">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                <div className="min-w-0">
-                  <h3 className="text-lg font-semibold text-teal-950">Booking sheet</h3>
-                  <p className="mt-0.5 text-sm text-teal-900/55">
-                    Select several bookings, then assign them to one van together — or change van
-                    one by one.
-                  </p>
-                </div>
-                <div className="relative w-full sm:max-w-xs">
-                  <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-teal-900/35" />
-                  <Input
-                    value={sheetQuery}
-                    onChange={(event) => setSheetQuery(event.target.value)}
-                    placeholder="Search guest, agent, hotel…"
-                    className="h-10 pl-9"
-                    aria-label="Search bookings for this day"
-                  />
-                </div>
-              </div>
-              {sheetQuery.trim() ? (
-                <p className="mt-2 text-xs text-teal-900/45">
-                  Showing {sheetRows.length} of {sorted.length} on {formatShortDate(date)}
-                </p>
-              ) : null}
-              {selectedList.length > 0 ? (
-                <div className="mt-3 flex flex-col gap-2 rounded-xl border border-teal-700/20 bg-teal-50/70 px-3 py-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-                  <p className="text-sm font-medium text-teal-950">
-                    {selectedList.length} selected · {selectedPax} pax
-                  </p>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <label className="flex items-center gap-1.5 text-sm text-teal-900/70">
-                      <span className="whitespace-nowrap">Assign to van</span>
-                      <select
-                        value={bulkVan}
-                        onChange={(event) => setBulkVan(event.target.value)}
-                        className="h-8 w-[4.5rem] rounded-lg border border-teal-900/12 bg-white px-2 text-sm font-medium text-teal-950 outline-none focus:border-teal-700/40"
-                        aria-label="Van for selected bookings"
-                      >
-                        <option value="">—</option>
-                        {vanOptions.map((n) => (
-                          <option key={n} value={n}>
-                            {n}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <Button
-                      type="button"
-                      size="sm"
-                      className="h-8"
-                      disabled={!bulkVan}
-                      onClick={() => applyBulkVan(Number(bulkVan))}
-                    >
-                      Assign
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-8"
-                      onClick={() => applyBulkVan(null)}
-                    >
-                      Unassign
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-8"
-                      onClick={() => {
-                        setSelectedCodes(new Set())
-                        setBulkVan('')
-                      }}
-                    >
-                      Clear
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-            <Table className="text-[13px]">
-              <TableHeader>
-                <TableRow className="bg-teal-950/[0.03] hover:bg-teal-950/[0.03]">
-                  <TableHead className="sticky left-0 z-10 w-10 bg-[#f7faf9] px-2">
-                    <input
-                      type="checkbox"
-                      className="size-4 rounded border-teal-900/25 accent-teal-700"
-                      checked={allVisibleSelected}
-                      ref={(el) => {
-                        if (!el) return
-                        el.indeterminate =
-                          selectedList.length > 0 && !allVisibleSelected
-                      }}
-                      onChange={toggleSelectAllVisible}
-                      aria-label="Select all visible bookings"
-                      disabled={selectableSheetRows.length === 0}
-                    />
-                  </TableHead>
-                  <TableHead className="bg-[#f7faf9] px-2 font-semibold text-teal-900/70">
-                    Code
-                  </TableHead>
-                  <TableHead className="px-2 font-semibold text-teal-900/70">Guest name</TableHead>
-                  <TableHead className="px-2 font-semibold text-teal-900/70">Voucher number</TableHead>
-                  <TableHead className="w-10 px-1 text-center font-semibold text-teal-900/70">
-                    AD
-                  </TableHead>
-                  <TableHead className="w-10 px-1 text-center font-semibold text-teal-900/70">
-                    CH
-                  </TableHead>
-                  <TableHead className="w-10 px-1 text-center font-semibold text-teal-900/70">
-                    IF
-                  </TableHead>
-                  <TableHead className="w-10 px-1 text-center font-semibold text-teal-900/70">
-                    TL
-                  </TableHead>
-                  <TableHead className="w-12 px-1 text-center font-semibold text-teal-900/70">
-                    Tot
-                  </TableHead>
-                  <TableHead className="px-2 font-semibold text-teal-900/70">Zone</TableHead>
-                  <TableHead className="px-2 font-semibold text-teal-900/70">Hotel</TableHead>
-                  <TableHead className="px-2 font-semibold text-teal-900/70">Room</TableHead>
-                  <TableHead className="px-2 font-semibold text-teal-900/70">Time</TableHead>
-                  <TableHead className="px-2 font-semibold text-teal-900/70">Note</TableHead>
-                  <TableHead className="sticky right-0 z-10 bg-[#f7faf9] px-2 font-semibold text-teal-900/70">
-                    Van
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {sheetRows.length === 0 ? (
-                  <TableRow>
-                    <TableCell
-                      colSpan={15}
-                      className="px-4 py-10 text-center text-sm text-teal-900/45"
-                    >
-                      No bookings match “{sheetQuery.trim()}” on this day.
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-                {sheetRows.map((booking) => {
-                  const legs = plan.assignments[booking.code]
-                  const primary = primaryVan(legs)
-                  const pax = totalPassengers(booking)
-                  const oversized = pax > capacity
-                  const split = (legs?.length ?? 0) > 1
-                  const needsSplit = oversized && !split
-                  const checked = selectedCodes.has(booking.code)
-                  return (
-                    <TableRow
-                      key={booking.code}
-                      className={cn(
-                        'hover:bg-teal-50/40',
-                        checked && 'bg-teal-50/80',
-                        !legs?.length && !needsSplit && !checked && 'bg-amber-50/30',
-                        needsSplit && 'bg-amber-100/80 ring-1 ring-inset ring-amber-300/70',
-                      )}
-                    >
-                      <TableCell className="sticky left-0 z-10 bg-inherit px-2">
-                        <input
-                          type="checkbox"
-                          className="size-4 rounded border-teal-900/25 accent-teal-700"
-                          checked={checked}
-                          disabled={needsSplit}
-                          onChange={() => toggleCode(booking.code)}
-                          aria-label={`Select ${booking.leadGuest}`}
-                          title={
-                            needsSplit
-                              ? 'Use Separate Van for oversized bookings'
-                              : undefined
-                          }
-                        />
-                      </TableCell>
-                      <TableCell className="bg-inherit px-2 font-mono text-xs text-teal-900/70">
-                        {booking.code}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap px-2 font-medium text-teal-950">
-                        {booking.leadGuest}
-                      </TableCell>
-                      <TableCell className="max-w-[7rem] truncate px-2 font-mono text-xs text-teal-900/70">
-                        {booking.agentRef?.trim() || '—'}
-                      </TableCell>
-                      <TableCell className="px-1 text-center tabular-nums text-teal-950">
-                        {booking.adults}
-                      </TableCell>
-                      <TableCell className="px-1 text-center tabular-nums text-teal-950">
-                        {booking.children}
-                      </TableCell>
-                      <TableCell className="px-1 text-center tabular-nums text-teal-950">
-                        {booking.infants}
-                      </TableCell>
-                      <TableCell className="px-1 text-center tabular-nums text-teal-950">
-                        {booking.tourLeaders}
-                      </TableCell>
-                      <TableCell
-                        className={cn(
-                          'px-1 text-center font-semibold tabular-nums text-teal-950',
-                          needsSplit && 'text-amber-900',
-                        )}
-                      >
-                        {pax}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap px-2 text-teal-950">
-                        {booking.pickupZone}
-                      </TableCell>
-                      <TableCell className="max-w-[9rem] truncate px-2 text-teal-900/80">
-                        {booking.pickupHotel}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap px-2 tabular-nums text-teal-950">
-                        {booking.roomNumber || '—'}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap px-2 tabular-nums text-teal-950">
-                        {booking.pickupTime}
-                      </TableCell>
-                      <TableCell className="max-w-[10rem] truncate px-2 text-teal-900/70">
-                        {booking.note || '—'}
-                      </TableCell>
-                      <TableCell className="sticky right-0 z-10 bg-inherit px-2">
-                        <div className="flex flex-col items-start gap-1.5">
-                          {needsSplit ? (
-                            <span className="rounded-md bg-amber-200/80 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-amber-950 uppercase">
-                              Over {capacity} · split needed
-                            </span>
-                          ) : null}
-                          {split ? (
-                            <div className="space-y-0.5">
-                              <p className="text-[10px] font-semibold tracking-wide text-teal-800/70 uppercase">
-                                Split
-                              </p>
-                              <p className="text-xs font-semibold leading-snug text-teal-800">
-                                {formatVanLegs(legs)}
-                              </p>
-                            </div>
-                          ) : !needsSplit ? (
-                            <select
-                              value={primary ?? ''}
-                              onChange={(event) => {
-                                const value = event.target.value
-                                onAssign(booking.code, value === '' ? null : Number(value))
-                              }}
-                              className="h-8 w-[4.5rem] rounded-lg border border-teal-900/12 bg-white px-2 text-sm font-medium text-teal-950 outline-none focus:border-teal-700/40"
-                              aria-label={`Assign van for ${booking.leadGuest}`}
-                            >
-                              <option value="">—</option>
-                              {vanOptions.map((n) => (
-                                <option key={n} value={n}>
-                                  {n}
-                                </option>
-                              ))}
-                            </select>
-                          ) : null}
-                          {oversized ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className={cn(
-                                'h-7 gap-1 px-2 text-[11px]',
-                                needsSplit &&
-                                  'border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200',
-                              )}
-                              onClick={() => setSplitCode(booking.code)}
-                            >
-                              <SplitSquareVertical className="size-3" />
-                              {split ? 'Edit split' : 'Separate Van'}
-                            </Button>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )
-                })}
-              </TableBody>
-            </Table>
-          </Surface>
         </div>
       )}
 
@@ -1063,7 +1304,8 @@ function VehicleBoard({
               </div>
               {openMeta.fromFleet ? (
                 <p className="mt-2 text-xs text-teal-800/55">
-                  Prefilling from remembered Van {openVan} details. Changes save for this day and for next time.
+                  Prefilling from remembered Van {openVan} details. Changes save for this day and
+                  for next time.
                 </p>
               ) : (
                 <p className="mt-2 text-xs text-teal-800/55">
@@ -1082,7 +1324,6 @@ function VehicleBoard({
                     <tr>
                       <th className="w-16 px-2 py-2 font-medium">#</th>
                       <th className="px-3 py-2 font-medium">Guest</th>
-                      <th className="px-3 py-2 font-medium">VC No.</th>
                       <th className="px-3 py-2 font-medium">Pax</th>
                       <th className="px-3 py-2 font-medium">Hotel / room</th>
                       <th className="px-3 py-2 font-medium">Time</th>
@@ -1151,10 +1392,6 @@ function VehicleBoard({
                           </td>
                           <td className="px-3 py-2">
                             <p className="font-medium text-teal-950">{booking.leadGuest}</p>
-                            <p className="font-mono text-xs text-teal-900/45">{booking.code}</p>
-                          </td>
-                          <td className="px-3 py-2 font-mono text-xs text-teal-900/70">
-                            {booking.agentRef?.trim() || '—'}
                           </td>
                           <td className="px-3 py-2 tabular-nums text-teal-950">
                             <span className="font-semibold">{legPax}</span>
@@ -1264,7 +1501,6 @@ function SeparateVanDialog({
   const [legs, setLegs] = useState<VanSplit[]>([])
   const [error, setError] = useState('')
 
-  // Reset draft whenever dialog opens for a booking
   useEffect(() => {
     if (!open || !booking) return
     const start = Math.max(1, nextVanHint)
@@ -1318,8 +1554,8 @@ function SeparateVanDialog({
                 Separate Van
               </DialogTitle>
               <DialogDescription className="text-sm text-teal-900/55">
-                {booking.leadGuest} · {booking.code} · {total} pax (over {capacity}). Choose how
-                many guests go on each van.
+                {booking.leadGuest} · {total} pax (over {capacity}). Choose how many guests go on
+                each van.
               </DialogDescription>
             </DialogHeader>
 
@@ -1391,9 +1627,7 @@ function SeparateVanDialog({
               <div
                 className={cn(
                   'rounded-xl px-3 py-2 text-sm',
-                  remaining === 0
-                    ? 'bg-teal-50 text-teal-800'
-                    : 'bg-amber-50 text-amber-900',
+                  remaining === 0 ? 'bg-teal-50 text-teal-800' : 'bg-amber-50 text-amber-900',
                 )}
               >
                 Assigned {assigned} / {total} pax

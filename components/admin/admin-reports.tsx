@@ -17,7 +17,6 @@ import {
 } from '@/components/admin/admin-daily-job-order'
 import { AdminCheckInReport } from '@/components/admin/admin-check-in-report'
 import { usePortal } from '@/components/portal-provider'
-import { StatusBadge } from '@/components/status-badge'
 import {
   EmptyState,
   PageHeader,
@@ -37,7 +36,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { dateFromISO, formatLongDate, formatShortDate, startOfToday, toISODate } from '@/lib/format'
+import { dateFromISO, formatIncludeLabel, formatIncludeShort, formatLongDate, formatCollectTotal, collectTotal, formatShortDate, startOfToday, toISODate } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import {
   bookingsToReportRows,
@@ -306,6 +305,36 @@ function BookingReport({ onBack }: { onBack: () => void }) {
   const totalPax = sumPax(activeRows)
   const ppPax = sumPax(activeRows.filter((b) => b.program === 'PP'))
   const jbPax = sumPax(activeRows.filter((b) => b.program === 'James Bond'))
+  const paxTotals = useMemo(
+    () =>
+      activeRows.reduce(
+        (acc, booking) => {
+          acc.adults += booking.adults
+          acc.children += booking.children
+          acc.infants += booking.infants
+          acc.tourLeaders += booking.tourLeaders
+          return acc
+        },
+        { adults: 0, children: 0, infants: 0, tourLeaders: 0 },
+      ),
+    [activeRows],
+  )
+  const collectSum = useMemo(
+    () =>
+      activeRows.reduce(
+        (sum, booking) =>
+          sum +
+          collectTotal(
+            booking.parkFee,
+            booking.program,
+            booking.adults,
+            booking.children,
+            booking.cashOnTour,
+          ),
+        0,
+      ),
+    [activeRows],
+  )
 
   const dateLabel =
     fromIso === toIso
@@ -524,23 +553,25 @@ function BookingReport({ onBack }: { onBack: () => void }) {
             <EmptyState>No bookings match these filters.</EmptyState>
           ) : (
             <div className="overflow-x-auto">
-              <Table>
+              <Table className="table-fixed">
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
-                    <TableHead>VC No.</TableHead>
-                    <TableHead>Agent</TableHead>
-                    <TableHead>Guest</TableHead>
-                    <TableHead className="text-center">AD</TableHead>
-                    <TableHead className="text-center">CH</TableHead>
-                    <TableHead className="text-center">IF</TableHead>
-                    <TableHead className="text-center">TL</TableHead>
-                    <TableHead className="text-center">Total</TableHead>
-                    <TableHead>Time</TableHead>
-                    <TableHead>Hotel</TableHead>
-                    <TableHead>Park</TableHead>
-                    {program === 'James Bond' ? <TableHead>Canoe</TableHead> : null}
+                    <TableHead className="w-[8.5rem]">Agent</TableHead>
+                    <TableHead className="w-[5.5rem]">VC No.</TableHead>
+                    <TableHead className="w-[7.5rem]">Guest</TableHead>
+                    <TableHead className="w-8 px-0.5 text-center">AD</TableHead>
+                    <TableHead className="w-8 px-0.5 text-center">CH</TableHead>
+                    <TableHead className="w-7 px-0.5 text-center">IF</TableHead>
+                    <TableHead className="w-7 px-0.5 text-center">TL</TableHead>
+                    <TableHead className="w-9 px-0.5 text-center">Total</TableHead>
+                    <TableHead className="w-[7.5rem]">Hotel</TableHead>
+                    <TableHead className="w-[5.5rem]">COT</TableHead>
+                    <TableHead className="w-[4.5rem]">Park</TableHead>
+                    <TableHead className="w-[4.5rem] text-right">Total</TableHead>
+                    {program === 'James Bond' ? (
+                      <TableHead className="w-[4.5rem]">Canoe</TableHead>
+                    ) : null}
                     <TableHead>Note</TableHead>
-                    <TableHead>Status</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -549,46 +580,83 @@ function BookingReport({ onBack }: { onBack: () => void }) {
                       key={booking.code}
                       className={cn(!isActiveBooking(booking) && 'opacity-55')}
                     >
-                      <TableCell className="text-teal-900/55">{booking.agentRef || '—'}</TableCell>
                       <TableCell>
-                        <div className="max-w-[9rem] truncate" title={booking.agentName}>
+                        <div className="truncate" title={booking.agentName}>
                           {booking.agentName}
                         </div>
                       </TableCell>
+                      <TableCell className="truncate text-teal-900/55">{booking.agentRef || '—'}</TableCell>
                       <TableCell>
-                        <div className="max-w-[8rem] truncate" title={booking.leadGuest}>
+                        <div className="truncate" title={booking.leadGuest}>
                           {booking.leadGuest}
                         </div>
                       </TableCell>
-                      <TableCell className="text-center tabular-nums">{booking.adults}</TableCell>
-                      <TableCell className="text-center tabular-nums">{booking.children}</TableCell>
-                      <TableCell className="text-center tabular-nums">{booking.infants}</TableCell>
-                      <TableCell className="text-center tabular-nums">{booking.tourLeaders}</TableCell>
-                      <TableCell className="text-center font-medium tabular-nums text-teal-950">
+                      <TableCell className="px-0.5 text-center tabular-nums">{booking.adults}</TableCell>
+                      <TableCell className="px-0.5 text-center tabular-nums">{booking.children}</TableCell>
+                      <TableCell className="px-0.5 text-center tabular-nums">{booking.infants}</TableCell>
+                      <TableCell className="px-0.5 text-center tabular-nums">{booking.tourLeaders}</TableCell>
+                      <TableCell className="px-0.5 text-center font-medium tabular-nums text-teal-950">
                         {totalPassengers(booking)}
                       </TableCell>
-                      <TableCell className="whitespace-nowrap tabular-nums text-sm">
-                        {booking.pickupTime}
-                      </TableCell>
                       <TableCell>
-                        <div className="max-w-[9rem] truncate" title={booking.pickupHotel}>
+                        <div className="truncate" title={booking.pickupHotel}>
                           {booking.pickupHotel || '—'}
                         </div>
                       </TableCell>
-                      <TableCell className="text-xs">{booking.parkFee}</TableCell>
+                      <TableCell>
+                        <div
+                          className="truncate text-xs font-medium text-teal-950"
+                          title={booking.cashOnTour}
+                        >
+                          {booking.cashOnTour.trim() || '—'}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-xs">{formatIncludeLabel(booking.parkFee)}</TableCell>
+                      <TableCell className="text-right tabular-nums text-xs font-medium text-teal-950">
+                        {formatCollectTotal(
+                          booking.parkFee,
+                          booking.program,
+                          booking.adults,
+                          booking.children,
+                          booking.cashOnTour,
+                        )}
+                      </TableCell>
                       {program === 'James Bond' ? (
-                        <TableCell className="text-xs">{booking.canoe ?? '—'}</TableCell>
+                        <TableCell className="text-xs">{formatIncludeLabel(booking.canoe)}</TableCell>
                       ) : null}
                       <TableCell>
-                        <div className="max-w-[8rem] truncate text-xs text-teal-900/55" title={booking.note}>
+                        <div className="whitespace-normal text-xs leading-snug text-teal-900/55" title={booking.note}>
                           {booking.note || '—'}
                         </div>
                       </TableCell>
-                      <TableCell>
-                        <StatusBadge status={booking.status} />
-                      </TableCell>
                     </TableRow>
                   ))}
+                  <TableRow className="bg-teal-50/50 hover:bg-teal-50/50">
+                    <TableCell colSpan={3} className="text-xs font-semibold text-teal-900/70">
+                      Total · {activeRows.length} booking{activeRows.length === 1 ? '' : 's'}
+                    </TableCell>
+                    <TableCell className="px-0.5 text-center text-xs font-semibold tabular-nums">
+                      {paxTotals.adults}
+                    </TableCell>
+                    <TableCell className="px-0.5 text-center text-xs font-semibold tabular-nums">
+                      {paxTotals.children}
+                    </TableCell>
+                    <TableCell className="px-0.5 text-center text-xs font-semibold tabular-nums">
+                      {paxTotals.infants}
+                    </TableCell>
+                    <TableCell className="px-0.5 text-center text-xs font-semibold tabular-nums">
+                      {paxTotals.tourLeaders}
+                    </TableCell>
+                    <TableCell className="px-0.5 text-center text-xs font-semibold tabular-nums text-teal-950">
+                      {totalPax}
+                    </TableCell>
+                    <TableCell colSpan={2} />
+                    <TableCell className="text-xs font-semibold text-teal-900/70">Collect</TableCell>
+                    <TableCell className="text-right text-xs font-semibold tabular-nums text-teal-950">
+                      {collectSum > 0 ? collectSum.toLocaleString('en-US') : ''}
+                    </TableCell>
+                    <TableCell colSpan={program === 'James Bond' ? 2 : 1} />
+                  </TableRow>
                 </TableBody>
               </Table>
             </div>
@@ -605,6 +673,8 @@ function BookingReport({ onBack }: { onBack: () => void }) {
         rows={rows}
         bookingCount={activeRows.length}
         totalPax={totalPax}
+        paxTotals={paxTotals}
+        collectSum={collectSum}
         ppPax={ppPax}
         jbPax={jbPax}
         program={program}
@@ -666,6 +736,8 @@ function ReportPrintSheet({
   rows,
   bookingCount,
   totalPax,
+  paxTotals,
+  collectSum,
   ppPax,
   jbPax,
   program,
@@ -678,6 +750,8 @@ function ReportPrintSheet({
   rows: Booking[]
   bookingCount: number
   totalPax: number
+  paxTotals: { adults: number; children: number; infants: number; tourLeaders: number }
+  collectSum: number
   ppPax: number
   jbPax: number
   program: ProgramFilter
@@ -724,20 +798,20 @@ function ReportPrintSheet({
         <table className="w-full text-left text-[9.5px] leading-tight">
           <thead>
             <tr className="border-b-2 border-neutral-800">
-              <th className="py-1 pr-1.5 font-semibold">VC No.</th>
               <th className="py-1 pr-1.5 font-semibold">Agent</th>
+              <th className="py-1 pr-1.5 font-semibold">VC No.</th>
               <th className="py-1 pr-1.5 font-semibold">Guest</th>
-              <th className="py-1 pr-1.5 text-center font-semibold">AD</th>
-              <th className="py-1 pr-1.5 text-center font-semibold">CH</th>
-              <th className="py-1 pr-1.5 text-center font-semibold">IF</th>
-              <th className="py-1 pr-1.5 text-center font-semibold">TL</th>
-              <th className="py-1 pr-1.5 text-center font-semibold">Total</th>
-              <th className="py-1 pr-1.5 font-semibold">Time</th>
+              <th className="w-7 py-1 px-0.5 text-center font-semibold">AD</th>
+              <th className="w-7 py-1 px-0.5 text-center font-semibold">CH</th>
+              <th className="w-6 py-1 px-0.5 text-center font-semibold">IF</th>
+              <th className="w-6 py-1 px-0.5 text-center font-semibold">TL</th>
+              <th className="w-8 py-1 px-0.5 text-center font-semibold">Tot</th>
               <th className="py-1 pr-1.5 font-semibold">Hotel</th>
+              <th className="py-1 pr-1.5 font-semibold">COT</th>
               <th className="py-1 pr-1.5 font-semibold">Park</th>
+              <th className="py-1 pr-1.5 text-right font-semibold">Total</th>
               {program === 'James Bond' ? <th className="py-1 pr-1.5 font-semibold">Canoe</th> : null}
-              <th className="py-1 pr-1.5 font-semibold">Note</th>
-              <th className="py-1 font-semibold">Status</th>
+              <th className="w-[18%] py-1 font-semibold">Note</th>
             </tr>
           </thead>
           <tbody>
@@ -749,8 +823,8 @@ function ReportPrintSheet({
                   !isActiveBooking(booking) && 'text-neutral-400',
                 )}
               >
-                <td className="max-w-[4rem] truncate py-1 pr-1.5">{booking.agentRef || '—'}</td>
                 <td className="max-w-[6.5rem] truncate py-1 pr-1.5">{booking.agentName}</td>
+                <td className="max-w-[4rem] truncate py-1 pr-1.5">{booking.agentRef || '—'}</td>
                 <td className="max-w-[5.5rem] truncate py-1 pr-1.5">{booking.leadGuest}</td>
                 <td className="py-1 pr-1.5 text-center tabular-nums">{booking.adults}</td>
                 <td className="py-1 pr-1.5 text-center tabular-nums">{booking.children}</td>
@@ -759,24 +833,46 @@ function ReportPrintSheet({
                 <td className="py-1 pr-1.5 text-center font-semibold tabular-nums">
                   {totalPassengers(booking)}
                 </td>
-                <td className="py-1 pr-1.5 whitespace-nowrap">{booking.pickupTime}</td>
                 <td className="max-w-[6rem] truncate py-1 pr-1.5">{booking.pickupHotel || '—'}</td>
+                <td className="max-w-[5rem] truncate py-1 pr-1.5 font-medium">
+                  {booking.cashOnTour.trim() || '—'}
+                </td>
                 <td className="py-1 pr-1.5 whitespace-nowrap">
-                  {booking.parkFee === 'Included' ? 'Inc' : 'Not'}
+                  {formatIncludeShort(booking.parkFee)}
+                </td>
+                <td className="py-1 pr-1.5 text-right tabular-nums">
+                  {formatCollectTotal(
+                    booking.parkFee,
+                    booking.program,
+                    booking.adults,
+                    booking.children,
+                    booking.cashOnTour,
+                  )}
                 </td>
                 {program === 'James Bond' ? (
                   <td className="py-1 pr-1.5 whitespace-nowrap">
-                    {booking.canoe === 'Included'
-                      ? 'Inc'
-                      : booking.canoe === 'Not Included'
-                        ? 'Not'
-                        : '—'}
+                    {formatIncludeShort(booking.canoe)}
                   </td>
                 ) : null}
-                <td className="max-w-[5rem] truncate py-1 pr-1.5">{booking.note || '—'}</td>
-                <td className="py-1 whitespace-nowrap">{statusShort(booking.status)}</td>
+                <td className="max-w-[5rem] truncate py-1">{booking.note || '—'}</td>
               </tr>
             ))}
+            <tr className="border-t-2 border-neutral-800 bg-neutral-50 font-semibold">
+              <td className="py-1.5 pr-1.5" colSpan={3}>
+                TOTAL · {bookingCount} booking{bookingCount === 1 ? '' : 's'}
+              </td>
+              <td className="py-1.5 pr-1.5 text-center tabular-nums">{paxTotals.adults}</td>
+              <td className="py-1.5 pr-1.5 text-center tabular-nums">{paxTotals.children}</td>
+              <td className="py-1.5 pr-1.5 text-center tabular-nums">{paxTotals.infants}</td>
+              <td className="py-1.5 pr-1.5 text-center tabular-nums">{paxTotals.tourLeaders}</td>
+              <td className="py-1.5 pr-1.5 text-center tabular-nums">{totalPax}</td>
+              <td className="py-1.5" colSpan={2} />
+              <td className="py-1.5 pr-1.5">Collect</td>
+              <td className="py-1.5 pr-1.5 text-right tabular-nums">
+                {collectSum > 0 ? collectSum.toLocaleString('en-US') : ''}
+              </td>
+              <td className="py-1.5" colSpan={program === 'James Bond' ? 2 : 1} />
+            </tr>
           </tbody>
         </table>
       )}
@@ -802,11 +898,6 @@ function SummaryCard({
       <p className="mt-0.5 truncate text-xs text-teal-900/45">{detail}</p>
     </div>
   )
-}
-
-function statusShort(status: Booking['status']) {
-  if (status === 'Pending Pickup Time') return 'Pending'
-  return status
 }
 
 function sumPax(list: Booking[]) {

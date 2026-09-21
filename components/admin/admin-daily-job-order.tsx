@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowLeft, ArrowUp, CalendarIcon, ClipboardList, Pencil, Printer, Ship } from 'lucide-react'
 import { EditVanDetailsDialog } from '@/components/edit-van-details-dialog'
 import { usePortal } from '@/components/portal-provider'
@@ -16,7 +16,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
+import { formatIncludeLabel, formatCollectTotal, formatLongDate, formatParkFeeTotal, formatShortDate, toISODate } from '@/lib/format'
 import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
 import {
   DEFAULT_VAN_CAPACITY,
@@ -25,7 +25,6 @@ import {
   totalPassengers,
   type Booking,
   type DayVehiclePlan,
-  type IncludeOption,
   type Program,
   type VanMeta,
 } from '@/lib/types'
@@ -609,6 +608,77 @@ export function AdminDailyJobOrder({
   )
 }
 
+function CheckInGuestCopyCell({
+  guestName,
+  vcNo,
+}: {
+  guestName: string
+  vcNo: string
+}) {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<number | null>(null)
+  const longPressedRef = useRef(false)
+
+  function clearTimer() {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+  }
+
+  async function copyGuestAndVc() {
+    const text = `${guestName}\nVC No.: ${vcNo.trim() || '—'}`
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      window.prompt('Copy guest + VC No.:', text)
+    }
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1600)
+  }
+
+  function startPress() {
+    longPressedRef.current = false
+    clearTimer()
+    timerRef.current = window.setTimeout(() => {
+      longPressedRef.current = true
+      void copyGuestAndVc()
+    }, 450)
+  }
+
+  function endPress() {
+    clearTimer()
+  }
+
+  return (
+    <button
+      type="button"
+      className={cn(
+        'block w-full select-none truncate text-left font-medium outline-none transition-colors',
+        copied ? 'text-emerald-700' : 'text-teal-950 hover:text-sky-800',
+      )}
+      title="Long-press to copy guest name + VC No."
+      aria-label={`Guest ${guestName}. Long-press to copy name and voucher number.`}
+      onPointerDown={startPress}
+      onPointerUp={endPress}
+      onPointerLeave={endPress}
+      onPointerCancel={endPress}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        void copyGuestAndVc()
+      }}
+      onClick={(event) => {
+        if (longPressedRef.current) {
+          event.preventDefault()
+          longPressedRef.current = false
+        }
+      }}
+    >
+      {copied ? 'Copied' : guestName}
+    </button>
+  )
+}
+
 function VanGroupSection({
   group,
   variant = 'driver',
@@ -685,6 +755,11 @@ function VanGroupSection({
               <TableHead className="w-[11rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 Guest name
               </TableHead>
+              {isCheckIn ? (
+                <TableHead className="w-[6.5rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  VC No.
+                </TableHead>
+              ) : null}
               <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 AD
               </TableHead>
@@ -699,9 +774,6 @@ function VanGroupSection({
               </TableHead>
               {isCheckIn ? (
                 <>
-                  <TableHead className="w-[6.5rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    VC No.
-                  </TableHead>
                   <TableHead className="w-12 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Boat
                   </TableHead>
@@ -716,6 +788,12 @@ function VanGroupSection({
                       Canoe
                     </TableHead>
                   ) : null}
+                  <TableHead className="w-[6.5rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    COT
+                  </TableHead>
+                  <TableHead className="w-[4.5rem] px-1 text-right text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Total
+                  </TableHead>
                   <TableHead className="text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Remark
                   </TableHead>
@@ -758,10 +836,24 @@ function VanGroupSection({
               <TableRow key={`${group.van ?? 'none'}-${booking.code}`}>
                 <TableCell className="tabular-nums text-teal-900/55">{no}</TableCell>
                 <TableCell>
-                  <div className="truncate font-medium" title={booking.leadGuest}>
-                    {booking.leadGuest}
-                  </div>
+                  {isCheckIn ? (
+                    <CheckInGuestCopyCell
+                      guestName={booking.leadGuest}
+                      vcNo={booking.agentRef}
+                    />
+                  ) : (
+                    <div className="truncate font-medium" title={booking.leadGuest}>
+                      {booking.leadGuest}
+                    </div>
+                  )}
                 </TableCell>
+                {isCheckIn ? (
+                  <TableCell className="text-teal-900/55">
+                    <div className="truncate" title={booking.agentRef}>
+                      {booking.agentRef || '—'}
+                    </div>
+                  </TableCell>
+                ) : null}
                 <TableCell className="px-1 text-center tabular-nums">{booking.adults || ''}</TableCell>
                 <TableCell className="px-1 text-center tabular-nums">{booking.children || ''}</TableCell>
                 <TableCell className="px-1 text-center tabular-nums">{booking.infants || ''}</TableCell>
@@ -770,25 +862,42 @@ function VanGroupSection({
                 </TableCell>
                 {isCheckIn ? (
                   <>
-                    <TableCell className="text-teal-900/55">
-                      <div className="truncate" title={booking.agentRef}>
-                        {booking.agentRef || '—'}
-                      </div>
-                    </TableCell>
                     <TableCell className="px-1 text-center tabular-nums font-medium text-teal-950">
                       {boatAssignments[booking.code] ?? '—'}
                     </TableCell>
                     <TableCell className="px-1 text-center text-xs whitespace-nowrap">
-                      {booking.parkFee}
+                      {formatIncludeLabel(booking.parkFee)}
                     </TableCell>
                     <TableCell className="px-1 text-center tabular-nums text-xs font-medium text-teal-950">
-                      {parkFeeAmount(booking.parkFee, program)}
+                      {formatParkFeeTotal(
+                        booking.parkFee,
+                        program,
+                        booking.adults,
+                        booking.children,
+                      )}
                     </TableCell>
                     {showCanoe ? (
                       <TableCell className="px-1 text-center text-xs whitespace-nowrap">
-                        {booking.canoe ?? '—'}
+                        {formatIncludeLabel(booking.canoe)}
                       </TableCell>
                     ) : null}
+                    <TableCell>
+                      <div
+                        className="truncate text-xs font-medium text-teal-950"
+                        title={booking.cashOnTour}
+                      >
+                        {booking.cashOnTour.trim() || ''}
+                      </div>
+                    </TableCell>
+                    <TableCell className="px-1 text-right tabular-nums text-xs font-medium text-teal-950">
+                      {formatCollectTotal(
+                        booking.parkFee,
+                        program,
+                        booking.adults,
+                        booking.children,
+                        booking.cashOnTour,
+                      )}
+                    </TableCell>
                     <TableCell>
                       <div className="truncate text-teal-900/60" title={booking.note}>
                         {booking.note || ''}
@@ -826,7 +935,10 @@ function VanGroupSection({
               </TableRow>
             ))}
             <TableRow className="bg-teal-50/40 hover:bg-teal-50/40">
-              <TableCell colSpan={2} className="text-xs font-semibold text-teal-900/70">
+              <TableCell
+                colSpan={isCheckIn ? 3 : 2}
+                className="text-xs font-semibold text-teal-900/70"
+              >
                 Group total
               </TableCell>
               <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
@@ -841,7 +953,7 @@ function VanGroupSection({
               <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
                 {group.totals.tourLeaders}
               </TableCell>
-              <TableCell colSpan={isCheckIn ? (showCanoe ? 6 : 5) : 5} />
+              <TableCell colSpan={isCheckIn ? (showCanoe ? 7 : 6) : 5} />
             </TableRow>
           </TableBody>
         </Table>
@@ -1229,7 +1341,8 @@ function JobOrderPrintSheet({
 }) {
   const isCheckIn = variant === 'check-in'
   const showCanoe = isCheckIn && program === 'James Bond'
-  const trailingColSpan = isCheckIn ? (showCanoe ? 6 : 5) : 5
+  const trailingColSpan = isCheckIn ? (showCanoe ? 7 : 6) : 5
+  const leadingColSpan = isCheckIn ? 3 : 2
 
   return (
     <div className="job-order-print-sheet hidden print:block">
@@ -1298,6 +1411,11 @@ function JobOrderPrintSheet({
                       <th className="w-[16%] border border-neutral-400 px-1 py-1 font-semibold">
                         GUEST NAME
                       </th>
+                      {isCheckIn ? (
+                        <th className="w-[10%] border border-neutral-400 px-1 py-1 font-semibold">
+                          VC NO.
+                        </th>
+                      ) : null}
                       <th className="w-8 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
                         AD
                       </th>
@@ -1312,9 +1430,6 @@ function JobOrderPrintSheet({
                       </th>
                       {isCheckIn ? (
                         <>
-                          <th className="w-[10%] border border-neutral-400 px-1 py-1 font-semibold">
-                            VC NO.
-                          </th>
                           <th className="w-10 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
                             BOAT
                           </th>
@@ -1329,6 +1444,10 @@ function JobOrderPrintSheet({
                               CANOE
                             </th>
                           ) : null}
+                          <th className="w-14 border border-neutral-400 px-1 py-1 font-semibold">COT</th>
+                          <th className="w-12 border border-neutral-400 px-0.5 py-1 text-right font-semibold">
+                            TOTAL
+                          </th>
                           <th className="border border-neutral-400 px-1 py-1 font-semibold">REMARK</th>
                           <th className="w-8 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
                             ✓
@@ -1360,6 +1479,11 @@ function JobOrderPrintSheet({
                           {no}
                         </td>
                         <td className="border border-neutral-400 px-1 py-0.5">{booking.leadGuest}</td>
+                        {isCheckIn ? (
+                          <td className="border border-neutral-400 px-1 py-0.5">
+                            {booking.agentRef || '—'}
+                          </td>
+                        ) : null}
                         <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
                           {blankIfZero(booking.adults)}
                         </td>
@@ -1374,23 +1498,37 @@ function JobOrderPrintSheet({
                         </td>
                         {isCheckIn ? (
                           <>
-                            <td className="border border-neutral-400 px-1 py-0.5">
-                              {booking.agentRef || '—'}
-                            </td>
                             <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums font-semibold">
                               {boatAssignments[booking.code] ?? '—'}
                             </td>
                             <td className="border border-neutral-400 px-1 py-0.5 text-center whitespace-nowrap">
-                              {booking.parkFee}
+                              {formatIncludeLabel(booking.parkFee)}
                             </td>
                             <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
-                              {parkFeeAmount(booking.parkFee, program)}
+                              {formatParkFeeTotal(
+                                booking.parkFee,
+                                program,
+                                booking.adults,
+                                booking.children,
+                              )}
                             </td>
                             {showCanoe ? (
                               <td className="border border-neutral-400 px-1 py-0.5 text-center whitespace-nowrap">
-                                {booking.canoe ?? '—'}
+                                {formatIncludeLabel(booking.canoe)}
                               </td>
                             ) : null}
+                            <td className="border border-neutral-400 px-1 py-0.5 font-medium">
+                              {booking.cashOnTour.trim() || ''}
+                            </td>
+                            <td className="border border-neutral-400 px-1 py-0.5 text-right tabular-nums font-semibold">
+                              {formatCollectTotal(
+                                booking.parkFee,
+                                program,
+                                booking.adults,
+                                booking.children,
+                                booking.cashOnTour,
+                              )}
+                            </td>
                             <td className="border border-neutral-400 px-1 py-0.5">{booking.note}</td>
                             <td className="border border-neutral-400 px-1 py-0.5 text-center">□</td>
                           </>
@@ -1410,7 +1548,7 @@ function JobOrderPrintSheet({
                       </tr>
                     ))}
                     <tr className="bg-neutral-50 font-semibold">
-                      <td className="border border-neutral-400 px-1 py-1" colSpan={2}>
+                      <td className="border border-neutral-400 px-1 py-1" colSpan={leadingColSpan}>
                         GROUP TOTAL
                       </td>
                       <td className="border border-neutral-400 px-1 py-1 text-center tabular-nums">
@@ -1732,12 +1870,6 @@ function makeGroup(
 
 function blankIfZero(value: number) {
   return value > 0 ? value : ''
-}
-
-/** National park cash fee (AD/CH) for marina check-in when park is not included. */
-function parkFeeAmount(parkFee: IncludeOption, program: Program) {
-  if (parkFee !== 'Not Included') return ''
-  return program === 'James Bond' ? '300/150' : '400/200'
 }
 
 function jobOrderNumber(
