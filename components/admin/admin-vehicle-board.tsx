@@ -137,7 +137,7 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
   }
 
   return (
-    <div className="mx-auto max-w-[96rem]">
+    <div className="w-full">
       <div className="print:hidden">
         <div className="mb-4">
           <Button type="button" variant="ghost" size="sm" className="gap-1.5" onClick={onBack}>

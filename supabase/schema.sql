@@ -158,6 +158,7 @@ create table if not exists public.day_boat_plans (
   capacity_3 int not null default 44 check (capacity_3 >= 1),
   /** Source of truth for boat count + per-boat seats (e.g. [44,44,60]). */
   capacities jsonb not null default '[44, 44, 44]'::jsonb,
+  boat_names jsonb not null default '["","",""]'::jsonb,
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now()),
   primary key (date, program)

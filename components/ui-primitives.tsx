@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { HTMLAttributes, ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
 export function PageHeader({
@@ -36,12 +36,13 @@ export function PageHeader({
 export function Surface({
   children,
   className,
+  ...props
 }: {
   children: ReactNode
   className?: string
-}) {
+} & HTMLAttributes<HTMLDivElement>) {
   return (
-    <div className={cn('gday-sheet rounded-[1.35rem]', className)}>
+    <div className={cn('gday-sheet rounded-[1.35rem]', className)} {...props}>
       {children}
     </div>
   )

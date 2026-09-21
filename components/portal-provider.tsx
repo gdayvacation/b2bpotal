@@ -3,6 +3,12 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { nextBookingCode, uniqueAgentSlug } from '@/lib/format'
 import { autoAssignBoats } from '@/lib/boat-assign'
+import {
+  getCheckInAttendance,
+  loadCheckInAttendanceMap,
+  saveCheckInAttendanceMap,
+  withCheckInAttendance,
+} from '@/lib/check-in-attendance'
 import { autoAssignVans, nextSortOrderForVan, normalizeAssignments, paxOnVan, reorderVanAssignments } from '@/lib/vehicle-assign'
 import {
   bookingClosedMessage,
@@ -53,7 +59,9 @@ import type {
   BookingClosure,
   BookingEvent,
   BookingEventType,
+  CheckInAttendance,
   DayBoatPlan,
+  DayCheckInAttendanceMap,
   DayVehiclePlan,
   FleetVan,
   Hotel,
@@ -74,6 +82,7 @@ import {
   dayBoatPlanKey,
   dayVehiclePlanKey,
   defaultBoatCapacities,
+  defaultBoatNames,
   emptyDayBoatPlan,
   emptyDayVehiclePlan,
   emptyVanMeta,
@@ -81,6 +90,7 @@ import {
   isCorePickupZone,
   isNoTransfer,
   normalizeBoatCapacities,
+  normalizeBoatNames,
   totalPassengers,
 } from '@/lib/types'
 
@@ -183,6 +193,17 @@ type PortalContextValue = {
   getCapacity: (date: string) => { ppCapacity: number; jamesBondCapacity: number }
   bookedPaxFor: (date: string, program: 'PP' | 'James Bond') => number
   getDayBoatPlan: (date: string, program: Program) => DayBoatPlan
+  getCheckInAttendance: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+  ) => CheckInAttendance | null
+  setCheckInAttendance: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    status: CheckInAttendance | null,
+  ) => void
   assignBookingToBoat: (
     date: string,
     program: Program,
@@ -195,6 +216,8 @@ type PortalContextValue = {
     boat: BoatNumber,
     capacity: number,
   ) => void
+  /** Rename a boat for this day (empty resets to "Boat N"). */
+  setBoatName: (date: string, program: Program, boat: BoatNumber, name: string) => void
   /** Append a boat for this day (default capacity 44, or a custom rental size). */
   addDayBoat: (date: string, program: Program, capacity?: number) => void
   /** Remove a boat; guests on it become unassigned; higher boat numbers shift down. */
@@ -256,10 +279,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [availability, setAvailability] = useState<Availability[]>([])
   const [dayBoatPlans, setDayBoatPlans] = useState<Record<string, DayBoatPlan>>({})
   const [dayVehiclePlans, setDayVehiclePlans] = useState<Record<string, DayVehiclePlan>>({})
+  const [checkInAttendance, setCheckInAttendanceMap] =
+    useState<DayCheckInAttendanceMap>({})
   const [fleetVans, setFleetVans] = useState<FleetVan[]>([])
   const [bookingCutoffs, setBookingCutoffs] = useState<BookingCutoffSettings>(DEFAULT_BOOKING_CUTOFFS)
   const [bookingClosures, setBookingClosures] = useState<BookingClosure[]>([])
   const [bookingEventsByCode, setBookingEventsByCode] = useState<Record<string, BookingEvent[]>>({})
+
+  useEffect(() => {
+    setCheckInAttendanceMap(loadCheckInAttendanceMap())
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -409,6 +438,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       return {
         ...stored,
         capacities: normalizeBoatCapacities(stored.capacities),
+        names: normalizeBoatNames(
+          stored.names,
+          normalizeBoatCapacities(stored.capacities).length,
+        ),
       }
     }
 
@@ -503,6 +536,24 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       getCapacity,
       bookedPaxFor,
       getDayBoatPlan,
+      getCheckInAttendance: (date, program, bookingCode) =>
+        getCheckInAttendance(checkInAttendance, date, program, bookingCode),
+      setCheckInAttendance: (date, program, bookingCode, status) => {
+        setCheckInAttendanceMap((current) => {
+          const next = withCheckInAttendance(current, date, program, bookingCode, status)
+          saveCheckInAttendanceMap(next)
+          return next
+        })
+        // No-show frees the boat seat — remove them from the day's boat plan.
+        if (status === 'no-show') {
+          upsertPlan(date, program, (plan) => {
+            if (!plan.assignments[bookingCode]) return plan
+            const assignments = { ...plan.assignments }
+            delete assignments[bookingCode]
+            return { ...plan, assignments }
+          })
+        }
+      },
       getDayVehiclePlan,
       getFleetVan,
       resolveVanMeta,
@@ -1260,6 +1311,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         })
       },
       assignBookingToBoat: (date, program, bookingCode, boat) => {
+        if (
+          boat !== null &&
+          getCheckInAttendance(checkInAttendance, date, program, bookingCode) === 'no-show'
+        ) {
+          return
+        }
         upsertPlan(date, program, (plan) => {
           const assignments = { ...plan.assignments }
           if (boat === null) delete assignments[bookingCode]
@@ -1270,37 +1327,55 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       setBoatCapacity: (date, program, boat, capacity) => {
         upsertPlan(date, program, (plan) => {
           const capacities = normalizeBoatCapacities(plan.capacities)
+          const names = normalizeBoatNames(plan.names, capacities.length)
           const index = boat - 1
           if (index < 0 || index >= capacities.length) return plan
           capacities[index] = Math.max(1, Math.floor(capacity) || 1)
-          return { ...plan, capacities }
+          return { ...plan, capacities, names }
+        })
+      },
+      setBoatName: (date, program, boat, name) => {
+        upsertPlan(date, program, (plan) => {
+          const capacities = normalizeBoatCapacities(plan.capacities)
+          const names = normalizeBoatNames(plan.names, capacities.length)
+          const index = boat - 1
+          if (index < 0 || index >= names.length) return plan
+          names[index] = name.trim().slice(0, 40)
+          return { ...plan, capacities, names }
         })
       },
       addDayBoat: (date, program, capacity) => {
         upsertPlan(date, program, (plan) => {
           const capacities = normalizeBoatCapacities(plan.capacities)
+          const names = normalizeBoatNames(plan.names, capacities.length)
           if (capacities.length >= MAX_DAY_BOATS) return plan
           const nextCap = Math.max(
             1,
             Math.floor(capacity ?? DEFAULT_BOAT_CAPACITY) || DEFAULT_BOAT_CAPACITY,
           )
-          return { ...plan, capacities: [...capacities, nextCap] }
+          return {
+            ...plan,
+            capacities: [...capacities, nextCap],
+            names: [...names, ''],
+          }
         })
       },
       removeDayBoat: (date, program, boat) => {
         upsertPlan(date, program, (plan) => {
           const capacities = normalizeBoatCapacities(plan.capacities)
+          const names = normalizeBoatNames(plan.names, capacities.length)
           if (capacities.length <= 1) return plan
           const index = boat - 1
           if (index < 0 || index >= capacities.length) return plan
           const nextCaps = capacities.filter((_, i) => i !== index)
+          const nextNames = names.filter((_, i) => i !== index)
           const assignments: Record<string, BoatNumber> = {}
           for (const [code, assigned] of Object.entries(plan.assignments)) {
             if (assigned === boat) continue
             if (assigned > boat) assignments[code] = assigned - 1
             else assignments[code] = assigned
           }
-          return { ...plan, capacities: nextCaps, assignments }
+          return { ...plan, capacities: nextCaps, names: nextNames, assignments }
         })
       },
       resetDayBoatCapacities: (date, program) => {
@@ -1308,7 +1383,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           const capacities = normalizeBoatCapacities(plan.capacities).map(
             () => DEFAULT_BOAT_CAPACITY,
           )
-          return { ...plan, capacities }
+          return {
+            ...plan,
+            capacities,
+            names: normalizeBoatNames(plan.names, capacities.length),
+          }
         })
       },
       resetDayBoatFleet: (date, program) => {
@@ -1320,17 +1399,40 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               assignments[code] = assigned
             }
           }
-          return { ...plan, capacities, assignments }
+          return {
+            ...plan,
+            capacities,
+            names: defaultBoatNames(capacities.length),
+            assignments,
+          }
         })
       },
       autoAssignDayBoats: (date, program) => {
-        const dayBookings = activeDayBookings(date, program)
+        const dayBookings = activeDayBookings(date, program).filter(
+          (booking) =>
+            getCheckInAttendance(checkInAttendance, date, program, booking.code) !== 'no-show',
+        )
         const vehiclePlan = getDayVehiclePlan(date, program)
-        upsertPlan(date, program, (plan) => ({
-          ...plan,
-          capacities: normalizeBoatCapacities(plan.capacities),
-          assignments: autoAssignBoats(dayBookings, plan.capacities, vehiclePlan.assignments),
-        }))
+        upsertPlan(date, program, (plan) => {
+          const nextAssignments = autoAssignBoats(
+            dayBookings,
+            plan.capacities,
+            vehiclePlan.assignments,
+          )
+          // Keep no-show bookings off boats even if they were previously assigned.
+          for (const booking of activeDayBookings(date, program)) {
+            if (
+              getCheckInAttendance(checkInAttendance, date, program, booking.code) === 'no-show'
+            ) {
+              delete nextAssignments[booking.code]
+            }
+          }
+          return {
+            ...plan,
+            capacities: normalizeBoatCapacities(plan.capacities),
+            assignments: nextAssignments,
+          }
+        })
       },
       clearDayBoatAssignments: (date, program) => {
         upsertPlan(date, program, (plan) => ({ ...plan, assignments: {} }))
@@ -1339,6 +1441,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const vehiclePlan = getDayVehiclePlan(date, program)
         const codes = activeDayBookings(date, program)
           .filter((booking) => paxOnVan(vehiclePlan.assignments[booking.code], van) > 0)
+          .filter(
+            (booking) =>
+              getCheckInAttendance(checkInAttendance, date, program, booking.code) !== 'no-show',
+          )
           .map((booking) => booking.code)
         if (codes.length === 0) return
         upsertPlan(date, program, (plan) => {
@@ -1467,7 +1573,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }))
       },
     }
-  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, fleetVans, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
+  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, fleetVans, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }

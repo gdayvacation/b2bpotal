@@ -85,7 +85,7 @@ export function AdminAgents() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="w-full">
       <PageHeader
         title="Agents"
         description="Add partner agencies, edit their names, and copy each private booking link."

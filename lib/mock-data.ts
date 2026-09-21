@@ -105,6 +105,22 @@ type DayGuest = {
   cashOnTour?: string
 }
 
+
+function mockAgentRef(agentSlug: string, code: string) {
+  const prefix =
+    agentSlug === 'abc-travel'
+      ? 'ABC'
+      : agentSlug === 'mumbai-holidays'
+        ? 'MH'
+        : agentSlug === 'delhi-travel'
+          ? 'DT'
+          : agentSlug === 'golden-triangle'
+            ? 'GT'
+            : 'GDV'
+  const digits = (code.match(/\d+/g) ?? ['1000']).join('').slice(-4).padStart(4, '0')
+  return `${prefix}-${digits}`
+}
+
 function buildDayBookings(
   rows: DayGuest[],
   program: 'PP' | 'James Bond',
@@ -117,7 +133,7 @@ function buildDayBookings(
       code: `${program === 'PP' ? 'PP' : 'JB'}TMP-${date}-${index}`,
       agentSlug: row.agent.slug,
       agentName: row.agent.name,
-      agentRef: '',
+      agentRef: mockAgentRef(row.agent.slug, `${program === 'PP' ? 'PP' : 'JB'}TMP-${date}-${index}`),
       program,
       date,
       parkFee: index % 5 === 0 ? ('Not Included' as const) : ('Included' as const),
@@ -145,7 +161,7 @@ const SEP17_PP_BOOKINGS: Booking[] = SEP17_PP_GUESTS.map((row, index) => {
     code: `PP2609-${String(index + 1).padStart(4, '0')}`,
     agentSlug: row.agent.slug,
     agentName: row.agent.name,
-    agentRef: '',
+    agentRef: mockAgentRef(row.agent.slug, `PP2609-${String(index + 1).padStart(4, '0')}`),
     program: 'PP' as const,
     date: '2026-09-17',
     parkFee: index % 5 === 0 ? ('Not Included' as const) : ('Included' as const),
@@ -172,7 +188,7 @@ const SEP17_JB_BOOKINGS: Booking[] = SEP17_JB_GUESTS.map((row, index) => {
     code: `JB2609-${String(index + 1).padStart(4, '0')}`,
     agentSlug: row.agent.slug,
     agentName: row.agent.name,
-    agentRef: '',
+    agentRef: mockAgentRef(row.agent.slug, `JB2609-${String(index + 1).padStart(4, '0')}`),
     program: 'James Bond' as const,
     date: '2026-09-17',
     parkFee: 'Included' as const,
@@ -289,7 +305,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'PP2608-0001',
     agentSlug: 'abc-travel',
     agentName: 'ABC Travel India',
-    agentRef: '',
+    agentRef: 'ABC-0001',
     program: 'PP',
     date: '2026-08-15',
     parkFee: 'Included',
@@ -312,7 +328,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'JB2608-0001',
     agentSlug: 'golden-triangle',
     agentName: 'Golden Triangle Travel',
-    agentRef: '',
+    agentRef: 'GT-0001',
     program: 'James Bond',
     date: '2026-08-16',
     parkFee: 'Included',
@@ -335,7 +351,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'PP2608-0002',
     agentSlug: 'mumbai-holidays',
     agentName: 'Mumbai Holidays',
-    agentRef: '',
+    agentRef: 'MH-0002',
     program: 'PP',
     date: '2026-08-22',
     parkFee: 'Not Included',
@@ -358,7 +374,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'JB2608-0002',
     agentSlug: 'delhi-travel',
     agentName: 'Delhi Travel Group',
-    agentRef: '',
+    agentRef: 'DT-0002',
     program: 'James Bond',
     date: '2026-08-28',
     parkFee: 'Included',
@@ -381,7 +397,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'PP2609-extra-05',
     agentSlug: 'delhi-travel',
     agentName: 'Delhi Travel Group',
-    agentRef: '',
+    agentRef: 'DT-0905',
     program: 'PP',
     date: '2026-09-05',
     parkFee: 'Included',
@@ -404,7 +420,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'JB2609-extra-10',
     agentSlug: 'mumbai-holidays',
     agentName: 'Mumbai Holidays',
-    agentRef: '',
+    agentRef: 'MH-0910',
     program: 'James Bond',
     date: '2026-09-10',
     parkFee: 'Included',
@@ -427,7 +443,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'PP2609-extra-25',
     agentSlug: 'golden-triangle',
     agentName: 'Golden Triangle Travel',
-    agentRef: '',
+    agentRef: 'GT-0925',
     program: 'PP',
     date: '2026-09-25',
     parkFee: 'Included',
@@ -450,7 +466,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'JB2609-extra-28',
     agentSlug: 'abc-travel',
     agentName: 'ABC Travel India',
-    agentRef: '',
+    agentRef: 'ABC-0928',
     program: 'James Bond',
     date: '2026-09-28',
     parkFee: 'Not Included',
@@ -473,7 +489,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'PP2610-0001',
     agentSlug: 'abc-travel',
     agentName: 'ABC Travel India',
-    agentRef: '',
+    agentRef: 'ABC-0001',
     program: 'PP',
     date: '2026-10-03',
     parkFee: 'Included',
@@ -496,7 +512,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'JB2610-0001',
     agentSlug: 'mumbai-holidays',
     agentName: 'Mumbai Holidays',
-    agentRef: '',
+    agentRef: 'MH-0001',
     program: 'James Bond',
     date: '2026-10-05',
     parkFee: 'Included',
@@ -519,7 +535,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'PP2610-0002',
     agentSlug: 'delhi-travel',
     agentName: 'Delhi Travel Group',
-    agentRef: '',
+    agentRef: 'DT-0002',
     program: 'PP',
     date: '2026-10-12',
     parkFee: 'Not Included',
@@ -542,7 +558,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'JB2610-0002',
     agentSlug: 'golden-triangle',
     agentName: 'Golden Triangle Travel',
-    agentRef: '',
+    agentRef: 'GT-0002',
     program: 'James Bond',
     date: '2026-10-18',
     parkFee: 'Included',
@@ -565,7 +581,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'PP2610-0003',
     agentSlug: 'abc-travel',
     agentName: 'ABC Travel India',
-    agentRef: '',
+    agentRef: 'ABC-0003',
     program: 'PP',
     date: '2026-10-25',
     parkFee: 'Included',
@@ -588,7 +604,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'PP2611-0001',
     agentSlug: 'mumbai-holidays',
     agentName: 'Mumbai Holidays',
-    agentRef: '',
+    agentRef: 'MH-0001',
     program: 'PP',
     date: '2026-11-02',
     parkFee: 'Included',
@@ -611,7 +627,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'JB2611-0001',
     agentSlug: 'delhi-travel',
     agentName: 'Delhi Travel Group',
-    agentRef: '',
+    agentRef: 'DT-0001',
     program: 'James Bond',
     date: '2026-11-08',
     parkFee: 'Included',
@@ -634,7 +650,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'PP2611-0002',
     agentSlug: 'golden-triangle',
     agentName: 'Golden Triangle Travel',
-    agentRef: '',
+    agentRef: 'GT-0002',
     program: 'PP',
     date: '2026-11-15',
     parkFee: 'Not Included',
@@ -657,7 +673,7 @@ const RAW_INITIAL_BOOKINGS: Booking[] = [
     code: 'JB2611-0002',
     agentSlug: 'abc-travel',
     agentName: 'ABC Travel India',
-    agentRef: '',
+    agentRef: 'ABC-0002',
     program: 'James Bond',
     date: '2026-11-22',
     parkFee: 'Included',

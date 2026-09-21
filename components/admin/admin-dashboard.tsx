@@ -115,7 +115,7 @@ export function AdminDashboard() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl">
+    <div className="w-full">
       <PageHeader
         eyebrow={formatLongDate(today)}
         title="Dashboard"

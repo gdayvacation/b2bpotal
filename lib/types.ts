@@ -141,6 +141,8 @@ export type DayBoatPlan = {
    * and set each boat’s capacity (e.g. a larger rental boat).
    */
   capacities: number[]
+  /** Optional display names parallel to capacities (empty → "Boat N"). */
+  names: string[]
   /** booking code → boat number (1-based index into capacities) */
   assignments: Record<string, BoatNumber>
 }
@@ -161,6 +163,11 @@ export function defaultBoatCapacities(count = DEFAULT_BOAT_COUNT): number[] {
   return Array.from({ length: n }, () => DEFAULT_BOAT_CAPACITY)
 }
 
+export function defaultBoatNames(count = DEFAULT_BOAT_COUNT): string[] {
+  const n = Math.max(1, Math.min(MAX_DAY_BOATS, Math.floor(count) || DEFAULT_BOAT_COUNT))
+  return Array.from({ length: n }, () => '')
+}
+
 export function normalizeBoatCapacities(capacities: number[] | null | undefined): number[] {
   const cleaned = (capacities ?? [])
     .map((value) => Math.max(1, Math.floor(Number(value) || 0)))
@@ -169,19 +176,50 @@ export function normalizeBoatCapacities(capacities: number[] | null | undefined)
   return cleaned.slice(0, MAX_DAY_BOATS)
 }
 
+export function normalizeBoatNames(
+  names: string[] | null | undefined,
+  boatCount: number,
+): string[] {
+  const count = Math.max(1, Math.min(MAX_DAY_BOATS, boatCount || DEFAULT_BOAT_COUNT))
+  const source = Array.isArray(names) ? names : []
+  return Array.from({ length: count }, (_, index) =>
+    String(source[index] ?? '')
+      .trim()
+      .slice(0, 40),
+  )
+}
+
 export function boatNumbersForPlan(plan: Pick<DayBoatPlan, 'capacities'>): BoatNumber[] {
   const caps = normalizeBoatCapacities(plan.capacities)
   return caps.map((_, index) => index + 1)
 }
 
+export function boatDisplayName(
+  plan: Pick<DayBoatPlan, 'names' | 'capacities'>,
+  boat: BoatNumber,
+): string {
+  const caps = normalizeBoatCapacities(plan.capacities)
+  const names = normalizeBoatNames(plan.names, caps.length)
+  const custom = names[boat - 1]?.trim()
+  return custom || `Boat ${boat}`
+}
+
 export function emptyDayBoatPlan(date: string, program: Program): DayBoatPlan {
+  const capacities = defaultBoatCapacities()
   return {
     date,
     program,
-    capacities: defaultBoatCapacities(),
+    capacities,
+    names: defaultBoatNames(capacities.length),
     assignments: {},
   }
 }
+
+/** Marina check-in attendance for a booking on a departure day. */
+export type CheckInAttendance = 'checked' | 'no-show'
+
+/** date|program → booking code → attendance */
+export type DayCheckInAttendanceMap = Record<string, Record<string, CheckInAttendance>>
 
 /** Van / transfer vehicle assignment for a single departure day + program. */
 export const DEFAULT_VAN_CAPACITY = 12

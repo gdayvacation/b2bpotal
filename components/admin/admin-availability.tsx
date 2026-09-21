@@ -174,7 +174,7 @@ export function AdminAvailability() {
         : `Default every day: PP ${DEFAULT_PP_CAPACITY} · James Bond ${DEFAULT_JB_CAPACITY}. Adjust per day or view live booking status.`
 
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="w-full">
       <PageHeader title="Availability" description={headerDescription} />
 
       <SegmentedControl className="mb-4 w-full sm:w-auto">

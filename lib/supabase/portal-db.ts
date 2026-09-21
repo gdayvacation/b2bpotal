@@ -23,7 +23,7 @@ import type {
   VanMeta,
   VanSplit,
 } from '@/lib/types'
-import { dayBoatPlanKey, dayVehiclePlanKey, emptyDayBoatPlan, emptyDayVehiclePlan, normalizeBoatCapacities } from '@/lib/types'
+import { dayBoatPlanKey, dayVehiclePlanKey, emptyDayBoatPlan, emptyDayVehiclePlan, normalizeBoatCapacities, normalizeBoatNames } from '@/lib/types'
 
 type AgentRow = {
   slug: string
@@ -85,6 +85,7 @@ type BoatPlanRow = {
   capacity_2: number
   capacity_3: number
   capacities?: number[] | string | null
+  boat_names?: string[] | string | null
 }
 
 type BoatAssignmentRow = {
@@ -283,6 +284,22 @@ function parseBoatCapacities(plan: BoatPlanRow): number[] {
   return normalizeBoatCapacities([plan.capacity_1, plan.capacity_2, plan.capacity_3])
 }
 
+function parseBoatNames(plan: BoatPlanRow, boatCount: number): string[] {
+  const raw = plan.boat_names
+  let fromJson: string[] | null = null
+  if (Array.isArray(raw)) {
+    fromJson = raw.map((value) => String(value ?? ''))
+  } else if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (Array.isArray(parsed)) fromJson = parsed.map((value) => String(value ?? ''))
+    } catch {
+      fromJson = null
+    }
+  }
+  return normalizeBoatNames(fromJson, boatCount)
+}
+
 function buildBoatPlans(
   plans: BoatPlanRow[],
   assignments: BoatAssignmentRow[],
@@ -291,10 +308,12 @@ function buildBoatPlans(
   for (const plan of plans) {
     const date = asDateString(plan.date)
     const key = dayBoatPlanKey(date, plan.program)
+    const capacities = parseBoatCapacities(plan)
     next[key] = {
       date,
       program: plan.program,
-      capacities: parseBoatCapacities(plan),
+      capacities,
+      names: parseBoatNames(plan, capacities.length),
       assignments: {},
     }
   }
@@ -694,6 +713,7 @@ export async function upsertAvailabilityRows(rows: Availability[]) {
 export async function saveDayBoatPlan(plan: DayBoatPlan) {
   const supabase = getSupabaseBrowserClient()
   const capacities = normalizeBoatCapacities(plan.capacities)
+  const boat_names = normalizeBoatNames(plan.names, capacities.length)
   const { error: planError } = await supabase.from('day_boat_plans').upsert({
     date: plan.date,
     program: plan.program,
@@ -701,6 +721,7 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
     capacity_2: capacities[1] ?? capacities[0] ?? 44,
     capacity_3: capacities[2] ?? capacities[0] ?? 44,
     capacities,
+    boat_names,
   })
   if (planError) throw new Error(`upsert boat plan: ${planError.message}`)
 

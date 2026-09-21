@@ -136,7 +136,7 @@ export function AdminPickupZones() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4">
+    <div className="w-full space-y-4">
       <PageHeader
         title="Pickup Zones"
         description="Set times shown to agents. Manage hotels so agents can typeahead-select pickup points. Optional Extra Charge Transfer notes appear on the agent voucher when set."

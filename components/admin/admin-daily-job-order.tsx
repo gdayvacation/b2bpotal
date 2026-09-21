@@ -1,7 +1,7 @@
 'use client'
 
-import { useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowLeft, ArrowUp, CalendarIcon, ClipboardList, Pencil, Printer, Ship } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowDown, ArrowLeft, ArrowUp, CalendarIcon, Check, ClipboardList, Pencil, Printer, Ship } from 'lucide-react'
 import { EditVanDetailsDialog } from '@/components/edit-van-details-dialog'
 import { usePortal } from '@/components/portal-provider'
 import { EmptyState, PageHeader, SoftLabel, Surface } from '@/components/ui-primitives'
@@ -16,7 +16,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatIncludeLabel, formatCollectTotal, formatLongDate, formatParkFeeTotal, formatShortDate, toISODate } from '@/lib/format'
+import { formatIncludeLabel, formatCollectTotal, collectTotal, formatLongDate, formatParkFeeTotal, formatShortDate, toISODate } from '@/lib/format'
 import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
 import {
   DEFAULT_VAN_CAPACITY,
@@ -24,6 +24,7 @@ import {
   isNoTransfer,
   totalPassengers,
   type Booking,
+  type CheckInAttendance,
   type DayVehiclePlan,
   type Program,
   type VanMeta,
@@ -44,7 +45,14 @@ type VanGroup = {
   phone: string
   mockMeta: boolean
   rows: JobOrderRow[]
-  totals: { adults: number; children: number; infants: number; tourLeaders: number; pax: number }
+  totals: {
+    adults: number
+    children: number
+    infants: number
+    tourLeaders: number
+    pax: number
+    collect: number
+  }
 }
 
 type PickupSortDir = 'asc' | 'desc'
@@ -127,7 +135,8 @@ export function AdminDailyJobOrder({
   onBack: () => void
   audience?: JobAudience
 }) {
-  const { bookings, getDayVehiclePlan, getDayBoatPlan, resolveVanMeta } = usePortal()
+  const { bookings, getDayVehiclePlan, getDayBoatPlan, resolveVanMeta, getCheckInAttendance, setCheckInAttendance } =
+    usePortal()
   const [selectedDate, setSelectedDate, portalToday] = usePortalDefaultDateISO()
   const [program, setProgram] = useState<Program | null>(null)
   const [calendarOpen, setCalendarOpen] = useState(false)
@@ -229,7 +238,7 @@ export function AdminDailyJobOrder({
   }
 
   return (
-    <div className="mx-auto max-w-7xl">
+    <div className="w-full">
       <div className="print:hidden">
         <div className="mb-4">
           <Button type="button" variant="ghost" size="sm" className="gap-1.5" onClick={onBack}>
@@ -422,6 +431,17 @@ export function AdminDailyJobOrder({
                       variant={sheetVariant}
                       program={program}
                       boatAssignments={boatAssignments}
+                      getAttendance={
+                        isCheckInView
+                          ? (code) => getCheckInAttendance(selectedDate, program, code)
+                          : undefined
+                      }
+                      onAttendanceChange={
+                        isCheckInView
+                          ? (code, status) =>
+                              setCheckInAttendance(selectedDate, program, code, status)
+                          : undefined
+                      }
                       pickupSortDir={pickupSortDir}
                       onTogglePickupSort={() =>
                         setPickupSortDir((current) => (current === 'asc' ? 'desc' : 'asc'))
@@ -505,7 +525,7 @@ export function AdminDailyJobOrder({
                   </p>
                 </div>
                 {visibleAgentGroups.map((group) => (
-                  <AgentGroupSection key={group.id} group={group} />
+                  <AgentGroupSection key={group.id} group={group} program={program} />
                 ))}
               </div>
             )}
@@ -524,6 +544,11 @@ export function AdminDailyJobOrder({
           usingMockAssignments={usingMockAssignments}
           variant={sheetVariant}
           boatAssignments={boatAssignments}
+          getAttendance={
+            isCheckInView
+              ? (code) => getCheckInAttendance(selectedDate, program, code)
+              : undefined
+          }
         />
       ) : null}
 
@@ -542,7 +567,7 @@ export function AdminDailyJobOrder({
         @media print {
           @page {
             size: A4 landscape;
-            margin: 8mm;
+            margin: 7mm;
           }
           html, body {
             width: 100% !important;
@@ -551,21 +576,31 @@ export function AdminDailyJobOrder({
             padding: 0 !important;
             background: white !important;
             overflow: visible !important;
-            -webkit-print-color-adjust: exact;
-            print-color-adjust: exact;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          body * {
+            visibility: hidden !important;
+          }
+          .job-order-print-sheet,
+          .job-order-print-sheet * {
+            visibility: visible !important;
           }
           .job-order-print-sheet {
             display: block !important;
-            position: static !important;
+            position: absolute !important;
+            left: 0 !important;
+            top: 0 !important;
             width: 100% !important;
             max-width: none !important;
             margin: 0 !important;
             padding: 0 !important;
             background: white !important;
-            color: black !important;
+            color: #0f3d3e !important;
             box-shadow: none !important;
             border: 0 !important;
             overflow: visible !important;
+            z-index: 99999 !important;
           }
           .job-order-print-sheet table {
             width: 100% !important;
@@ -577,26 +612,21 @@ export function AdminDailyJobOrder({
           .job-order-print-sheet tfoot {
             display: table-footer-group;
           }
-          .job-order-van-card {
+          .job-order-van-card,
+          .job-order-agent-card {
             break-inside: avoid;
             page-break-inside: avoid;
             -webkit-column-break-inside: avoid;
           }
-          .job-order-van-card--tall {
+          .job-order-van-card--tall,
+          .job-order-agent-card--tall {
             break-inside: auto;
             page-break-inside: auto;
           }
-          .job-order-van-card--tall tr {
+          .job-order-van-card--tall tr,
+          .job-order-agent-card--tall tr {
             break-inside: avoid;
             page-break-inside: avoid;
-          }
-          .job-order-agent-card {
-            break-before: page;
-            page-break-before: always;
-          }
-          .job-order-agent-card:first-child {
-            break-before: auto;
-            page-break-before: auto;
           }
           .job-order-print-footer {
             break-inside: avoid;
@@ -679,11 +709,130 @@ function CheckInGuestCopyCell({
   )
 }
 
+function CheckInActionCell({
+  status,
+  onChange,
+}: {
+  status: CheckInAttendance | null
+  onChange: (status: CheckInAttendance | null) => void
+}) {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const longPressedRef = useRef(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  const clearPress = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current)
+      longPressTimer.current = null
+    }
+  }
+
+  const startPress = () => {
+    longPressedRef.current = false
+    clearPress()
+    longPressTimer.current = setTimeout(() => {
+      longPressedRef.current = true
+      setMenuOpen(true)
+    }, 480)
+  }
+
+  const endPress = () => {
+    clearPress()
+  }
+
+  useEffect(() => {
+    if (!menuOpen) return
+    function onPointerDown(event: PointerEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [menuOpen])
+
+  return (
+    <div ref={rootRef} className="relative inline-flex justify-center">
+      <button
+        type="button"
+        className={cn(
+          'inline-flex size-7 items-center justify-center rounded-md border transition-colors',
+          status === 'checked' && 'border-teal-700/40 bg-teal-700 text-white',
+          status === 'no-show' && 'border-orange-500/50 bg-orange-500 text-white',
+          !status && 'border-teal-900/30 bg-white text-transparent hover:border-teal-800/45',
+        )}
+        aria-label={
+          status === 'checked'
+            ? 'Checked in. Long-press for No Show options.'
+            : status === 'no-show'
+              ? 'No show. Long-press for options.'
+              : 'Not marked. Click to tick, long-press for No Show.'
+        }
+        title="Click to tick · Long-press for No Show"
+        onPointerDown={startPress}
+        onPointerUp={endPress}
+        onPointerLeave={endPress}
+        onPointerCancel={endPress}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          setMenuOpen(true)
+        }}
+        onClick={(event) => {
+          if (longPressedRef.current) {
+            event.preventDefault()
+            longPressedRef.current = false
+            return
+          }
+          setMenuOpen(false)
+          onChange(status === 'checked' ? null : 'checked')
+        }}
+      >
+        {status === 'checked' ? (
+          <Check className="size-3.5" strokeWidth={3} />
+        ) : status === 'no-show' ? (
+          <span className="text-[9px] font-bold tracking-wide text-white">NS</span>
+        ) : (
+          <span className="size-3.5" />
+        )}
+      </button>
+      {menuOpen ? (
+        <div className="absolute top-full right-0 z-30 mt-1 w-36 overflow-hidden rounded-lg border border-teal-900/10 bg-white py-1 shadow-md">
+          <button
+            type="button"
+            className="w-full px-3 py-2 text-left text-sm font-medium text-orange-800 transition-colors hover:bg-orange-50"
+            onClick={() => {
+              onChange('no-show')
+              setMenuOpen(false)
+            }}
+          >
+            No Show
+          </button>
+          {status ? (
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-sm font-medium text-teal-900/70 transition-colors hover:bg-teal-50"
+              onClick={() => {
+                onChange(null)
+                setMenuOpen(false)
+              }}
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function VanGroupSection({
   group,
   variant = 'driver',
   program,
   boatAssignments = {},
+  getAttendance,
+  onAttendanceChange,
   pickupSortDir,
   onTogglePickupSort,
   onEditVan,
@@ -692,6 +841,8 @@ function VanGroupSection({
   variant?: 'driver' | 'check-in'
   program: Program
   boatAssignments?: Record<string, number>
+  getAttendance?: (bookingCode: string) => CheckInAttendance | null
+  onAttendanceChange?: (bookingCode: string, status: CheckInAttendance | null) => void
   pickupSortDir: PickupSortDir
   onTogglePickupSort: () => void
   onEditVan?: (van: number) => void
@@ -745,66 +896,89 @@ function VanGroupSection({
         </p>
       </div>
 
-      <div className="overflow-x-auto">
-        <Table className="table-fixed">
+      <div className={cn(!isCheckIn && 'overflow-x-auto')}>
+        <Table
+          className={cn(
+            'table-fixed',
+            isCheckIn && 'text-[13px] [&_th]:px-1 [&_td]:px-1',
+          )}
+          containerClassName={isCheckIn ? 'overflow-x-hidden' : undefined}
+        >
           <TableHeader>
             <TableRow className="border-b border-teal-900/15 bg-teal-950/[0.04] hover:bg-teal-950/[0.04]">
-              <TableHead className="w-10 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+              <TableHead
+                className={cn(
+                  'text-[11px] font-bold tracking-wide text-teal-900/80 uppercase',
+                  isCheckIn ? 'w-[3%]' : 'w-10',
+                )}
+              >
                 No.
-              </TableHead>
-              <TableHead className="w-[11rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                Guest name
-              </TableHead>
-              {isCheckIn ? (
-                <TableHead className="w-[6.5rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                  VC No.
-                </TableHead>
-              ) : null}
-              <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                AD
-              </TableHead>
-              <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                CHD
-              </TableHead>
-              <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                INF
-              </TableHead>
-              <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                TL
               </TableHead>
               {isCheckIn ? (
                 <>
-                  <TableHead className="w-12 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[8%] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    VC No.
+                  </TableHead>
+                  <TableHead className="w-[11%] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Guest name
+                  </TableHead>
+                  <TableHead
+                    className={cn(
+                      'text-[11px] font-bold tracking-wide text-teal-900/80 uppercase',
+                      showCanoe ? 'w-[12%]' : 'w-[15%]',
+                    )}
+                  >
+                    Hotel
+                  </TableHead>
+                  <TableHead className="w-[3%] px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    AD
+                  </TableHead>
+                  <TableHead className="w-[3%] px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    CHD
+                  </TableHead>
+                  <TableHead className="w-[3%] px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    INF
+                  </TableHead>
+                  <TableHead className="w-[3%] px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    TL
+                  </TableHead>
+                  <TableHead className="w-[3.5%] px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Boat
                   </TableHead>
-                  <TableHead className="w-[7rem] px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[5%] px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Park
                   </TableHead>
-                  <TableHead className="w-12 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[4.5%] px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Fee
                   </TableHead>
                   {showCanoe ? (
-                    <TableHead className="w-[7.5rem] px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    <TableHead className="w-[5.5%] px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                       Canoe
                     </TableHead>
                   ) : null}
-                  <TableHead className="w-[6.5rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[5%] px-0.5 pr-0 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     COT
                   </TableHead>
-                  <TableHead className="w-[4.5rem] px-1 text-right text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[4.5%] px-0.5 pl-0 text-right text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Total
                   </TableHead>
-                  <TableHead className="text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[8%] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Remark
                   </TableHead>
-                  <TableHead className="w-12 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    ✓
+                  <TableHead className="w-[7%] px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Status
+                  </TableHead>
+                  <TableHead className="w-[4.5%] px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Action
                   </TableHead>
                 </>
               ) : (
                 <>
-                  <TableHead className="w-[6.5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    Zone
+                  <TableHead className="w-[12rem] pr-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Hotel
+                  </TableHead>
+                  <TableHead className="w-16 pl-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Room
                   </TableHead>
                   <TableHead className="w-[5.5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     <button
@@ -818,50 +992,70 @@ function VanGroupSection({
                       <SortIcon className="size-3 opacity-70" />
                     </button>
                   </TableHead>
-                  <TableHead className="w-[12rem] pr-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    Hotel
+                  <TableHead className="w-[6.5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Zone
                   </TableHead>
-                  <TableHead className="w-16 pl-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    Room
+                  <TableHead className="w-[11rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Guest name
                   </TableHead>
-                  <TableHead className="text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    Remark
+                  <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    AD
+                  </TableHead>
+                  <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    CHD
+                  </TableHead>
+                  <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    INF
+                  </TableHead>
+                  <TableHead className="w-11 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    TL
+                  </TableHead>
+                  <TableHead className="w-12 px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Tot
                   </TableHead>
                 </>
               )}
             </TableRow>
           </TableHeader>
           <TableBody>
-            {group.rows.map(({ no, booking }) => (
-              <TableRow key={`${group.van ?? 'none'}-${booking.code}`}>
+            {group.rows.map(({ no, booking }) => {
+              const attendance = getAttendance?.(booking.code) ?? null
+              return (
+              <TableRow
+                key={`${group.van ?? 'none'}-${booking.code}`}
+                className={cn(attendance === 'no-show' && 'bg-orange-50/70 hover:bg-orange-50/90')}
+              >
                 <TableCell className="tabular-nums text-teal-900/55">{no}</TableCell>
-                <TableCell>
-                  {isCheckIn ? (
-                    <CheckInGuestCopyCell
-                      guestName={booking.leadGuest}
-                      vcNo={booking.agentRef}
-                    />
-                  ) : (
-                    <div className="truncate font-medium" title={booking.leadGuest}>
-                      {booking.leadGuest}
-                    </div>
-                  )}
-                </TableCell>
-                {isCheckIn ? (
-                  <TableCell className="text-teal-900/55">
-                    <div className="truncate" title={booking.agentRef}>
-                      {booking.agentRef || '—'}
-                    </div>
-                  </TableCell>
-                ) : null}
-                <TableCell className="px-1 text-center tabular-nums">{booking.adults || ''}</TableCell>
-                <TableCell className="px-1 text-center tabular-nums">{booking.children || ''}</TableCell>
-                <TableCell className="px-1 text-center tabular-nums">{booking.infants || ''}</TableCell>
-                <TableCell className="px-1 text-center tabular-nums">
-                  {booking.tourLeaders || ''}
-                </TableCell>
                 {isCheckIn ? (
                   <>
+                    <TableCell className="text-teal-900/55">
+                      <div className="truncate font-mono text-xs" title={booking.agentRef}>
+                        {booking.agentRef || '—'}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <CheckInGuestCopyCell
+                        guestName={booking.leadGuest}
+                        vcNo={booking.agentRef}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <div className="truncate" title={booking.pickupHotel}>
+                        {booking.pickupHotel || '—'}
+                      </div>
+                    </TableCell>
+                    <TableCell className="px-1 text-center tabular-nums">
+                      {booking.adults || ''}
+                    </TableCell>
+                    <TableCell className="px-1 text-center tabular-nums">
+                      {booking.children || ''}
+                    </TableCell>
+                    <TableCell className="px-1 text-center tabular-nums">
+                      {booking.infants || ''}
+                    </TableCell>
+                    <TableCell className="px-1 text-center tabular-nums">
+                      {booking.tourLeaders || ''}
+                    </TableCell>
                     <TableCell className="px-1 text-center tabular-nums font-medium text-teal-950">
                       {boatAssignments[booking.code] ?? '—'}
                     </TableCell>
@@ -881,7 +1075,7 @@ function VanGroupSection({
                         {formatIncludeLabel(booking.canoe)}
                       </TableCell>
                     ) : null}
-                    <TableCell>
+                    <TableCell className="pr-0.5">
                       <div
                         className="truncate text-xs font-medium text-teal-950"
                         title={booking.cashOnTour}
@@ -889,7 +1083,7 @@ function VanGroupSection({
                         {booking.cashOnTour.trim() || ''}
                       </div>
                     </TableCell>
-                    <TableCell className="px-1 text-right tabular-nums text-xs font-medium text-teal-950">
+                    <TableCell className="px-0.5 pl-0 text-right tabular-nums text-xs font-medium text-teal-950">
                       {formatCollectTotal(
                         booking.parkFee,
                         program,
@@ -903,20 +1097,22 @@ function VanGroupSection({
                         {booking.note || ''}
                       </div>
                     </TableCell>
+                    <TableCell className="px-1 text-center text-xs text-teal-900/40">
+                      {/* Marina QR check-in status — wired later */}
+                    </TableCell>
                     <TableCell className="px-1 text-center">
-                      <span className="inline-block size-3.5 rounded-sm border border-teal-900/35" />
+                      {onAttendanceChange ? (
+                        <CheckInActionCell
+                          status={attendance}
+                          onChange={(next) => onAttendanceChange(booking.code, next)}
+                        />
+                      ) : (
+                        <span className="inline-block size-3.5 rounded-sm border border-teal-900/35" />
+                      )}
                     </TableCell>
                   </>
                 ) : (
                   <>
-                    <TableCell className="px-1">
-                      <div className="truncate" title={booking.pickupZone}>
-                        {booking.pickupZone || '—'}
-                      </div>
-                    </TableCell>
-                    <TableCell className="px-1 whitespace-nowrap tabular-nums text-teal-950">
-                      {formatPickupTime(booking.pickupTime)}
-                    </TableCell>
                     <TableCell className="pr-1">
                       <div className="truncate" title={booking.pickupHotel}>
                         {booking.pickupHotel || '—'}
@@ -925,35 +1121,81 @@ function VanGroupSection({
                     <TableCell className="pl-1 whitespace-nowrap tabular-nums">
                       {booking.roomNumber || ''}
                     </TableCell>
-                    <TableCell>
-                      <div className="truncate text-teal-900/60" title={booking.note}>
-                        {booking.note || ''}
+                    <TableCell className="px-1 whitespace-nowrap tabular-nums text-teal-950">
+                      {formatPickupTime(booking.pickupTime)}
+                    </TableCell>
+                    <TableCell className="px-1">
+                      <div className="truncate" title={booking.pickupZone}>
+                        {booking.pickupZone || '—'}
                       </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="truncate font-medium" title={booking.leadGuest}>
+                        {booking.leadGuest}
+                      </div>
+                    </TableCell>
+                    <TableCell className="px-1 text-center tabular-nums">{booking.adults || ''}</TableCell>
+                    <TableCell className="px-1 text-center tabular-nums">{booking.children || ''}</TableCell>
+                    <TableCell className="px-1 text-center tabular-nums">{booking.infants || ''}</TableCell>
+                    <TableCell className="px-1 text-center tabular-nums">
+                      {booking.tourLeaders || ''}
+                    </TableCell>
+                    <TableCell className="px-1 text-center font-medium tabular-nums text-teal-950">
+                      {totalPassengers(booking)}
                     </TableCell>
                   </>
                 )}
               </TableRow>
-            ))}
+              )
+            })}
             <TableRow className="bg-teal-50/40 hover:bg-teal-50/40">
-              <TableCell
-                colSpan={isCheckIn ? 3 : 2}
-                className="text-xs font-semibold text-teal-900/70"
-              >
-                Group total
-              </TableCell>
-              <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
-                {group.totals.adults}
-              </TableCell>
-              <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
-                {group.totals.children}
-              </TableCell>
-              <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
-                {group.totals.infants}
-              </TableCell>
-              <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
-                {group.totals.tourLeaders}
-              </TableCell>
-              <TableCell colSpan={isCheckIn ? (showCanoe ? 7 : 6) : 5} />
+              {isCheckIn ? (
+                <>
+                  <TableCell colSpan={4} className="text-xs font-semibold text-teal-900/70">
+                    Group total
+                  </TableCell>
+                  <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
+                    {group.totals.adults}
+                  </TableCell>
+                  <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
+                    {group.totals.children}
+                  </TableCell>
+                  <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
+                    {group.totals.infants}
+                  </TableCell>
+                  <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
+                    {group.totals.tourLeaders}
+                  </TableCell>
+                  <TableCell colSpan={showCanoe ? 5 : 4} />
+                  <TableCell className="px-0.5 pl-0 text-right tabular-nums text-xs font-semibold text-teal-950">
+                    {group.totals.collect > 0
+                      ? group.totals.collect.toLocaleString('en-US')
+                      : ''}
+                  </TableCell>
+                  <TableCell colSpan={3} />
+                </>
+              ) : (
+                <>
+                  <TableCell colSpan={6} className="text-xs font-semibold text-teal-900/70">
+                    Group total
+                  </TableCell>
+                  <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
+                    {group.totals.adults}
+                  </TableCell>
+                  <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
+                    {group.totals.children}
+                  </TableCell>
+                  <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
+                    {group.totals.infants}
+                  </TableCell>
+                  <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
+                    {group.totals.tourLeaders}
+                  </TableCell>
+                  <TableCell className="px-1 text-center tabular-nums text-xs font-semibold text-teal-950">
+                    {group.totals.pax}
+                  </TableCell>
+                </>
+              )}
             </TableRow>
           </TableBody>
         </Table>
@@ -962,8 +1204,15 @@ function VanGroupSection({
   )
 }
 
-function AgentGroupSection({ group }: { group: AgentGroup }) {
+function AgentGroupSection({
+  group,
+  program,
+}: {
+  group: AgentGroup
+  program: Program
+}) {
   const detailSpans = detailRowSpans(group.rows)
+  const showCanoe = program === 'James Bond'
 
   return (
     <Surface className="overflow-hidden">
@@ -986,11 +1235,11 @@ function AgentGroupSection({ group }: { group: AgentGroup }) {
               <TableHead className="w-9 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 No.
               </TableHead>
+              <TableHead className="w-[6.2rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                VC No.
+              </TableHead>
               <TableHead className="w-[8.5rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 Guest name
-              </TableHead>
-              <TableHead className="w-[6.5rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                Voucher no.
               </TableHead>
               <TableHead className="w-7 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 AD
@@ -1004,7 +1253,7 @@ function AgentGroupSection({ group }: { group: AgentGroup }) {
               <TableHead className="w-7 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 TL
               </TableHead>
-              <TableHead className="w-[5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+              <TableHead className="w-[4rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 Zone
               </TableHead>
               <TableHead className="w-[4rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
@@ -1013,9 +1262,14 @@ function AgentGroupSection({ group }: { group: AgentGroup }) {
               <TableHead className="w-[9rem] pr-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 Hotel
               </TableHead>
-              <TableHead className="w-11 pl-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                Room
+              <TableHead className="w-[5.5rem] px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                National Park
               </TableHead>
+              {showCanoe ? (
+                <TableHead className="w-[5rem] px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  Canoe
+                </TableHead>
+              ) : null}
               <TableHead className="w-[7rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 COT
               </TableHead>
@@ -1046,13 +1300,13 @@ function AgentGroupSection({ group }: { group: AgentGroup }) {
                 >
                   <TableCell className="tabular-nums text-teal-900/55">{no}</TableCell>
                   <TableCell>
-                    <div className="truncate font-medium" title={booking.leadGuest}>
-                      {booking.leadGuest}
+                    <div className="truncate tabular-nums text-teal-950" title={booking.agentRef || undefined}>
+                      {booking.agentRef?.trim() || '—'}
                     </div>
                   </TableCell>
                   <TableCell>
-                    <div className="truncate tabular-nums text-teal-950" title={booking.agentRef || undefined}>
-                      {booking.agentRef?.trim() || '—'}
+                    <div className="truncate font-medium" title={booking.leadGuest}>
+                      {booking.leadGuest}
                     </div>
                   </TableCell>
                   <TableCell className="px-0.5 text-center tabular-nums">{booking.adults || ''}</TableCell>
@@ -1072,9 +1326,14 @@ function AgentGroupSection({ group }: { group: AgentGroup }) {
                       {booking.pickupHotel || '—'}
                     </div>
                   </TableCell>
-                  <TableCell className="pl-1 whitespace-nowrap tabular-nums">
-                    {booking.roomNumber || ''}
+                  <TableCell className="px-1 text-center text-xs whitespace-nowrap">
+                    {formatIncludeLabel(booking.parkFee)}
                   </TableCell>
+                  {showCanoe ? (
+                    <TableCell className="px-1 text-center text-xs whitespace-nowrap">
+                      {formatIncludeLabel(booking.canoe)}
+                    </TableCell>
+                  ) : null}
                   <TableCell>
                     <div className="truncate font-medium text-teal-950" title={cashOnTour}>
                       {cashOnTour || ''}
@@ -1127,7 +1386,7 @@ function AgentGroupSection({ group }: { group: AgentGroup }) {
               <TableCell className="px-0.5 text-center tabular-nums text-xs font-semibold">
                 {group.totals.tourLeaders}
               </TableCell>
-              <TableCell colSpan={6} />
+              <TableCell colSpan={showCanoe ? 7 : 6} />
             </TableRow>
           </TableBody>
         </Table>
@@ -1151,127 +1410,180 @@ function AgentJobOrderPrintSheet({
   groups: AgentGroup[]
   usingMockAssignments: boolean
 }) {
+  const showCanoe = program === 'James Bond'
+  const border = 'border border-teal-900/20'
+  const th = cn(border, 'bg-teal-950/[0.06] px-1 py-1.5 text-[9px] font-bold tracking-wide text-teal-900/80 uppercase')
+  const td = cn(border, 'px-1 py-1 text-[9.5px] text-teal-950')
+
   return (
     <div className="job-order-print-sheet hidden print:block">
-      {groups.length === 0 ? (
-        <p className="text-sm text-neutral-500">No bookings to print.</p>
-      ) : (
-        groups.map((group) => {
-          const detailSpans = detailRowSpans(group.rows)
-          return (
-          <div key={group.id} className="job-order-agent-card mb-4">
-            <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2 border border-neutral-400 bg-neutral-100 px-2 py-1.5 text-[10px]">
-              <div>
-                <p className="text-sm font-semibold text-neutral-900">
-                  Agent Job Order · {program === 'PP' ? 'PP' : 'JB'} · {group.agentName}
-                </p>
-                <p className="mt-0.5 text-neutral-600">
-                  {formatLongDate(date)} · {programLabel} · Job {jobNumber}
-                  {usingMockAssignments ? ' · preview vans' : ''}
-                </p>
-              </div>
-              <p className="font-semibold tabular-nums text-neutral-700">
-                {group.rows.length} bookings · {group.totals.pax} pax
-              </p>
-            </div>
+      <div className="mb-3 flex items-end justify-between gap-4 border-b-2 border-teal-900/25 pb-2.5">
+        <div>
+          <p className="text-[10px] font-semibold tracking-[0.16em] text-teal-700/70 uppercase">
+            G&apos;Day Tours Phuket · Agent Job Order
+          </p>
+          <h1 className="mt-0.5 text-lg font-bold text-teal-950">
+            {program === 'PP' ? 'PP' : 'JB'} · {programLabel}
+          </h1>
+          <p className="mt-0.5 text-xs text-teal-900/60">
+            {formatLongDate(date)} · Job {jobNumber}
+            {usingMockAssignments ? ' · preview vans' : ''}
+            {groups.length > 0
+              ? ` · ${groups.length} agent${groups.length === 1 ? '' : 's'}`
+              : ''}
+          </p>
+        </div>
+        <div className="text-right text-[11px] text-teal-900/65">
+          <p>
+            Prepared by: <span className="inline-block min-w-[7rem] border-b border-teal-900/25" />
+          </p>
+          <p className="mt-1">
+            Checked by: <span className="inline-block min-w-[7rem] border-b border-teal-900/25" />
+          </p>
+        </div>
+      </div>
 
-            <table className="w-full border-collapse text-[9px]">
-              <thead>
-                <tr className="bg-neutral-100">
-                  <th className="w-7 border border-neutral-400 px-1 py-1 font-semibold">NO.</th>
-                  <th className="border border-neutral-400 px-1 py-1 font-semibold">GUEST</th>
-                  <th className="w-16 border border-neutral-400 px-1 py-1 font-semibold">
-                    VOUCHER
-                  </th>
-                  <th className="w-7 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
-                    AD
-                  </th>
-                  <th className="w-7 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
-                    CHD
-                  </th>
-                  <th className="w-7 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
-                    INF
-                  </th>
-                  <th className="w-7 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
-                    TL
-                  </th>
-                  <th className="w-14 border border-neutral-400 px-0.5 py-1 font-semibold">ZONE</th>
-                  <th className="w-12 border border-neutral-400 px-0.5 py-1 font-semibold">
-                    P/U TIME
-                  </th>
-                  <th className="border border-neutral-400 px-1 py-1 font-semibold">HOTEL</th>
-                  <th className="w-10 border border-neutral-400 px-0.5 py-1 font-semibold">ROOM</th>
-                  <th className="w-14 border border-neutral-400 px-1 py-1 font-semibold">COT</th>
-                  <th className="border border-neutral-400 px-1 py-1 font-semibold">DETAIL</th>
-                </tr>
-              </thead>
-              <tbody>
-                {group.rows.map(({ no, booking, vanLabel, driver, plate, phone, cashOnTour }, index) => {
-                  const span = detailSpans[index]
-                  return (
-                  <tr key={`${group.agentSlug}-${booking.code}`}>
-                    <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
-                      {no}
-                    </td>
-                    <td className="border border-neutral-400 px-1 py-0.5">{booking.leadGuest}</td>
-                    <td className="border border-neutral-400 px-1 py-0.5 tabular-nums">
-                      {booking.agentRef?.trim() || '—'}
-                    </td>
-                    <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
-                      {blankIfZero(booking.adults)}
-                    </td>
-                    <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
-                      {blankIfZero(booking.children)}
-                    </td>
-                    <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
-                      {blankIfZero(booking.infants)}
-                    </td>
-                    <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
-                      {blankIfZero(booking.tourLeaders)}
-                    </td>
-                    <td className="border border-neutral-400 px-1 py-0.5">{booking.pickupZone}</td>
-                    <td className="border border-neutral-400 px-1 py-0.5 tabular-nums">
-                      {formatPickupTime(booking.pickupTime)}
-                    </td>
-                    <td className="border border-neutral-400 px-1 py-0.5">{booking.pickupHotel}</td>
-                    <td className="border border-neutral-400 px-1 py-0.5">{booking.roomNumber}</td>
-                    <td className="border border-neutral-400 px-1 py-0.5 font-medium">{cashOnTour}</td>
-                    {span > 0 ? (
-                      <td
-                        rowSpan={span}
-                        className="border border-neutral-400 px-1 py-0.5 align-middle"
-                      >
-                        {vanLabel.startsWith('Van')
-                          ? `${driver} · ${plate} · ${phone}`
-                          : '—'}
+      {groups.length === 0 ? (
+        <p className="py-8 text-center text-sm text-teal-900/45">No bookings to print.</p>
+      ) : (
+        <div className="space-y-3.5">
+          {groups.map((group) => {
+            const detailSpans = detailRowSpans(group.rows)
+            const tall = group.rows.length > 10
+            return (
+              <div
+                key={group.id}
+                className={cn(
+                  'job-order-agent-card overflow-hidden rounded-xl border border-teal-900/15',
+                  tall && 'job-order-agent-card--tall',
+                )}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-900/10 bg-gradient-to-r from-teal-50 to-white px-3 py-2">
+                  <div>
+                    <p className="text-[9px] font-semibold tracking-[0.14em] text-teal-700/55 uppercase">
+                      Agency
+                    </p>
+                    <p className="text-sm font-semibold text-teal-950">{group.agentName}</p>
+                  </div>
+                  <p className="rounded-full border border-teal-900/10 bg-white/90 px-2.5 py-0.5 text-[10px] font-medium tabular-nums text-teal-800/70">
+                    {group.rows.length} booking{group.rows.length === 1 ? '' : 's'} ·{' '}
+                    {group.totals.pax} pax
+                  </p>
+                </div>
+
+                <table className="w-full border-collapse text-left leading-tight">
+                  <thead>
+                    <tr>
+                      <th className={cn(th, 'w-7 text-center')}>No.</th>
+                      <th className={cn(th, 'w-[5rem]')}>VC No.</th>
+                      <th className={th}>Guest name</th>
+                      <th className={cn(th, 'w-7 text-center')}>AD</th>
+                      <th className={cn(th, 'w-7 text-center')}>CHD</th>
+                      <th className={cn(th, 'w-7 text-center')}>INF</th>
+                      <th className={cn(th, 'w-7 text-center')}>TL</th>
+                      <th className={cn(th, 'w-14')}>Zone</th>
+                      <th className={cn(th, 'w-12')}>P/U Time</th>
+                      <th className={th}>Hotel</th>
+                      <th className={cn(th, 'w-16 text-center')}>Nat. Park</th>
+                      {showCanoe ? (
+                        <th className={cn(th, 'w-14 text-center')}>Canoe</th>
+                      ) : null}
+                      <th className={cn(th, 'w-14')}>COT</th>
+                      <th className={th}>Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {group.rows.map(
+                      ({ no, booking, vanLabel, driver, plate, phone, cashOnTour }, index) => {
+                        const span = detailSpans[index]
+                        const stripe = (() => {
+                          let owning = 0
+                          let seen = 0
+                          for (let i = 0; i <= index; i++) {
+                            if (detailSpans[i] > 0) owning = seen++
+                          }
+                          return owning % 2 === 0
+                        })()
+                        return (
+                          <tr
+                            key={`${group.agentSlug}-${booking.code}`}
+                            className={stripe ? 'bg-teal-50/55' : 'bg-stone-50/70'}
+                          >
+                            <td className={cn(td, 'text-center tabular-nums text-teal-900/55')}>
+                              {no}
+                            </td>
+                            <td className={cn(td, 'tabular-nums')}>
+                              {booking.agentRef?.trim() || '—'}
+                            </td>
+                            <td className={cn(td, 'font-medium')}>{booking.leadGuest}</td>
+                            <td className={cn(td, 'text-center tabular-nums')}>
+                              {blankIfZero(booking.adults)}
+                            </td>
+                            <td className={cn(td, 'text-center tabular-nums')}>
+                              {blankIfZero(booking.children)}
+                            </td>
+                            <td className={cn(td, 'text-center tabular-nums')}>
+                              {blankIfZero(booking.infants)}
+                            </td>
+                            <td className={cn(td, 'text-center tabular-nums')}>
+                              {blankIfZero(booking.tourLeaders)}
+                            </td>
+                            <td className={td}>{booking.pickupZone}</td>
+                            <td className={cn(td, 'tabular-nums')}>
+                              {formatPickupTime(booking.pickupTime)}
+                            </td>
+                            <td className={td}>{booking.pickupHotel}</td>
+                            <td className={cn(td, 'text-center whitespace-nowrap')}>
+                              {formatIncludeLabel(booking.parkFee)}
+                            </td>
+                            {showCanoe ? (
+                              <td className={cn(td, 'text-center whitespace-nowrap')}>
+                                {formatIncludeLabel(booking.canoe)}
+                              </td>
+                            ) : null}
+                            <td className={cn(td, 'font-medium')}>{cashOnTour}</td>
+                            {span > 0 ? (
+                              <td
+                                rowSpan={span}
+                                className={cn(
+                                  td,
+                                  'align-middle',
+                                  stripe ? 'bg-teal-50/55' : 'bg-stone-50/70',
+                                )}
+                              >
+                                {vanLabel.startsWith('Van')
+                                  ? `${driver} · ${plate} · ${phone}`
+                                  : '—'}
+                              </td>
+                            ) : null}
+                          </tr>
+                        )
+                      },
+                    )}
+                    <tr className="bg-teal-50/80 font-semibold">
+                      <td className={cn(td, 'text-teal-900/70')} colSpan={3}>
+                        Agent total
                       </td>
-                    ) : null}
-                  </tr>
-                  )
-                })}
-                <tr className="bg-neutral-50 font-semibold">
-                  <td className="border border-neutral-400 px-1 py-1" colSpan={3}>
-                    AGENT TOTAL
-                  </td>
-                  <td className="border border-neutral-400 px-1 py-1 text-center tabular-nums">
-                    {group.totals.adults}
-                  </td>
-                  <td className="border border-neutral-400 px-1 py-1 text-center tabular-nums">
-                    {group.totals.children}
-                  </td>
-                  <td className="border border-neutral-400 px-1 py-1 text-center tabular-nums">
-                    {group.totals.infants}
-                  </td>
-                  <td className="border border-neutral-400 px-1 py-1 text-center tabular-nums">
-                    {group.totals.tourLeaders}
-                  </td>
-                  <td className="border border-neutral-400 px-1 py-1" colSpan={6} />
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          )
-        })
+                      <td className={cn(td, 'text-center tabular-nums')}>
+                        {group.totals.adults}
+                      </td>
+                      <td className={cn(td, 'text-center tabular-nums')}>
+                        {group.totals.children}
+                      </td>
+                      <td className={cn(td, 'text-center tabular-nums')}>
+                        {group.totals.infants}
+                      </td>
+                      <td className={cn(td, 'text-center tabular-nums')}>
+                        {group.totals.tourLeaders}
+                      </td>
+                      <td className={td} colSpan={showCanoe ? 7 : 6} />
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            )
+          })}
+        </div>
       )}
     </div>
   )
@@ -1328,6 +1640,7 @@ function JobOrderPrintSheet({
   usingMockAssignments,
   variant = 'driver',
   boatAssignments = {},
+  getAttendance,
 }: {
   date: string
   program: Program
@@ -1338,38 +1651,36 @@ function JobOrderPrintSheet({
   usingMockAssignments: boolean
   variant?: 'driver' | 'check-in'
   boatAssignments?: Record<string, number>
+  getAttendance?: (bookingCode: string) => CheckInAttendance | null
 }) {
   const isCheckIn = variant === 'check-in'
   const showCanoe = isCheckIn && program === 'James Bond'
-  const trailingColSpan = isCheckIn ? (showCanoe ? 7 : 6) : 5
-  const leadingColSpan = isCheckIn ? 3 : 2
+  const trailingBeforeTotal = isCheckIn ? (showCanoe ? 5 : 4) : 0
+  const trailingAfterTotal = isCheckIn ? 3 : 0
+  const leadingColSpan = isCheckIn ? 4 : 6
 
   return (
     <div className="job-order-print-sheet hidden print:block">
-      <div className="mb-2 flex items-start justify-between gap-4 border-b-2 border-neutral-900 pb-2">
+      <div className="mb-3 flex items-end justify-between gap-4 border-b-2 border-teal-900/25 pb-2.5">
         <div>
-          <p className="text-base font-bold tracking-wide text-neutral-900">G&apos;DAY TOURS PHUKET</p>
-          <p className="mt-0.5 text-sm font-semibold text-neutral-800">
-            {isCheckIn ? 'Check in Report' : 'Daily Job Order'} · {program === 'PP' ? 'PP' : 'JB'}
+          <p className="text-[10px] font-semibold tracking-[0.16em] text-teal-700/70 uppercase">
+            G&apos;Day Tours Phuket · {isCheckIn ? 'Check in Report' : 'Driver Job Order'}
           </p>
-          <p className="mt-0.5 text-[11px] text-neutral-600">
-            {programLabel}
-            {usingMockAssignments ? ' · mock van groups' : ''}
+          <h1 className="mt-0.5 text-lg font-bold text-teal-950">
+            {program === 'PP' ? 'PP' : 'JB'} · {programLabel}
+          </h1>
+          <p className="mt-0.5 text-xs text-teal-900/60">
+            {formatLongDate(date)} · Job {jobNumber}
+            {usingMockAssignments ? ' · preview vans' : ''}
             {isCheckIn ? ' · marina check-in' : ''}
           </p>
         </div>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[11px] text-neutral-800">
+        <div className="grid grid-cols-2 gap-x-5 gap-y-1 text-[11px] text-teal-900/70">
           <p>
-            <span className="font-semibold">Date:</span> {formatLongDate(date)}
+            Prepared by: <span className="inline-block min-w-[6.5rem] border-b border-teal-900/25" />
           </p>
           <p>
-            <span className="font-semibold">Job No:</span> {jobNumber}
-          </p>
-          <p>
-            <span className="font-semibold">Prepared by:</span> ______________
-          </p>
-          <p>
-            <span className="font-semibold">Checked by:</span> ______________
+            Checked by: <span className="inline-block min-w-[6.5rem] border-b border-teal-900/25" />
           </p>
         </div>
       </div>
@@ -1385,126 +1696,180 @@ function JobOrderPrintSheet({
             return (
               <div
                 key={group.id}
-                className={cn('job-order-van-card mb-3', tall && 'job-order-van-card--tall')}
+                className={cn(
+                  'job-order-van-card mb-3 overflow-hidden rounded-xl border border-teal-900/15',
+                  tall && 'job-order-van-card--tall',
+                )}
               >
-                <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2 border border-neutral-400 bg-neutral-100 px-2 py-1 text-[10px]">
-                  <p className="font-semibold text-neutral-900">
-                    {group.van === null ? 'NO TRANSFER / UNASSIGNED' : `VAN ${group.van}`}
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-900/10 bg-gradient-to-r from-teal-50 to-white px-3 py-2">
+                  <div>
+                    <p className="text-sm font-semibold text-teal-950">
+                      {group.van === null ? 'No Transfer / Unassigned' : `Van ${group.van}`}
+                    </p>
                     {group.van !== null ? (
-                      <span className="ml-2 font-normal text-neutral-700">
-                        Driver: {group.driver || '—'}
-                        {group.phone ? ` · Tel: ${group.phone}` : ''}
-                        {' · '}
-                        Plate: {group.plate || '—'}
-                        {group.mockMeta ? ' (needs details)' : ''}
-                      </span>
+                      <p className="mt-0.5 text-[10px] text-teal-900/60">
+                        Driver: <span className="font-medium text-teal-950">{group.driver || '—'}</span>
+                        {group.phone ? (
+                          <>
+                            {' · '}Tel:{' '}
+                            <span className="font-medium text-teal-950">{group.phone}</span>
+                          </>
+                        ) : null}
+                        {' · '}Plate:{' '}
+                        <span className="font-medium text-teal-950">{group.plate || '—'}</span>
+                        {group.mockMeta ? ' · needs details' : ''}
+                      </p>
                     ) : null}
-                  </p>
-                  <p className="tabular-nums text-neutral-600">
-                    {group.rows.length} bk · {group.totals.pax} pax
+                  </div>
+                  <p className="rounded-full border border-teal-900/10 bg-white/90 px-2.5 py-0.5 text-[10px] font-medium tabular-nums text-teal-800/70">
+                    {group.rows.length} booking{group.rows.length === 1 ? '' : 's'} ·{' '}
+                    {group.totals.pax} pax
                   </p>
                 </div>
-                <table className="w-full table-fixed border-collapse text-left text-[9px] leading-tight">
+                <table className="w-full table-fixed border-collapse text-left text-[9.5px] leading-tight">
                   <thead>
-                    <tr className="bg-neutral-50">
-                      <th className="w-8 border border-neutral-400 px-1 py-1 font-semibold">NO.</th>
-                      <th className="w-[16%] border border-neutral-400 px-1 py-1 font-semibold">
-                        GUEST NAME
-                      </th>
-                      {isCheckIn ? (
-                        <th className="w-[10%] border border-neutral-400 px-1 py-1 font-semibold">
-                          VC NO.
-                        </th>
-                      ) : null}
-                      <th className="w-8 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
-                        AD
-                      </th>
-                      <th className="w-8 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
-                        CHD
-                      </th>
-                      <th className="w-8 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
-                        INF
-                      </th>
-                      <th className="w-8 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
-                        TL
+                    <tr className="bg-teal-950/[0.06]">
+                      <th className="w-8 border border-teal-900/20 px-1 py-1.5 font-bold tracking-wide text-teal-900/80 uppercase">
+                        No.
                       </th>
                       {isCheckIn ? (
                         <>
-                          <th className="w-10 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
-                            BOAT
+                          <th className="w-[9%] border border-teal-900/20 px-1 py-1 font-semibold">
+                            VC NO.
                           </th>
-                          <th className="w-16 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
-                            PARK
+                          <th className="w-[12%] border border-teal-900/20 px-1 py-1 font-semibold">
+                            GUEST NAME
                           </th>
-                          <th className="w-10 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
-                            FEE
-                          </th>
-                          {showCanoe ? (
-                            <th className="w-16 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
-                              CANOE
-                            </th>
-                          ) : null}
-                          <th className="w-14 border border-neutral-400 px-1 py-1 font-semibold">COT</th>
-                          <th className="w-12 border border-neutral-400 px-0.5 py-1 text-right font-semibold">
-                            TOTAL
-                          </th>
-                          <th className="border border-neutral-400 px-1 py-1 font-semibold">REMARK</th>
-                          <th className="w-8 border border-neutral-400 px-0.5 py-1 text-center font-semibold">
-                            ✓
+                          <th className="w-[14%] border border-teal-900/20 px-1 py-1 font-semibold">
+                            HOTEL
                           </th>
                         </>
                       ) : (
                         <>
-                          <th className="w-14 border border-neutral-400 px-0.5 py-1 font-semibold">
-                            ZONE
-                          </th>
-                          <th className="w-12 border border-neutral-400 px-0.5 py-1 font-semibold">
-                            P/U TIME
-                          </th>
-                          <th className="w-[20%] border border-neutral-400 px-1 py-1 pr-0.5 font-semibold">
+                          <th className="w-[20%] border border-teal-900/20 px-1 py-1 pr-0.5 font-semibold">
                             HOTEL
                           </th>
-                          <th className="w-12 border border-neutral-400 px-0.5 py-1 pl-0.5 font-semibold">
+                          <th className="w-12 border border-teal-900/20 px-0.5 py-1 pl-0.5 font-semibold">
                             ROOM
                           </th>
-                          <th className="border border-neutral-400 px-1 py-1 font-semibold">REMARK</th>
+                          <th className="w-12 border border-teal-900/20 px-0.5 py-1 font-semibold">
+                            P/U TIME
+                          </th>
+                          <th className="w-14 border border-teal-900/20 px-0.5 py-1 font-semibold">
+                            ZONE
+                          </th>
+                          <th className="w-[16%] border border-teal-900/20 px-1 py-1 font-semibold">
+                            GUEST NAME
+                          </th>
                         </>
+                      )}
+                      <th className="w-8 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
+                        AD
+                      </th>
+                      <th className="w-8 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
+                        CHD
+                      </th>
+                      <th className="w-8 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
+                        INF
+                      </th>
+                      <th className="w-8 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
+                        TL
+                      </th>
+                      {isCheckIn ? (
+                        <>
+                          <th className="w-10 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
+                            BOAT
+                          </th>
+                          <th className="w-16 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
+                            PARK
+                          </th>
+                          <th className="w-10 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
+                            FEE
+                          </th>
+                          {showCanoe ? (
+                            <th className="w-16 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
+                              CANOE
+                            </th>
+                          ) : null}
+                          <th className="w-14 border border-teal-900/20 px-1 py-1 font-semibold">COT</th>
+                          <th className="w-12 border border-teal-900/20 px-0.5 py-1 text-right font-semibold">
+                            TOTAL
+                          </th>
+                          <th className="w-16 border border-teal-900/20 px-1 py-1 font-semibold">
+                            REMARK
+                          </th>
+                          <th className="w-16 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
+                            STATUS
+                          </th>
+                          <th className="w-14 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
+                            ACTION
+                          </th>
+                        </>
+                      ) : (
+                        <th className="w-8 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
+                          TOT
+                        </th>
                       )}
                     </tr>
                   </thead>
                   <tbody>
                     {group.rows.map(({ no, booking }) => (
                       <tr key={`${group.van ?? 'none'}-${booking.code}`}>
-                        <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
+                        <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums">
                           {no}
                         </td>
-                        <td className="border border-neutral-400 px-1 py-0.5">{booking.leadGuest}</td>
                         {isCheckIn ? (
-                          <td className="border border-neutral-400 px-1 py-0.5">
-                            {booking.agentRef || '—'}
-                          </td>
-                        ) : null}
-                        <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
+                          <>
+                            <td className="border border-teal-900/20 px-1 py-0.5">
+                              {booking.agentRef || '—'}
+                            </td>
+                            <td className="border border-teal-900/20 px-1 py-0.5">
+                              {booking.leadGuest}
+                            </td>
+                            <td className="border border-teal-900/20 px-1 py-0.5">
+                              {booking.pickupHotel || '—'}
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td className="border border-teal-900/20 px-1 py-0.5">
+                              {booking.pickupHotel}
+                            </td>
+                            <td className="border border-teal-900/20 px-1 py-0.5">
+                              {booking.roomNumber}
+                            </td>
+                            <td className="border border-teal-900/20 px-1 py-0.5 tabular-nums">
+                              {formatPickupTime(booking.pickupTime)}
+                            </td>
+                            <td className="border border-teal-900/20 px-1 py-0.5">
+                              {booking.pickupZone}
+                            </td>
+                            <td className="border border-teal-900/20 px-1 py-0.5">
+                              {booking.leadGuest}
+                            </td>
+                          </>
+                        )}
+                        <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums">
                           {blankIfZero(booking.adults)}
                         </td>
-                        <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
+                        <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums">
                           {blankIfZero(booking.children)}
                         </td>
-                        <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
+                        <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums">
                           {blankIfZero(booking.infants)}
                         </td>
-                        <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
+                        <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums">
                           {blankIfZero(booking.tourLeaders)}
                         </td>
                         {isCheckIn ? (
                           <>
-                            <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums font-semibold">
+                            <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums font-semibold">
                               {boatAssignments[booking.code] ?? '—'}
                             </td>
-                            <td className="border border-neutral-400 px-1 py-0.5 text-center whitespace-nowrap">
+                            <td className="border border-teal-900/20 px-1 py-0.5 text-center whitespace-nowrap">
                               {formatIncludeLabel(booking.parkFee)}
                             </td>
-                            <td className="border border-neutral-400 px-1 py-0.5 text-center tabular-nums">
+                            <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums">
                               {formatParkFeeTotal(
                                 booking.parkFee,
                                 program,
@@ -1513,14 +1878,14 @@ function JobOrderPrintSheet({
                               )}
                             </td>
                             {showCanoe ? (
-                              <td className="border border-neutral-400 px-1 py-0.5 text-center whitespace-nowrap">
+                              <td className="border border-teal-900/20 px-1 py-0.5 text-center whitespace-nowrap">
                                 {formatIncludeLabel(booking.canoe)}
                               </td>
                             ) : null}
-                            <td className="border border-neutral-400 px-1 py-0.5 font-medium">
+                            <td className="border border-teal-900/20 px-1 py-0.5 font-medium">
                               {booking.cashOnTour.trim() || ''}
                             </td>
-                            <td className="border border-neutral-400 px-1 py-0.5 text-right tabular-nums font-semibold">
+                            <td className="border border-teal-900/20 px-1 py-0.5 text-right tabular-nums font-semibold">
                               {formatCollectTotal(
                                 booking.parkFee,
                                 program,
@@ -1529,41 +1894,62 @@ function JobOrderPrintSheet({
                                 booking.cashOnTour,
                               )}
                             </td>
-                            <td className="border border-neutral-400 px-1 py-0.5">{booking.note}</td>
-                            <td className="border border-neutral-400 px-1 py-0.5 text-center">□</td>
+                            <td className="border border-teal-900/20 px-1 py-0.5">
+                              {booking.note || ''}
+                            </td>
+                            <td className="border border-teal-900/20 px-1 py-0.5 text-center" />
+                            <td className="border border-teal-900/20 px-1 py-0.5 text-center font-semibold">
+                              {getAttendance?.(booking.code) === 'checked'
+                                ? '✓'
+                                : getAttendance?.(booking.code) === 'no-show'
+                                  ? 'NS'
+                                  : '□'}
+                            </td>
                           </>
                         ) : (
-                          <>
-                            <td className="border border-neutral-400 px-1 py-0.5">{booking.pickupZone}</td>
-                            <td className="border border-neutral-400 px-1 py-0.5 tabular-nums">
-                              {formatPickupTime(booking.pickupTime)}
-                            </td>
-                            <td className="border border-neutral-400 px-1 py-0.5">
-                              {booking.pickupHotel}
-                            </td>
-                            <td className="border border-neutral-400 px-1 py-0.5">{booking.roomNumber}</td>
-                            <td className="border border-neutral-400 px-1 py-0.5">{booking.note}</td>
-                          </>
+                          <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums font-semibold">
+                            {totalPassengers(booking)}
+                          </td>
                         )}
                       </tr>
                     ))}
-                    <tr className="bg-neutral-50 font-semibold">
-                      <td className="border border-neutral-400 px-1 py-1" colSpan={leadingColSpan}>
-                        GROUP TOTAL
+                    <tr className="bg-teal-50/80 font-semibold">
+                      <td className="border border-teal-900/20 px-1 py-1" colSpan={leadingColSpan}>
+                        Group total
                       </td>
-                      <td className="border border-neutral-400 px-1 py-1 text-center tabular-nums">
+                      <td className="border border-teal-900/20 px-1 py-1 text-center tabular-nums">
                         {group.totals.adults}
                       </td>
-                      <td className="border border-neutral-400 px-1 py-1 text-center tabular-nums">
+                      <td className="border border-teal-900/20 px-1 py-1 text-center tabular-nums">
                         {group.totals.children}
                       </td>
-                      <td className="border border-neutral-400 px-1 py-1 text-center tabular-nums">
+                      <td className="border border-teal-900/20 px-1 py-1 text-center tabular-nums">
                         {group.totals.infants}
                       </td>
-                      <td className="border border-neutral-400 px-1 py-1 text-center tabular-nums">
+                      <td className="border border-teal-900/20 px-1 py-1 text-center tabular-nums">
                         {group.totals.tourLeaders}
                       </td>
-                      <td className="border border-neutral-400 px-1 py-1" colSpan={trailingColSpan} />
+                      {isCheckIn ? (
+                        <>
+                          <td
+                            className="border border-teal-900/20 px-1 py-1"
+                            colSpan={trailingBeforeTotal}
+                          />
+                          <td className="border border-teal-900/20 px-1 py-1 text-right tabular-nums">
+                            {group.totals.collect > 0
+                              ? group.totals.collect.toLocaleString('en-US')
+                              : ''}
+                          </td>
+                          <td
+                            className="border border-teal-900/20 px-1 py-1"
+                            colSpan={trailingAfterTotal}
+                          />
+                        </>
+                      ) : (
+                        <td className="border border-teal-900/20 px-1 py-1 text-center tabular-nums">
+                          {group.totals.pax}
+                        </td>
+                      )}
                     </tr>
                   </tbody>
                 </table>
@@ -1574,28 +1960,28 @@ function JobOrderPrintSheet({
           <div className="job-order-print-footer">
             <table className="mt-2 w-full border-collapse text-[9px]">
               <tbody>
-                <tr className="bg-neutral-100 font-semibold">
-                  <td className="border border-neutral-400 px-2 py-1" colSpan={2}>
-                    DAY TOTAL
+                <tr className="bg-teal-50 font-semibold text-teal-950">
+                  <td className="border border-teal-900/20 px-2 py-1" colSpan={2}>
+                    Day total
                   </td>
-                  <td className="border border-neutral-400 px-2 py-1 text-center tabular-nums">
+                  <td className="border border-teal-900/20 px-2 py-1 text-center tabular-nums">
                     AD {totals.adults}
                   </td>
-                  <td className="border border-neutral-400 px-2 py-1 text-center tabular-nums">
+                  <td className="border border-teal-900/20 px-2 py-1 text-center tabular-nums">
                     CHD {totals.children}
                   </td>
-                  <td className="border border-neutral-400 px-2 py-1 text-center tabular-nums">
+                  <td className="border border-teal-900/20 px-2 py-1 text-center tabular-nums">
                     INF {totals.infants}
                   </td>
-                  <td className="border border-neutral-400 px-2 py-1 text-center tabular-nums">
+                  <td className="border border-teal-900/20 px-2 py-1 text-center tabular-nums">
                     TL {totals.tourLeaders}
                   </td>
                 </tr>
               </tbody>
             </table>
 
-            <div className="mt-3 border border-neutral-400">
-              <p className="border-b border-neutral-400 bg-neutral-100 px-2 py-1 text-[10px] font-semibold">
+            <div className="mt-3 border border-teal-900/20">
+              <p className="border-b border-teal-900/20 bg-teal-50 px-2 py-1 text-[10px] font-semibold">
                 Notes
               </p>
               <div className="min-h-[3.5rem] px-2 py-1 text-[10px] text-neutral-500">
@@ -1864,6 +2250,11 @@ function makeGroup(
       infants: bookings.reduce((sum, b) => sum + b.infants, 0),
       tourLeaders: bookings.reduce((sum, b) => sum + b.tourLeaders, 0),
       pax: bookings.reduce((sum, b) => sum + totalPassengers(b), 0),
+      collect: bookings.reduce(
+        (sum, b) =>
+          sum + collectTotal(b.parkFee, b.program, b.adults, b.children, b.cashOnTour),
+        0,
+      ),
     },
   }
 }
