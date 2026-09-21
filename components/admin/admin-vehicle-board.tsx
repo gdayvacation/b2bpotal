@@ -356,6 +356,7 @@ function VehicleBoard({
   const [openVan, setOpenVan] = useState<number | null>(null)
   const [splitCode, setSplitCode] = useState<string | null>(null)
   const [sheetQuery, setSheetQuery] = useState('')
+  const [activeZone, setActiveZone] = useState<string | null>(null)
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(() => new Set())
   const [dragCodes, setDragCodes] = useState<string[] | null>(null)
   const [dropTarget, setDropTarget] = useState<'pool' | number | null>(null)
@@ -373,6 +374,7 @@ function VehicleBoard({
 
   useEffect(() => {
     setSheetQuery('')
+    setActiveZone(null)
     setSelectedCodes(new Set())
     setDragCodes(null)
     setDropTarget(null)
@@ -397,10 +399,36 @@ function VehicleBoard({
       })
   }, [bookings, plan.assignments, capacity])
 
+  const zoneBar = useMemo(() => {
+    const map = new Map<string, { count: number; pax: number }>()
+    for (const booking of poolBookings) {
+      const zone = booking.pickupZone?.trim() || 'Other'
+      const current = map.get(zone) ?? { count: 0, pax: 0 }
+      current.count += 1
+      current.pax += totalPassengers(booking)
+      map.set(zone, current)
+    }
+    return [...map.entries()]
+      .map(([zone, stats]) => ({ zone, ...stats }))
+      .sort((a, b) => a.zone.localeCompare(b.zone))
+  }, [poolBookings])
+
+  useEffect(() => {
+    if (activeZone && !zoneBar.some((item) => item.zone === activeZone)) {
+      setActiveZone(null)
+    }
+  }, [activeZone, zoneBar])
+
   const sheetRows = useMemo(() => {
+    let rows = poolBookings
+    if (activeZone) {
+      rows = rows.filter(
+        (booking) => (booking.pickupZone?.trim() || 'Other') === activeZone,
+      )
+    }
     const q = sheetQuery.trim().toLowerCase()
-    if (!q) return poolBookings
-    return poolBookings.filter((booking) => {
+    if (!q) return rows
+    return rows.filter((booking) => {
       const haystack = [
         booking.leadGuest,
         booking.agentName,
@@ -414,7 +442,7 @@ function VehicleBoard({
         .toLowerCase()
       return haystack.includes(q)
     })
-  }, [poolBookings, sheetQuery])
+  }, [poolBookings, sheetQuery, activeZone])
 
   const selectableSheetRows = useMemo(
     () => sheetRows.filter((booking) => totalPassengers(booking) <= capacity),
@@ -681,7 +709,8 @@ function VehicleBoard({
                   <div className="min-w-0">
                     <h3 className="text-base font-semibold text-teal-950">Guest list</h3>
                     <p className="mt-0.5 text-xs text-teal-900/55">
-                      Grouped by zone · {poolBookings.length} waiting · {unassignedPax} pax
+                      {activeZone ? activeZone : 'All zones'} · {sheetRows.length} showing ·{' '}
+                      {poolBookings.length} waiting
                     </p>
                   </div>
                   <label className="flex items-center gap-1.5 text-xs text-teal-900/60">
@@ -700,12 +729,74 @@ function VehicleBoard({
                     All
                   </label>
                 </div>
+
+                {zoneBar.length > 0 ? (
+                  <div
+                    className="mt-2.5 -mx-1 flex gap-1.5 overflow-x-auto px-1 pb-0.5"
+                    role="tablist"
+                    aria-label="Filter by pickup zone"
+                  >
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeZone === null}
+                      onClick={() => setActiveZone(null)}
+                      className={cn(
+                        'shrink-0 rounded-lg px-2.5 py-1.5 text-left text-[11px] font-semibold transition-colors',
+                        activeZone === null
+                          ? 'bg-teal-800 text-white'
+                          : 'bg-teal-950/[0.05] text-teal-900/70 hover:bg-teal-950/[0.09]',
+                      )}
+                    >
+                      All
+                      <span
+                        className={cn(
+                          'ml-1.5 tabular-nums',
+                          activeZone === null ? 'text-white/70' : 'text-teal-900/45',
+                        )}
+                      >
+                        {unassignedPax}
+                      </span>
+                    </button>
+                    {zoneBar.map(({ zone, count, pax }) => (
+                      <button
+                        key={zone}
+                        type="button"
+                        role="tab"
+                        aria-selected={activeZone === zone}
+                        onClick={() => {
+                          setActiveZone(zone)
+                          setSelectedCodes(new Set())
+                        }}
+                        className={cn(
+                          'shrink-0 rounded-lg px-2.5 py-1.5 text-left transition-colors',
+                          activeZone === zone
+                            ? 'bg-teal-800 text-white'
+                            : 'bg-teal-950/[0.05] text-teal-900/80 hover:bg-teal-950/[0.09]',
+                        )}
+                      >
+                        <span className="block text-[11px] font-semibold tracking-wide uppercase">
+                          {zone}
+                        </span>
+                        <span
+                          className={cn(
+                            'mt-0.5 block text-[10px] tabular-nums',
+                            activeZone === zone ? 'text-white/70' : 'text-teal-900/45',
+                          )}
+                        >
+                          {count} · {pax} pax
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+
                 <div className="relative mt-2.5">
                   <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-teal-900/35" />
                   <Input
                     value={sheetQuery}
                     onChange={(event) => setSheetQuery(event.target.value)}
-                    placeholder="Search guest, hotel, zone…"
+                    placeholder="Search guest, hotel…"
                     className="h-9 pl-8 text-sm"
                     aria-label="Search unassigned guests"
                   />
@@ -853,7 +944,13 @@ function VehicleBoard({
                                 <div className="min-w-0 flex-1">
                                   <div className="flex items-start justify-between gap-2">
                                     <p className="truncate text-sm font-semibold text-teal-950">
-                                      {booking.leadGuest}
+                                      {booking.pickupHotel || '—'}
+                                      {booking.roomNumber ? (
+                                        <span className="font-medium text-teal-900/55">
+                                          {' '}
+                                          · Rm {booking.roomNumber}
+                                        </span>
+                                      ) : null}
                                     </p>
                                     <span
                                       className={cn(
@@ -866,12 +963,12 @@ function VehicleBoard({
                                       {pax}
                                     </span>
                                   </div>
-                                  <p className="mt-0.5 text-[11px] tabular-nums text-teal-900/50">
-                                    {formatPaxBreakdown(booking)}
-                                  </p>
-                                  <p className="mt-1 truncate text-xs text-teal-900/70">
-                                    {booking.pickupHotel}
-                                    {booking.roomNumber ? ` · Rm ${booking.roomNumber}` : ''}
+                                  <p className="mt-0.5 truncate text-xs text-teal-900/70">
+                                    {booking.leadGuest}
+                                    <span className="text-teal-900/45">
+                                      {' '}
+                                      · {formatPaxBreakdown(booking)}
+                                    </span>
                                   </p>
                                   <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-teal-900/50">
                                     <span className="tabular-nums">{booking.pickupTime}</span>
@@ -1098,11 +1195,11 @@ function VehicleBoard({
                                   <div className="flex items-start justify-between gap-2">
                                     <div className="min-w-0">
                                       <p className="truncate text-sm font-medium text-teal-950">
-                                        {booking.leadGuest}
+                                        {booking.pickupHotel || '—'}
+                                        {booking.roomNumber ? ` · ${booking.roomNumber}` : ''}
                                       </p>
                                       <p className="mt-0.5 truncate text-[11px] text-teal-900/55">
-                                        {booking.pickupZone} · {booking.pickupHotel}
-                                        {booking.roomNumber ? ` · ${booking.roomNumber}` : ''}
+                                        {booking.leadGuest}
                                       </p>
                                     </div>
                                     <div className="shrink-0 text-right">
