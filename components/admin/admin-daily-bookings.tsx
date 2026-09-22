@@ -9,6 +9,7 @@ import {
   Minus,
   Plus,
   Printer,
+  Save,
   Ship,
   Sparkles,
 } from 'lucide-react'
@@ -142,6 +143,7 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
     resetDayBoatFleet,
     autoAssignDayBoats,
     clearDayBoatAssignments,
+    commitDayBoatPlan,
     resolveVanMeta,
     getCheckInAttendance,
     getCheckInEnrollments,
@@ -153,6 +155,13 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
   const [selectedDate, setSelectedDate] = usePortalDefaultDateISO()
   const [program, setProgram] = useState<Program | null>(null)
   const [calendarOpen, setCalendarOpen] = useState(false)
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveMessage, setSaveMessage] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
+
+  /** Draft edits stay local until Save — avoids production reset from auto-save races. */
+  const draft = { persist: false as const }
 
   const selectedDateObj = new Date(`${selectedDate}T12:00:00`)
 
@@ -178,11 +187,43 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
   const ppPax = ppDay.reduce((sum, b) => sum + totalPassengers(b), 0)
   const jbPax = jbDay.reduce((sum, b) => sum + totalPassengers(b), 0)
 
+  function markDraft() {
+    setDirty(true)
+    setSaveMessage(null)
+    setSaveError(null)
+  }
+
+  function confirmLeaveDraft() {
+    if (!dirty) return true
+    return window.confirm(
+      'You have unsaved boat arrangement or guide changes. Leave without saving?',
+    )
+  }
+
+  async function handleSave() {
+    if (!program) return
+    setSaving(true)
+    setSaveError(null)
+    setSaveMessage(null)
+    const result = await commitDayBoatPlan(selectedDate, program)
+    setSaving(false)
+    if (!result.ok) {
+      setSaveError(result.error)
+      return
+    }
+    setDirty(false)
+    setSaveMessage(result.warning ?? 'Boat arrangement and guide information saved.')
+  }
+
   function selectDate(date: Date | undefined) {
     if (!date) return
+    if (!confirmLeaveDraft()) return
     setSelectedDate(toISODate(date))
     setProgram(null)
     setCalendarOpen(false)
+    setDirty(false)
+    setSaveMessage(null)
+    setSaveError(null)
   }
 
   function handlePrint() {
@@ -193,14 +234,23 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
     <div className="w-full">
       <div className="print:hidden">
         <div className="mb-4">
-          <Button type="button" variant="ghost" size="sm" className="gap-1.5" onClick={onBack}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => {
+              if (!confirmLeaveDraft()) return
+              onBack()
+            }}
+          >
             <ArrowLeft className="size-3.5" />
             Daily Board
           </Button>
         </div>
         <PageHeader
           title="Arrange boats"
-          description="Vans first, then boats — put each van on a boat so the whole group stays together. Place No Transfer guests on any boat."
+          description="Vans first, then boats — put each van on a boat so the whole group stays together. Place No Transfer guests on any boat. Save when you are done so production keeps your arrangement."
           actions={
             program ? (
               <div className="flex flex-wrap gap-2">
@@ -212,17 +262,33 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => clearDayBoatAssignments(selectedDate, program)}
+                  onClick={() => {
+                    clearDayBoatAssignments(selectedDate, program, draft)
+                    markDraft()
+                  }}
                 >
                   Clear boats
                 </Button>
                 <Button
                   type="button"
                   size="sm"
-                  onClick={() => autoAssignDayBoats(selectedDate, program)}
+                  variant="outline"
+                  onClick={() => {
+                    autoAssignDayBoats(selectedDate, program, draft)
+                    markDraft()
+                  }}
                 >
                   <Sparkles data-icon="inline-start" />
                   Auto-assign by van
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={saving || !dirty}
+                  onClick={() => void handleSave()}
+                >
+                  <Save data-icon="inline-start" />
+                  {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
                 </Button>
               </div>
             ) : null
@@ -237,7 +303,13 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
             variant="ghost"
             size="sm"
             className="gap-1.5"
-            onClick={() => setProgram(null)}
+            onClick={() => {
+              if (!confirmLeaveDraft()) return
+              setProgram(null)
+              setDirty(false)
+              setSaveMessage(null)
+              setSaveError(null)
+            }}
           >
             <ArrowLeft className="size-3.5" />
             Choose program
@@ -313,20 +385,58 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
           vanAssignments={vehiclePlan.assignments}
           vanMeta={vehiclePlan.vanMeta}
           resolveVanMeta={resolveVanMeta}
+          dirty={dirty}
+          saving={saving}
+          saveMessage={saveMessage}
+          saveError={saveError}
+          onSave={() => void handleSave()}
           isNoShow={(code) => getCheckInAttendance(selectedDate, program, code) === 'no-show'}
           getEnrollments={(code) => getCheckInEnrollments(selectedDate, program, code)}
           getServices={(code) => getCheckInServices(selectedDate, program, code)}
-          onAssignBooking={(code, boat) => assignBookingToBoat(selectedDate, program, code, boat)}
-          onAssignVan={(van, boat) => assignVanToBoat(selectedDate, program, van, boat)}
-          onCapacity={(boat, capacity) => setBoatCapacity(selectedDate, program, boat, capacity)}
-          onRename={(boat, name) => setBoatName(selectedDate, program, boat, name)}
-          onSetGuide={(boat, guide) => setBoatGuide(selectedDate, program, boat, guide)}
-          onAddBoat={(capacity) => addDayBoat(selectedDate, program, capacity)}
-          onRemoveBoat={(boat) => removeDayBoat(selectedDate, program, boat)}
-          onResetCapacities={() => resetDayBoatCapacities(selectedDate, program)}
-          onResetFleet={() => resetDayBoatFleet(selectedDate, program)}
-          onAutoAssign={() => autoAssignDayBoats(selectedDate, program)}
-          onClear={() => clearDayBoatAssignments(selectedDate, program)}
+          onAssignBooking={(code, boat) => {
+            assignBookingToBoat(selectedDate, program, code, boat, draft)
+            markDraft()
+          }}
+          onAssignVan={(van, boat) => {
+            assignVanToBoat(selectedDate, program, van, boat, draft)
+            markDraft()
+          }}
+          onCapacity={(boat, capacity) => {
+            setBoatCapacity(selectedDate, program, boat, capacity, draft)
+            markDraft()
+          }}
+          onRename={(boat, name) => {
+            setBoatName(selectedDate, program, boat, name, draft)
+            markDraft()
+          }}
+          onSetGuide={(boat, guide) => {
+            setBoatGuide(selectedDate, program, boat, guide, draft)
+            markDraft()
+          }}
+          onAddBoat={(capacity) => {
+            addDayBoat(selectedDate, program, capacity, draft)
+            markDraft()
+          }}
+          onRemoveBoat={(boat) => {
+            removeDayBoat(selectedDate, program, boat, draft)
+            markDraft()
+          }}
+          onResetCapacities={() => {
+            resetDayBoatCapacities(selectedDate, program, draft)
+            markDraft()
+          }}
+          onResetFleet={() => {
+            resetDayBoatFleet(selectedDate, program, draft)
+            markDraft()
+          }}
+          onAutoAssign={() => {
+            autoAssignDayBoats(selectedDate, program, draft)
+            markDraft()
+          }}
+          onClear={() => {
+            clearDayBoatAssignments(selectedDate, program, draft)
+            markDraft()
+          }}
           onPrint={handlePrint}
         />
       ) : null}
@@ -385,6 +495,11 @@ function BoatBoard({
   vanAssignments,
   vanMeta,
   resolveVanMeta,
+  dirty,
+  saving,
+  saveMessage,
+  saveError,
+  onSave,
   isNoShow,
   getEnrollments,
   getServices,
@@ -408,6 +523,11 @@ function BoatBoard({
   vanAssignments: Record<string, VanSplit[]>
   vanMeta: Record<string, { plate: string; driver: string; phone: string }>
   resolveVanMeta: ReturnType<typeof usePortal>['resolveVanMeta']
+  dirty: boolean
+  saving: boolean
+  saveMessage: string | null
+  saveError: string | null
+  onSave: () => void
   isNoShow: (bookingCode: string) => boolean
   getEnrollments: (bookingCode: string) => ReturnType<ReturnType<typeof usePortal>['getCheckInEnrollments']>
   getServices: (bookingCode: string) => CheckInServiceLine[]
@@ -1324,6 +1444,35 @@ function BoatBoard({
           </div>
         </Surface>
       ) : null}
+
+      <Surface className="mt-5 p-5 print:hidden">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-teal-950">Save boat arrangement & guides</p>
+            <p className="mt-0.5 text-sm text-teal-900/55">
+              {dirty
+                ? 'You have unsaved changes. Save so production keeps this arrangement and guide information.'
+                : 'Arrangement matches the last save.'}
+            </p>
+            {saveMessage ? (
+              <p className="mt-1.5 text-sm font-medium text-emerald-800">{saveMessage}</p>
+            ) : null}
+            {saveError ? (
+              <p className="mt-1.5 text-sm font-medium text-rose-700">{saveError}</p>
+            ) : null}
+          </div>
+          <Button
+            type="button"
+            size="lg"
+            className="h-12 shrink-0 rounded-xl px-6"
+            disabled={saving || !dirty}
+            onClick={onSave}
+          >
+            <Save data-icon="inline-start" />
+            {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+          </Button>
+        </div>
+      </Surface>
 
       <Dialog
         open={selectedGuest !== null}

@@ -805,31 +805,50 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
   const capacities = normalizeBoatCapacities(plan.capacities)
   const boat_names = normalizeBoatNames(plan.names, capacities.length)
   const boat_guides = normalizeBoatGuides(plan.guides, capacities.length)
-  const baseRow = {
+
+  const legacyCaps = {
     date: plan.date,
     program: plan.program,
     capacity_1: capacities[0] ?? 44,
     capacity_2: capacities[1] ?? capacities[0] ?? 44,
     capacity_3: capacities[2] ?? capacities[0] ?? 44,
-    capacities,
-    boat_names,
   }
-  let { error: planError } = await supabase.from('day_boat_plans').upsert({
-    ...baseRow,
-    boat_guides,
-  })
-  if (planError && /boat_guides/i.test(planError.message)) {
+
+  const warnings: string[] = []
+  let planError: { message: string } | null = null
+
+  const fullRow = { ...legacyCaps, capacities, boat_names, boat_guides }
+  const withoutGuides = { ...legacyCaps, capacities, boat_names }
+  const withoutNames = { ...legacyCaps, capacities }
+  const attempts = [fullRow, withoutGuides, withoutNames, legacyCaps] as const
+
+  for (let index = 0; index < attempts.length; index += 1) {
+    const { error } = await supabase.from('day_boat_plans').upsert(attempts[index]!)
+    if (!error) {
+      planError = null
+      break
+    }
+    planError = error
+    const schemaGap =
+      /Could not find the .* column|schema cache|column .* does not exist/i.test(error.message)
+    if (!schemaGap || index === attempts.length - 1) break
+
+    const sqlFile = /boat_guides/i.test(error.message)
+      ? 'supabase/add-boat-guides.sql'
+      : /boat_names/i.test(error.message)
+        ? 'supabase/add-boat-names.sql'
+        : /capacities/i.test(error.message)
+          ? 'supabase/add-flexible-day-boats.sql'
+          : null
     console.error(
-      '[supabase] boat_guides column missing — run supabase/add-boat-guides.sql so guides persist for all admins',
-      planError.message,
+      `[supabase] day_boat_plans schema behind${sqlFile ? ` — run ${sqlFile}` : ''}`,
+      error.message,
     )
-    ;({ error: planError } = await supabase.from('day_boat_plans').upsert(baseRow))
-    if (!planError) {
-      throw new Error(
-        'Boat guides need a DB update — run supabase/add-boat-guides.sql in Supabase, then save again.',
-      )
+    if (sqlFile) {
+      warnings.push(`Run ${sqlFile} in Supabase.`)
     }
   }
+
   if (planError) throw new Error(`upsert boat plan: ${planError.message}`)
 
   const { error: delError } = await supabase
@@ -848,10 +867,16 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
       boat_number: Math.max(1, Math.floor(Number(boat_number) || 0)),
     }))
     .filter((row) => row.boat_number >= 1 && row.boat_number <= maxBoat)
-  if (rows.length === 0) return
+  if (rows.length > 0) {
+    const { error: insertError } = await supabase.from('boat_assignments').insert(rows)
+    if (insertError) throw new Error(`insert boat assignments: ${insertError.message}`)
+  }
 
-  const { error: insertError } = await supabase.from('boat_assignments').insert(rows)
-  if (insertError) throw new Error(`insert boat assignments: ${insertError.message}`)
+  if (warnings.length > 0) {
+    throw new Error(
+      `Boat arrangement saved, but some fields need a DB update — ${warnings.join(' ')} Then save again.`,
+    )
+  }
 }
 
 export async function saveDayVehiclePlan(plan: DayVehiclePlan) {
