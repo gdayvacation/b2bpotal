@@ -213,7 +213,9 @@ export function AdminAvailability() {
           <Surface className="p-5 sm:p-6">
             <h2 className="text-sm font-semibold text-teal-950">Last book time</h2>
             <p className="mt-1 text-xs leading-relaxed text-teal-950/50">
-              Agents can create bookings for a travel date until this deadline.
+              Agents can create bookings until this deadline the day before travel (Asia/Bangkok).
+              Default closes at 23:59 the day before — so after midnight, today is closed and
+              tomorrow is already open.
             </p>
             <div className="mt-4 grid gap-3 sm:grid-cols-[7.5rem_1fr]">
               <div>

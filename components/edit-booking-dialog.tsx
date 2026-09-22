@@ -353,7 +353,16 @@ export function EditBookingDialog({
                   value={pickupHotel}
                   onChange={setPickupHotel}
                   onSelectHotel={applyHotelSelection}
+                  onSelectOther={() => {
+                    if (zones.some((zone) => zone.name === 'Other')) {
+                      setPickupZone('Other')
+                    }
+                  }}
                 />
+                <p className="text-xs text-teal-900/50">
+                  Use Other if the hotel is missing — admin can add it under Pickup Zones with zone
+                  and time.
+                </p>
               </div>
 
               {isPrivate ? (
@@ -590,7 +599,7 @@ function IncludeOptionGroup({
                 : 'border-teal-900/10 text-teal-900/65 hover:border-teal-700/30',
             )}
           >
-            {option}
+            {option === 'Not Included' ? 'Excluded' : option}
           </button>
         ))}
       </div>

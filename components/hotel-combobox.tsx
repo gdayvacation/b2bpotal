@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useRef, useState } from 'react'
-import { Check, Hotel as HotelIcon } from 'lucide-react'
+import { Check, Hotel as HotelIcon, PenLine } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import type { Hotel } from '@/lib/types'
@@ -13,6 +13,7 @@ export function HotelCombobox({
   value,
   onChange,
   onSelectHotel,
+  onSelectOther,
   id = 'hotel',
   placeholder = 'Type to search hotels…',
 }: {
@@ -20,6 +21,8 @@ export function HotelCombobox({
   value: string
   onChange: (value: string) => void
   onSelectHotel: (hotel: Hotel) => void
+  /** Called when staff pick “Other” for a hotel not in the catalog. */
+  onSelectOther?: () => void
   id?: string
   placeholder?: string
 }) {
@@ -40,6 +43,11 @@ export function HotelCombobox({
       .slice(0, MAX_SUGGESTIONS)
   }, [activeHotels, query])
 
+  const options = useMemo(
+    () => [...suggestions.map((hotel) => ({ kind: 'hotel' as const, hotel })), { kind: 'other' as const }],
+    [suggestions],
+  )
+
   function clearBlurTimer() {
     if (blurTimer.current !== null) {
       window.clearTimeout(blurTimer.current)
@@ -49,6 +57,12 @@ export function HotelCombobox({
 
   function pick(hotel: Hotel) {
     onSelectHotel(hotel)
+    setOpen(false)
+    setHighlight(0)
+  }
+
+  function pickOther() {
+    onSelectOther?.()
     setOpen(false)
     setHighlight(0)
   }
@@ -83,30 +97,35 @@ export function HotelCombobox({
             setOpen(true)
             return
           }
-          if (!open || suggestions.length === 0) return
+          if (!open || options.length === 0) return
           if (event.key === 'ArrowDown') {
             event.preventDefault()
-            setHighlight((current) => (current + 1) % suggestions.length)
+            setHighlight((current) => (current + 1) % options.length)
           } else if (event.key === 'ArrowUp') {
             event.preventDefault()
-            setHighlight((current) => (current - 1 + suggestions.length) % suggestions.length)
+            setHighlight((current) => (current - 1 + options.length) % options.length)
           } else if (event.key === 'Enter') {
-            const hotel = suggestions[highlight]
-            if (hotel) {
-              event.preventDefault()
-              pick(hotel)
-            }
+            const option = options[highlight]
+            if (!option) return
+            event.preventDefault()
+            if (option.kind === 'other') pickOther()
+            else pick(option.hotel)
           } else if (event.key === 'Escape') {
             setOpen(false)
           }
         }}
       />
-      {open && suggestions.length > 0 ? (
+      {open ? (
         <ul
           id={`${id}-listbox`}
           role="listbox"
           className="absolute z-40 mt-1.5 max-h-64 w-full overflow-auto rounded-xl border border-teal-900/10 bg-white py-1 shadow-lg shadow-teal-950/10"
         >
+          {suggestions.length === 0 && query.length > 0 ? (
+            <li className="px-3 py-2 text-xs text-teal-900/50">
+              No catalog match — choose Other and type the hotel name.
+            </li>
+          ) : null}
           {suggestions.map((hotel, index) => {
             const selected = hotel.name.toLowerCase() === query
             const active = index === highlight
@@ -132,12 +151,25 @@ export function HotelCombobox({
               </li>
             )
           })}
+          <li role="option" aria-selected={false} className="border-t border-teal-900/8">
+            <button
+              type="button"
+              className={cn(
+                'flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm transition-colors',
+                highlight === suggestions.length
+                  ? 'bg-teal-50 text-teal-950'
+                  : 'text-teal-950 hover:bg-teal-950/[0.04]',
+              )}
+              onMouseDown={(event) => event.preventDefault()}
+              onMouseEnter={() => setHighlight(suggestions.length)}
+              onClick={pickOther}
+            >
+              <PenLine className="size-3.5 shrink-0 text-teal-800/45" />
+              <span className="min-w-0 flex-1 font-medium">Other — not in list</span>
+              <span className="shrink-0 text-xs text-teal-900/45">Custom</span>
+            </button>
+          </li>
         </ul>
-      ) : null}
-      {open && query.length > 0 && suggestions.length === 0 ? (
-        <div className="absolute z-40 mt-1.5 w-full rounded-xl border border-teal-900/10 bg-white px-3 py-2.5 text-sm text-teal-900/50 shadow-lg shadow-teal-950/10">
-          No matching hotel — keep typing a custom name, or ask admin to add it.
-        </div>
       ) : null}
     </div>
   )

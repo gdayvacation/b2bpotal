@@ -33,7 +33,6 @@ import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
 import { dateFromISO, formatLongDate, slugifyAgentName, startOfToday, toISODate, todayISO } from '@/lib/format'
-import { addCalendarDays } from '@/lib/booking-cutoffs'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { cn } from '@/lib/utils'
 import { formatPaxBreakdown, isNoTransfer, NO_TRANSFER_ZONE, type Agent, type Booking, type Hotel, type IncludeOption, type PickupZoneName, type Program } from '@/lib/types'
@@ -46,11 +45,9 @@ const CORE_STEPS = [
   'Review',
 ] as const
 
-/** Thailand today when bookable; otherwise next day (after cutoff). Admin always gets today. */
-function defaultTourDate(isOpen: (iso: string) => boolean, allowClosedToday: boolean): Date {
-  const today = startOfToday()
-  if (allowClosedToday || isOpen(toISODate(today))) return today
-  return dateFromISO(addCalendarDays(todayISO(), 1))
+/** Prefer earliest open travel day (Bangkok). Today stays closed after the day-before cutoff. */
+function defaultTourDate(earliestBookableDate: () => string): Date {
+  return dateFromISO(earliestBookableDate())
 }
 
 type ResolvedAgent = { slug: string; name: string }
@@ -77,6 +74,8 @@ export function BookingWizard({
     addBooking,
     agents,
     bookedPaxFor,
+    bookingCutoffs,
+    earliestBookableDate,
     getBookingClosure,
     getCapacity,
     getZoneTime,
@@ -110,20 +109,25 @@ export function BookingWizard({
   const [draftCanoe, setDraftCanoe] = useState<IncludeOption>('Included')
   const portalToday = usePortalTodayISO()
   const prevTodayRef = useRef(portalToday)
-  const [date, setDate] = useState<Date | undefined>(() =>
-    defaultTourDate(isBookingOpen, selectAgent),
-  )
+  const [date, setDate] = useState<Date | undefined>(() => defaultTourDate(earliestBookableDate))
 
+  // Bangkok day change or cutoff settings: closed today → next open travel day (usually tomorrow).
   useEffect(() => {
-    if (portalToday === prevTodayRef.current) return
-    const previousToday = prevTodayRef.current
     prevTodayRef.current = portalToday
     setDate((current) => {
-      if (!current) return defaultTourDate(isBookingOpen, selectAgent)
-      if (toISODate(current) !== previousToday) return current
-      return defaultTourDate(isBookingOpen, selectAgent)
+      const currentIso = current ? toISODate(current) : ''
+      if (currentIso && isBookingOpen(currentIso) && currentIso >= portalToday) {
+        return current
+      }
+      return defaultTourDate(earliestBookableDate)
     })
-  }, [portalToday, isBookingOpen, selectAgent])
+  }, [
+    portalToday,
+    bookingCutoffs.bookBeforeDays,
+    bookingCutoffs.bookUntilTime,
+    earliestBookableDate,
+    isBookingOpen,
+  ])
 
   const [adults, setAdults] = useState(2)
   const [children, setChildren] = useState(0)
@@ -174,7 +178,7 @@ export function BookingWizard({
 
   const total = adults + children + infants + tourLeaders
   const isoDate = date ? toISODate(date) : ''
-  const bookingOpen = !isoDate || selectAgent || isBookingOpen(isoDate)
+  const bookingOpen = !isoDate || isBookingOpen(isoDate)
   const programClosedOnDate =
     Boolean(program && isoDate) && isProgramClosed(isoDate, program!)
   const programClosed = programClosedOnDate && !selectAgent
@@ -509,7 +513,7 @@ export function BookingWizard({
           <div className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
               <ProgramCard
-                title="PP"
+                title="Phi Phi"
                 subtitle="Phi Phi Islands day tour"
                 selected={program === 'PP'}
                 icon={<Mountain className="size-6" />}
@@ -525,7 +529,10 @@ export function BookingWizard({
             </div>
             {program ? (
               <p className="text-sm text-teal-900/55">
-                Selected: <span className="font-medium text-teal-950">{program}</span>
+                Selected:{' '}
+                <span className="font-medium text-teal-950">
+                  {programDisplayName(program)}
+                </span>
                 <span className="text-teal-900/30"> · </span>
                 Park fee {parkFee.toLowerCase()}
                 {program === 'James Bond' ? (
@@ -558,8 +565,8 @@ export function BookingWizard({
                   onSelect={setDate}
                   disabled={(day) => {
                     if (toISODate(day) < todayISO()) return true
-                    if (selectAgent) return false
                     const dayIso = toISODate(day)
+                    // Today closes at 23:59 Bangkok the day before — after midnight only next day+ is open.
                     if (!isBookingOpen(dayIso)) return true
                     if (program && isProgramClosed(dayIso, program)) return true
                     return false
@@ -743,9 +750,16 @@ export function BookingWizard({
                         setError('')
                       }}
                       onSelectHotel={applyHotelSelection}
+                      onSelectOther={() => {
+                        if (zones.some((zone) => zone.name === 'Other')) {
+                          setPickupZone('Other')
+                        }
+                        setError('')
+                      }}
                     />
                     <p className="text-xs text-neutral-500">
-                      Type a few letters and pick from the list — zone fills in automatically when known.
+                      Pick from the list when possible. Use Other for a hotel not listed — admin can
+                      add it later under Pickup Zones with the correct zone and time.
                     </p>
                   </div>
                   <div className="w-[7.5rem] shrink-0 space-y-2 sm:w-32">
@@ -833,7 +847,7 @@ export function BookingWizard({
                     Booking summary
                   </p>
                   <h3 className="font-display mt-1 text-xl font-semibold tracking-tight sm:text-2xl">
-                    {program ?? '—'}
+                    {program ? programDisplayName(program) : '—'}
                   </h3>
                   <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-white/75">
                     <span className="inline-flex items-center gap-1.5">
@@ -941,10 +955,9 @@ export function BookingWizard({
             <ReviewSection title="Tour options" icon={<Ship className="size-3.5" />}>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
                 <DetailCell label="Park fee" value={parkFee} />
-                <DetailCell
-                  label="Canoe"
-                  value={program === 'James Bond' ? canoe : 'N/A'}
-                />
+                {program === 'James Bond' ? (
+                  <DetailCell label="Canoe" value={canoe} />
+                ) : null}
                 <DetailCell
                   label="Voucher number"
                   value={agentRef.trim() || '—'}
@@ -993,7 +1006,7 @@ export function BookingWizard({
         <DialogContent className="sm:max-w-md" showCloseButton>
           <DialogHeader>
             <DialogTitle className="pr-8 font-display text-lg font-semibold tracking-tight text-teal-950">
-              {pendingProgram === 'James Bond' ? 'James Bond options' : 'PP options'}
+              {pendingProgram === 'James Bond' ? 'James Bond options' : 'Phi Phi options'}
             </DialogTitle>
             <DialogDescription className="text-sm text-teal-900/55">
               {pendingProgram === 'James Bond'
@@ -1028,6 +1041,10 @@ export function BookingWizard({
       </Dialog>
     </div>
   )
+}
+
+function programDisplayName(program: Program) {
+  return program === 'PP' ? 'Phi Phi' : program
 }
 
 function ProgramCard({
@@ -1098,7 +1115,7 @@ function OptionGroup({
                 : 'border-teal-900/10 text-teal-900/65 hover:border-teal-700/30',
             )}
           >
-            {option}
+            {option === 'Not Included' ? 'Excluded' : option}
           </button>
         ))}
       </div>

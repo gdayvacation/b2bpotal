@@ -139,7 +139,7 @@ export function AdminPickupZones() {
     <div className="w-full space-y-4">
       <PageHeader
         title="Pickup Zones"
-        description="Set times shown to agents. Manage hotels so agents can typeahead-select pickup points. Optional Extra Charge Transfer notes appear on the agent voucher when set."
+        description="Set zone pickup times and manage the hotel catalog. Hotels missing from booking search can be added here with the correct zone and time."
       />
 
       <Surface className="divide-y divide-teal-900/6">
@@ -250,8 +250,9 @@ export function AdminPickupZones() {
           <div>
             <h2 className="font-semibold text-teal-950">Hotels</h2>
             <p className="mt-1 text-sm text-teal-900/50">
-              Agents typeahead from this list. Leave zone blank if unsure — assign later. Extra
-              Charge Transfer is optional for any zone.
+              Add hotels here for agent typeahead. If a booking used Other with a custom name, add
+              that hotel and assign zone (pickup time comes from the zone). Leave zone blank if
+              unsure — assign later. Extra Charge Transfer is optional.
               {unassignedCount > 0 ? (
                 <span className="font-medium text-amber-800">
                   {' '}

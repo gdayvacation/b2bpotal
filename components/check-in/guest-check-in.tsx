@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Building2,
   Bus,
@@ -118,7 +118,11 @@ function paymentDue(booking: Booking) {
   }
 }
 
-export function GuestCheckIn() {
+export function GuestCheckIn({
+  lockedBookingCode = null,
+}: {
+  lockedBookingCode?: string | null
+}) {
   const {
     bookings,
     getDayVehiclePlan,
@@ -131,18 +135,30 @@ export function GuestCheckIn() {
   } = usePortal()
 
   const today = usePortalTodayISO()
-  const [step, setStep] = useState<Step>('welcome')
+  const lockedCode = lockedBookingCode?.trim() || null
+  const isLocked = Boolean(lockedCode)
+
+  const lockedBooking = useMemo(() => {
+    if (!lockedCode) return null
+    return bookings.find((item) => item.code === lockedCode) ?? null
+  }, [bookings, lockedCode])
+
+  const tourDate = lockedBooking?.date ?? today
+
+  const [step, setStep] = useState<Step>(() => (lockedCode ? 'scope' : 'welcome'))
   const [program, setProgram] = useState<Program | null>(null)
   const [findMode, setFindMode] = useState<FindMode>('van')
   const [findQuery, setFindQuery] = useState('')
   const [selectedVan, setSelectedVan] = useState<number | null>(null)
   const [selectedHotel, setSelectedHotel] = useState<string | null>(null)
-  const [bookingCode, setBookingCode] = useState<string | null>(null)
+  const [bookingCode, setBookingCode] = useState<string | null>(lockedCode)
   const [scope, setScope] = useState<Scope | null>(null)
   const [guests, setGuests] = useState<GuestDraft[]>([emptyGuestDraft()])
   const [error, setError] = useState('')
   const [detailsAttempted, setDetailsAttempted] = useState(false)
   const [doneNeedsPayment, setDoneNeedsPayment] = useState(false)
+  const [lockedReady, setLockedReady] = useState(!lockedCode)
+  const lockedBootstrappedRef = useRef(false)
 
   const detailsReady = guests.length > 0 && guests.every(guestDraftReady)
 
@@ -152,17 +168,17 @@ export function GuestCheckIn() {
       .filter(
         (b) =>
           isActiveBooking(b) &&
-          b.date === today &&
+          b.date === tourDate &&
           b.program === program &&
-          getCheckInAttendance(today, program, b.code) !== 'no-show',
+          getCheckInAttendance(tourDate, program, b.code) !== 'no-show',
       )
       .sort(
         (a, b) =>
           a.leadGuest.localeCompare(b.leadGuest) || a.code.localeCompare(b.code),
       )
-  }, [bookings, getCheckInAttendance, program, today])
+  }, [bookings, getCheckInAttendance, program, tourDate])
 
-  const vehiclePlan = program ? getDayVehiclePlan(today, program) : null
+  const vehiclePlan = program ? getDayVehiclePlan(tourDate, program) : null
   const vanNumbers = vehiclePlan ? listVanNumbers(vehiclePlan.assignments) : []
   const vanOptions = useMemo(() => {
     if (!vehiclePlan) return [] as Array<{ van: number; plate: string }>
@@ -218,27 +234,83 @@ export function GuestCheckIn() {
     vehiclePlan,
   ])
 
-  const selectedBooking = useMemo(
-    () => dayBookings.find((b) => b.code === bookingCode) ?? null,
-    [bookingCode, dayBookings],
-  )
+  const selectedBooking = useMemo(() => {
+    if (!bookingCode) return null
+    if (isLocked && lockedBooking) return lockedBooking
+    return (
+      dayBookings.find((b) => b.code === bookingCode) ??
+      bookings.find((b) => b.code === bookingCode) ??
+      null
+    )
+  }, [bookingCode, bookings, dayBookings, isLocked, lockedBooking])
 
   const enrolled = selectedBooking
-    ? getCheckInEnrollments(today, selectedBooking.program, selectedBooking.code)
+    ? getCheckInEnrollments(tourDate, selectedBooking.program, selectedBooking.code)
     : []
   const enrolledSeats = enrolledSeatCount(enrolled)
   const seatsTotal = selectedBooking ? totalPassengers(selectedBooking) : 0
   const remainingSeats = Math.max(0, seatsTotal - enrolledSeats)
   const fullyCheckedIn = selectedBooking
     ? remainingSeats === 0 ||
-      getCheckInAttendance(today, selectedBooking.program, selectedBooking.code) === 'checked'
+      getCheckInAttendance(tourDate, selectedBooking.program, selectedBooking.code) === 'checked'
     : false
+
+  // Resolve locked QR booking once portal data is ready.
+  useEffect(() => {
+    if (!hydrated || !lockedCode || lockedBootstrappedRef.current) return
+
+    const booking = bookings.find((item) => item.code === lockedCode) ?? null
+    lockedBootstrappedRef.current = true
+
+    if (!booking) {
+      setLockedReady(true)
+      setError('This check-in QR is not valid. Please ask marina staff for a new code.')
+      setStep('welcome')
+      return
+    }
+
+    if (!isActiveBooking(booking)) {
+      setLockedReady(true)
+      setError('This booking is cancelled. Please ask marina staff for help.')
+      setStep('welcome')
+      return
+    }
+    if (getCheckInAttendance(booking.date, booking.program, booking.code) === 'no-show') {
+      setLockedReady(true)
+      setError('This booking was marked no-show. Please ask marina staff for help.')
+      setStep('welcome')
+      return
+    }
+
+    setProgram(booking.program)
+    setBookingCode(booking.code)
+    setError('')
+    setLockedReady(true)
+
+    const seats = totalPassengers(booking)
+    const already = enrolledSeatCount(
+      getCheckInEnrollments(booking.date, booking.program, booking.code),
+    )
+    const attendance = getCheckInAttendance(booking.date, booking.program, booking.code)
+    if (attendance === 'checked' || already >= seats) {
+      setDoneNeedsPayment(paymentDue(booking).needsStaff)
+      setStep('done')
+      return
+    }
+    setStep('scope')
+  }, [
+    bookings,
+    getCheckInAttendance,
+    getCheckInEnrollments,
+    hydrated,
+    lockedCode,
+  ])
 
   function resetFind() {
     setFindQuery('')
     setSelectedVan(null)
     setSelectedHotel(null)
-    setBookingCode(null)
+    if (!isLocked) setBookingCode(null)
   }
 
   function goBack() {
@@ -249,6 +321,7 @@ export function GuestCheckIn() {
       resetFind()
       setStep('program')
     } else if (step === 'scope') {
+      if (isLocked) return
       setBookingCode(null)
       setScope(null)
       setStep('find')
@@ -261,15 +334,35 @@ export function GuestCheckIn() {
   }
 
   function startOver() {
-    setStep('welcome')
-    setProgram(null)
-    setFindMode('van')
-    resetFind()
     setScope(null)
     setGuests([emptyGuestDraft()])
     setDetailsAttempted(false)
     setError('')
     setDoneNeedsPayment(false)
+    if (isLocked && lockedBooking && isActiveBooking(lockedBooking)) {
+      setProgram(lockedBooking.program)
+      setBookingCode(lockedBooking.code)
+      const seats = totalPassengers(lockedBooking)
+      const already = enrolledSeatCount(
+        getCheckInEnrollments(lockedBooking.date, lockedBooking.program, lockedBooking.code),
+      )
+      const attendance = getCheckInAttendance(
+        lockedBooking.date,
+        lockedBooking.program,
+        lockedBooking.code,
+      )
+      if (attendance === 'checked' || already >= seats) {
+        setDoneNeedsPayment(paymentDue(lockedBooking).needsStaff)
+        setStep('done')
+      } else {
+        setStep('scope')
+      }
+      return
+    }
+    setStep('welcome')
+    setProgram(null)
+    setFindMode('van')
+    resetFind()
   }
 
   function updateGuest(index: number, patch: Partial<GuestDraft>) {
@@ -291,11 +384,11 @@ export function GuestCheckIn() {
     const booking = dayBookings.find((item) => item.code === code)
     if (!booking) return
     const seats = totalPassengers(booking)
-    const enrolled = enrolledSeatCount(
-      getCheckInEnrollments(today, booking.program, booking.code),
+    const enrolledCount = enrolledSeatCount(
+      getCheckInEnrollments(tourDate, booking.program, booking.code),
     )
-    const attendance = getCheckInAttendance(today, booking.program, booking.code)
-    const alreadyDone = attendance === 'checked' || enrolled >= seats
+    const attendance = getCheckInAttendance(tourDate, booking.program, booking.code)
+    const alreadyDone = attendance === 'checked' || enrolledCount >= seats
     setBookingCode(code)
     if (alreadyDone) {
       setDoneNeedsPayment(paymentDue(booking).needsStaff)
@@ -309,7 +402,7 @@ export function GuestCheckIn() {
     if (!selectedBooking || !scope) return
     setError('')
 
-    if (selectedBooking.program !== program) {
+    if (program && selectedBooking.program !== program) {
       setError('Program does not match this booking. Please start again.')
       return
     }
@@ -323,7 +416,7 @@ export function GuestCheckIn() {
     }))
 
     const result = recordGuestCheckIns({
-      date: today,
+      date: selectedBooking.date,
       program: selectedBooking.program,
       bookingCode: selectedBooking.code,
       scope,
@@ -338,7 +431,7 @@ export function GuestCheckIn() {
     setStep('done')
   }
 
-  if (!hydrated) {
+  if (!hydrated || (isLocked && !lockedReady)) {
     return (
       <div className="gday-app flex min-h-dvh items-center justify-center px-4">
         <p className="text-sm text-teal-900/55">Loading check-in…</p>
@@ -346,16 +439,21 @@ export function GuestCheckIn() {
     )
   }
 
+  const showBack =
+    step !== 'welcome' &&
+    step !== 'done' &&
+    !(isLocked && step === 'scope')
+
   return (
     <div className="gday-app relative min-h-dvh overflow-hidden">
       <div className="gday-grid pointer-events-none absolute inset-0 opacity-40" />
       <header className="relative mx-auto flex h-14 w-full max-w-lg items-center justify-between px-4">
         <BrandMark />
-        <p className="text-xs font-medium text-teal-900/45">{formatLongDate(today)}</p>
+        <p className="text-xs font-medium text-teal-900/45">{formatLongDate(tourDate)}</p>
       </header>
 
       <main className="relative mx-auto w-full max-w-lg px-4 pb-10 pt-2">
-        {step !== 'welcome' && step !== 'done' ? (
+        {showBack ? (
           <button
             type="button"
             onClick={goBack}
@@ -370,24 +468,28 @@ export function GuestCheckIn() {
           <section className="gday-sheet space-y-5 rounded-[1.5rem] p-6">
             <p className="gday-soft-label">Marina check-in</p>
             <h1 className="font-display text-2xl font-semibold tracking-tight text-teal-950">
-              Welcome — let&apos;s check you in
+              {error ? 'Check-in unavailable' : 'Scan your booking QR'}
             </h1>
-            <p className="text-sm leading-relaxed text-teal-950/60">
-              Tour date:{' '}
-              <span className="font-semibold text-teal-950">{formatLongDate(today)}</span>
-            </p>
-            <p className="rounded-2xl bg-teal-950/[0.04] px-4 py-3.5 text-sm leading-relaxed text-teal-900/70">
-              Please enter your details exactly as on your passport — this is used for travel
-              insurance.
-            </p>
-            <Button className="h-12 w-full text-base" onClick={() => setStep('program')}>
-              Start check-in
-              <ChevronRight data-icon="inline-end" />
-            </Button>
+            {error ? (
+              <p className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3.5 text-sm leading-relaxed text-rose-900">
+                {error}
+              </p>
+            ) : (
+              <>
+                <p className="text-sm leading-relaxed text-teal-950/60">
+                  Check-in is linked to your booking so we can confirm any park fee or cash due
+                  before tickets are issued.
+                </p>
+                <p className="rounded-2xl bg-teal-950/[0.04] px-4 py-3.5 text-sm leading-relaxed text-teal-900/70">
+                  Please ask marina staff to show the QR code for your booking, then scan it with
+                  your phone.
+                </p>
+              </>
+            )}
           </section>
         ) : null}
 
-        {step === 'program' ? (
+        {step === 'program' && !isLocked ? (
           <section className="space-y-4">
             <StepHeading title="Which program today?" subtitle="Choose the tour you are joining." />
             <div className="grid gap-3">
@@ -417,11 +519,11 @@ export function GuestCheckIn() {
           </section>
         ) : null}
 
-        {step === 'find' && program ? (
+        {step === 'find' && program && !isLocked ? (
           <section className="space-y-4">
             <StepHeading
               title="Find your booking"
-              subtitle={`${programLabel(program)} · ${formatLongDate(today)}`}
+              subtitle={`${programLabel(program)} · ${formatLongDate(tourDate)}`}
             />
             <div className="relative">
               <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-teal-900/35" />
@@ -473,7 +575,7 @@ export function GuestCheckIn() {
                 ) : (
                   <BookingPickList
                     bookings={filteredBookings}
-                    today={today}
+                    today={tourDate}
                     getCheckInEnrollments={getCheckInEnrollments}
                     getCheckInAttendance={getCheckInAttendance}
                     onPick={openBooking}
@@ -555,7 +657,7 @@ export function GuestCheckIn() {
                     ) : (
                       <BookingPickList
                         bookings={filteredBookings}
-                        today={today}
+                        today={tourDate}
                         getCheckInEnrollments={getCheckInEnrollments}
                         getCheckInAttendance={getCheckInAttendance}
                         onPick={openBooking}
@@ -572,8 +674,42 @@ export function GuestCheckIn() {
           <section className="space-y-4">
             <StepHeading
               title="Who is checking in?"
-              subtitle={`${selectedBooking.leadGuest} · ${remainingSeats} of ${seatsTotal} left`}
+              subtitle={`${programLabel(selectedBooking.program)} · ${formatLongDate(selectedBooking.date)}`}
             />
+            <div className="gday-sheet space-y-2 rounded-[1.5rem] p-4">
+              <p className="text-sm font-semibold text-teal-950">{selectedBooking.leadGuest}</p>
+              <p className="text-xs text-teal-900/55">
+                {selectedBooking.code}
+                {selectedBooking.pickupHotel
+                  ? ` · ${selectedBooking.pickupHotel}`
+                  : selectedBooking.pickupZone
+                    ? ` · ${selectedBooking.pickupZone}`
+                    : ''}
+              </p>
+              <p className="text-xs font-medium tabular-nums text-teal-800/70">
+                {remainingSeats} of {seatsTotal} seat{seatsTotal === 1 ? '' : 's'} left to check in
+              </p>
+            </div>
+            {(() => {
+              const due = paymentDue(selectedBooking)
+              if (!due.needsStaff) return null
+              return (
+                <div
+                  role="alert"
+                  className="rounded-2xl border border-orange-300 bg-orange-50 px-4 py-3.5 text-sm leading-relaxed text-orange-950"
+                >
+                  <p className="flex items-center gap-2 font-semibold">
+                    <AlertTriangle className="size-4 shrink-0" />
+                    Payment due before tickets
+                  </p>
+                  <p className="mt-1 text-orange-900/85">
+                    {due.amount > 0
+                      ? `Please pay ${due.amount.toLocaleString('en-US')} THB at the marina desk.`
+                      : 'Please see marina staff about cash on tour before boarding.'}
+                  </p>
+                </div>
+              )
+            })()}
             {fullyCheckedIn ? (
               <div className="space-y-3">
                 <EmptyNote text="This booking is already fully checked in." />
@@ -745,7 +881,7 @@ export function GuestCheckIn() {
                 ? guests.map((guest) => guestDisplayName(guest)).filter(Boolean)
                 : selectedBooking
                   ? getCheckInEnrollments(
-                      today,
+                      selectedBooking.date,
                       selectedBooking.program,
                       selectedBooking.code,
                     ).map((item) => guestDisplayName(item))
@@ -753,13 +889,15 @@ export function GuestCheckIn() {
             }
             boat={
               selectedBooking
-                ? (getDayBoatPlan(today, selectedBooking.program).assignments[
+                ? (getDayBoatPlan(selectedBooking.date, selectedBooking.program).assignments[
                     selectedBooking.code
                   ] ?? null)
                 : null
             }
             boatPlan={
-              selectedBooking ? getDayBoatPlan(today, selectedBooking.program) : null
+              selectedBooking
+                ? getDayBoatPlan(selectedBooking.date, selectedBooking.program)
+                : null
             }
             onAgain={startOver}
           />

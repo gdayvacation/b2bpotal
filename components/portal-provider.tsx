@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { nextBookingCode, uniqueAgentSlug } from '@/lib/format'
 import { autoAssignBoats } from '@/lib/boat-assign'
 import {
@@ -19,6 +19,15 @@ import {
   type CheckInPaymentStatus,
   type DayCheckInPaymentMap,
 } from '@/lib/check-in-payment'
+import {
+  CHECK_IN_SERVICE_STORAGE_KEY,
+  getCheckInServices,
+  loadCheckInServiceMap,
+  saveCheckInServiceMap,
+  withCheckInServices,
+  type CheckInServiceLine,
+  type DayCheckInServiceMap,
+} from '@/lib/check-in-services'
 import {
   CHECK_IN_ENROLLMENT_STORAGE_KEY,
   enrolledSeatCount,
@@ -39,6 +48,7 @@ import {
   bookingClosedMessage,
   cancelClosedMessage,
   DEFAULT_BOOKING_CUTOFFS,
+  earliestBookableTravelDate,
   isBookingOpenForDate,
   isCancelOpenForDate,
   normalizeBeforeDays,
@@ -48,16 +58,25 @@ import {
 import {
   deleteAgent,
   deleteBookingClosures,
+  deleteCheckInAttendanceRow,
+  deleteCheckInEnrollment,
+  deleteCheckInPaymentRow,
   deleteHotel,
   deleteZone,
   fetchBookingEvents,
   fetchBookings,
+  fetchCheckInMaps,
   insertBooking,
   insertBookingEvent,
   loadPortalSnapshot,
   persistQuietly,
+  pushCheckInMaps,
+  replaceCheckInEnrollmentsForBooking,
+  replaceCheckInServicesForBooking,
   saveDayBoatPlan,
   saveDayVehiclePlan,
+  subscribeBookings,
+  type CheckInMapsSnapshot,
   updateBookingDate,
   updateBookingDetails,
   updateBookingPickup,
@@ -69,6 +88,9 @@ import {
   upsertAvailabilityRows,
   upsertBookingClosures,
   upsertBookingCutoffs,
+  upsertCheckInAttendanceRow,
+  upsertCheckInEnrollments,
+  upsertCheckInPaymentRow,
   upsertHotel,
   upsertZone,
   upsertFleetVan,
@@ -147,6 +169,8 @@ type PortalContextValue = {
   closeBookingForDates: (dates: string[], programs: Program[], reason?: string) => void
   openBookingForDates: (dates: string[], programs: Program[]) => void
   isBookingOpen: (travelDate: string) => boolean
+  /** Soonest travel date open for agent booking (Bangkok; usually tomorrow after midnight). */
+  earliestBookableDate: () => string
   isCancelOpen: (travelDate: string) => boolean
   addBooking: (
     booking: Omit<
@@ -264,6 +288,17 @@ type PortalContextValue = {
     bookingCode: string,
     status: CheckInPaymentStatus | null,
   ) => void
+  getCheckInServices: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+  ) => CheckInServiceLine[]
+  setCheckInServices: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    services: CheckInServiceLine[],
+  ) => void
   getCheckInEnrollments: (
     date: string,
     program: Program,
@@ -373,6 +408,22 @@ type PortalContextValue = {
 
 const PortalContext = createContext<PortalContextValue | null>(null)
 
+function checkInMapsHaveData(maps: CheckInMapsSnapshot) {
+  return (
+    Object.keys(maps.enrollments).length > 0 ||
+    Object.keys(maps.attendance).length > 0 ||
+    Object.keys(maps.payments).length > 0 ||
+    Object.keys(maps.services).length > 0
+  )
+}
+
+function applyCheckInMapsToStorage(maps: CheckInMapsSnapshot) {
+  saveCheckInEnrollmentMap(maps.enrollments)
+  saveCheckInAttendanceMap(maps.attendance)
+  saveCheckInPaymentMap(maps.payments)
+  saveCheckInServiceMap(maps.services)
+}
+
 export function PortalProvider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -388,15 +439,49 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [checkInEnrollment, setCheckInEnrollmentMap] =
     useState<DayCheckInEnrollmentMap>({})
   const [checkInPayment, setCheckInPaymentMap] = useState<DayCheckInPaymentMap>({})
+  const [checkInServices, setCheckInServiceMap] = useState<DayCheckInServiceMap>({})
   const [fleetVans, setFleetVans] = useState<FleetVan[]>([])
   const [bookingCutoffs, setBookingCutoffs] = useState<BookingCutoffSettings>(DEFAULT_BOOKING_CUTOFFS)
   const [bookingClosures, setBookingClosures] = useState<BookingClosure[]>([])
   const [bookingEventsByCode, setBookingEventsByCode] = useState<Record<string, BookingEvent[]>>({})
+  const checkInCloudEnabledRef = useRef(false)
+  const checkInWritePendingRef = useRef(0)
+  const bookingWritePendingRef = useRef(0)
+
+  function persistBookingWrite(label: string, task: Promise<unknown>) {
+    bookingWritePendingRef.current += 1
+    persistQuietly(
+      label,
+      task.finally(() => {
+        bookingWritePendingRef.current = Math.max(0, bookingWritePendingRef.current - 1)
+      }),
+    )
+  }
+
+  function applyCheckInMaps(maps: CheckInMapsSnapshot) {
+    setCheckInEnrollmentMap(maps.enrollments)
+    setCheckInAttendanceMap(maps.attendance)
+    setCheckInPaymentMap(maps.payments)
+    setCheckInServiceMap(maps.services)
+    applyCheckInMapsToStorage(maps)
+  }
+
+  function persistCheckInWrite(label: string, task: Promise<unknown>) {
+    if (!checkInCloudEnabledRef.current) return
+    checkInWritePendingRef.current += 1
+    persistQuietly(
+      label,
+      task.finally(() => {
+        checkInWritePendingRef.current = Math.max(0, checkInWritePendingRef.current - 1)
+      }),
+    )
+  }
 
   useEffect(() => {
     setCheckInAttendanceMap(loadCheckInAttendanceMap())
     setCheckInEnrollmentMap(loadCheckInEnrollmentMap())
     setCheckInPaymentMap(loadCheckInPaymentMap())
+    setCheckInServiceMap(loadCheckInServiceMap())
   }, [])
 
   useEffect(() => {
@@ -430,16 +515,20 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  /** Pull latest bookings when returning to the tab so agency cancels show as Cancelled. */
+  /** Keep bookings live across devices via Supabase poll + Realtime. */
   useEffect(() => {
     if (!hydrated) return
 
     let busy = false
+    let cancelled = false
+
     async function refreshBookings() {
-      if (busy || document.visibilityState !== 'visible') return
+      if (cancelled || busy || bookingWritePendingRef.current > 0) return
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       busy = true
       try {
         const next = await fetchBookings()
+        if (cancelled || bookingWritePendingRef.current > 0) return
         setBookings(next)
       } catch (error) {
         console.error('[portal] bookings refresh failed', error)
@@ -454,42 +543,113 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('focus', onVisible)
+    const poll = window.setInterval(() => {
+      void refreshBookings()
+    }, 4000)
+
+    let unsubscribeRealtime: (() => void) | undefined
+    try {
+      unsubscribeRealtime = subscribeBookings(() => {
+        void refreshBookings()
+      })
+    } catch (error) {
+      console.error('[portal] bookings realtime subscribe failed', error)
+    }
+
+    void refreshBookings()
+
     return () => {
+      cancelled = true
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
+      window.clearInterval(poll)
+      unsubscribeRealtime?.()
     }
   }, [hydrated])
 
-  /** Keep marina check-in board in sync across tabs (guest QR + admin live board). */
+  /** Keep marina check-in board in sync across devices (Supabase) and same-browser tabs. */
   useEffect(() => {
     if (!hydrated) return
 
-    function reloadCheckInMaps() {
+    let cancelled = false
+    let migrateAttempted = false
+
+    function reloadCheckInMapsFromStorage() {
       setCheckInAttendanceMap(loadCheckInAttendanceMap())
       setCheckInEnrollmentMap(loadCheckInEnrollmentMap())
       setCheckInPaymentMap(loadCheckInPaymentMap())
+      setCheckInServiceMap(loadCheckInServiceMap())
+    }
+
+    async function syncCheckInFromCloud(allowMigrate: boolean) {
+      if (cancelled || checkInWritePendingRef.current > 0) return
+      try {
+        const remote = await fetchCheckInMaps()
+        if (cancelled) return
+        if (remote === null) {
+          checkInCloudEnabledRef.current = false
+          return
+        }
+        checkInCloudEnabledRef.current = true
+
+        let next = remote
+        if (allowMigrate && !migrateAttempted) {
+          migrateAttempted = true
+          const local: CheckInMapsSnapshot = {
+            enrollments: loadCheckInEnrollmentMap(),
+            attendance: loadCheckInAttendanceMap(),
+            payments: loadCheckInPaymentMap(),
+            services: loadCheckInServiceMap(),
+          }
+          // First cloud sync: upload this browser's local-only check-ins when remote is empty.
+          if (!checkInMapsHaveData(remote) && checkInMapsHaveData(local)) {
+            checkInWritePendingRef.current += 1
+            try {
+              await pushCheckInMaps(local)
+              next = local
+            } catch (error) {
+              console.error('[supabase] migrate check-in maps', error)
+              next = local
+            } finally {
+              checkInWritePendingRef.current = Math.max(0, checkInWritePendingRef.current - 1)
+            }
+          }
+        }
+
+        if (cancelled || checkInWritePendingRef.current > 0) return
+        applyCheckInMaps(next)
+      } catch (error) {
+        console.error('[portal] check-in sync failed', error)
+      }
     }
 
     function onStorage(event: StorageEvent) {
       if (
         event.key === CHECK_IN_ENROLLMENT_STORAGE_KEY ||
         event.key === CHECK_IN_ATTENDANCE_STORAGE_KEY ||
-        event.key === CHECK_IN_PAYMENT_STORAGE_KEY
+        event.key === CHECK_IN_PAYMENT_STORAGE_KEY ||
+        event.key === CHECK_IN_SERVICE_STORAGE_KEY
       ) {
-        reloadCheckInMaps()
+        reloadCheckInMapsFromStorage()
       }
     }
 
     function onVisible() {
-      if (document.visibilityState === 'visible') reloadCheckInMaps()
+      if (document.visibilityState === 'visible') {
+        void syncCheckInFromCloud(false)
+      }
     }
 
+    void syncCheckInFromCloud(true)
     window.addEventListener('storage', onStorage)
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('focus', onVisible)
-    const poll = window.setInterval(reloadCheckInMaps, 4000)
+    const poll = window.setInterval(() => {
+      void syncCheckInFromCloud(false)
+    }, 4000)
 
     return () => {
+      cancelled = true
       window.removeEventListener('storage', onStorage)
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
@@ -755,6 +915,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         saveCheckInEnrollmentMap(next)
         return next
       })
+      persistCheckInWrite(
+        'upsertCheckInEnrollments',
+        upsertCheckInEnrollments(input.date, input.program, input.bookingCode, cleaned),
+      )
 
       if (already + cleaned.length >= seatsTotal) {
         setCheckInAttendanceMap((current) => {
@@ -768,6 +932,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           saveCheckInAttendanceMap(next)
           return next
         })
+        persistCheckInWrite(
+          'upsertCheckInAttendance',
+          upsertCheckInAttendanceRow(input.date, input.program, input.bookingCode, 'checked'),
+        )
       }
 
       return { ok: true, count: cleaned.length }
@@ -798,6 +966,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           saveCheckInAttendanceMap(next)
           return next
         })
+        if (status === null) {
+          persistCheckInWrite(
+            'deleteCheckInAttendance',
+            deleteCheckInAttendanceRow(date, program, bookingCode),
+          )
+        } else {
+          persistCheckInWrite(
+            'upsertCheckInAttendance',
+            upsertCheckInAttendanceRow(date, program, bookingCode, status),
+          )
+        }
         // No-show frees the boat seat — remove them from the day's boat plan.
         if (status === 'no-show') {
           upsertPlan(date, program, (plan) => {
@@ -816,6 +995,30 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           saveCheckInPaymentMap(next)
           return next
         })
+        if (status === null) {
+          persistCheckInWrite(
+            'deleteCheckInPayment',
+            deleteCheckInPaymentRow(date, program, bookingCode),
+          )
+        } else {
+          persistCheckInWrite(
+            'upsertCheckInPayment',
+            upsertCheckInPaymentRow(date, program, bookingCode, status),
+          )
+        }
+      },
+      getCheckInServices: (date, program, bookingCode) =>
+        getCheckInServices(checkInServices, date, program, bookingCode),
+      setCheckInServices: (date, program, bookingCode, services) => {
+        setCheckInServiceMap((current) => {
+          const next = withCheckInServices(current, date, program, bookingCode, services)
+          saveCheckInServiceMap(next)
+          return next
+        })
+        persistCheckInWrite(
+          'replaceCheckInServices',
+          replaceCheckInServicesForBooking(date, program, bookingCode, services),
+        )
       },
       getCheckInEnrollments: (date, program, bookingCode) =>
         getCheckInEnrollments(checkInEnrollment, date, program, bookingCode),
@@ -831,6 +1034,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           saveCheckInEnrollmentMap(next)
           return next
         })
+        persistCheckInWrite('deleteCheckInEnrollment', deleteCheckInEnrollment(enrollmentId))
         setCheckInAttendanceMap((current) => {
           if (getCheckInAttendance(current, date, program, bookingCode) !== 'checked') {
             return current
@@ -844,30 +1048,41 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           if (booking && remaining >= totalPassengers(booking)) return current
           const next = withCheckInAttendance(current, date, program, bookingCode, null)
           saveCheckInAttendanceMap(next)
+          persistCheckInWrite(
+            'deleteCheckInAttendance',
+            deleteCheckInAttendanceRow(date, program, bookingCode),
+          )
           return next
         })
       },
       trimCheckInEnrollments: (date, program, bookingCode, maxSeats) => {
-        setCheckInEnrollmentMap((current) => {
-          const next = trimCheckInEnrollmentsToSeats(
-            current,
-            date,
-            program,
-            bookingCode,
-            Math.max(0, maxSeats),
-          )
-          saveCheckInEnrollmentMap(next)
-          return next
-        })
+        const next = trimCheckInEnrollmentsToSeats(
+          checkInEnrollment,
+          date,
+          program,
+          bookingCode,
+          Math.max(0, maxSeats),
+        )
+        const trimmed = getCheckInEnrollments(next, date, program, bookingCode)
+        setCheckInEnrollmentMap(next)
+        saveCheckInEnrollmentMap(next)
+        persistCheckInWrite(
+          'replaceCheckInEnrollments',
+          replaceCheckInEnrollmentsForBooking(date, program, bookingCode, trimmed),
+        )
         setCheckInAttendanceMap((current) => {
           if (getCheckInAttendance(current, date, program, bookingCode) !== 'checked') {
             return current
           }
           const booking = bookings.find((item) => item.code === bookingCode)
           if (!booking || Math.max(0, maxSeats) >= totalPassengers(booking)) return current
-          const next = withCheckInAttendance(current, date, program, bookingCode, null)
-          saveCheckInAttendanceMap(next)
-          return next
+          const cleared = withCheckInAttendance(current, date, program, bookingCode, null)
+          saveCheckInAttendanceMap(cleared)
+          persistCheckInWrite(
+            'deleteCheckInAttendance',
+            deleteCheckInAttendanceRow(date, program, bookingCode),
+          )
+          return cleared
         })
       },
       recordGuestCheckIn: (input) => {
@@ -909,6 +1124,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       getBookingClosure,
       isProgramClosed,
       isBookingOpen: (travelDate) => isBookingOpenForDate(bookingCutoffs, travelDate),
+      earliestBookableDate: () => earliestBookableTravelDate(bookingCutoffs),
       isCancelOpen: (travelDate) => isCancelOpenForDate(bookingCutoffs, travelDate),
       updateBookingCutoffs: (patch) => {
         setBookingCutoffs((current) => {
@@ -1031,7 +1247,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           status: pending ? 'Pending Pickup Time' : 'Confirmed',
         }
         setBookings((current) => [booking, ...current])
-        persistQuietly('insertBooking', insertBooking(booking))
+        persistBookingWrite(
+          'insertBooking',
+          insertBooking(booking).catch((error) => {
+            setBookings((current) => current.filter((item) => item.code !== code))
+            const message =
+              error instanceof Error ? error.message : 'Failed to save booking to Supabase'
+            setLoadError(`Booking ${code} was not saved: ${message}`)
+            throw error
+          }),
+        )
         logBookingEvent(
           code,
           'created',
@@ -1057,7 +1282,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             booking.code === code ? { ...booking, status: 'Cancelled' } : booking,
           ),
         )
-        persistQuietly('updateBookingStatus', updateBookingStatus(code, 'Cancelled'))
+        persistBookingWrite('updateBookingStatus', updateBookingStatus(code, 'Cancelled'))
         logBookingEvent(code, 'cancelled', `Cancelled · was ${existing.date}`, options?.actor)
 
         upsertPlan(existing.date, existing.program, (plan) => {
@@ -1132,7 +1357,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             booking.code === code ? { ...booking, date: trimmedDate } : booking,
           ),
         )
-        persistQuietly('updateBookingDate', updateBookingDate(code, trimmedDate))
+        persistBookingWrite('updateBookingDate', updateBookingDate(code, trimmedDate))
         logBookingEvent(
           code,
           'date_changed',
@@ -1218,7 +1443,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               : booking,
           ),
         )
-        persistQuietly(
+        persistBookingWrite(
           'updateBookingRebook',
           updateBookingRebook(code, trimmedDate, nextStatus),
         )
@@ -1404,7 +1629,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         setBookings((current) =>
           current.map((booking) => (booking.code === code ? next : booking)),
         )
-        persistQuietly('updateBookingDetails', updateBookingDetails(next))
+        persistBookingWrite('updateBookingDetails', updateBookingDetails(next))
         logBookingEvent(
           code,
           'details_edited',
@@ -1434,7 +1659,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               : booking,
           ),
         )
-        persistQuietly(
+        persistBookingWrite(
           'updateBookingPickup',
           updateBookingPickup(code, trimmed, 'Confirmed'),
         )
@@ -2024,7 +2249,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }))
       },
     }
-  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, fleetVans, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
+  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInServices, fleetVans, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }

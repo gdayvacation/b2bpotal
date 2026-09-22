@@ -6,6 +6,16 @@ import {
   type BookingCutoffSettings,
 } from '@/lib/booking-cutoffs'
 import type {
+  CheckInEnrollment,
+  DayCheckInEnrollmentMap,
+} from '@/lib/check-in-enrollment'
+import type { DayCheckInPaymentMap } from '@/lib/check-in-payment'
+import {
+  isCheckInServiceKind,
+  type CheckInServiceLine,
+  type DayCheckInServiceMap,
+} from '@/lib/check-in-services'
+import type {
   Agent,
   AgentStatus,
   Availability,
@@ -14,7 +24,9 @@ import type {
   BookingEvent,
   BookingEventType,
   BookingActorRole,
+  CheckInAttendance,
   DayBoatPlan,
+  DayCheckInAttendanceMap,
   DayVehiclePlan,
   FleetVan,
   Hotel,
@@ -673,6 +685,24 @@ export async function fetchBookings(): Promise<Booking[]> {
   return (data as BookingRow[]).map(mapBooking)
 }
 
+/** Live updates when bookings change in Supabase (requires Realtime on `bookings`). */
+export function subscribeBookings(onChange: () => void) {
+  const supabase = getSupabaseBrowserClient()
+  const channel = supabase
+    .channel(`portal-bookings-${Date.now()}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'bookings' },
+      () => {
+        onChange()
+      },
+    )
+    .subscribe()
+  return () => {
+    void supabase.removeChannel(channel)
+  }
+}
+
 export async function upsertAgent(agent: Agent) {
   const supabase = getSupabaseBrowserClient()
   const { error } = await supabase.from('agents').upsert({
@@ -908,6 +938,439 @@ export async function upsertFleetVan(van: FleetVan) {
     phone: van.phone.trim(),
   })
   if (error) throw new Error(`upsert fleet van: ${error.message}`)
+}
+
+type CheckInEnrollmentRow = {
+  id: string
+  date: string
+  program: Program
+  booking_code: string
+  first_name: string
+  last_name: string
+  nationality: string
+  birthday: string
+  passport_number: string
+  scope: CheckInEnrollment['scope']
+  seats: number
+  checked_in_at: string
+}
+
+type CheckInAttendanceRow = {
+  date: string
+  program: Program
+  booking_code: string
+  status: CheckInAttendance
+}
+
+type CheckInPaymentRow = {
+  date: string
+  program: Program
+  seat_key: string
+  status: 'paid'
+}
+
+export type CheckInMapsSnapshot = {
+  enrollments: DayCheckInEnrollmentMap
+  attendance: DayCheckInAttendanceMap
+  payments: DayCheckInPaymentMap
+  services: DayCheckInServiceMap
+}
+
+function isProgram(value: unknown): value is Program {
+  return value === 'PP' || value === 'James Bond'
+}
+
+function mapEnrollmentRow(row: CheckInEnrollmentRow): CheckInEnrollment | null {
+  const id = String(row.id ?? '').trim()
+  const firstName = String(row.first_name ?? '').trim()
+  const scope = row.scope === 'group' ? 'group' : row.scope === 'one' ? 'one' : null
+  const checkedInAt = String(row.checked_in_at ?? '').trim()
+  if (!id || !firstName || !scope || !checkedInAt) return null
+  return {
+    id,
+    firstName,
+    lastName: String(row.last_name ?? '').trim(),
+    nationality: String(row.nationality ?? '').trim(),
+    birthday: String(row.birthday ?? '').trim(),
+    passportNumber: String(row.passport_number ?? '').trim(),
+    scope,
+    seats: Math.max(1, Math.floor(Number(row.seats) || 1)),
+    checkedInAt,
+  }
+}
+
+function enrollmentToRow(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  enrollment: CheckInEnrollment,
+): CheckInEnrollmentRow {
+  return {
+    id: enrollment.id,
+    date,
+    program,
+    booking_code: bookingCode,
+    first_name: enrollment.firstName,
+    last_name: enrollment.lastName,
+    nationality: enrollment.nationality,
+    birthday: enrollment.birthday,
+    passport_number: enrollment.passportNumber,
+    scope: enrollment.scope,
+    seats: enrollment.seats,
+    checked_in_at: enrollment.checkedInAt,
+  }
+}
+
+function buildCheckInEnrollmentMap(rows: CheckInEnrollmentRow[]): DayCheckInEnrollmentMap {
+  const next: DayCheckInEnrollmentMap = {}
+  for (const row of rows) {
+    if (!isProgram(row.program)) continue
+    const enrollment = mapEnrollmentRow(row)
+    if (!enrollment) continue
+    const key = dayBoatPlanKey(asDateString(row.date), row.program)
+    const day = next[key] ?? {}
+    const list = day[row.booking_code] ?? []
+    list.push(enrollment)
+    day[row.booking_code] = list
+    next[key] = day
+  }
+  return next
+}
+
+function buildCheckInAttendanceMap(rows: CheckInAttendanceRow[]): DayCheckInAttendanceMap {
+  const next: DayCheckInAttendanceMap = {}
+  for (const row of rows) {
+    if (!isProgram(row.program)) continue
+    if (row.status !== 'checked' && row.status !== 'no-show') continue
+    const key = dayBoatPlanKey(asDateString(row.date), row.program)
+    const day = next[key] ?? {}
+    day[row.booking_code] = row.status
+    next[key] = day
+  }
+  return next
+}
+
+function buildCheckInPaymentMap(rows: CheckInPaymentRow[]): DayCheckInPaymentMap {
+  const next: DayCheckInPaymentMap = {}
+  for (const row of rows) {
+    if (!isProgram(row.program)) continue
+    if (row.status !== 'paid') continue
+    const key = dayBoatPlanKey(asDateString(row.date), row.program)
+    const day = next[key] ?? {}
+    day[row.seat_key] = 'paid'
+    next[key] = day
+  }
+  return next
+}
+
+function flattenCheckInEnrollmentMap(map: DayCheckInEnrollmentMap): CheckInEnrollmentRow[] {
+  const rows: CheckInEnrollmentRow[] = []
+  for (const [dayKey, byCode] of Object.entries(map)) {
+    const sep = dayKey.indexOf('|')
+    if (sep <= 0) continue
+    const date = dayKey.slice(0, sep)
+    const program = dayKey.slice(sep + 1)
+    if (!isProgram(program)) continue
+    for (const [bookingCode, list] of Object.entries(byCode)) {
+      for (const enrollment of list) {
+        rows.push(enrollmentToRow(date, program, bookingCode, enrollment))
+      }
+    }
+  }
+  return rows
+}
+
+function flattenCheckInAttendanceMap(map: DayCheckInAttendanceMap): CheckInAttendanceRow[] {
+  const rows: CheckInAttendanceRow[] = []
+  for (const [dayKey, byCode] of Object.entries(map)) {
+    const sep = dayKey.indexOf('|')
+    if (sep <= 0) continue
+    const date = dayKey.slice(0, sep)
+    const program = dayKey.slice(sep + 1)
+    if (!isProgram(program)) continue
+    for (const [bookingCode, status] of Object.entries(byCode)) {
+      if (status !== 'checked' && status !== 'no-show') continue
+      rows.push({ date, program, booking_code: bookingCode, status })
+    }
+  }
+  return rows
+}
+
+function flattenCheckInPaymentMap(map: DayCheckInPaymentMap): CheckInPaymentRow[] {
+  const rows: CheckInPaymentRow[] = []
+  for (const [dayKey, byKey] of Object.entries(map)) {
+    const sep = dayKey.indexOf('|')
+    if (sep <= 0) continue
+    const date = dayKey.slice(0, sep)
+    const program = dayKey.slice(sep + 1)
+    if (!isProgram(program)) continue
+    for (const [seatKey, status] of Object.entries(byKey)) {
+      if (status !== 'paid') continue
+      rows.push({ date, program, seat_key: seatKey, status: 'paid' })
+    }
+  }
+  return rows
+}
+
+type CheckInServiceRow = {
+  id: string
+  date: string
+  program: Program
+  booking_code: string
+  kind: string
+  people: number
+  price_per_person: number
+  paid: boolean
+}
+
+function mapServiceRow(row: CheckInServiceRow): CheckInServiceLine | null {
+  const id = String(row.id ?? '').trim()
+  if (!id || !isCheckInServiceKind(row.kind)) return null
+  return {
+    id,
+    kind: row.kind,
+    people: Math.max(1, Math.floor(Number(row.people) || 1)),
+    pricePerPerson: Math.max(0, Math.floor(Number(row.price_per_person) || 0)),
+    paid: row.paid === true,
+  }
+}
+
+function serviceToRow(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  service: CheckInServiceLine,
+): CheckInServiceRow {
+  return {
+    id: service.id,
+    date,
+    program,
+    booking_code: bookingCode,
+    kind: service.kind,
+    people: service.people,
+    price_per_person: service.pricePerPerson,
+    paid: service.paid,
+  }
+}
+
+function buildCheckInServiceMap(rows: CheckInServiceRow[]): DayCheckInServiceMap {
+  const next: DayCheckInServiceMap = {}
+  for (const row of rows) {
+    if (!isProgram(row.program)) continue
+    const service = mapServiceRow(row)
+    if (!service) continue
+    const key = dayBoatPlanKey(asDateString(row.date), row.program)
+    const day = next[key] ?? {}
+    const list = day[row.booking_code] ?? []
+    list.push(service)
+    day[row.booking_code] = list
+    next[key] = day
+  }
+  return next
+}
+
+function flattenCheckInServiceMap(map: DayCheckInServiceMap): CheckInServiceRow[] {
+  const rows: CheckInServiceRow[] = []
+  for (const [dayKey, byCode] of Object.entries(map)) {
+    const sep = dayKey.indexOf('|')
+    if (sep <= 0) continue
+    const date = dayKey.slice(0, sep)
+    const program = dayKey.slice(sep + 1)
+    if (!isProgram(program)) continue
+    for (const [bookingCode, list] of Object.entries(byCode)) {
+      for (const service of list) {
+        rows.push(serviceToRow(date, program, bookingCode, service))
+      }
+    }
+  }
+  return rows
+}
+
+/** Returns null when core check-in tables are missing (migration not run yet). */
+export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
+  const supabase = getSupabaseBrowserClient()
+  const [enrollmentsRes, attendanceRes, paymentsRes, servicesRes] = await Promise.all([
+    supabase.from('check_in_enrollments').select('*'),
+    supabase.from('check_in_attendance').select('*'),
+    supabase.from('check_in_payments').select('*'),
+    supabase.from('check_in_services').select('*'),
+  ])
+
+  if (enrollmentsRes.error || attendanceRes.error || paymentsRes.error) {
+    const message =
+      enrollmentsRes.error?.message ||
+      attendanceRes.error?.message ||
+      paymentsRes.error?.message ||
+      'unknown'
+    console.warn(
+      '[supabase] check-in tables unavailable — run supabase/add-check-in.sql',
+      message,
+    )
+    return null
+  }
+
+  let services: DayCheckInServiceMap = {}
+  if (servicesRes.error) {
+    console.warn(
+      '[supabase] check_in_services unavailable — run supabase/add-check-in-services.sql',
+      servicesRes.error.message,
+    )
+  } else {
+    services = buildCheckInServiceMap(servicesRes.data as CheckInServiceRow[])
+  }
+
+  return {
+    enrollments: buildCheckInEnrollmentMap(enrollmentsRes.data as CheckInEnrollmentRow[]),
+    attendance: buildCheckInAttendanceMap(attendanceRes.data as CheckInAttendanceRow[]),
+    payments: buildCheckInPaymentMap(paymentsRes.data as CheckInPaymentRow[]),
+    services,
+  }
+}
+
+export async function upsertCheckInEnrollments(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  enrollments: CheckInEnrollment[],
+) {
+  if (enrollments.length === 0) return
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase
+    .from('check_in_enrollments')
+    .upsert(enrollments.map((item) => enrollmentToRow(date, program, bookingCode, item)))
+  if (error) throw new Error(`upsert check-in enrollments: ${error.message}`)
+}
+
+export async function deleteCheckInEnrollment(enrollmentId: string) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase.from('check_in_enrollments').delete().eq('id', enrollmentId)
+  if (error) throw new Error(`delete check-in enrollment: ${error.message}`)
+}
+
+export async function replaceCheckInEnrollmentsForBooking(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  enrollments: CheckInEnrollment[],
+) {
+  const supabase = getSupabaseBrowserClient()
+  const { error: deleteError } = await supabase
+    .from('check_in_enrollments')
+    .delete()
+    .eq('date', date)
+    .eq('program', program)
+    .eq('booking_code', bookingCode)
+  if (deleteError) throw new Error(`replace check-in enrollments: ${deleteError.message}`)
+  if (enrollments.length === 0) return
+  const { error } = await supabase
+    .from('check_in_enrollments')
+    .insert(enrollments.map((item) => enrollmentToRow(date, program, bookingCode, item)))
+  if (error) throw new Error(`replace check-in enrollments insert: ${error.message}`)
+}
+
+export async function upsertCheckInAttendanceRow(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  status: CheckInAttendance,
+) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase.from('check_in_attendance').upsert({
+    date,
+    program,
+    booking_code: bookingCode,
+    status,
+  })
+  if (error) throw new Error(`upsert check-in attendance: ${error.message}`)
+}
+
+export async function deleteCheckInAttendanceRow(
+  date: string,
+  program: Program,
+  bookingCode: string,
+) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase
+    .from('check_in_attendance')
+    .delete()
+    .eq('date', date)
+    .eq('program', program)
+    .eq('booking_code', bookingCode)
+  if (error) throw new Error(`delete check-in attendance: ${error.message}`)
+}
+
+export async function upsertCheckInPaymentRow(
+  date: string,
+  program: Program,
+  seatKey: string,
+  status: 'paid',
+) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase.from('check_in_payments').upsert({
+    date,
+    program,
+    seat_key: seatKey,
+    status,
+  })
+  if (error) throw new Error(`upsert check-in payment: ${error.message}`)
+}
+
+export async function deleteCheckInPaymentRow(date: string, program: Program, seatKey: string) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase
+    .from('check_in_payments')
+    .delete()
+    .eq('date', date)
+    .eq('program', program)
+    .eq('seat_key', seatKey)
+  if (error) throw new Error(`delete check-in payment: ${error.message}`)
+}
+
+export async function replaceCheckInServicesForBooking(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  services: CheckInServiceLine[],
+) {
+  const supabase = getSupabaseBrowserClient()
+  const { error: deleteError } = await supabase
+    .from('check_in_services')
+    .delete()
+    .eq('date', date)
+    .eq('program', program)
+    .eq('booking_code', bookingCode)
+  if (deleteError) throw new Error(`replace check-in services: ${deleteError.message}`)
+  if (services.length === 0) return
+  const { error } = await supabase
+    .from('check_in_services')
+    .insert(services.map((item) => serviceToRow(date, program, bookingCode, item)))
+  if (error) throw new Error(`replace check-in services insert: ${error.message}`)
+}
+
+/** One-shot upload used when migrating browser-local check-in data into Supabase. */
+export async function pushCheckInMaps(snapshot: CheckInMapsSnapshot) {
+  const supabase = getSupabaseBrowserClient()
+  const enrollmentRows = flattenCheckInEnrollmentMap(snapshot.enrollments)
+  const attendanceRows = flattenCheckInAttendanceMap(snapshot.attendance)
+  const paymentRows = flattenCheckInPaymentMap(snapshot.payments)
+  const serviceRows = flattenCheckInServiceMap(snapshot.services)
+
+  if (enrollmentRows.length > 0) {
+    const { error } = await supabase.from('check_in_enrollments').upsert(enrollmentRows)
+    if (error) throw new Error(`push check-in enrollments: ${error.message}`)
+  }
+  if (attendanceRows.length > 0) {
+    const { error } = await supabase.from('check_in_attendance').upsert(attendanceRows)
+    if (error) throw new Error(`push check-in attendance: ${error.message}`)
+  }
+  if (paymentRows.length > 0) {
+    const { error } = await supabase.from('check_in_payments').upsert(paymentRows)
+    if (error) throw new Error(`push check-in payments: ${error.message}`)
+  }
+  if (serviceRows.length > 0) {
+    const { error } = await supabase.from('check_in_services').upsert(serviceRows)
+    if (error) throw new Error(`push check-in services: ${error.message}`)
+  }
 }
 
 export function persistQuietly(label: string, task: Promise<unknown>) {

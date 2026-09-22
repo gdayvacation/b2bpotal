@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState, Fragment, type ReactNode } from 'react'
 import {
   ArrowLeft,
   Bus,
@@ -1453,8 +1453,11 @@ function BoatBoard({
             key: `print-van-${boat}-${group.van}`,
             title: `Van ${group.van}${group.zone !== '—' ? ` · ${group.zone}` : ''} · ${group.pax} pax${group.meta.driver ? ` · Driver ${group.meta.driver}` : ''}`,
             vanLabel: `Van ${group.van}`,
-            rows: group.items.flatMap((booking) =>
-              expandGuidePassengerRows(booking, getEnrollments(booking.code)),
+            rows: group.items.map((booking) =>
+              guideLeaderPrintRow(
+                booking,
+                paxOnVan(vanAssignments[booking.code], group.van) || totalPassengers(booking),
+              ),
             ),
           }))
           const noTransferSection =
@@ -1463,8 +1466,8 @@ function BoatBoard({
                   key: `print-nt-${boat}`,
                   title: `No transfer · ${freeGuests.reduce((sum, b) => sum + totalPassengers(b), 0)} pax`,
                   vanLabel: 'No transfer',
-                  rows: freeGuests.flatMap((booking) =>
-                    expandGuidePassengerRows(booking, getEnrollments(booking.code)),
+                  rows: freeGuests.map((booking) =>
+                    guideLeaderPrintRow(booking, totalPassengers(booking)),
                   ),
                 }
               : null
@@ -1489,28 +1492,28 @@ function BoatBoard({
               )}
             >
               <div
-                className="guide-jo-color-bar mb-1.5 h-1.5 w-full rounded-sm"
+                className="guide-jo-color-bar mb-1 h-1 w-full rounded-sm"
                 style={{ backgroundColor: theme.printHex }}
               />
-              <div className="guide-jo-header mb-1.5 flex items-end justify-between gap-3 border-b border-teal-900/25 pb-1.5">
+              <div className="guide-jo-header mb-1 flex items-end justify-between gap-3 border-b border-teal-900/25 pb-1">
                 <div>
-                  <p className="text-[8px] font-semibold tracking-[0.14em] text-teal-700/70 uppercase">
+                  <p className="text-[7px] font-semibold tracking-[0.14em] text-teal-700/70 uppercase">
                     G&apos;Day Tours Phuket · Guide Job Order
                   </p>
-                  <h1 className="mt-0.5 text-[13px] leading-tight font-bold text-teal-950">
+                  <h1 className="mt-0.5 text-[12px] leading-tight font-bold text-teal-950">
                     <span
-                      className="mr-1.5 inline-block size-2.5 rounded-full align-middle"
+                      className="mr-1.5 inline-block size-2 rounded-full align-middle"
                       style={{ backgroundColor: theme.printHex }}
                     />
                     {boatDisplayName(plan, boat)} · {theme.colorName} ·{' '}
                     {program === 'PP' ? 'PP' : 'JB'} ·{' '}
                     {program === 'PP' ? 'Phi Phi Islands' : 'Phang Nga Bay'}
                   </h1>
-                  <p className="mt-0.5 text-[9px] leading-tight text-teal-900/60">
+                  <p className="mt-0.5 text-[8px] leading-tight text-teal-900/60">
                     {formatLongDate(date)} · {pax} / {capacity} pax
                   </p>
                 </div>
-                <div className="text-right text-[9px] leading-tight text-teal-900/70">
+                <div className="text-right text-[8px] leading-tight text-teal-900/70">
                   <p>
                     Guide:{' '}
                     <span className="font-semibold text-teal-950">
@@ -1533,23 +1536,10 @@ function BoatBoard({
               {numberedSections.length === 0 ? (
                 <p className="py-4 text-center text-[10px] text-neutral-500">No guests on this boat.</p>
               ) : (
-                <div className="guide-jo-sections space-y-1.5">
-                  {numberedSections.map((section) => (
-                    <div key={section.key} className="guide-jo-van">
-                      <p className="guide-jo-van-title mb-0.5 text-[10px] leading-tight font-semibold text-teal-950">
-                        {section.title}
-                      </p>
-                      <GuidePassengerTable
-                        rows={section.rows}
-                        vanLabel={section.vanLabel}
-                        startNo={section.startNo}
-                      />
-                    </div>
-                  ))}
-                </div>
+                <GuideBoatPassengerTable sections={numberedSections} />
               )}
 
-              <p className="guide-jo-footer mt-1 text-[8px] text-teal-900/50">
+              <p className="guide-jo-footer mt-1 text-[7px] text-teal-900/50">
                 Total passengers on {boatDisplayName(plan, boat)}: {pax} / {capacity}
               </p>
             </div>
@@ -1561,7 +1551,7 @@ function BoatBoard({
         @media print {
           @page {
             size: A4 portrait;
-            margin: 6mm;
+            margin: 5mm;
           }
           body.printing-guide-jo * {
             visibility: hidden !important;
@@ -1581,13 +1571,19 @@ function BoatBoard({
             print-color-adjust: exact !important;
           }
           body.printing-guide-jo .guide-jo-table {
-            font-size: 8.5px !important;
-            line-height: 1.15 !important;
+            table-layout: fixed !important;
+            width: 100% !important;
+            font-size: 8px !important;
+            line-height: 1.1 !important;
           }
           body.printing-guide-jo .guide-jo-table th,
           body.printing-guide-jo .guide-jo-table td {
-            padding-top: 1px !important;
-            padding-bottom: 1px !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+            vertical-align: top !important;
+          }
+          body.printing-guide-jo .guide-jo-boat {
+            margin-bottom: 0.25rem !important;
           }
         }
       `}</style>
@@ -1624,18 +1620,28 @@ function GuideField({
 
 type GuidePassengerRow = {
   bookingCode: string
-  slot: number
   guestName: string
-  /** Shown only on lead guest row, e.g. "(2AD+2IF)". */
+  /** Shown next to lead name, e.g. "(2AD+2IF)". */
   leadPaxTag: string
-  nationality: string
   hotel: string
+  /** Extra paid option for guide (e.g. Private Longtail) — filled later. */
+  option: string
 }
 
-/** Compact booking mix for lead guest only — e.g. (2AD+1CHD+2IF). */
+/** Compact booking mix for lead guest — e.g. (2AD+1CHD+2IF). */
 function formatGuideLeadPaxTag(
   booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>,
+  seatsOnThisVan?: number,
 ) {
+  const total =
+    booking.adults + booking.children + booking.infants + booking.tourLeaders
+  if (
+    typeof seatsOnThisVan === 'number' &&
+    seatsOnThisVan > 0 &&
+    seatsOnThisVan !== total
+  ) {
+    return `(${seatsOnThisVan}pax)`
+  }
   const parts: string[] = []
   if (booking.adults > 0) parts.push(`${booking.adults}AD`)
   if (booking.children > 0) parts.push(`${booking.children}CHD`)
@@ -1644,65 +1650,74 @@ function formatGuideLeadPaxTag(
   return parts.length > 0 ? `(${parts.join('+')})` : ''
 }
 
-/** One print row per booking (lead guest). Extra seats are summarized in leadPaxTag. */
-function expandGuidePassengerRows(
-  booking: Booking,
-  enrollments: { firstName: string; lastName: string; nationality: string; seats: number }[] = [],
-): GuidePassengerRow[] {
-  const leadEnrollment = enrollments[0]
-  const enrolledName = leadEnrollment
-    ? [leadEnrollment.firstName, leadEnrollment.lastName].filter(Boolean).join(' ').trim()
-    : ''
-  return [
-    {
-      bookingCode: booking.code,
-      slot: 0,
-      guestName: enrolledName || booking.leadGuest,
-      leadPaxTag: formatGuideLeadPaxTag(booking),
-      nationality: leadEnrollment?.nationality || '',
-      hotel: booking.pickupHotel || '',
-    },
-  ]
+/** One print row per booking — leader name only. */
+function guideLeaderPrintRow(booking: Booking, seatsOnThisVan?: number): GuidePassengerRow {
+  return {
+    bookingCode: booking.code,
+    guestName: booking.leadGuest,
+    leadPaxTag: formatGuideLeadPaxTag(booking, seatsOnThisVan),
+    hotel: booking.pickupHotel?.trim() || '—',
+    option: '',
+  }
 }
 
-function GuidePassengerTable({
-  rows,
-  vanLabel,
-  startNo,
+function GuideBoatPassengerTable({
+  sections,
 }: {
-  rows: GuidePassengerRow[]
-  vanLabel: string
-  startNo: number
+  sections: Array<{
+    key: string
+    title: string
+    rows: GuidePassengerRow[]
+    startNo: number
+  }>
 }) {
   return (
-    <table className="guide-jo-table w-full border-collapse text-[10px] leading-tight">
+    <table className="guide-jo-table w-full table-fixed border-collapse text-[10px] leading-tight">
+      <colgroup>
+        <col style={{ width: '5%' }} />
+        <col style={{ width: '44%' }} />
+        <col style={{ width: '39%' }} />
+        <col style={{ width: '12%' }} />
+      </colgroup>
       <thead>
         <tr className="border-b border-teal-900/20 text-left text-[8px] tracking-wide text-teal-900/60 uppercase">
-          <th className="w-6 py-0.5 pr-1.5 font-semibold">No.</th>
+          <th className="py-0.5 pr-1.5 font-semibold">No.</th>
           <th className="py-0.5 pr-1.5 font-semibold">Guest name</th>
-          <th className="w-[16%] py-0.5 pr-1.5 font-semibold">Nationality</th>
           <th className="py-0.5 pr-1.5 font-semibold">Hotel</th>
-          <th className="w-[10%] py-0.5 font-semibold">Van</th>
+          <th className="py-0.5 font-semibold">Option</th>
         </tr>
       </thead>
       <tbody>
-        {rows.map((row, index) => (
-          <tr key={`${row.bookingCode}-${row.slot}`} className="border-b border-teal-900/8">
-            <td className="py-0.5 pr-1.5 tabular-nums text-teal-900/50">{startNo + index + 1}</td>
-            <td className="py-0.5 pr-1.5 font-medium text-teal-950">
-              {row.guestName ? (
-                <>
+        {sections.map((section) => (
+          <Fragment key={section.key}>
+            <tr className="guide-jo-van-title">
+              <td
+                colSpan={4}
+                className="pt-1.5 pb-0.5 text-[9px] leading-tight font-semibold text-teal-950"
+              >
+                {section.title}
+              </td>
+            </tr>
+            {section.rows.map((row, index) => (
+              <tr key={row.bookingCode} className="border-b border-teal-900/8">
+                <td className="py-0.5 pr-1.5 align-top tabular-nums text-teal-900/50">
+                  {section.startNo + index + 1}
+                </td>
+                <td className="py-0.5 pr-1.5 align-top font-medium break-words text-teal-950">
                   {row.guestName}
                   {row.leadPaxTag ? (
                     <span className="ml-1 font-normal text-teal-900/65">{row.leadPaxTag}</span>
                   ) : null}
-                </>
-              ) : null}
-            </td>
-            <td className="py-0.5 pr-1.5 text-teal-900/70">{row.nationality || ''}</td>
-            <td className="py-0.5 pr-1.5 text-teal-900/80">{row.hotel || ''}</td>
-            <td className="py-0.5 text-teal-900/70">{vanLabel}</td>
-          </tr>
+                </td>
+                <td className="py-0.5 pr-1.5 align-top break-words text-teal-900/80">
+                  {row.hotel}
+                </td>
+                <td className="py-0.5 align-top text-teal-900/50">
+                  {row.option || ''}
+                </td>
+              </tr>
+            ))}
+          </Fragment>
         ))}
       </tbody>
     </table>

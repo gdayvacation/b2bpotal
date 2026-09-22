@@ -9,7 +9,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { voucherUrl } from '@/components/voucher-share-actions'
 import { BRAND_LEGAL } from '@/lib/brand'
-import { formatLongDate } from '@/lib/format'
+import { formatIncludeLabel, formatLongDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { formatPaxBreakdown, isNoTransfer, totalPassengers, type Booking } from '@/lib/types'
 
@@ -118,12 +118,12 @@ export function VoucherView({ booking, slug }: { booking: Booking; slug: string 
             />
           </div>
           <div className="mt-2 grid grid-cols-2 gap-2 border-t border-white/10 pt-2">
-            <HeroFact label="National Park" value={live.parkFee || '—'} />
+            <HeroFact label="National Park" value={formatIncludeLabel(live.parkFee)} />
             <HeroFact
               label="Canoe"
               value={
                 live.program === 'James Bond'
-                  ? live.canoe || '—'
+                  ? formatIncludeLabel(live.canoe)
                   : 'N/A'
               }
             />
@@ -168,11 +168,11 @@ export function VoucherView({ booking, slug }: { booking: Booking; slug: string 
 
           <Section title="Tour options" icon={<Ship className="size-3.5" />}>
             <dl className="grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-3">
-              <DetailCell label="National Park" value={live.parkFee || '—'} />
+              <DetailCell label="National Park" value={formatIncludeLabel(live.parkFee)} />
               <DetailCell
                 label="Canoe"
                 value={
-                  live.program === 'James Bond' ? live.canoe || '—' : 'N/A'
+                  live.program === 'James Bond' ? formatIncludeLabel(live.canoe) : 'N/A'
                 }
               />
               <DetailCell

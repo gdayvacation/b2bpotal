@@ -16,8 +16,9 @@ export type BookingCutoffSettings = {
 
 export const DEFAULT_BOOKING_CUTOFFS: BookingCutoffSettings = {
   timezone: BOOKING_CUTOFF_TIMEZONE,
+  /** Close new bookings at end of the day before travel (Bangkok). */
   bookBeforeDays: 1,
-  bookUntilTime: '18:00',
+  bookUntilTime: '23:59',
   cancelBeforeDays: 1,
   cancelUntilTime: '16:00',
 }
@@ -111,6 +112,24 @@ export function isBookingOpenForDate(
     now,
     settings.timezone,
   )
+}
+
+/**
+ * Soonest travel date open for booking right now (Asia/Bangkok).
+ * Example with day-before 23:59 cutoff: on 22 Sep after midnight, 22 Sep is closed
+ * and this returns 23 Sep (next-day trip already open until 23:59 on 22 Sep).
+ */
+export function earliestBookableTravelDate(
+  settings: BookingCutoffSettings,
+  now: Date = new Date(),
+  horizonDays = 60,
+): string {
+  const today = zonedParts(now, settings.timezone).date
+  for (let offset = 0; offset <= horizonDays; offset += 1) {
+    const candidate = addCalendarDays(today, offset)
+    if (isBookingOpenForDate(settings, candidate, now)) return candidate
+  }
+  return addCalendarDays(today, 1)
 }
 
 export function isCancelOpenForDate(

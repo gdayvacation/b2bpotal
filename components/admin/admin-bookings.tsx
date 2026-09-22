@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
@@ -51,11 +52,18 @@ import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { isNoTransfer, isPrivateTransfer, totalPassengers, type Booking, type Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
-/** Search only looks from 7 days ago through all future trips (keeps lists fast). */
+/** Wider window when searching text fields; code search ignores this. */
 function searchFromISO() {
   const d = startOfToday()
   d.setDate(d.getDate() - 7)
   return toISODate(d)
+}
+
+function looksLikeBookingCodeQuery(query: string) {
+  const q = query.trim().toLowerCase()
+  if (!q) return false
+  // Full or partial codes: PP2609-0229, 0229, pp2609, jb2701-0001
+  return /^(pp|jb)?\d{0,4}-?\d{0,6}$/i.test(q) || q.includes('-')
 }
 
 /** Default list: newest first, capped so the table stays light. */
@@ -64,7 +72,7 @@ const PAGE_SIZE = 50
 
 type QuickFilter = 'all' | 'today'
 type ProgramFilter = 'all' | Program
-type SortKey = 'code' | 'agent' | 'zone'
+type SortKey = 'code' | 'date' | 'agent' | 'zone'
 type SortDir = 'asc' | 'desc'
 
 function SortableHead({
@@ -293,7 +301,7 @@ function BookingStatusMenu({
 }
 
 export function AdminBookings() {
-  const { bookings, cancelBooking, setBookingPickupTime } = usePortal()
+  const { bookings, cancelBooking, hydrated, setBookingPickupTime } = usePortal()
   const searchParams = useSearchParams()
   const createdCode = searchParams.get('created')
   const [quick, setQuick] = useState<QuickFilter>('all')
@@ -330,8 +338,8 @@ export function AdminBookings() {
       .filter((booking) => {
         if (program !== 'all' && booking.program !== program) return false
         if (isSearching) {
-          if (booking.date < searchFrom) return false
           const haystack = [
+            booking.code,
             booking.agentName,
             booking.leadGuest,
             booking.agentRef,
@@ -340,6 +348,8 @@ export function AdminBookings() {
             .join(' ')
             .toLowerCase()
           if (!haystack.includes(query)) return false
+          // Text/name/hotel search stays recent; booking-number search covers all dates.
+          if (!looksLikeBookingCodeQuery(query) && booking.date < searchFrom) return false
         }
         if (quick === 'today' && booking.date !== today) return false
         if (dateIso && booking.date !== dateIso) return false
@@ -349,6 +359,12 @@ export function AdminBookings() {
       .sort((a, b) => {
         if (sortKey === 'code') {
           return dir * a.code.localeCompare(b.code, undefined, { numeric: true })
+        }
+        if (sortKey === 'date') {
+          return (
+            dir * a.date.localeCompare(b.date) ||
+            dir * a.code.localeCompare(b.code, undefined, { numeric: true })
+          )
         }
         if (sortKey === 'agent') {
           return (
@@ -412,8 +428,18 @@ export function AdminBookings() {
       return
     }
     setSortKey(key)
-    setSortDir('asc')
+    setSortDir(key === 'date' || key === 'code' ? 'desc' : 'asc')
   }
+
+  useEffect(() => {
+    if (!createdCode) return
+    setDismissCreated(false)
+    setQuick('all')
+    setProgram('all')
+    setSelectedDate(undefined)
+    setSearch('')
+    setPage(1)
+  }, [createdCode])
 
   function applyToday() {
     setQuick('today')
@@ -468,6 +494,10 @@ export function AdminBookings() {
   const dateLabel = selectedDate ? formatShortDate(toISODate(selectedDate)) : 'Trip date'
 
   const showCreated = Boolean(createdCode) && !dismissCreated
+  const createdMissing =
+    Boolean(createdCode) &&
+    hydrated &&
+    !bookings.some((booking) => booking.code === createdCode)
   const showingFrom = list.length === 0 ? 0 : pageStart + 1
   const showingTo = Math.min(pageStart + PAGE_SIZE, list.length)
 
@@ -485,14 +515,40 @@ export function AdminBookings() {
       />
 
       {showCreated ? (
-        <div className="mb-4 flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/80 px-4 py-3 text-sm text-emerald-900">
-          <Check className="mt-0.5 size-4 shrink-0 text-emerald-700" />
+        <div
+          className={cn(
+            'mb-4 flex items-start gap-3 rounded-2xl border px-4 py-3 text-sm',
+            createdMissing
+              ? 'border-amber-200 bg-amber-50/90 text-amber-950'
+              : 'border-emerald-200 bg-emerald-50/80 text-emerald-900',
+          )}
+        >
+          {createdMissing ? (
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-700" />
+          ) : (
+            <Check className="mt-0.5 size-4 shrink-0 text-emerald-700" />
+          )}
           <p className="min-w-0 flex-1">
-            Booking <span className="font-mono font-semibold">{createdCode}</span> was added successfully.
+            {createdMissing ? (
+              <>
+                Booking <span className="font-mono font-semibold">{createdCode}</span> is not in
+                Supabase yet — check the red error bar at the top, or add the booking again.
+              </>
+            ) : (
+              <>
+                Booking <span className="font-mono font-semibold">{createdCode}</span> was added
+                successfully.
+              </>
+            )}
           </p>
           <button
             type="button"
-            className="rounded-md p-1 text-emerald-800/50 hover:bg-emerald-100 hover:text-emerald-900"
+            className={cn(
+              'rounded-md p-1',
+              createdMissing
+                ? 'text-amber-800/50 hover:bg-amber-100 hover:text-amber-900'
+                : 'text-emerald-800/50 hover:bg-emerald-100 hover:text-emerald-900',
+            )}
             aria-label="Dismiss"
             onClick={() => setDismissCreated(true)}
           >
@@ -603,9 +659,9 @@ export function AdminBookings() {
             <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search agent, guest, voucher number, or hotel…"
+              placeholder="Search booking number, agent, guest, voucher, or hotel…"
               className="h-10 rounded-xl pr-9 pl-9"
-              aria-label="Search bookings by agent, guest, voucher number, or hotel"
+              aria-label="Search bookings by booking number, agent, guest, voucher number, or hotel"
             />
             {isSearching ? (
               <button
@@ -625,7 +681,12 @@ export function AdminBookings() {
         {list.length === 0 ? (
           <div className="px-4 py-12 text-center text-sm text-teal-900/45">
             No bookings match this filter
-            {isSearching ? ' (search covers last 7 days + upcoming only)' : ''}.
+            {isSearching
+              ? looksLikeBookingCodeQuery(query)
+                ? ''
+                : ' (name/hotel search covers last 7 days + upcoming; booking numbers search all dates)'
+              : ''}
+            .
           </div>
         ) : (
           <>
@@ -641,7 +702,14 @@ export function AdminBookings() {
                   >
                     Booking Number
                   </SortableHead>
-                  <TableHead className="text-teal-800/50">Date</TableHead>
+                  <SortableHead
+                    column="date"
+                    active={sortKey === 'date'}
+                    dir={sortDir}
+                    onSort={toggleSort}
+                  >
+                    Date
+                  </SortableHead>
                   <TableHead className="text-teal-800/50">Program</TableHead>
                   <SortableHead
                     column="agent"

@@ -6,7 +6,7 @@ create table if not exists public.booking_cutoffs (
   timezone text not null default 'Asia/Bangkok',
   book_before_days int not null default 1
     check (book_before_days >= 0 and book_before_days <= 30),
-  book_until_time text not null default '18:00'
+  book_until_time text not null default '23:59'
     check (book_until_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'),
   cancel_before_days int not null default 1
     check (cancel_before_days >= 0 and cancel_before_days <= 30),
