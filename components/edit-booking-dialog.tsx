@@ -297,10 +297,24 @@ export function EditBookingDialog({
                 <NumberField label="TL" value={tourLeaders} onChange={setTourLeaders} />
               </div>
               {seatsHint ? (
-                <p className="text-xs text-teal-900/50">
-                  {pax} pax total · up to {seatsHint.seatsLeft} seats available on this date
-                  (capacity {seatsHint.capacity})
-                </p>
+                pax > seatsHint.seatsLeft ? (
+                  <p
+                    className={cn(
+                      'text-xs',
+                      bypassCutoff ? 'text-amber-800' : 'text-rose-700',
+                    )}
+                  >
+                    {pax} pax total · {seatsHint.seatsLeft} of {seatsHint.capacity} seats available
+                    {bypassCutoff
+                      ? ' — admin can overbook; confirm boat capacity offline'
+                      : ' — reduce guests to save'}
+                  </p>
+                ) : (
+                  <p className="text-xs text-teal-900/50">
+                    {pax} pax total · up to {seatsHint.seatsLeft} seats available on this date
+                    (capacity {seatsHint.capacity})
+                  </p>
+                )
               ) : null}
             </>
           ) : null}

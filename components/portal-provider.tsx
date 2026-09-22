@@ -66,6 +66,7 @@ import {
   fetchBookingEvents,
   fetchBookings,
   fetchCheckInMaps,
+  fetchDayBoatPlans,
   insertBooking,
   insertBookingEvent,
   loadPortalSnapshot,
@@ -447,6 +448,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const checkInCloudEnabledRef = useRef(false)
   const checkInWritePendingRef = useRef(0)
   const bookingWritePendingRef = useRef(0)
+  const boatPlanWritePendingRef = useRef(0)
 
   function persistBookingWrite(label: string, task: Promise<unknown>) {
     bookingWritePendingRef.current += 1
@@ -456,6 +458,21 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         bookingWritePendingRef.current = Math.max(0, bookingWritePendingRef.current - 1)
       }),
     )
+  }
+
+  function persistBoatPlanWrite(task: Promise<unknown>) {
+    boatPlanWritePendingRef.current += 1
+    void task
+      .catch((error) => {
+        console.error('[supabase] saveDayBoatPlan', error)
+        const message = error instanceof Error ? error.message : 'Failed to save boat plan'
+        if (/boat.?guides|add-boat-guides/i.test(message)) {
+          setLoadError(message)
+        }
+      })
+      .finally(() => {
+        boatPlanWritePendingRef.current = Math.max(0, boatPlanWritePendingRef.current - 1)
+      })
   }
 
   function applyCheckInMaps(maps: CheckInMapsSnapshot) {
@@ -564,6 +581,48 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('focus', onVisible)
       window.clearInterval(poll)
       unsubscribeRealtime?.()
+    }
+  }, [hydrated])
+
+  /** Keep boat guides / assignments live across admins. */
+  useEffect(() => {
+    if (!hydrated) return
+
+    let busy = false
+    let cancelled = false
+
+    async function refreshDayBoatPlans() {
+      if (cancelled || busy || boatPlanWritePendingRef.current > 0) return
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      busy = true
+      try {
+        const next = await fetchDayBoatPlans()
+        if (cancelled || boatPlanWritePendingRef.current > 0) return
+        setDayBoatPlans(next)
+      } catch (error) {
+        console.error('[portal] day boat plans refresh failed', error)
+      } finally {
+        busy = false
+      }
+    }
+
+    function onVisible() {
+      if (document.visibilityState === 'visible') void refreshDayBoatPlans()
+    }
+
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    const poll = window.setInterval(() => {
+      void refreshDayBoatPlans()
+    }, 4000)
+
+    void refreshDayBoatPlans()
+
+    return () => {
+      cancelled = true
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+      window.clearInterval(poll)
     }
   }, [hydrated])
 
@@ -759,7 +818,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const key = dayBoatPlanKey(date, program)
         const base = current[key] ?? emptyDayBoatPlan(date, program)
         const next = updater(base)
-        persistQuietly('saveDayBoatPlan', saveDayBoatPlan(next))
+        persistBoatPlanWrite(saveDayBoatPlan(next))
         return { ...current, [key]: next }
       })
     }
@@ -1203,17 +1262,19 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
 
         const pax = totalPassengers(input)
-        const caps = getCapacity(input.date)
-        const capacity = input.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
-        const booked = bookedPaxFor(input.date, input.program)
-        const seatsLeft = Math.max(0, capacity - booked)
-        if (pax > seatsLeft) {
-          return {
-            ok: false,
-            error:
-              seatsLeft === 0
-                ? `${input.program} is sold out on this date (${capacity} seats).`
-                : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${input.program} on this date (capacity ${capacity}).`,
+        if (!options?.bypassCutoff) {
+          const caps = getCapacity(input.date)
+          const capacity = input.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
+          const booked = bookedPaxFor(input.date, input.program)
+          const seatsLeft = Math.max(0, capacity - booked)
+          if (pax > seatsLeft) {
+            return {
+              ok: false,
+              error:
+                seatsLeft === 0
+                  ? `${input.program} is sold out on this date (${capacity} seats).`
+                  : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${input.program} on this date (capacity ${capacity}).`,
+            }
           }
         }
 
@@ -1334,18 +1395,20 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
 
         const pax = totalPassengers(existing)
-        const caps = getCapacity(trimmedDate)
-        const capacity =
-          existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
-        const booked = bookedPaxFor(trimmedDate, existing.program)
-        const seatsLeft = Math.max(0, capacity - booked)
-        if (pax > seatsLeft) {
-          return {
-            ok: false,
-            error:
-              seatsLeft === 0
-                ? `${existing.program} is sold out on ${trimmedDate} (${capacity} seats).`
-                : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${existing.program} on ${trimmedDate}.`,
+        if (!options?.bypassCutoff) {
+          const caps = getCapacity(trimmedDate)
+          const capacity =
+            existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
+          const booked = bookedPaxFor(trimmedDate, existing.program)
+          const seatsLeft = Math.max(0, capacity - booked)
+          if (pax > seatsLeft) {
+            return {
+              ok: false,
+              error:
+                seatsLeft === 0
+                  ? `${existing.program} is sold out on ${trimmedDate} (${capacity} seats).`
+                  : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${existing.program} on ${trimmedDate}.`,
+            }
           }
         }
 
@@ -1410,18 +1473,20 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
 
         const pax = totalPassengers(existing)
-        const caps = getCapacity(trimmedDate)
-        const capacity =
-          existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
-        const booked = bookedPaxFor(trimmedDate, existing.program)
-        const seatsLeft = Math.max(0, capacity - booked)
-        if (pax > seatsLeft) {
-          return {
-            ok: false,
-            error:
-              seatsLeft === 0
-                ? `${existing.program} is sold out on this date (${capacity} seats).`
-                : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${existing.program} on this date (capacity ${capacity}).`,
+        if (!options?.bypassCutoff) {
+          const caps = getCapacity(trimmedDate)
+          const capacity =
+            existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
+          const booked = bookedPaxFor(trimmedDate, existing.program)
+          const seatsLeft = Math.max(0, capacity - booked)
+          if (pax > seatsLeft) {
+            return {
+              ok: false,
+              error:
+                seatsLeft === 0
+                  ? `${existing.program} is sold out on this date (${capacity} seats).`
+                  : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${existing.program} on this date (capacity ${capacity}).`,
+            }
           }
         }
 
@@ -1581,7 +1646,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
         const oldPax = totalPassengers(existing)
         const delta = newPax - oldPax
-        if (delta > 0) {
+        if (delta > 0 && !options?.bypassCutoff) {
           const caps = getCapacity(existing.date)
           const capacity =
             existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity

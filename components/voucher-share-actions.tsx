@@ -15,12 +15,14 @@ export function VoucherShareActions({
   code,
   className,
   size = 'default',
+  printOnly = false,
 }: {
   slug: string
   code: string
   guestName?: string
   className?: string
   size?: 'default' | 'sm'
+  printOnly?: boolean
 }) {
   const [copied, setCopied] = useState(false)
   const url = voucherUrl(slug, code)
@@ -54,10 +56,12 @@ export function VoucherShareActions({
         <Printer className="size-3.5" />
         Print
       </Button>
-      <Button type="button" variant="outline" className={btnClass} onClick={() => void copyLink()}>
-        {copied ? <Check className="size-3.5 text-emerald-600" /> : <Copy className="size-3.5" />}
-        {copied ? 'Copied' : 'Copy link'}
-      </Button>
+      {printOnly ? null : (
+        <Button type="button" variant="outline" className={btnClass} onClick={() => void copyLink()}>
+          {copied ? <Check className="size-3.5 text-emerald-600" /> : <Copy className="size-3.5" />}
+          {copied ? 'Copied' : 'Copy link'}
+        </Button>
+      )}
     </div>
   )
 }

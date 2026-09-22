@@ -25,7 +25,7 @@ export function AgentLayoutClient({
   if (voucherPreview) {
     return (
       <div className="gday-app relative min-h-screen">
-        <main className="relative mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-8">{children}</main>
+        <main className="relative w-full px-4 py-5 sm:px-6 sm:py-8 lg:px-8 xl:px-10">{children}</main>
       </div>
     )
   }

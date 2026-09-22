@@ -695,7 +695,7 @@ export function AdminBookings() {
                 <TableRow className="hover:bg-transparent">
                   <SortableHead
                     column="code"
-                    className="px-4"
+                    className="w-px whitespace-normal px-2 leading-tight"
                     active={sortKey === 'code'}
                     dir={sortDir}
                     onSort={toggleSort}
@@ -710,7 +710,9 @@ export function AdminBookings() {
                   >
                     Date
                   </SortableHead>
-                  <TableHead className="text-teal-800/50">Program</TableHead>
+                  <TableHead className="w-px px-1.5 text-center text-teal-800/50" title="Program">
+                    PG
+                  </TableHead>
                   <SortableHead
                     column="agent"
                     active={sortKey === 'agent'}
@@ -722,6 +724,7 @@ export function AdminBookings() {
                   <TableHead className="text-teal-800/50">Voucher Number</TableHead>
                   <TableHead className="text-teal-800/50">Guest Name</TableHead>
                   <TableHead className="text-teal-800/50">Total Pax</TableHead>
+                  <TableHead className="text-teal-800/50">Hotel Name</TableHead>
                   <SortableHead
                     column="zone"
                     active={sortKey === 'zone'}
@@ -744,20 +747,23 @@ export function AdminBookings() {
                   >
                     <TableCell
                       className={cn(
-                        'px-4 font-mono text-[13px] font-medium',
+                        'w-px px-2 font-mono text-[13px] font-medium',
                         booking.status === 'Cancelled' && 'text-rose-800 line-through decoration-rose-300',
                       )}
                     >
                       {booking.code}
                     </TableCell>
                     <TableCell>{formatShortDate(booking.date)}</TableCell>
-                    <TableCell>{booking.program}</TableCell>
+                    <TableCell className="w-px px-1.5 text-center font-semibold tabular-nums text-teal-900/80">
+                      {booking.program === 'PP' ? 'PP' : 'JB'}
+                    </TableCell>
                     <TableCell>{booking.agentName}</TableCell>
                     <TableCell className="font-mono text-[13px] text-teal-900/70">
                       {booking.agentRef?.trim() ? booking.agentRef : '—'}
                     </TableCell>
                     <TableCell>{booking.leadGuest}</TableCell>
                     <TableCell>{totalPassengers(booking)}</TableCell>
+                    <TableCell>{booking.pickupHotel.trim() || '—'}</TableCell>
                     <TableCell>
                       <BookingPickupCell
                         booking={booking}

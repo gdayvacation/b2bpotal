@@ -5,7 +5,7 @@ import { Check, Ticket } from 'lucide-react'
 import { StatusBadge } from '@/components/status-badge'
 import { buttonVariants } from '@/components/ui/button'
 import { VoucherShareActions } from '@/components/voucher-share-actions'
-import { formatLongDate } from '@/lib/format'
+import { formatIncludeLabel, formatLongDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { formatPaxBreakdown, isNoTransfer, totalPassengers } from '@/lib/types'
 import type { Booking } from '@/lib/types'
@@ -42,13 +42,10 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
           <Item label="Guest Name" value={booking.leadGuest} />
           <Item label="Voucher Number" value={booking.agentRef || '—'} />
           <Item label="Total Passengers" value={`${formatPaxBreakdown(booking)} (${total})`} />
-          <Item label="National Park" value={booking.parkFee || '—'} />
-          <Item
-            label="Canoe"
-            value={
-              booking.program === 'James Bond' ? booking.canoe || '—' : 'N/A'
-            }
-          />
+          <Item label="National Park" value={formatIncludeLabel(booking.parkFee)} />
+          {booking.program === 'James Bond' ? (
+            <Item label="Canoe" value={formatIncludeLabel(booking.canoe)} />
+          ) : null}
           <Item
             label="Pickup"
             value={
@@ -61,7 +58,7 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
             <Item label="Extra Charge Transfer" value={booking.transferExtraCharge.trim()} />
           ) : null}
           <Item label="Cash on tour" value={booking.cashOnTour || '—'} />
-          <Item label="Note" value={booking.note || '—'} />
+          {booking.note.trim() ? <Item label="Note" value={booking.note.trim()} /> : null}
           <Item label="Agent" value={booking.agentName} />
         </dl>
       </div>

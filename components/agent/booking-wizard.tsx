@@ -13,7 +13,6 @@ import {
   Mountain,
   Plus,
   Ship,
-  UserRound,
   Users,
 } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
@@ -32,7 +31,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
-import { dateFromISO, formatLongDate, slugifyAgentName, startOfToday, toISODate, todayISO } from '@/lib/format'
+import { dateFromISO, formatIncludeLabel, formatLongDate, slugifyAgentName, startOfToday, toISODate, todayISO } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { cn } from '@/lib/utils'
 import { formatPaxBreakdown, isNoTransfer, NO_TRANSFER_ZONE, type Agent, type Booking, type Hotel, type IncludeOption, type PickupZoneName, type Program } from '@/lib/types'
@@ -193,7 +192,11 @@ export function BookingWizard({
     return { capacity, booked, seatsLeft }
   }, [program, isoDate, getCapacity, bookedPaxFor])
   const seatsLeft = capacityInfo?.seatsLeft ?? null
-  const dateSelectable = bookingOpen && !programClosed && (seatsLeft === null || seatsLeft > 0)
+  const enforceCapacity = !selectAgent
+  const overCapacity =
+    enforceCapacity && seatsLeft !== null ? total > seatsLeft : false
+  const dateSelectable =
+    bookingOpen && !programClosed && (!enforceCapacity || seatsLeft === null || seatsLeft > 0)
   const pickupTime = pickupZone && !isNoTransfer(pickupZone) ? getZoneTime(pickupZone) : ''
   const selectedZone = zones.find((zone) => zone.name === pickupZone)
   const pendingPickup = !isNoTransfer(pickupZone) && (selectedZone?.pending ?? false)
@@ -223,7 +226,7 @@ export function BookingWizard({
       return (
         adults + children + infants + tourLeaders > 0 &&
         leadGuest.trim().length > 1 &&
-        (seatsLeft === null || total <= seatsLeft)
+        !overCapacity
       )
     if (step === pickupStep) {
       if (noTransfer) return true
@@ -233,7 +236,7 @@ export function BookingWizard({
         pickupHotel.trim().length > 1
       )
     }
-    if (step === reviewStep) return seatsLeft === null || total <= seatsLeft
+    if (step === reviewStep) return !overCapacity
     return true
   }, [
     selectAgent,
@@ -244,14 +247,13 @@ export function BookingWizard({
     dateStep,
     date,
     dateSelectable,
-    seatsLeft,
+    overCapacity,
     guestsStep,
     adults,
     children,
     infants,
     tourLeaders,
     leadGuest,
-    total,
     pickupStep,
     pickupZone,
     pickupHotel,
@@ -276,13 +278,13 @@ export function BookingWizard({
                   ? closureNote
                     ? `Booking closed for this program — ${closureNote}`
                     : 'Booking is closed for this program on this date.'
-                  : seatsLeft === 0
+                  : enforceCapacity && seatsLeft === 0
                     ? 'This date is sold out for the selected program.'
                     : 'Please choose a tour date.'
               : step === guestsStep
                 ? adults + children + infants + tourLeaders <= 0
                   ? 'Add at least one passenger.'
-                  : seatsLeft !== null && total > seatsLeft
+                  : overCapacity
                     ? `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left on this date.`
                     : 'Enter the guest name.'
                 : 'Select a pickup zone and hotel, or choose No Transfer.',
@@ -295,7 +297,7 @@ export function BookingWizard({
 
   function confirm() {
     if (!program || !date || !pickupZone || !resolvedAgent) return
-    if (seatsLeft !== null && total > seatsLeft) {
+    if (overCapacity) {
       setError(`Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left on this date.`)
       return
     }
@@ -534,11 +536,11 @@ export function BookingWizard({
                   {programDisplayName(program)}
                 </span>
                 <span className="text-teal-900/30"> · </span>
-                Park fee {parkFee.toLowerCase()}
+                Park fee {formatIncludeLabel(parkFee)}
                 {program === 'James Bond' ? (
                   <>
                     <span className="text-teal-900/30"> · </span>
-                    Canoe {canoe.toLowerCase()}
+                    Canoe {formatIncludeLabel(canoe)}
                   </>
                 ) : null}
               </p>
@@ -599,11 +601,17 @@ export function BookingWizard({
                     : 'This date is closed for agents. Admin can still book.'}
                 </div>
               ) : seatsLeft === 0 ? (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-                  {selectAgent
-                    ? `Sold out — ${program} has no seats left on this date (capacity ${capacityInfo.capacity}).`
-                    : `Sold out — ${program} has no seats left on this date.`}
-                </div>
+                selectAgent ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                    Sold out for agents — {program} is at capacity ({capacityInfo.capacity} seats,{' '}
+                    {capacityInfo.booked} booked). Admin can still add a booking; confirm boat
+                    capacity offline.
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                    Sold out — {program} has no seats left on this date.
+                  </div>
+                )
               ) : (
                 <div className="rounded-xl border border-teal-200 bg-teal-50/80 px-4 py-3 text-sm text-teal-900/75">
                   {selectAgent ? (
@@ -628,20 +636,31 @@ export function BookingWizard({
           <div className="space-y-5">
             {seatsLeft !== null ? (
               seatsLeft === 0 ? (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-                  Sold out — go back and choose another date.
-                </div>
+                selectAgent ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                    Sold out for agents (capacity {capacityInfo?.capacity}). Admin can still add
+                    guests — confirm boat capacity offline.
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                    Sold out — go back and choose another date.
+                  </div>
+                )
               ) : (
                 <div
                   className={cn(
                     'rounded-xl border px-4 py-3 text-sm',
                     total > seatsLeft
-                      ? 'border-rose-200 bg-rose-50 text-rose-800'
+                      ? selectAgent
+                        ? 'border-amber-200 bg-amber-50 text-amber-950'
+                        : 'border-rose-200 bg-rose-50 text-rose-800'
                       : 'border-teal-200 bg-teal-50/80 text-teal-900/75',
                   )}
                 >
                   {total > seatsLeft
-                    ? `Too many guests — only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left.`
+                    ? selectAgent
+                      ? `Over capacity — need ${total}, only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left. Admin can still book; confirm boat capacity offline.`
+                      : `Too many guests — only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left.`
                     : `${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for this departure.`}
                 </div>
               )
@@ -651,28 +670,44 @@ export function BookingWizard({
                 label="Adults"
                 hint="12 years and above"
                 value={adults}
-                max={seatsLeft === null ? undefined : Math.max(0, seatsLeft - children - infants - tourLeaders)}
+                max={
+                  enforceCapacity && seatsLeft !== null
+                    ? Math.max(0, seatsLeft - children - infants - tourLeaders)
+                    : undefined
+                }
                 onChange={setAdults}
               />
               <GuestRow
                 label="Children"
                 hint="3–11 years"
                 value={children}
-                max={seatsLeft === null ? undefined : Math.max(0, seatsLeft - adults - infants - tourLeaders)}
+                max={
+                  enforceCapacity && seatsLeft !== null
+                    ? Math.max(0, seatsLeft - adults - infants - tourLeaders)
+                    : undefined
+                }
                 onChange={setChildren}
               />
               <GuestRow
                 label="Infants"
                 hint="Under 3 years"
                 value={infants}
-                max={seatsLeft === null ? undefined : Math.max(0, seatsLeft - adults - children - tourLeaders)}
+                max={
+                  enforceCapacity && seatsLeft !== null
+                    ? Math.max(0, seatsLeft - adults - children - tourLeaders)
+                    : undefined
+                }
                 onChange={setInfants}
               />
               <GuestRow
                 label="Tour Leaders"
                 hint="Accompanying guides"
                 value={tourLeaders}
-                max={seatsLeft === null ? undefined : Math.max(0, seatsLeft - adults - children - infants)}
+                max={
+                  enforceCapacity && seatsLeft !== null
+                    ? Math.max(0, seatsLeft - adults - children - infants)
+                    : undefined
+                }
                 onChange={setTourLeaders}
               />
               <div className="mt-4 flex items-center justify-between rounded-2xl bg-teal-950/[0.04] px-4 py-3.5">
@@ -839,65 +874,36 @@ export function BookingWizard({
         )}
 
         {step === reviewStep && (
-          <div className="space-y-3">
-            <div className="overflow-hidden rounded-2xl bg-gradient-to-br from-teal-800 via-teal-700 to-cyan-700 px-4 py-4 text-white sm:px-5">
-              <div className="flex flex-wrap items-end justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-[10px] font-semibold tracking-[0.16em] text-white/50 uppercase">
-                    Booking summary
-                  </p>
-                  <h3 className="font-display mt-1 text-xl font-semibold tracking-tight sm:text-2xl">
-                    {program ? programDisplayName(program) : '—'}
-                  </h3>
-                  <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-white/75">
-                    <span className="inline-flex items-center gap-1.5">
-                      <CalendarIcon className="size-3.5 shrink-0 opacity-70" />
-                      {isoDate ? formatLongDate(isoDate) : '—'}
-                    </span>
-                    <span className="inline-flex items-center gap-1.5">
-                      <UserRound className="size-3.5 shrink-0 opacity-70" />
-                      {leadGuest || '—'}
-                    </span>
-                  </p>
-                </div>
-                <div className="rounded-lg bg-white/12 px-3 py-2 text-right backdrop-blur-sm">
-                  <p className="text-[10px] font-medium tracking-wide text-white/55 uppercase">
-                    Pax
-                  </p>
-                  <p className="mt-0.5 font-mono text-lg font-semibold tracking-tight leading-none tabular-nums sm:text-xl">
-                    {formatPaxBreakdown({ adults, children, infants, tourLeaders })}
-                  </p>
-                  <p className="mt-1 text-[10px] text-white/45">{total} total</p>
-                </div>
+          <div className="space-y-4">
+            {selectAgent && seatsLeft !== null && total > seatsLeft ? (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                Over capacity — {total} pax vs {seatsLeft} seat{seatsLeft === 1 ? '' : 's'} left
+                (capacity {capacityInfo?.capacity}). Confirm boat capacity offline before sending.
               </div>
-              <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 border-t border-white/15 pt-2.5 text-xs text-white/65">
-                <span>{resolvedAgent?.name ?? '—'}</span>
-                {selectAgent && agentMode === 'offline' ? (
-                  <>
-                    <span className="text-white/30">·</span>
-                    <span>Offline / walk-in</span>
-                  </>
-                ) : null}
-                {agentRef.trim() ? (
-                  <>
-                    <span className="text-white/30">·</span>
-                    <span>Ref {agentRef.trim()}</span>
-                  </>
-                ) : null}
-                {cashOnTour.trim() ? (
-                  <>
-                    <span className="text-white/30">·</span>
-                    <span>Cash on tour {cashOnTour.trim()}</span>
-                  </>
-                ) : null}
-                <span className="text-white/30">·</span>
-                <span>Park fee {parkFee.toLowerCase()}</span>
-                {program === 'James Bond' ? (
-                  <>
-                    <span className="text-white/30">·</span>
-                    <span>Canoe {canoe.toLowerCase()}</span>
-                  </>
-                ) : null}
+            ) : null}
+            <div className="rounded-2xl bg-gradient-to-br from-teal-800 via-teal-700 to-cyan-700 px-5 py-5 text-white sm:px-6 sm:py-6">
+              <p className="text-sm font-semibold tracking-wide text-white/75">Guest Name</p>
+              <h3 className="font-display mt-1.5 text-3xl leading-tight font-semibold tracking-tight sm:text-4xl">
+                {leadGuest.trim() || '—'}
+              </h3>
+              {resolvedAgent?.name || (selectAgent && agentMode === 'offline') ? (
+                <p className="mt-2 text-sm text-white/70">
+                  {resolvedAgent?.name ?? '—'}
+                  {selectAgent && agentMode === 'offline' ? ' · Offline / walk-in' : ''}
+                </p>
+              ) : null}
+              <div className="mt-5 grid grid-cols-2 gap-4 border-t border-white/15 pt-4 sm:grid-cols-3">
+                <SummaryFact
+                  label="Program"
+                  value={program ? programDisplayName(program) : '—'}
+                />
+                <SummaryFact label="Date" value={isoDate ? formatLongDate(isoDate) : '—'} />
+                <SummaryFact
+                  label="Passengers"
+                  value={`${total}`}
+                  hint={formatPaxBreakdown({ adults, children, infants, tourLeaders })}
+                  className="col-span-2 sm:col-span-1"
+                />
               </div>
             </div>
 
@@ -922,7 +928,7 @@ export function BookingWizard({
                 </p>
               ) : (
                 <>
-                  <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
                     <DetailCell label="Zone" value={pickupZone ?? '—'} />
                     <DetailCell
                       label="Time"
@@ -939,7 +945,7 @@ export function BookingWizard({
                     />
                   </dl>
                   {transferExtraChargePreview ? (
-                    <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                    <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
                       <p className="text-[10px] font-semibold tracking-wide text-amber-800/70 uppercase">
                         Extra Charge Transfer
                       </p>
@@ -953,15 +959,21 @@ export function BookingWizard({
             </ReviewSection>
 
             <ReviewSection title="Tour options" icon={<Ship className="size-3.5" />}>
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
-                <DetailCell label="Park fee" value={parkFee} />
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
+                <DetailCell label="Park fee" value={formatIncludeLabel(parkFee)} />
                 {program === 'James Bond' ? (
-                  <DetailCell label="Canoe" value={canoe} />
+                  <DetailCell label="Canoe" value={formatIncludeLabel(canoe)} />
                 ) : null}
                 <DetailCell
                   label="Voucher number"
                   value={agentRef.trim() || '—'}
                   className="col-span-2 sm:col-span-1"
+                />
+                <DetailCell
+                  label="Cash on tour"
+                  value={cashOnTour.trim() || '—'}
+                  className="col-span-2 sm:col-span-3"
+                  wrap
                 />
               </dl>
             </ReviewSection>
@@ -1165,6 +1177,26 @@ function GuestRow({
           <Plus />
         </Button>
       </div>
+    </div>
+  )
+}
+
+function SummaryFact({
+  label,
+  value,
+  hint,
+  className,
+}: {
+  label: string
+  value: string
+  hint?: string
+  className?: string
+}) {
+  return (
+    <div className={cn('min-w-0', className)}>
+      <p className="text-[11px] font-medium tracking-wide text-white/50 uppercase">{label}</p>
+      <p className="mt-0.5 text-base font-semibold tracking-tight">{value}</p>
+      {hint ? <p className="mt-0.5 text-xs text-white/55">{hint}</p> : null}
     </div>
   )
 }

@@ -26,7 +26,7 @@ export function AdminAddBooking() {
         selectAgent
         eyebrow="Admin"
         title="Add Booking"
-        description="Create a reservation taken offline or by phone — same steps as the partner booking link."
+        description="Create a reservation taken offline or by phone. Sold-out dates stay bookable here so ops can confirm boat capacity manually."
         onSuccess={(booking) => {
           router.push(`/admin/bookings?created=${encodeURIComponent(booking.code)}`)
         }}

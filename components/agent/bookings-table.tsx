@@ -1,7 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
-import Link from 'next/link'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CalendarDays, ChevronDown, History, Pencil, Search, X } from 'lucide-react'
 import { BookingHistoryDialog } from '@/components/booking-history-dialog'
 import { ChangeBookingDateDialog } from '@/components/change-booking-date-dialog'
@@ -15,8 +14,10 @@ import {
   SegmentedControl,
   Surface,
 } from '@/components/ui-primitives'
+import { VoucherPreview } from '@/components/agent/voucher-view'
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
@@ -27,8 +28,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { VoucherShareActions } from '@/components/voucher-share-actions'
-import { formatShortDate, startOfToday, toISODate } from '@/lib/format'
+import { formatIncludeLabel, formatShortDate, startOfToday, toISODate } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import {
   totalPassengers,
@@ -172,6 +172,7 @@ export function BookingsTable({
   const [rebookTarget, setRebookTarget] = useState<Booking | null>(null)
   const [editTarget, setEditTarget] = useState<Booking | null>(null)
   const [historyTarget, setHistoryTarget] = useState<Booking | null>(null)
+  const [voucherTarget, setVoucherTarget] = useState<Booking | null>(null)
   const portalToday = usePortalTodayISO()
   const prevTodayRef = useRef(portalToday)
   const [dayFilter, setDayFilter] = useState<string | null>(() => portalToday)
@@ -216,7 +217,14 @@ export function BookingsTable({
         if (programFilter !== 'all' && booking.program !== programFilter) return false
         if (isSearching) {
           if (booking.date < searchFrom) return false
-          const haystack = [booking.leadGuest, booking.agentRef].join(' ').toLowerCase()
+          const haystack = [
+            booking.agentRef,
+            booking.code,
+            booking.leadGuest,
+            booking.pickupHotel,
+          ]
+            .join(' ')
+            .toLowerCase()
           if (!haystack.includes(query)) return false
           return true
         }
@@ -229,6 +237,8 @@ export function BookingsTable({
   const today = portalToday
   const filtersActive = isSearching || dayFilter !== today || programFilter !== 'all'
   const dayFilterObj = dayFilter ? new Date(`${dayFilter}T12:00:00`) : undefined
+  const showCanoe = programFilter !== 'PP'
+  const columnCount = (showAgent ? 11 : 10) + (showCanoe ? 1 : 0)
 
   function handleCancel(code: string, travelDate: string, program: Booking['program']) {
     if (isProgramClosed(travelDate, program)) {
@@ -267,7 +277,7 @@ export function BookingsTable({
     <>
       <PageHeader
         title="My Bookings"
-        description="Confirmed, pending, and cancelled bookings for this agency. Search by guest name or voucher number, or filter by day and program."
+        description="Confirmed, pending, and cancelled bookings for this agency. Search by VC No., booking code, guest name, or hotel, or filter by day and program."
       />
 
       <Surface className="mb-4 p-4 sm:p-5">
@@ -277,9 +287,9 @@ export function BookingsTable({
             <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search guest name or voucher number…"
+              placeholder="Search VC No., booking code, guest, or hotel…"
               className="h-10 rounded-xl pr-9 pl-9"
-              aria-label="Search bookings by guest name or voucher number"
+              aria-label="Search bookings by VC No., booking code, guest name, or hotel"
             />
             {isSearching ? (
               <button
@@ -466,17 +476,13 @@ export function BookingsTable({
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     {slug ? (
-                      <Link
-                        href={`/agent/${slug}/voucher/${booking.code}`}
-                        className={cn(
-                          'font-mono text-sm font-semibold hover:underline',
-                          booking.status === 'Cancelled'
-                            ? 'text-rose-800 line-through decoration-rose-300'
-                            : 'text-teal-900',
-                        )}
+                      <OpenVoucherButton
+                        booking={booking}
+                        onOpen={setVoucherTarget}
+                        className="text-sm font-semibold"
                       >
                         {booking.code}
-                      </Link>
+                      </OpenVoucherButton>
                     ) : (
                       <p
                         className={cn(
@@ -503,6 +509,7 @@ export function BookingsTable({
                   <div>
                     <p className="gday-soft-label">Pax</p>
                     <p className="mt-0.5 font-semibold text-teal-950">{totalPassengers(booking)}</p>
+                    <p className="mt-0.5 text-xs text-teal-900/55">{paxDetail(booking)}</p>
                   </div>
                   {showAgent ? (
                     <div className="col-span-2">
@@ -517,6 +524,20 @@ export function BookingsTable({
                       {booking.pickupTime ? ` · ${booking.pickupTime}` : ''}
                     </p>
                   </div>
+                  <div>
+                    <p className="gday-soft-label">Park fee</p>
+                    <p className="mt-0.5 font-semibold text-teal-950">
+                      {formatIncludeLabel(booking.parkFee)}
+                    </p>
+                  </div>
+                  {booking.program === 'James Bond' ? (
+                    <div>
+                      <p className="gday-soft-label">Canoe</p>
+                      <p className="mt-0.5 font-semibold text-teal-950">
+                        {formatIncludeLabel(booking.canoe)}
+                      </p>
+                    </div>
+                  ) : null}
                   {booking.note.trim() ? (
                     <div className="col-span-2">
                       <p className="gday-soft-label">Note</p>
@@ -532,15 +553,6 @@ export function BookingsTable({
                     </div>
                   ) : null}
                 </div>
-                {slug ? (
-                  <VoucherShareActions
-                    slug={slug}
-                    code={booking.code}
-                    guestName={booking.leadGuest}
-                    size="sm"
-                    className="mt-4"
-                  />
-                ) : null}
                 {booking.status !== 'Cancelled' ? (
                   canEdit ? (
                     <div className="mt-3 grid grid-cols-2 gap-2">
@@ -629,16 +641,19 @@ export function BookingsTable({
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="px-4 text-teal-800/50">Booking Number</TableHead>
-              <TableHead className="text-teal-800/50">Date</TableHead>
-              <TableHead className="text-teal-800/50">Program</TableHead>
+              <TableHead className="w-px whitespace-normal px-2 leading-tight text-teal-800/50">
+                Booking Number
+              </TableHead>
+              <TableHead className="w-px text-teal-800/50">VC No.</TableHead>
               {showAgent ? <TableHead className="text-teal-800/50">Agent</TableHead> : null}
               <TableHead className="text-teal-800/50">Guest Name</TableHead>
               <TableHead className="text-teal-800/50">Total Pax</TableHead>
-              <TableHead className="text-teal-800/50">Pickup</TableHead>
-              <TableHead className="text-teal-800/50">Note</TableHead>
+              <TableHead className="text-teal-800/50">Hotel Name</TableHead>
+              <TableHead className="w-px text-teal-800/50">Pickup</TableHead>
+              <TableHead className="text-teal-800/50">Park fee</TableHead>
+              {showCanoe ? <TableHead className="text-teal-800/50">Canoe</TableHead> : null}
               <TableHead className="text-teal-800/50">COT</TableHead>
-              <TableHead className="text-teal-800/50">Voucher</TableHead>
+              <TableHead className="min-w-[18rem] text-teal-800/50">Note</TableHead>
               <TableHead className="px-4 text-teal-800/50">Status</TableHead>
             </TableRow>
           </TableHeader>
@@ -646,7 +661,7 @@ export function BookingsTable({
             {filtered.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={showAgent ? 11 : 10}
+                  colSpan={columnCount}
                   className="px-4 py-10 text-center text-teal-900/50"
                 >
                   {bookings.length === 0
@@ -667,51 +682,67 @@ export function BookingsTable({
                 >
                   <TableCell
                     className={cn(
-                      'px-4 font-mono text-[13px] font-medium',
+                      'w-px px-2 font-mono text-[13px] font-medium',
                       booking.status === 'Cancelled' &&
                         'text-rose-800 line-through decoration-rose-300',
                     )}
                   >
                     {slug ? (
-                      <Link
-                        href={`/agent/${slug}/voucher/${booking.code}`}
-                        className="hover:underline"
-                      >
+                      <OpenVoucherButton booking={booking} onOpen={setVoucherTarget}>
                         {booking.code}
-                      </Link>
+                      </OpenVoucherButton>
                     ) : (
                       booking.code
                     )}
                   </TableCell>
-                  <TableCell>{formatShortDate(booking.date)}</TableCell>
-                  <TableCell>{booking.program}</TableCell>
+                  <TableCell className="w-px font-mono text-[13px]">
+                    {slug ? (
+                      <OpenVoucherButton booking={booking} onOpen={setVoucherTarget}>
+                        {booking.agentRef.trim() || '—'}
+                      </OpenVoucherButton>
+                    ) : (
+                      booking.agentRef.trim() || '—'
+                    )}
+                  </TableCell>
                   {showAgent ? <TableCell>{booking.agentName}</TableCell> : null}
-                  <TableCell className="font-medium">{booking.leadGuest}</TableCell>
-                  <TableCell>{totalPassengers(booking)}</TableCell>
-                  <TableCell>
+                  <TableCell className="font-medium">
+                    {slug ? (
+                      <OpenVoucherButton
+                        booking={booking}
+                        onOpen={setVoucherTarget}
+                        className="font-sans"
+                      >
+                        {booking.leadGuest}
+                      </OpenVoucherButton>
+                    ) : (
+                      booking.leadGuest
+                    )}
+                  </TableCell>
+                  <TableCell className="whitespace-normal">
+                    <p className="font-medium tabular-nums">{totalPassengers(booking)}</p>
+                    <p className="mt-0.5 text-[11px] leading-snug text-teal-900/55 tabular-nums">
+                      {paxDetail(booking)}
+                    </p>
+                  </TableCell>
+                  <TableCell>{booking.pickupHotel.trim() || '—'}</TableCell>
+                  <TableCell className="w-px whitespace-nowrap">
                     {booking.pickupZone}
                     {booking.pickupTime ? ` · ${booking.pickupTime}` : ''}
                   </TableCell>
-                  <TableCell className="max-w-[10rem] truncate" title={booking.note || undefined}>
-                    {booking.note.trim() || '—'}
-                  </TableCell>
+                  <TableCell>{formatIncludeLabel(booking.parkFee)}</TableCell>
+                  {showCanoe ? (
+                    <TableCell>
+                      {booking.program === 'James Bond' ? formatIncludeLabel(booking.canoe) : '—'}
+                    </TableCell>
+                  ) : null}
                   <TableCell
                     className="max-w-[8rem] truncate"
                     title={booking.cashOnTour || undefined}
                   >
                     {booking.cashOnTour.trim() || '—'}
                   </TableCell>
-                  <TableCell>
-                    {slug ? (
-                      <VoucherShareActions
-                        slug={slug}
-                        code={booking.code}
-                        guestName={booking.leadGuest}
-                        size="sm"
-                      />
-                    ) : (
-                      '—'
-                    )}
+                  <TableCell className="min-w-[18rem] whitespace-normal" title={booking.note || undefined}>
+                    <p className="whitespace-pre-wrap break-words">{booking.note.trim() || '—'}</p>
                   </TableCell>
                   <TableCell className="px-4">
                     <AgentStatusMenu
@@ -729,6 +760,20 @@ export function BookingsTable({
           </TableBody>
         </Table>
       </Surface>
+
+      <Dialog
+        open={voucherTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setVoucherTarget(null)
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+          <DialogTitle className="sr-only">Voucher confirmation</DialogTitle>
+          {voucherTarget && slug ? (
+            <VoucherPreview booking={voucherTarget} slug={slug} embedded />
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       <ChangeBookingDateDialog
         booking={dateTarget}
@@ -767,4 +812,34 @@ export function BookingsTable({
       />
     </>
   )
+}
+
+function OpenVoucherButton({
+  booking,
+  onOpen,
+  className,
+  children,
+}: {
+  booking: Booking
+  onOpen: (booking: Booking) => void
+  className?: string
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(booking)}
+      className={cn(
+        'text-left font-mono text-[13px] font-medium hover:underline',
+        booking.status === 'Cancelled' && 'text-rose-800 line-through decoration-rose-300',
+        className,
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
+function paxDetail(booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>) {
+  return `${booking.adults} AD · ${booking.children} CH · ${booking.infants} INF · ${booking.tourLeaders} TL`
 }

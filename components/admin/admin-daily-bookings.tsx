@@ -46,6 +46,10 @@ import {
 } from '@/lib/types'
 import { listVanNumbers, paxOnVan, primaryVan, sortOrderOnVan } from '@/lib/vehicle-assign'
 import { boatTheme } from '@/lib/boat-theme'
+import {
+  formatCheckInServicesOption,
+  type CheckInServiceLine,
+} from '@/lib/check-in-services'
 import { cn } from '@/lib/utils'
 
 type BoardMode = 'vehicles' | 'boats'
@@ -141,6 +145,7 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
     resolveVanMeta,
     getCheckInAttendance,
     getCheckInEnrollments,
+    getCheckInServices,
     setBoatName,
     setBoatGuide,
   } = usePortal()
@@ -310,6 +315,7 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
           resolveVanMeta={resolveVanMeta}
           isNoShow={(code) => getCheckInAttendance(selectedDate, program, code) === 'no-show'}
           getEnrollments={(code) => getCheckInEnrollments(selectedDate, program, code)}
+          getServices={(code) => getCheckInServices(selectedDate, program, code)}
           onAssignBooking={(code, boat) => assignBookingToBoat(selectedDate, program, code, boat)}
           onAssignVan={(van, boat) => assignVanToBoat(selectedDate, program, van, boat)}
           onCapacity={(boat, capacity) => setBoatCapacity(selectedDate, program, boat, capacity)}
@@ -381,6 +387,7 @@ function BoatBoard({
   resolveVanMeta,
   isNoShow,
   getEnrollments,
+  getServices,
   onAssignBooking,
   onAssignVan,
   onCapacity,
@@ -403,6 +410,7 @@ function BoatBoard({
   resolveVanMeta: ReturnType<typeof usePortal>['resolveVanMeta']
   isNoShow: (bookingCode: string) => boolean
   getEnrollments: (bookingCode: string) => ReturnType<ReturnType<typeof usePortal>['getCheckInEnrollments']>
+  getServices: (bookingCode: string) => CheckInServiceLine[]
   onAssignBooking: (code: string, boat: BoatNumber | null) => void
   onAssignVan: (van: number, boat: BoatNumber | null) => void
   onCapacity: (boat: BoatNumber, capacity: number) => void
@@ -1213,6 +1221,7 @@ function BoatBoard({
               const hasAssistant =
                 Boolean(guide.assistantName.trim() || guide.assistantPhone.trim()) ||
                 showAssistantFor[boat] === true
+              const guideAssigned = Boolean(guide.guideName.trim() || guide.guidePhone.trim())
               return (
                 <div
                   key={`guide-${boat}`}
@@ -1242,7 +1251,23 @@ function BoatBoard({
                         {freeGuests.length > 0 ? ` · ${freeGuests.length} no transfer` : ''}
                       </p>
                     </div>
+                    {guideAssigned ? (
+                      <span className="shrink-0 rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-emerald-900 uppercase">
+                        Guide set
+                      </span>
+                    ) : null}
                   </div>
+                  {guideAssigned ? (
+                    <p className="mt-2 text-sm font-medium text-teal-950">
+                      {guide.guideName.trim() || 'Guide'}
+                      {guide.guidePhone.trim() ? (
+                        <span className="font-normal text-teal-900/60">
+                          {' '}
+                          · {guide.guidePhone.trim()}
+                        </span>
+                      ) : null}
+                    </p>
+                  ) : null}
                   <div className="mt-3 grid gap-2.5">
                     <GuideField
                       label="Guide name"
@@ -1457,6 +1482,7 @@ function BoatBoard({
               guideLeaderPrintRow(
                 booking,
                 paxOnVan(vanAssignments[booking.code], group.van) || totalPassengers(booking),
+                getServices(booking.code),
               ),
             ),
           }))
@@ -1467,7 +1493,7 @@ function BoatBoard({
                   title: `No transfer · ${freeGuests.reduce((sum, b) => sum + totalPassengers(b), 0)} pax`,
                   vanLabel: 'No transfer',
                   rows: freeGuests.map((booking) =>
-                    guideLeaderPrintRow(booking, totalPassengers(booking)),
+                    guideLeaderPrintRow(booking, totalPassengers(booking), getServices(booking.code)),
                   ),
                 }
               : null
@@ -1651,7 +1677,7 @@ type GuidePassengerRow = {
   /** Shown next to lead name, e.g. "(2AD+2IF)". */
   leadPaxTag: string
   hotel: string
-  /** Extra paid option for guide (e.g. Private Longtail) — filled later. */
+  /** Extra paid marina services for guide (e.g. Private Longtail · 2,000). */
   option: string
 }
 
@@ -1678,13 +1704,17 @@ function formatGuideLeadPaxTag(
 }
 
 /** One print row per booking — leader name only. */
-function guideLeaderPrintRow(booking: Booking, seatsOnThisVan?: number): GuidePassengerRow {
+function guideLeaderPrintRow(
+  booking: Booking,
+  seatsOnThisVan?: number,
+  services: CheckInServiceLine[] = [],
+): GuidePassengerRow {
   return {
     bookingCode: booking.code,
     guestName: booking.leadGuest,
     leadPaxTag: formatGuideLeadPaxTag(booking, seatsOnThisVan),
     hotel: booking.pickupHotel?.trim() || '—',
-    option: '',
+    option: formatCheckInServicesOption(services),
   }
 }
 

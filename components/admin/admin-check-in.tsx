@@ -219,7 +219,7 @@ export function AdminCheckIn() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+      <div className="flex flex-col gap-4 print:hidden sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="gday-soft-label">Marina</p>
           <h1 className="font-display mt-1 text-2xl font-semibold tracking-tight text-teal-950 sm:text-3xl">
@@ -233,7 +233,7 @@ export function AdminCheckIn() {
         <p className="text-sm font-medium text-teal-900/50">{formatLongDate(headerDate)}</p>
       </div>
 
-      <div className="grid grid-cols-3 gap-1 rounded-2xl bg-teal-950/[0.04] p-1 sm:inline-grid sm:w-auto">
+      <div className="grid grid-cols-3 gap-1 rounded-2xl bg-teal-950/[0.04] p-1 print:hidden sm:inline-grid sm:w-auto">
         <TabButton
           active={tab === 'today'}
           onClick={() => setTab('today')}
@@ -485,16 +485,18 @@ function InsuranceListTab({
   function handlePrint() {
     const previousTitle = document.title
     document.title = `Insurance ${formatShortDate(boardDate)}`
+    document.body.classList.add('printing-insurance')
     let restored = false
-    const restoreTitle = () => {
+    const restore = () => {
       if (restored) return
       restored = true
       document.title = previousTitle
-      window.removeEventListener('afterprint', restoreTitle)
+      document.body.classList.remove('printing-insurance')
+      window.removeEventListener('afterprint', restore)
     }
-    window.addEventListener('afterprint', restoreTitle)
+    window.addEventListener('afterprint', restore)
     window.print()
-    window.setTimeout(restoreTitle, 2000)
+    window.setTimeout(restore, 2000)
   }
 
   if (!hydrated) {
@@ -599,89 +601,217 @@ function InsuranceListTab({
         <div className="space-y-8">
           {programFilter === 'all' && groups.length > 1 ? (
             <p className="print:hidden text-sm text-teal-900/50">
-              All programs shows separate lists — Phi Phi first, then James Bond. Print sends each
-              program on its own page.
+              All programs shows separate lists — Phi Phi first, then James Bond. Print keeps both
+              on as few pages as possible.
             </p>
           ) : null}
-          {groups.map((program, groupIndex) => (
-            <div key={program.program} className="space-y-2">
-              {programFilter === 'all' ? (
-                <div className="print:hidden flex items-baseline justify-between gap-3 px-1">
-                  <p className="font-display text-lg font-semibold text-teal-950">
-                    {groupIndex + 1}. {programLabel(program.program)}
-                    {program.program === 'PP' ? ' (PP)' : ' (JB)'}
-                  </p>
-                  <p className="text-sm text-teal-900/45">
-                    {program.guests.length} guest{program.guests.length === 1 ? '' : 's'}
-                  </p>
+          <div className="insurance-print-sheet space-y-8 print:space-y-3">
+            {groups.map((program, groupIndex) => (
+              <div key={program.program} className="space-y-2 print:space-y-0">
+                {programFilter === 'all' ? (
+                  <div className="print:hidden flex items-baseline justify-between gap-3 px-1">
+                    <p className="font-display text-lg font-semibold text-teal-950">
+                      {groupIndex + 1}. {programLabel(program.program)}
+                      {program.program === 'PP' ? ' (PP)' : ' (JB)'}
+                    </p>
+                    <p className="text-sm text-teal-900/45">
+                      {program.guests.length} guest{program.guests.length === 1 ? '' : 's'}
+                    </p>
+                  </div>
+                ) : null}
+                <div className="gday-sheet overflow-hidden rounded-[1.5rem] print:rounded-none print:border print:border-neutral-300 print:shadow-none">
+                  <div className="space-y-2 border-b border-teal-900/8 px-4 py-4 text-sm leading-relaxed text-teal-950 sm:px-5 print:hidden">
+                    <p className="text-lg font-semibold sm:text-xl">
+                      บริษัท กู๊ด เดย์ วาเคชั่น จำกัด
+                    </p>
+                    <p>35/84 หมู่ 3 ต.รัษฎา อ.เมือง จ.ภูเก็ต 83000</p>
+                    <p>เรียน บริษัท กรุงเทพประกันภัย จำกัด (มหาชน) สาขาภูเก็ต</p>
+                    <p>
+                      โทร. 076-304055-8{' '}
+                      <span className="mx-2 text-teal-900/35">|</span>
+                      Email : Phuket@bangkokinsurance.com
+                    </p>
+                    <p>
+                      กรมธรรม์เลขที่ :{' '}
+                      <span className="font-semibold text-red-700">
+                        {policyNumber.trim() || DEFAULT_INSURANCE_POLICY_NUMBER}
+                      </span>
+                      <span className="inline-block w-16 sm:w-24" aria-hidden />
+                      เดินทางวันที่ : {formatInsuranceTravelDate(boardDate)}
+                    </p>
+                    <p>รายละเอียดการท่องเที่ยวตามโปรแกรมทัวร์ที่แนบมาด้วยนี้</p>
+                    <p className="pt-1 text-base font-semibold text-teal-950">
+                      Program · {programLabel(program.program)}
+                      {program.program === 'PP' ? ' (PP)' : ' (JB)'} · {program.guests.length} guest
+                      {program.guests.length === 1 ? '' : 's'}
+                    </p>
+                  </div>
+                  <div className="hidden border-b border-neutral-300 pb-1.5 text-[9px] leading-snug text-teal-950 print:block">
+                    <p className="text-[10px] font-semibold">
+                      บริษัท กู๊ด เดย์ วาเคชั่น จำกัด
+                      <span className="mx-1.5 font-normal text-teal-900/45">·</span>
+                      <span className="font-normal">
+                        35/84 หมู่ 3 ต.รัษฎา อ.เมือง จ.ภูเก็ต 83000
+                      </span>
+                    </p>
+                    <p>
+                      เรียน บริษัท กรุงเทพประกันภัย จำกัด (มหาชน) สาขาภูเก็ต
+                      <span className="mx-1.5 text-teal-900/45">·</span>
+                      โทร. 076-304055-8
+                      <span className="mx-1.5 text-teal-900/45">·</span>
+                      Phuket@bangkokinsurance.com
+                    </p>
+                    <p className="font-semibold">
+                      กรมธรรม์เลขที่ :{' '}
+                      <span className="text-red-700">
+                        {policyNumber.trim() || DEFAULT_INSURANCE_POLICY_NUMBER}
+                      </span>
+                      <span className="mx-2 font-normal">เดินทางวันที่ : {formatInsuranceTravelDate(boardDate)}</span>
+                      <span className="mx-1.5 font-normal text-teal-900/45">·</span>
+                      Program · {programLabel(program.program)}
+                      {program.program === 'PP' ? ' (PP)' : ' (JB)'} · {program.guests.length} guest
+                      {program.guests.length === 1 ? '' : 's'}
+                    </p>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="hover:bg-transparent">
+                          <TableHead className="w-14 print:h-auto print:w-8 print:px-1 print:text-[8px]">
+                            No.
+                          </TableHead>
+                          <TableHead className="print:h-auto print:px-1 print:text-[8px]">
+                            Name-Surname
+                          </TableHead>
+                          <TableHead className="print:h-auto print:px-1 print:text-[8px]">
+                            Passport No.
+                          </TableHead>
+                          <TableHead className="print:h-auto print:px-1 print:text-[8px]">
+                            Date Of Birth
+                          </TableHead>
+                          <TableHead className="print:h-auto print:px-1 print:text-[8px]">Hotel</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {program.guests.map((guest, index) => (
+                          <TableRow key={guest.key}>
+                            <TableCell className="tabular-nums text-teal-900/55 print:p-0.5 print:px-1">
+                              {index + 1}
+                            </TableCell>
+                            <TableCell className="font-medium text-teal-950 print:p-0.5 print:px-1">
+                              {guest.fullName}
+                            </TableCell>
+                            <TableCell className="font-mono text-[0.85rem] print:p-0.5 print:px-1 print:text-[8.5px]">
+                              {guest.passportNumber || '—'}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap print:p-0.5 print:px-1">
+                              {formatInsuranceBirthday(guest.birthday) || '—'}
+                            </TableCell>
+                            <TableCell className="print:p-0.5 print:px-1">{guest.hotel}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
                 </div>
-              ) : null}
-              <div className="gday-sheet overflow-hidden rounded-[1.5rem] print:break-after-page print:rounded-none print:border print:border-neutral-300 print:shadow-none">
-              <div className="space-y-2 border-b border-teal-900/8 px-4 py-4 text-sm leading-relaxed text-teal-950 sm:px-5">
-                <p className="text-lg font-semibold sm:text-xl">บริษัท กู๊ด เดย์ วาเคชั่น จำกัด</p>
-                <p>35/84 หมู่ 3 ต.รัษฎา อ.เมือง จ.ภูเก็ต 83000</p>
-                <p>เรียน บริษัท กรุงเทพประกันภัย จำกัด (มหาชน) สาขาภูเก็ต</p>
-                <p>
-                  โทร. 076-304055-8{' '}
-                  <span className="mx-2 text-teal-900/35">|</span>
-                  Email : Phuket@bangkokinsurance.com
-                </p>
-                <p>
-                  กรมธรรม์เลขที่ :{' '}
-                  <span className="font-semibold text-red-700">
-                    {policyNumber.trim() || DEFAULT_INSURANCE_POLICY_NUMBER}
-                  </span>
-                  <span className="inline-block w-16 sm:w-24" aria-hidden />
-                  เดินทางวันที่ : {formatInsuranceTravelDate(boardDate)}
-                </p>
-                <p>รายละเอียดการท่องเที่ยวตามโปรแกรมทัวร์ที่แนบมาด้วยนี้</p>
-                <p className="pt-1 text-base font-semibold text-teal-950">
-                  Program · {programLabel(program.program)}
-                  {program.program === 'PP' ? ' (PP)' : ' (JB)'} · {program.guests.length} guest
-                  {program.guests.length === 1 ? '' : 's'}
-                </p>
               </div>
-
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="hover:bg-transparent">
-                      <TableHead className="w-14">No.</TableHead>
-                      <TableHead>Name-Surname</TableHead>
-                      <TableHead>Passport No.</TableHead>
-                      <TableHead>Date Of Birth</TableHead>
-                      <TableHead>Hotel</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {program.guests.map((guest, index) => (
-                      <TableRow key={guest.key}>
-                        <TableCell className="tabular-nums text-teal-900/55">{index + 1}</TableCell>
-                        <TableCell className="font-medium text-teal-950">{guest.fullName}</TableCell>
-                        <TableCell className="font-mono text-[0.85rem]">
-                          {guest.passportNumber || '—'}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap">
-                          {formatInsuranceBirthday(guest.birthday) || '—'}
-                        </TableCell>
-                        <TableCell>{guest.hotel}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-
-              <p className="border-t border-teal-900/8 px-4 py-3 text-xs font-semibold leading-relaxed text-red-700 sm:px-5">
-                Note : This is your insurance document. Please write the names of all family members
-                and all information exactly as they appear in their passports. If any information is
-                misspelled, missing or does not match the passport the insurance will not provide
-                coverage.
-              </p>
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
+      <style>{`
+        @media print {
+          @page {
+            size: A4 portrait;
+            margin: 8mm 7mm;
+          }
+          html, body {
+            width: 100% !important;
+            height: auto !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: white !important;
+            overflow: visible !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          body * {
+            visibility: hidden !important;
+          }
+          .insurance-print-sheet,
+          .insurance-print-sheet * {
+            visibility: visible !important;
+          }
+          .insurance-print-sheet {
+            display: block !important;
+            position: absolute !important;
+            left: 0 !important;
+            top: 0 !important;
+            width: 100% !important;
+            max-width: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: white !important;
+            color: #0f3d3e !important;
+            box-shadow: none !important;
+            border: 0 !important;
+            overflow: visible !important;
+            z-index: 99999 !important;
+          }
+          .insurance-print-sheet .gday-sheet {
+            background: white !important;
+            box-shadow: none !important;
+            backdrop-filter: none !important;
+            overflow: visible !important;
+            border-radius: 0 !important;
+            break-inside: auto;
+            page-break-inside: auto;
+          }
+          .insurance-print-sheet [data-slot='table-container'],
+          .insurance-print-sheet .overflow-x-auto {
+            overflow: visible !important;
+          }
+          .insurance-print-sheet table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            font-size: 8.5px !important;
+            line-height: 1.2 !important;
+          }
+          .insurance-print-sheet thead {
+            display: table-header-group;
+          }
+          .insurance-print-sheet th,
+          .insurance-print-sheet td {
+            background: white !important;
+            padding: 1px 4px !important;
+            height: auto !important;
+            font-size: 8.5px !important;
+            line-height: 1.2 !important;
+            vertical-align: middle !important;
+          }
+          .insurance-print-sheet th {
+            font-size: 8px !important;
+            font-weight: 700 !important;
+            padding: 2px 4px !important;
+          }
+          .insurance-print-sheet tr {
+            break-inside: avoid;
+            page-break-inside: avoid;
+          }
+          .insurance-print-sheet [class~='print:hidden'] {
+            display: none !important;
+            visibility: hidden !important;
+          }
+          .insurance-print-sheet [class~='print:block'] {
+            display: block !important;
+            visibility: visible !important;
+          }
+          .gday-admin-main::before {
+            display: none !important;
+          }
+        }
+      `}</style>
     </div>
   )
 }

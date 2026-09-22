@@ -685,6 +685,21 @@ export async function fetchBookings(): Promise<Booking[]> {
   return (data as BookingRow[]).map(mapBooking)
 }
 
+/** Reload boat capacities, names, guides, and assignments (for live multi-admin sync). */
+export async function fetchDayBoatPlans(): Promise<Record<string, DayBoatPlan>> {
+  const supabase = getSupabaseBrowserClient()
+  const [boatPlansRes, boatAssignRes] = await Promise.all([
+    supabase.from('day_boat_plans').select('*'),
+    supabase.from('boat_assignments').select('*'),
+  ])
+  await assertOk('day_boat_plans', boatPlansRes.error, boatPlansRes.data)
+  await assertOk('boat_assignments', boatAssignRes.error, boatAssignRes.data)
+  return buildBoatPlans(
+    boatPlansRes.data as BoatPlanRow[],
+    boatAssignRes.data as BoatAssignmentRow[],
+  )
+}
+
 /** Live updates when bookings change in Supabase (requires Realtime on `bookings`). */
 export function subscribeBookings(onChange: () => void) {
   const supabase = getSupabaseBrowserClient()
@@ -790,7 +805,7 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
   const capacities = normalizeBoatCapacities(plan.capacities)
   const boat_names = normalizeBoatNames(plan.names, capacities.length)
   const boat_guides = normalizeBoatGuides(plan.guides, capacities.length)
-  const { error: planError } = await supabase.from('day_boat_plans').upsert({
+  const baseRow = {
     date: plan.date,
     program: plan.program,
     capacity_1: capacities[0] ?? 44,
@@ -798,8 +813,23 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
     capacity_3: capacities[2] ?? capacities[0] ?? 44,
     capacities,
     boat_names,
+  }
+  let { error: planError } = await supabase.from('day_boat_plans').upsert({
+    ...baseRow,
     boat_guides,
   })
+  if (planError && /boat_guides/i.test(planError.message)) {
+    console.error(
+      '[supabase] boat_guides column missing — run supabase/add-boat-guides.sql so guides persist for all admins',
+      planError.message,
+    )
+    ;({ error: planError } = await supabase.from('day_boat_plans').upsert(baseRow))
+    if (!planError) {
+      throw new Error(
+        'Boat guides need a DB update — run supabase/add-boat-guides.sql in Supabase, then save again.',
+      )
+    }
+  }
   if (planError) throw new Error(`upsert boat plan: ${planError.message}`)
 
   const { error: delError } = await supabase

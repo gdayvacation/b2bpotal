@@ -117,6 +117,20 @@ export function serviceLineTotal(line: CheckInServiceLine) {
   return line.people * line.pricePerPerson
 }
 
+/** Compact line for Guide Job Order “Option” column (e.g. Private Longtail · 2,000). */
+export function formatCheckInServicesOption(services: CheckInServiceLine[]): string {
+  if (services.length === 0) return ''
+  return services
+    .map((line) => {
+      const label = checkInServiceLabel(line.kind)
+      const total = serviceLineTotal(line)
+      const head = line.people > 1 ? `${label} ×${line.people}` : label
+      if (total <= 0) return head
+      return `${head} · ${total.toLocaleString('en-US')}`
+    })
+    .join('; ')
+}
+
 export function newCheckInServiceId() {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
     return crypto.randomUUID()

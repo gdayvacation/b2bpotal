@@ -21,7 +21,7 @@ export function AgentShell({ agent, children }: { agent: Agent; children: React.
     <div className="gday-app relative">
       <header className="sticky top-0 z-40 border-b border-teal-900/8 bg-white/70 backdrop-blur-xl">
         <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-sky-400/50 via-teal-500/60 to-amber-400/40" />
-        <div className="relative mx-auto flex h-14 max-w-6xl items-center justify-between gap-3 px-4 sm:h-16 sm:px-6">
+        <div className="relative flex h-14 w-full items-center justify-between gap-3 px-4 sm:h-16 sm:px-6 lg:px-8 xl:px-10">
           <Link href={base} className="min-w-0 shrink-0">
             <BrandMark />
           </Link>
@@ -62,7 +62,7 @@ export function AgentShell({ agent, children }: { agent: Agent; children: React.
         </div>
       </header>
 
-      <main className="relative mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-8">{children}</main>
+      <main className="relative w-full px-4 py-5 sm:px-6 sm:py-8 lg:px-8 xl:px-10">{children}</main>
 
       <nav
         data-mobile-nav

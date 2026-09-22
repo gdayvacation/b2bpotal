@@ -15,8 +15,28 @@ import { formatPaxBreakdown, isNoTransfer, totalPassengers, type Booking } from 
 
 export function VoucherView({ booking, slug }: { booking: Booking; slug: string }) {
   const searchParams = useSearchParams()
-  const { bookings } = usePortal()
   const shouldPrint = searchParams.get('print') === '1'
+
+  useEffect(() => {
+    if (shouldPrint) {
+      const timer = window.setTimeout(() => window.print(), 250)
+      return () => window.clearTimeout(timer)
+    }
+  }, [shouldPrint])
+
+  return <VoucherPreview booking={booking} slug={slug} />
+}
+
+export function VoucherPreview({
+  booking,
+  slug,
+  embedded = false,
+}: {
+  booking: Booking
+  slug: string
+  embedded?: boolean
+}) {
+  const { bookings } = usePortal()
   const live = bookings.find((item) => item.code === booking.code) ?? booking
   const total = totalPassengers(live)
   const cancelled = live.status === 'Cancelled'
@@ -27,16 +47,9 @@ export function VoucherView({ booking, slug }: { booking: Booking; slug: string 
     .filter(Boolean)
     .join(' · ')
 
-  useEffect(() => {
-    if (shouldPrint) {
-      const timer = window.setTimeout(() => window.print(), 250)
-      return () => window.clearTimeout(timer)
-    }
-  }, [shouldPrint])
-
   return (
     <div className="mx-auto max-w-2xl">
-      <div className="mb-4 flex justify-end print:hidden">
+      <div className={cn('mb-4 flex justify-end print:hidden', embedded && 'pr-8')}>
         <Button
           type="button"
           variant="outline"
@@ -98,8 +111,8 @@ export function VoucherView({ booking, slug }: { booking: Booking; slug: string 
               <p className="text-[10px] font-medium tracking-wide text-white/55 uppercase">
                 Program
               </p>
-              <p className="mt-0.5 text-lg font-semibold tracking-tight leading-none">
-                {live.program}
+              <p className="mt-0.5 text-lg font-semibold tracking-tight leading-tight">
+                {live.program === 'PP' ? 'Phi Phi Islands' : 'James Bond'}
               </p>
             </div>
           </div>
@@ -119,14 +132,9 @@ export function VoucherView({ booking, slug }: { booking: Booking; slug: string 
           </div>
           <div className="mt-2 grid grid-cols-2 gap-2 border-t border-white/10 pt-2">
             <HeroFact label="National Park" value={formatIncludeLabel(live.parkFee)} />
-            <HeroFact
-              label="Canoe"
-              value={
-                live.program === 'James Bond'
-                  ? formatIncludeLabel(live.canoe)
-                  : 'N/A'
-              }
-            />
+            {live.program === 'James Bond' ? (
+              <HeroFact label="Canoe" value={formatIncludeLabel(live.canoe)} />
+            ) : null}
           </div>
         </div>
 
@@ -169,12 +177,9 @@ export function VoucherView({ booking, slug }: { booking: Booking; slug: string 
           <Section title="Tour options" icon={<Ship className="size-3.5" />}>
             <dl className="grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-3">
               <DetailCell label="National Park" value={formatIncludeLabel(live.parkFee)} />
-              <DetailCell
-                label="Canoe"
-                value={
-                  live.program === 'James Bond' ? formatIncludeLabel(live.canoe) : 'N/A'
-                }
-              />
+              {live.program === 'James Bond' ? (
+                <DetailCell label="Canoe" value={formatIncludeLabel(live.canoe)} />
+              ) : null}
               <DetailCell
                 label="Voucher number"
                 value={live.agentRef || '—'}
@@ -190,11 +195,9 @@ export function VoucherView({ booking, slug }: { booking: Booking; slug: string 
                 value={live.cashOnTour.trim() || '—'}
                 wrap
               />
-              <DetailCell
-                label="Note"
-                value={live.note.trim() || '—'}
-                wrap
-              />
+              {live.note.trim() ? (
+                <DetailCell label="Note" value={live.note.trim()} wrap />
+              ) : null}
             </dl>
           </Section>
         </div>

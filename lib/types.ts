@@ -32,6 +32,7 @@ export type BookingEvent = {
 }
 
 export type BookingActionOptions = {
+  /** Admin back-office override: skip agent cutoffs, program closures, and seat capacity. */
   bypassCutoff?: boolean
   actor?: BookingActor
 }
