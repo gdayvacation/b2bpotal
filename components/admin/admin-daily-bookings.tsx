@@ -1492,39 +1492,39 @@ function BoatBoard({
               )}
             >
               <div
-                className="guide-jo-color-bar mb-1 h-1 w-full rounded-sm"
+                className="guide-jo-color-bar mb-2 h-1.5 w-full rounded-sm"
                 style={{ backgroundColor: theme.printHex }}
               />
-              <div className="guide-jo-header mb-1 flex items-end justify-between gap-3 border-b border-teal-900/25 pb-1">
+              <div className="guide-jo-header mb-2 flex items-end justify-between gap-3 border-b-2 border-teal-900/30 pb-2">
                 <div>
-                  <p className="text-[7px] font-semibold tracking-[0.14em] text-teal-700/70 uppercase">
+                  <p className="text-[8px] font-bold tracking-[0.16em] text-teal-800 uppercase">
                     G&apos;Day Tours Phuket · Guide Job Order
                   </p>
-                  <h1 className="mt-0.5 text-[12px] leading-tight font-bold text-teal-950">
+                  <h1 className="mt-1 text-[15px] leading-snug font-bold text-teal-950">
                     <span
-                      className="mr-1.5 inline-block size-2 rounded-full align-middle"
+                      className="mr-1.5 inline-block size-2.5 rounded-full align-middle"
                       style={{ backgroundColor: theme.printHex }}
                     />
                     {boatDisplayName(plan, boat)} · {theme.colorName} ·{' '}
                     {program === 'PP' ? 'PP' : 'JB'} ·{' '}
                     {program === 'PP' ? 'Phi Phi Islands' : 'Phang Nga Bay'}
                   </h1>
-                  <p className="mt-0.5 text-[8px] leading-tight text-teal-900/60">
+                  <p className="mt-1 text-[10px] leading-snug font-medium text-teal-900/75">
                     {formatLongDate(date)} · {pax} / {capacity} pax
                   </p>
                 </div>
-                <div className="text-right text-[8px] leading-tight text-teal-900/70">
+                <div className="text-right text-[10px] leading-snug text-teal-900/80">
                   <p>
                     Guide:{' '}
-                    <span className="font-semibold text-teal-950">
+                    <span className="font-bold text-teal-950">
                       {guide.guideName || '—'}
                     </span>
                     {guide.guidePhone ? ` · ${guide.guidePhone}` : ''}
                   </p>
                   {guide.assistantName.trim() || guide.assistantPhone.trim() ? (
-                    <p className="mt-0.5">
+                    <p className="mt-1">
                       Assistant:{' '}
-                      <span className="font-semibold text-teal-950">
+                      <span className="font-bold text-teal-950">
                         {guide.assistantName || '—'}
                       </span>
                       {guide.assistantPhone ? ` · ${guide.assistantPhone}` : ''}
@@ -1534,12 +1534,12 @@ function BoatBoard({
               </div>
 
               {numberedSections.length === 0 ? (
-                <p className="py-4 text-center text-[10px] text-neutral-500">No guests on this boat.</p>
+                <p className="py-4 text-center text-[11px] text-neutral-500">No guests on this boat.</p>
               ) : (
                 <GuideBoatPassengerTable sections={numberedSections} />
               )}
 
-              <p className="guide-jo-footer mt-1 text-[7px] text-teal-900/50">
+              <p className="guide-jo-footer mt-2 text-[9px] font-medium text-teal-900/60">
                 Total passengers on {boatDisplayName(plan, boat)}: {pax} / {capacity}
               </p>
             </div>
@@ -1551,7 +1551,7 @@ function BoatBoard({
         @media print {
           @page {
             size: A4 portrait;
-            margin: 5mm;
+            margin: 8mm;
           }
           body.printing-guide-jo * {
             visibility: hidden !important;
@@ -1573,17 +1573,44 @@ function BoatBoard({
           body.printing-guide-jo .guide-jo-table {
             table-layout: fixed !important;
             width: 100% !important;
-            font-size: 8px !important;
-            line-height: 1.1 !important;
+            font-size: 11px !important;
+            line-height: 1.35 !important;
           }
-          body.printing-guide-jo .guide-jo-table th,
+          body.printing-guide-jo .guide-jo-table thead th {
+            font-size: 9px !important;
+            letter-spacing: 0.06em !important;
+            padding-top: 4px !important;
+            padding-bottom: 5px !important;
+            border-bottom: 1.5px solid #134e4a !important;
+            color: #134e4a !important;
+          }
           body.printing-guide-jo .guide-jo-table td {
-            padding-top: 0 !important;
-            padding-bottom: 0 !important;
+            padding-top: 5px !important;
+            padding-bottom: 5px !important;
             vertical-align: top !important;
           }
+          body.printing-guide-jo .guide-jo-van-title td {
+            padding-top: 10px !important;
+            padding-bottom: 4px !important;
+            font-size: 11px !important;
+            background: #f0fdfa !important;
+            border-top: 1px solid #99f6e4 !important;
+            border-bottom: 1px solid #99f6e4 !important;
+          }
+          body.printing-guide-jo .guide-jo-pax {
+            color: #0f766e !important;
+            font-weight: 700 !important;
+          }
           body.printing-guide-jo .guide-jo-boat {
-            margin-bottom: 0.25rem !important;
+            margin-bottom: 0.5rem !important;
+          }
+          body.printing-guide-jo .guide-jo-header h1 {
+            font-size: 16px !important;
+            line-height: 1.25 !important;
+          }
+          body.printing-guide-jo .guide-jo-footer {
+            font-size: 10px !important;
+            margin-top: 8px !important;
           }
         }
       `}</style>
@@ -1672,19 +1699,19 @@ function GuideBoatPassengerTable({
   }>
 }) {
   return (
-    <table className="guide-jo-table w-full table-fixed border-collapse text-[10px] leading-tight">
+    <table className="guide-jo-table w-full table-fixed border-collapse text-[11px] leading-snug">
       <colgroup>
-        <col style={{ width: '5%' }} />
-        <col style={{ width: '44%' }} />
-        <col style={{ width: '39%' }} />
-        <col style={{ width: '12%' }} />
+        <col style={{ width: '6%' }} />
+        <col style={{ width: '42%' }} />
+        <col style={{ width: '38%' }} />
+        <col style={{ width: '14%' }} />
       </colgroup>
       <thead>
-        <tr className="border-b border-teal-900/20 text-left text-[8px] tracking-wide text-teal-900/60 uppercase">
-          <th className="py-0.5 pr-1.5 font-semibold">No.</th>
-          <th className="py-0.5 pr-1.5 font-semibold">Guest name</th>
-          <th className="py-0.5 pr-1.5 font-semibold">Hotel</th>
-          <th className="py-0.5 font-semibold">Option</th>
+        <tr className="border-b border-teal-900/30 text-left text-[9px] tracking-wide text-teal-900/70 uppercase">
+          <th className="py-1.5 pr-2 font-bold">No.</th>
+          <th className="py-1.5 pr-2 font-bold">Guest name</th>
+          <th className="py-1.5 pr-2 font-bold">Hotel</th>
+          <th className="py-1.5 font-bold">Option</th>
         </tr>
       </thead>
       <tbody>
@@ -1693,26 +1720,28 @@ function GuideBoatPassengerTable({
             <tr className="guide-jo-van-title">
               <td
                 colSpan={4}
-                className="pt-1.5 pb-0.5 text-[9px] leading-tight font-semibold text-teal-950"
+                className="bg-teal-50/80 px-1.5 pt-2.5 pb-1.5 text-[11px] leading-snug font-bold text-teal-950"
               >
                 {section.title}
               </td>
             </tr>
             {section.rows.map((row, index) => (
-              <tr key={row.bookingCode} className="border-b border-teal-900/8">
-                <td className="py-0.5 pr-1.5 align-top tabular-nums text-teal-900/50">
+              <tr key={row.bookingCode} className="border-b border-teal-900/12">
+                <td className="py-1.5 pr-2 align-top text-[11px] font-semibold tabular-nums text-teal-900/55">
                   {section.startNo + index + 1}
                 </td>
-                <td className="py-0.5 pr-1.5 align-top font-medium break-words text-teal-950">
+                <td className="py-1.5 pr-2 align-top text-[11px] font-semibold break-words text-teal-950">
                   {row.guestName}
                   {row.leadPaxTag ? (
-                    <span className="ml-1 font-normal text-teal-900/65">{row.leadPaxTag}</span>
+                    <span className="guide-jo-pax ml-1.5 inline-block font-bold text-teal-700">
+                      {row.leadPaxTag}
+                    </span>
                   ) : null}
                 </td>
-                <td className="py-0.5 pr-1.5 align-top break-words text-teal-900/80">
+                <td className="py-1.5 pr-2 align-top text-[11px] break-words text-teal-900/85">
                   {row.hotel}
                 </td>
-                <td className="py-0.5 align-top text-teal-900/50">
+                <td className="py-1.5 align-top text-[10px] font-medium text-teal-900/70">
                   {row.option || ''}
                 </td>
               </tr>
