@@ -1579,7 +1579,8 @@ function BoatBoard({
               {vansHere.map((group) => (
                 <div key={group.van} className="mb-3">
                   <p className="text-sm font-semibold">
-                    Van {group.van} · {group.zone} · {group.pax} pax
+                    Van {group.van} · {group.pax} pax
+                    {group.meta.driver ? ` · Driver ${group.meta.driver}` : ''}
                   </p>
                   <ul className="text-sm">
                     {group.items.map((booking) => (
@@ -1625,7 +1626,7 @@ function BoatBoard({
 
           const vanSections = vansHere.map((group) => ({
             key: `print-van-${boat}-${group.van}`,
-            title: `Van ${group.van}${group.zone !== '—' ? ` · ${group.zone}` : ''} · ${group.pax} pax${group.meta.driver ? ` · Driver ${group.meta.driver}` : ''}`,
+            title: `Van ${group.van} · ${group.pax} pax${group.meta.driver ? ` · Driver ${group.meta.driver}` : ''}`,
             vanLabel: `Van ${group.van}`,
             rows: group.items.map((booking) =>
               guideLeaderPrintRow(
@@ -1670,8 +1671,8 @@ function BoatBoard({
                 className="guide-jo-color-bar mb-2 h-1.5 w-full rounded-sm"
                 style={{ backgroundColor: theme.printHex }}
               />
-              <div className="guide-jo-header mb-2 flex items-end justify-between gap-3 border-b-2 border-teal-900/30 pb-2">
-                <div>
+              <div className="guide-jo-header mb-3 flex items-start justify-between gap-4 border-b-2 border-teal-900/30 pb-3">
+                <div className="min-w-0 flex-1">
                   <p className="text-[8px] font-bold tracking-[0.16em] text-teal-800 uppercase">
                     G&apos;Day Tours Phuket · Guide Job Order
                   </p>
@@ -1688,22 +1689,28 @@ function BoatBoard({
                     {formatLongDate(date)} · {pax} / {capacity} pax
                   </p>
                 </div>
-                <div className="text-right text-[10px] leading-snug text-teal-900/80">
-                  <p>
-                    Guide:{' '}
-                    <span className="font-bold text-teal-950">
-                      {guide.guideName || '—'}
-                    </span>
-                    {guide.guidePhone ? ` · ${guide.guidePhone}` : ''}
+                <div className="guide-jo-contact w-[13.5rem] shrink-0 rounded-md border border-teal-900/25 bg-teal-50/60 px-3 py-2.5">
+                  <p className="text-[8px] font-bold tracking-[0.14em] text-teal-800/70 uppercase">
+                    Guide
+                  </p>
+                  <p className="mt-1 text-[13px] leading-tight font-bold text-teal-950">
+                    {guide.guideName.trim() || '—'}
+                  </p>
+                  <p className="mt-1 text-[12px] leading-tight font-semibold tabular-nums text-teal-900">
+                    {guide.guidePhone.trim() || '—'}
                   </p>
                   {guide.assistantName.trim() || guide.assistantPhone.trim() ? (
-                    <p className="mt-1">
-                      Assistant:{' '}
-                      <span className="font-bold text-teal-950">
-                        {guide.assistantName || '—'}
-                      </span>
-                      {guide.assistantPhone ? ` · ${guide.assistantPhone}` : ''}
-                    </p>
+                    <div className="mt-2 border-t border-teal-900/15 pt-2">
+                      <p className="text-[8px] font-bold tracking-[0.14em] text-teal-800/70 uppercase">
+                        Assistant
+                      </p>
+                      <p className="mt-1 text-[12px] leading-tight font-bold text-teal-950">
+                        {guide.assistantName.trim() || '—'}
+                      </p>
+                      <p className="mt-0.5 text-[11px] leading-tight font-semibold tabular-nums text-teal-900">
+                        {guide.assistantPhone.trim() || '—'}
+                      </p>
+                    </div>
                   ) : null}
                 </div>
               </div>
@@ -1783,6 +1790,29 @@ function BoatBoard({
             font-size: 16px !important;
             line-height: 1.25 !important;
           }
+          body.printing-guide-jo .guide-jo-contact {
+            width: 13.5rem !important;
+            padding: 8px 10px !important;
+            border: 1.5px solid #134e4a !important;
+            background: #f0fdfa !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          body.printing-guide-jo .guide-jo-contact p {
+            color: #042f2e !important;
+          }
+          body.printing-guide-jo .guide-jo-option-line {
+            display: block !important;
+            font-size: 10px !important;
+            line-height: 1.35 !important;
+            font-weight: 600 !important;
+            color: #134e4a !important;
+          }
+          body.printing-guide-jo .guide-jo-option-line + .guide-jo-option-line {
+            margin-top: 3px !important;
+            padding-top: 3px !important;
+            border-top: 1px solid #ccfbf1 !important;
+          }
           body.printing-guide-jo .guide-jo-footer {
             font-size: 10px !important;
             margin-top: 8px !important;
@@ -1826,8 +1856,8 @@ type GuidePassengerRow = {
   /** Shown next to lead name, e.g. "(2AD+2IF)". */
   leadPaxTag: string
   hotel: string
-  /** Extra paid marina services for guide (e.g. Private Longtail · 2,000). */
-  option: string
+  /** Extra paid marina services — one line each for print. */
+  optionLines: string[]
 }
 
 /** Compact booking mix for lead guest — e.g. (2AD+1CHD+2IF). */
@@ -1852,6 +1882,11 @@ function formatGuideLeadPaxTag(
   return parts.length > 0 ? `(${parts.join('+')})` : ''
 }
 
+function formatGuideOptionLines(services: CheckInServiceLine[]): string[] {
+  if (services.length === 0) return []
+  return services.map((line) => formatCheckInServicesOption([line]))
+}
+
 /** One print row per booking — leader name only. */
 function guideLeaderPrintRow(
   booking: Booking,
@@ -1863,7 +1898,7 @@ function guideLeaderPrintRow(
     guestName: booking.leadGuest,
     leadPaxTag: formatGuideLeadPaxTag(booking, seatsOnThisVan),
     hotel: booking.pickupHotel?.trim() || '—',
-    option: formatCheckInServicesOption(services),
+    optionLines: formatGuideOptionLines(services),
   }
 }
 
@@ -1880,10 +1915,10 @@ function GuideBoatPassengerTable({
   return (
     <table className="guide-jo-table w-full table-fixed border-collapse text-[11px] leading-snug">
       <colgroup>
-        <col style={{ width: '6%' }} />
-        <col style={{ width: '42%' }} />
-        <col style={{ width: '38%' }} />
-        <col style={{ width: '14%' }} />
+        <col style={{ width: '5%' }} />
+        <col style={{ width: '34%' }} />
+        <col style={{ width: '33%' }} />
+        <col style={{ width: '28%' }} />
       </colgroup>
       <thead>
         <tr className="border-b border-teal-900/30 text-left text-[9px] tracking-wide text-teal-900/70 uppercase">
@@ -1920,8 +1955,21 @@ function GuideBoatPassengerTable({
                 <td className="py-1.5 pr-2 align-top text-[11px] break-words text-teal-900/85">
                   {row.hotel}
                 </td>
-                <td className="py-1.5 align-top text-[10px] font-medium text-teal-900/70">
-                  {row.option || ''}
+                <td className="py-1.5 align-top">
+                  {row.optionLines.length === 0 ? (
+                    <span className="text-[10px] text-teal-900/30">—</span>
+                  ) : (
+                    <div className="guide-jo-option">
+                      {row.optionLines.map((line, lineIndex) => (
+                        <span
+                          key={`${row.bookingCode}-opt-${lineIndex}`}
+                          className="guide-jo-option-line block text-[10px] leading-snug font-semibold text-teal-900/85"
+                        >
+                          {line}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </td>
               </tr>
             ))}
