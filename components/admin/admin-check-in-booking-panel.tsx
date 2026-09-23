@@ -29,9 +29,18 @@ import { cn } from '@/lib/utils'
 import { NO_TRANSFER_TIME, NO_TRANSFER_ZONE, totalPassengers, type Booking } from '@/lib/types'
 import {
   formatGuestPaxParts,
+  getBookedPaxSnapshot,
   getOrCaptureBookedPaxSnapshot,
   type BookedPaxSnapshot,
 } from '@/lib/check-in-booked-pax'
+import {
+  addPax,
+  formatPaxOrDash,
+  getOwnArrival,
+  getPickupNoShow,
+  paxTotal,
+  recordOwnArrival,
+} from '@/lib/pickup-marina-sync'
 
 type PanelAction = 'ns-whole' | 'ns-some' | 'date' | 'own-arrival'
 
@@ -57,9 +66,7 @@ export function AdminCheckInBookingPanel({
     removeCheckInEnrollment,
     trimCheckInEnrollments,
     setCheckInAttendance,
-    getDayVehiclePlan,
     assignBookingToVan,
-    setBookingVanSplits,
   } = usePortal()
 
   const [original, setOriginal] = useState<BookedPaxSnapshot | null>(null)
@@ -79,7 +86,6 @@ export function AdminCheckInBookingPanel({
   const [saving, setSaving] = useState(false)
   const [dateSaving, setDateSaving] = useState(false)
   const [action, setAction] = useState<PanelAction>(null)
-  const [arrivalMode, setArrivalMode] = useState<'whole' | 'partial'>('whole')
   const [arrAdults, setArrAdults] = useState(0)
   const [arrChildren, setArrChildren] = useState(0)
   const [arrInfants, setArrInfants] = useState(0)
@@ -91,6 +97,22 @@ export function AdminCheckInBookingPanel({
 
   useEffect(() => {
     if (!booking || !open) return
+    const existing = getBookedPaxSnapshot(today, booking.program, booking.code)
+    if (existing) {
+      setOriginal(existing)
+      return
+    }
+    const ns = getPickupNoShow(today, booking.program, booking.code)
+    const taxi = getOwnArrival(today, booking.program, booking.code)
+    if (paxTotal(ns) > 0) {
+      setOriginal({
+        adults: booking.adults - taxi.adults + ns.adults,
+        children: booking.children - taxi.children + ns.children,
+        infants: booking.infants - taxi.infants + ns.infants,
+        tourLeaders: booking.tourLeaders - taxi.tourLeaders + ns.tourLeaders,
+      })
+      return
+    }
     setOriginal(
       getOrCaptureBookedPaxSnapshot(today, booking.program, booking.code, {
         adults: booking.adults,
@@ -117,12 +139,12 @@ export function AdminCheckInBookingPanel({
     setError('')
     setDateError('')
     setAction(null)
-    setArrivalMode('whole')
     setArrAdults(0)
     setArrChildren(0)
     setArrInfants(0)
     setArrTourLeaders(0)
     setArrivalError('')
+    setArrivalSaving(false)
   }, [bookingCode, open, today])
 
   const enrollments = booking
@@ -139,6 +161,25 @@ export function AdminCheckInBookingPanel({
   const moveTotal = moveAdults + moveChildren + moveInfants + moveTourLeaders
   const extraChargeAmount = Math.max(0, Math.floor(Number(extraCharge.replace(/,/g, '')) || 0))
   const arrTotal = arrAdults + arrChildren + arrInfants + arrTourLeaders
+  const missingPax = {
+    adults: Math.max(0, (original?.adults ?? booking?.adults ?? 0) - (booking?.adults ?? 0)),
+    children: Math.max(0, (original?.children ?? booking?.children ?? 0) - (booking?.children ?? 0)),
+    infants: Math.max(0, (original?.infants ?? booking?.infants ?? 0) - (booking?.infants ?? 0)),
+    tourLeaders: Math.max(
+      0,
+      (original?.tourLeaders ?? booking?.tourLeaders ?? 0) - (booking?.tourLeaders ?? 0),
+    ),
+  }
+  const missingTotal =
+    missingPax.adults + missingPax.children + missingPax.infants + missingPax.tourLeaders
+  const canRestoreSeats = missingTotal > 0
+  const arrMax = {
+    adults: canRestoreSeats ? missingPax.adults : (booking?.adults ?? 0),
+    children: canRestoreSeats ? missingPax.children : (booking?.children ?? 0),
+    infants: canRestoreSeats ? missingPax.infants : (booking?.infants ?? 0),
+    tourLeaders: canRestoreSeats ? missingPax.tourLeaders : (booking?.tourLeaders ?? 0),
+  }
+  const missingLabel = formatGuestPaxParts(missingPax)
   const actor = { role: 'admin' as const, name: 'Marina check-in' }
 
   const pay = booking
@@ -377,72 +418,92 @@ export function AdminCheckInBookingPanel({
     setExtraCharge('')
   }
 
-  function releaseVanSeats(releasePax: number) {
-    if (!booking || releasePax < 1) return
-    const plan = getDayVehiclePlan(today, booking.program)
-    const legs = plan.assignments[booking.code] ?? []
-    const vanPax = legs.reduce((sum, leg) => sum + leg.pax, 0)
-    const keep = Math.max(0, vanPax - releasePax)
-    if (keep < 1 || legs.length === 0) {
-      assignBookingToVan(today, booking.program, booking.code, null)
-      return
-    }
-    setBookingVanSplits(today, booking.program, booking.code, [
-      { van: legs[0].van, pax: keep, sortOrder: legs[0].sortOrder },
-    ])
-  }
-
   function applyOwnArrival() {
     if (!booking) return
     setArrivalError('')
-    const whole = arrivalMode === 'whole' || arrTotal >= currentTotal
-    if (!whole && arrTotal < 1) {
-      setArrivalError('Choose whole booking or how many AD / CH / INF / TL arrived on their own.')
+    if (arrTotal < 1) {
+      setArrivalError('Choose how many AD / CH / INF / TL came to the marina.')
       return
     }
     if (
-      !whole &&
-      (arrAdults > booking.adults ||
-        arrChildren > booking.children ||
-        arrInfants > booking.infants ||
-        arrTourLeaders > booking.tourLeaders)
+      arrAdults > arrMax.adults ||
+      arrChildren > arrMax.children ||
+      arrInfants > arrMax.infants ||
+      arrTourLeaders > arrMax.tourLeaders
     ) {
-      setArrivalError('Own-arrival counts cannot exceed this booking.')
+      setArrivalError('Counts cannot exceed the guests who are missing or on this booking.')
       return
     }
 
+    const arrived = {
+      adults: arrAdults,
+      children: arrChildren,
+      infants: arrInfants,
+      tourLeaders: arrTourLeaders,
+    }
+    const arrivedLabel = formatGuestPaxParts(arrived)
+    recordOwnArrival(today, booking.program, booking.code, arrived)
+    const noteLine = `Own arrival ${arrivedLabel} — missed hotel pickup, came to marina`
+    const note = booking.note.includes(noteLine)
+      ? booking.note.trim()
+      : [booking.note.trim(), noteLine].filter(Boolean).join(' · ')
+
     setArrivalSaving(true)
-    if (whole) {
-      assignBookingToVan(today, booking.program, booking.code, null)
-      const note = [booking.note.trim(), 'Own arrival — van seat released']
-        .filter(Boolean)
-        .join(' · ')
-      updateBookingDetails(
+    if (attendance === 'no-show') {
+      setCheckInAttendance(today, booking.program, booking.code, null)
+    }
+
+    if (canRestoreSeats) {
+      const result = updateBookingDetails(
         booking.code,
         {
-          pickupZone: NO_TRANSFER_ZONE,
-          pickupHotel: booking.pickupHotel,
-          pickupTime: NO_TRANSFER_TIME,
+          adults: booking.adults + arrAdults,
+          children: booking.children + arrChildren,
+          infants: booking.infants + arrInfants,
+          tourLeaders: booking.tourLeaders + arrTourLeaders,
           note,
         },
         { actor },
       )
+      setArrivalSaving(false)
+      if (!result.ok) {
+        setArrivalError(result.error)
+        return
+      }
     } else {
-      releaseVanSeats(arrTotal)
-      const note = [
-        booking.note.trim(),
-        `Own arrival ${formatGuestPaxParts({
-          adults: arrAdults,
-          children: arrChildren,
-          infants: arrInfants,
-          tourLeaders: arrTourLeaders,
-        })} — van seats released`,
-      ]
-        .filter(Boolean)
-        .join(' · ')
-      updateBookingDetails(booking.code, { note }, { actor })
+      const arrivedAll = arrTotal >= currentTotal
+      const result = updateBookingDetails(
+        booking.code,
+        {
+          ...(attendance === 'no-show' && !arrivedAll
+            ? {
+                adults: arrAdults,
+                children: arrChildren,
+                infants: arrInfants,
+                tourLeaders: arrTourLeaders,
+              }
+            : {}),
+          ...(arrivedAll || attendance === 'no-show'
+            ? {
+                pickupZone: NO_TRANSFER_ZONE,
+                pickupHotel: booking.pickupHotel,
+                pickupTime: NO_TRANSFER_TIME,
+              }
+            : {}),
+          note,
+        },
+        { actor },
+      )
+      if (arrivedAll || attendance === 'no-show') {
+        assignBookingToVan(today, booking.program, booking.code, null)
+      }
+      setArrivalSaving(false)
+      if (!result.ok) {
+        setArrivalError(result.error)
+        return
+      }
     }
-    setArrivalSaving(false)
+
     setArrAdults(0)
     setArrChildren(0)
     setArrInfants(0)
@@ -465,6 +526,15 @@ export function AdminCheckInBookingPanel({
   }
 
   const isWholeNoShow = attendance === 'no-show'
+  const isOwnArrival = /own arrival/i.test(booking.note)
+  const recordedPickupNs = getPickupNoShow(today, booking.program, booking.code)
+  const recordedTaxi = getOwnArrival(today, booking.program, booking.code)
+  const pickupNoShowPax =
+    paxTotal(recordedPickupNs) > 0 ? recordedPickupNs : addPax(missingPax, recordedTaxi)
+  const pickupNoShowLabel = formatPaxOrDash(pickupNoShowPax)
+  const taxiLabel = formatPaxOrDash(recordedTaxi)
+  const qrSeats = currentTotal
+  const pickedUpLabel = currentLabel
 
   return (
     <Dialog
@@ -502,15 +572,35 @@ export function AdminCheckInBookingPanel({
           />
         </div>
 
-        <p className="text-xs text-teal-900/60">
-          Original {originalLabel}
-          {currentLabel !== originalLabel ? (
-            <>
-              {' '}
-              · now <span className="font-semibold text-teal-950">{currentLabel}</span>
-            </>
-          ) : null}
-        </p>
+        <div className="rounded-xl bg-teal-950/[0.04] px-3 py-2.5">
+          <p className="text-[10px] font-semibold tracking-wide text-teal-800/50 uppercase">
+            Synced from Guest Pick up
+          </p>
+          <dl className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-teal-900/70">
+            <div className="flex justify-between gap-2">
+              <dt>Original booked</dt>
+              <dd className="font-semibold text-teal-950">{originalLabel}</dd>
+            </div>
+            <div className="flex justify-between gap-2">
+              <dt>No-show pickup</dt>
+              <dd className="font-semibold text-rose-800">{pickupNoShowLabel}</dd>
+            </div>
+            <div className="flex justify-between gap-2">
+              <dt>Now on trip</dt>
+              <dd className="font-semibold text-teal-950">{pickedUpLabel}</dd>
+            </div>
+            <div className="flex justify-between gap-2">
+              <dt>Came to marina</dt>
+              <dd className="font-semibold text-sky-800">{taxiLabel}</dd>
+            </div>
+          </dl>
+          <p className="mt-2 text-[11px] text-teal-900/55">
+            QR check-in seats {enrolled}/{qrSeats}
+            {canRestoreSeats
+              ? ' · open Came to marina to add pickup no-shows who took a taxi'
+              : ''}
+          </p>
+        </div>
 
         <div className="space-y-1.5">
           {!action ? (
@@ -554,12 +644,16 @@ export function AdminCheckInBookingPanel({
               />
               <ActionChoice
                 icon={<CarFront className="size-3.5" />}
-                title="Own arrival"
-                hint="Guest took a taxi to the marina"
+                title="Came to marina"
+                hint="Missed pickup — open AD / CH / INF / TL to check in"
                 tone="sky"
-                disabled={isWholeNoShow}
                 onSelect={() => selectAction('own-arrival')}
               />
+              {isOwnArrival ? (
+                <p className="rounded-xl bg-sky-50 px-3 py-2.5 text-sm text-sky-950 ring-1 ring-sky-200/80">
+                  Missed pickup — they came to the marina themselves. Still check in with QR.
+                </p>
+              ) : null}
             </>
           ) : (
             <>
@@ -707,63 +801,69 @@ export function AdminCheckInBookingPanel({
 
               {action === 'own-arrival' ? (
                 <div className="rounded-xl px-3 py-3 ring-1 ring-sky-200/80">
-                  <p className="text-sm font-semibold text-sky-950">Own arrival</p>
-                  <p className="mt-1 text-xs text-teal-900/55">
-                    They still check in here. This frees the van seat — boat stays assigned.
+                  <p className="text-sm font-semibold text-sky-950">Came to marina</p>
+                  <p className="mt-1 text-xs text-teal-900/60">
+                    They missed hotel pickup and took a taxi. This is not a no-show. Opening seats
+                    puts them back on the booking for QR check-in, invoice, and reports.
                   </p>
-                  <div className="mt-2 grid grid-cols-2 gap-1 rounded-xl bg-teal-950/[0.04] p-1">
-                    <button
-                      type="button"
-                      onClick={() => setArrivalMode('whole')}
-                      className={cn(
-                        'rounded-lg px-3 py-1.5 text-sm font-semibold transition-all',
-                        arrivalMode === 'whole'
-                          ? 'bg-white text-teal-950 shadow-sm'
-                          : 'text-teal-900/55 hover:text-teal-950',
-                      )}
-                    >
-                      Whole booking
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setArrivalMode('partial')}
-                      className={cn(
-                        'rounded-lg px-3 py-1.5 text-sm font-semibold transition-all',
-                        arrivalMode === 'partial'
-                          ? 'bg-white text-teal-950 shadow-sm'
-                          : 'text-teal-900/55 hover:text-teal-950',
-                      )}
-                    >
-                      Some guests
-                    </button>
-                  </div>
-                  {arrivalMode === 'partial' ? (
-                    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                      <PaxStepper label="AD" value={arrAdults} min={0} max={booking.adults} onChange={setArrAdults} />
-                      <PaxStepper label="CH" value={arrChildren} min={0} max={booking.children} onChange={setArrChildren} />
-                      <PaxStepper label="INF" value={arrInfants} min={0} max={booking.infants} onChange={setArrInfants} />
-                      <PaxStepper
-                        label="TL"
-                        value={arrTourLeaders}
-                        min={0}
-                        max={booking.tourLeaders}
-                        onChange={setArrTourLeaders}
-                      />
-                    </div>
-                  ) : null}
                   <p className="mt-2 text-xs text-teal-900/55">
-                    {arrivalMode === 'whole'
-                      ? `Release van seats for all ${currentTotal} guest${currentTotal === 1 ? '' : 's'}`
-                      : `Release ${arrTotal} van seat${arrTotal === 1 ? '' : 's'}`}
+                    Original {originalLabel}
+                    {currentLabel !== originalLabel ? ` · now on trip ${currentLabel}` : ''}
+                    {canRestoreSeats ? ` · missing from pickup ${missingLabel}` : ''}
                   </p>
-                  {arrivalError ? <p className="text-sm text-rose-700">{arrivalError}</p> : null}
+                  <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <PaxStepper label="AD" value={arrAdults} min={0} max={arrMax.adults} onChange={setArrAdults} />
+                    <PaxStepper label="CH" value={arrChildren} min={0} max={arrMax.children} onChange={setArrChildren} />
+                    <PaxStepper label="INF" value={arrInfants} min={0} max={arrMax.infants} onChange={setArrInfants} />
+                    <PaxStepper
+                      label="TL"
+                      value={arrTourLeaders}
+                      min={0}
+                      max={arrMax.tourLeaders}
+                      onChange={setArrTourLeaders}
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-teal-900/55">
+                    {canRestoreSeats
+                      ? arrTotal > 0
+                        ? `Open ${formatGuestPaxParts({
+                            adults: arrAdults,
+                            children: arrChildren,
+                            infants: arrInfants,
+                            tourLeaders: arrTourLeaders,
+                          })} to check in`
+                        : `Choose who is here from the ${missingLabel} missing pickup`
+                      : isWholeNoShow
+                        ? arrTotal > 0
+                          ? `Clear All NS for ${formatGuestPaxParts({
+                              adults: arrAdults,
+                              children: arrChildren,
+                              infants: arrInfants,
+                              tourLeaders: arrTourLeaders,
+                            })}`
+                          : 'Choose who is here. Anyone not selected stays no-show.'
+                        : arrTotal > 0
+                          ? `Record own arrival ${formatGuestPaxParts({
+                              adults: arrAdults,
+                              children: arrChildren,
+                              infants: arrInfants,
+                              tourLeaders: arrTourLeaders,
+                            })}`
+                          : 'Choose who missed pickup and came by taxi.'}
+                  </p>
+                  {isWholeNoShow ? (
+                    <p className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-xs text-amber-950/80">
+                      This will clear All NS for the guests you open.
+                    </p>
+                  ) : null}
+                  {arrivalError ? <p className="mt-2 text-sm text-rose-700">{arrivalError}</p> : null}
                   <Button
                     size="sm"
-                    className="mt-2"
-                    disabled={arrivalSaving || (arrivalMode === 'partial' && arrTotal < 1)}
+                    className="mt-3"
+                    disabled={arrivalSaving || arrTotal < 1}
                     onClick={applyOwnArrival}
                   >
-                    Free van seat
+                    Open seats to check in
                   </Button>
                 </div>
               ) : null}

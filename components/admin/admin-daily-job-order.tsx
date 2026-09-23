@@ -23,6 +23,7 @@ import {
   originalBookedPax,
   replaceBookedPaxSnapshot,
 } from '@/lib/check-in-booked-pax'
+import { recordPickupNoShow } from '@/lib/pickup-marina-sync'
 import { formatIncludeLabel, formatCollectTotal, collectTotal, formatLongDate, formatParkFeeTotal, formatShortDate, toISODate } from '@/lib/format'
 import {
   getJobOrderAction,
@@ -197,6 +198,18 @@ export function AdminDailyJobOrder({
       bookings.filter((booking) => booking.date === selectedDate && isActiveBooking(booking)),
     [bookings, selectedDate],
   )
+
+  useEffect(() => {
+    if (!isCheckInView) return
+    for (const booking of dayBookings) {
+      getOrCaptureBookedPaxSnapshot(selectedDate, booking.program, booking.code, {
+        adults: booking.adults,
+        children: booking.children,
+        infants: booking.infants,
+        tourLeaders: booking.tourLeaders,
+      })
+    }
+  }, [dayBookings, isCheckInView, selectedDate])
 
   const ppDay = dayBookings.filter((b) => b.program === 'PP')
   const jbDay = dayBookings.filter((b) => b.program === 'James Bond')
@@ -545,6 +558,12 @@ export function AdminDailyJobOrder({
               }}
               onWholeNoShow={(booking) => {
                 getOrCaptureBookedPaxSnapshot(selectedDate, booking.program, booking.code, {
+                  adults: booking.adults,
+                  children: booking.children,
+                  infants: booking.infants,
+                  tourLeaders: booking.tourLeaders,
+                })
+                recordPickupNoShow(selectedDate, booking.program, booking.code, {
                   adults: booking.adults,
                   children: booking.children,
                   infants: booking.infants,

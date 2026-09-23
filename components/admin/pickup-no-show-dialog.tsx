@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog'
 import { enrolledSeatCount } from '@/lib/check-in-enrollment'
 import { formatGuestPaxParts, getOrCaptureBookedPaxSnapshot } from '@/lib/check-in-booked-pax'
+import { recordPickupNoShow } from '@/lib/pickup-marina-sync'
 import { totalPassengers, type Booking } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -86,6 +87,12 @@ export function PickupNoShowDialog({
       children: booking.children,
       infants: booking.infants,
       tourLeaders: booking.tourLeaders,
+    })
+    recordPickupNoShow(today, booking.program, booking.code, {
+      adults: nsAdults,
+      children: nsChildren,
+      infants: nsInfants,
+      tourLeaders: nsTourLeaders,
     })
 
     const nextAdults = booking.adults - nsAdults

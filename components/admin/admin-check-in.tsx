@@ -44,7 +44,7 @@ import {
   guestDisplayName,
   type CheckInEnrollment,
 } from '@/lib/check-in-enrollment'
-import { hasPartialNoShow, originalBookedPax } from '@/lib/check-in-booked-pax'
+import { formatGuestPaxParts, hasPartialNoShow, originalBookedPax } from '@/lib/check-in-booked-pax'
 import {
   guestCheckInQrImageUrl,
   guestCheckInUrl,
@@ -1360,12 +1360,18 @@ function DriverGroupCard({
                           : line.status === 'checked'
                             ? `Checked in · ${progressLabel}`
                             : partialNoShow
-                              ? `Waiting · ${progressLabel} left · ${missingPax} NS`
+                              ? `Waiting · ${progressLabel} · pickup NS ${missingPax}`
                               : `Waiting · ${progressLabel}`}
                       </p>
 
                       {expanded ? (
                         <div className="mt-2 space-y-1.5 border-t border-teal-900/8 pt-2">
+                          {partialNoShow || wholeNoShow ? (
+                            <p className="text-[11px] text-teal-900/55">
+                              Original {formatGuestPaxParts(booked)}
+                              {partialNoShow ? ` · pickup NS ${missingPax}` : ''}
+                            </p>
+                          ) : null}
                           {line.guests.length > 0 ? (
                             line.guests.map((guest) => {
                               const details = [
