@@ -145,7 +145,7 @@ export function AdminReports() {
           />
           <ReportModeCard
             tone="sky"
-            title="Check in Report"
+            title="Guest Pick up"
             subtitle="Marina staff sheet by van — guest, boat, park & tick box from van / boat plans."
             meta="For marina"
             icon={<ClipboardCheck className="size-7" strokeWidth={1.75} />}

@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Minus, Plus, Trash2 } from 'lucide-react'
+import { CalendarRange, CarFront, ChevronLeft, ChevronRight, Minus, Plus, Trash2, UserX, Users } from 'lucide-react'
 import { BoatFleetBadge } from '@/components/boat-badge'
 import { usePortal } from '@/components/portal-provider'
 import { Button } from '@/components/ui/button'
@@ -26,12 +26,14 @@ import {
   parseCashOnTourAmount,
 } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { totalPassengers, type Booking } from '@/lib/types'
+import { NO_TRANSFER_TIME, NO_TRANSFER_ZONE, totalPassengers, type Booking } from '@/lib/types'
 import {
   formatGuestPaxParts,
   getOrCaptureBookedPaxSnapshot,
   type BookedPaxSnapshot,
 } from '@/lib/check-in-booked-pax'
+
+type PanelAction = 'ns-whole' | 'ns-some' | 'date' | 'own-arrival'
 
 export function AdminCheckInBookingPanel({
   open,
@@ -55,6 +57,9 @@ export function AdminCheckInBookingPanel({
     removeCheckInEnrollment,
     trimCheckInEnrollments,
     setCheckInAttendance,
+    getDayVehiclePlan,
+    assignBookingToVan,
+    setBookingVanSplits,
   } = usePortal()
 
   const [original, setOriginal] = useState<BookedPaxSnapshot | null>(null)
@@ -73,6 +78,16 @@ export function AdminCheckInBookingPanel({
   const [dateError, setDateError] = useState('')
   const [saving, setSaving] = useState(false)
   const [dateSaving, setDateSaving] = useState(false)
+  const [action, setAction] = useState<PanelAction>(null)
+  const [arrivalMode, setArrivalMode] = useState<'whole' | 'partial'>('whole')
+  const [arrAdults, setArrAdults] = useState(0)
+  const [arrChildren, setArrChildren] = useState(0)
+  const [arrInfants, setArrInfants] = useState(0)
+  const [arrTourLeaders, setArrTourLeaders] = useState(0)
+  const [arrivalError, setArrivalError] = useState('')
+  const [arrivalSaving, setArrivalSaving] = useState(false)
+
+  const bookingCode = booking?.code ?? ''
 
   useEffect(() => {
     if (!booking || !open) return
@@ -84,6 +99,10 @@ export function AdminCheckInBookingPanel({
         tourLeaders: booking.tourLeaders,
       }),
     )
+  }, [booking, open, today])
+
+  useEffect(() => {
+    if (!open || !bookingCode) return
     setNsAdults(0)
     setNsChildren(0)
     setNsInfants(0)
@@ -97,7 +116,14 @@ export function AdminCheckInBookingPanel({
     setExtraCharge('')
     setError('')
     setDateError('')
-  }, [booking, open, today])
+    setAction(null)
+    setArrivalMode('whole')
+    setArrAdults(0)
+    setArrChildren(0)
+    setArrInfants(0)
+    setArrTourLeaders(0)
+    setArrivalError('')
+  }, [bookingCode, open, today])
 
   const enrollments = booking
     ? getCheckInEnrollments(today, booking.program, booking.code)
@@ -112,6 +138,7 @@ export function AdminCheckInBookingPanel({
   const remainingAfterNs = currentTotal - nsTotal
   const moveTotal = moveAdults + moveChildren + moveInfants + moveTourLeaders
   const extraChargeAmount = Math.max(0, Math.floor(Number(extraCharge.replace(/,/g, '')) || 0))
+  const arrTotal = arrAdults + arrChildren + arrInfants + arrTourLeaders
   const actor = { role: 'admin' as const, name: 'Marina check-in' }
 
   const pay = booking
@@ -350,19 +377,119 @@ export function AdminCheckInBookingPanel({
     setExtraCharge('')
   }
 
+  function releaseVanSeats(releasePax: number) {
+    if (!booking || releasePax < 1) return
+    const plan = getDayVehiclePlan(today, booking.program)
+    const legs = plan.assignments[booking.code] ?? []
+    const vanPax = legs.reduce((sum, leg) => sum + leg.pax, 0)
+    const keep = Math.max(0, vanPax - releasePax)
+    if (keep < 1 || legs.length === 0) {
+      assignBookingToVan(today, booking.program, booking.code, null)
+      return
+    }
+    setBookingVanSplits(today, booking.program, booking.code, [
+      { van: legs[0].van, pax: keep, sortOrder: legs[0].sortOrder },
+    ])
+  }
+
+  function applyOwnArrival() {
+    if (!booking) return
+    setArrivalError('')
+    const whole = arrivalMode === 'whole' || arrTotal >= currentTotal
+    if (!whole && arrTotal < 1) {
+      setArrivalError('Choose whole booking or how many AD / CH / INF / TL arrived on their own.')
+      return
+    }
+    if (
+      !whole &&
+      (arrAdults > booking.adults ||
+        arrChildren > booking.children ||
+        arrInfants > booking.infants ||
+        arrTourLeaders > booking.tourLeaders)
+    ) {
+      setArrivalError('Own-arrival counts cannot exceed this booking.')
+      return
+    }
+
+    setArrivalSaving(true)
+    if (whole) {
+      assignBookingToVan(today, booking.program, booking.code, null)
+      const note = [booking.note.trim(), 'Own arrival — van seat released']
+        .filter(Boolean)
+        .join(' · ')
+      updateBookingDetails(
+        booking.code,
+        {
+          pickupZone: NO_TRANSFER_ZONE,
+          pickupHotel: booking.pickupHotel,
+          pickupTime: NO_TRANSFER_TIME,
+          note,
+        },
+        { actor },
+      )
+    } else {
+      releaseVanSeats(arrTotal)
+      const note = [
+        booking.note.trim(),
+        `Own arrival ${formatGuestPaxParts({
+          adults: arrAdults,
+          children: arrChildren,
+          infants: arrInfants,
+          tourLeaders: arrTourLeaders,
+        })} — van seats released`,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+      updateBookingDetails(booking.code, { note }, { actor })
+    }
+    setArrivalSaving(false)
+    setArrAdults(0)
+    setArrChildren(0)
+    setArrInfants(0)
+    setArrTourLeaders(0)
+    setAction(null)
+  }
+
+  function selectAction(next: PanelAction) {
+    setAction(next)
+    setError('')
+    setDateError('')
+    setArrivalError('')
+  }
+
+  function backToActions() {
+    setAction(null)
+    setError('')
+    setDateError('')
+    setArrivalError('')
+  }
+
   const isWholeNoShow = attendance === 'no-show'
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="pr-8">{booking.leadGuest}</DialogTitle>
+    <Dialog
+      open={open}
+      disablePointerDismissal
+      onOpenChange={(next, eventDetails) => {
+        if (
+          !next &&
+          (eventDetails.reason === 'outside-press' || eventDetails.reason === 'focus-out')
+        ) {
+          return
+        }
+        onOpenChange(next)
+      }}
+    >
+      <DialogContent className="top-4 flex max-h-[calc(100dvh-2rem)] w-full max-w-lg translate-y-0 flex-col gap-0 overflow-hidden p-0 sm:top-6 sm:max-w-lg">
+        <DialogHeader className="shrink-0 gap-1 px-4 pt-4 pr-12 pb-2">
+          <DialogTitle>{booking.leadGuest}</DialogTitle>
           <DialogDescription>
             {booking.pickupHotel || booking.pickupZone} · {booking.code}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid grid-cols-2 gap-2 text-xs text-teal-900/70 sm:grid-cols-4">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 py-2">
+        <div className="grid grid-cols-2 gap-1.5 text-xs text-teal-900/70 sm:grid-cols-4">
           <MetaChip label="Boat" value={<BoatFleetBadge boat={boat} />} />
           <MetaChip label="Park" value={formatIncludeShort(booking.parkFee)} />
           <MetaChip
@@ -375,223 +502,274 @@ export function AdminCheckInBookingPanel({
           />
         </div>
 
-        <div className="rounded-2xl bg-teal-950/[0.04] px-4 py-3.5">
-          <p className="text-[11px] font-semibold tracking-wide text-teal-800/55 uppercase">
-            Original booking
-          </p>
-          <p className="mt-1 text-base font-semibold text-teal-950">{originalLabel}</p>
+        <p className="text-xs text-teal-900/60">
+          Original {originalLabel}
           {currentLabel !== originalLabel ? (
-            <p className="mt-1 text-xs text-teal-900/55">
-              Now on trip: <span className="font-semibold text-teal-950">{currentLabel}</span>
-            </p>
+            <>
+              {' '}
+              · now <span className="font-semibold text-teal-950">{currentLabel}</span>
+            </>
           ) : null}
-        </div>
+        </p>
 
-        <div className="space-y-3">
-          <p className="text-xs font-semibold tracking-wide text-teal-800/55 uppercase">
-            Adjust booking
-          </p>
+        <div className="space-y-1.5">
+          {!action ? (
+            <>
+              <p className="text-xs font-semibold tracking-wide text-teal-800/55 uppercase">
+                What do you need?
+              </p>
 
-          {isWholeNoShow ? (
-            <div className="flex items-center justify-between gap-2 rounded-xl bg-rose-50 px-3 py-2.5 text-sm text-rose-900 ring-1 ring-rose-200/70">
-              Whole booking marked no-show
-              <Button size="sm" variant="outline" onClick={clearWholeNoShow}>
-                Undo
-              </Button>
-            </div>
+              {isWholeNoShow ? (
+                <div className="flex items-center justify-between gap-2 rounded-xl bg-rose-50 px-3 py-2.5 text-sm text-rose-900 ring-1 ring-rose-200/70">
+                  Whole booking no-show
+                  <Button size="sm" variant="outline" onClick={clearWholeNoShow}>
+                    Undo
+                  </Button>
+                </div>
+              ) : null}
+
+              <ActionChoice
+                icon={<UserX className="size-3.5" />}
+                title="No-show all"
+                hint="Driver pickup — whole booking missed"
+                tone="rose"
+                disabled={isWholeNoShow}
+                onSelect={() => selectAction('ns-whole')}
+              />
+              <ActionChoice
+                icon={<Users className="size-3.5" />}
+                title="No-show some"
+                hint="Driver pickup — only some guests missed"
+                tone="rose"
+                disabled={isWholeNoShow}
+                onSelect={() => selectAction('ns-some')}
+              />
+              <ActionChoice
+                icon={<CalendarRange className="size-3.5" />}
+                title="Change date"
+                hint="Move whole booking or some guests"
+                tone="teal"
+                disabled={isWholeNoShow}
+                onSelect={() => selectAction('date')}
+              />
+              <ActionChoice
+                icon={<CarFront className="size-3.5" />}
+                title="Own arrival"
+                hint="Guest took a taxi to the marina"
+                tone="sky"
+                disabled={isWholeNoShow}
+                onSelect={() => selectAction('own-arrival')}
+              />
+            </>
           ) : (
             <>
               <button
                 type="button"
-                onClick={markWholeNoShow}
-                className="flex w-full flex-col items-start rounded-2xl px-4 py-3.5 text-left ring-1 ring-rose-200/80 bg-rose-50/70 transition-colors hover:bg-rose-50"
+                onClick={backToActions}
+                className="flex items-center gap-1 text-xs font-semibold text-teal-800/70 hover:text-teal-950"
               >
-                <span className="text-sm font-semibold text-rose-950">1. No-show whole booking</span>
-                <span className="mt-0.5 text-xs text-rose-900/70">
-                  Removes this booking from today’s boat arrangement.
-                </span>
+                <ChevronLeft className="size-3.5" />
+                All actions
               </button>
 
-              <div className="space-y-2.5 rounded-2xl px-4 py-3.5 ring-1 ring-teal-900/10">
-                <div>
-                  <p className="text-sm font-semibold text-teal-950">2. No-show some</p>
-                  <p className="mt-0.5 text-xs text-teal-900/55">
-                    Choose how many of each type did not come. Saves to booking and boat seats.
+              {action === 'ns-whole' ? (
+                <div className="rounded-xl px-3 py-3 ring-1 ring-rose-200/70">
+                  <p className="text-sm font-semibold text-rose-950">No-show all</p>
+                  <p className="mt-1 text-xs text-rose-900/70">
+                    Marks All NS on Guest Pick up and Check-in. Frees the boat seat. Do not give
+                    tickets.
                   </p>
+                  <Button size="sm" className="mt-3" onClick={markWholeNoShow}>
+                    Mark whole booking no-show
+                  </Button>
                 </div>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  <PaxStepper
-                    label="AD"
-                    value={nsAdults}
-                    min={0}
-                    max={booking.adults}
-                    onChange={setNsAdults}
-                  />
-                  <PaxStepper
-                    label="CH"
-                    value={nsChildren}
-                    min={0}
-                    max={booking.children}
-                    onChange={setNsChildren}
-                  />
-                  <PaxStepper
-                    label="INF"
-                    value={nsInfants}
-                    min={0}
-                    max={booking.infants}
-                    onChange={setNsInfants}
-                  />
-                  <PaxStepper
-                    label="TL"
-                    value={nsTourLeaders}
-                    min={0}
-                    max={booking.tourLeaders}
-                    onChange={setNsTourLeaders}
-                  />
+              ) : null}
+
+              {action === 'ns-some' ? (
+                <div className="rounded-xl px-3 py-3 ring-1 ring-rose-200/70">
+                  <p className="text-sm font-semibold text-rose-950">No-show some</p>
+                  <p className="mt-1 text-xs text-teal-900/55">
+                    Remaining guests stay on the trip and can still check in.
+                  </p>
+                  <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <PaxStepper label="AD" value={nsAdults} min={0} max={booking.adults} onChange={setNsAdults} />
+                    <PaxStepper label="CH" value={nsChildren} min={0} max={booking.children} onChange={setNsChildren} />
+                    <PaxStepper label="INF" value={nsInfants} min={0} max={booking.infants} onChange={setNsInfants} />
+                    <PaxStepper
+                      label="TL"
+                      value={nsTourLeaders}
+                      min={0}
+                      max={booking.tourLeaders}
+                      onChange={setNsTourLeaders}
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-teal-900/55">
+                    No-show {nsTotal}
+                    {nsTotal > 0 ? ` · left on trip ${Math.max(0, remainingAfterNs)}` : ''}
+                  </p>
+                  {error ? <p className="text-sm text-rose-700">{error}</p> : null}
+                  <Button size="sm" className="mt-2" disabled={saving || nsTotal < 1} onClick={applyPartialNoShow}>
+                    Apply no-show
+                  </Button>
                 </div>
-                <p className="text-xs text-teal-900/55">
-                  No-show {nsTotal}
-                  {nsTotal > 0 ? ` · left on trip ${Math.max(0, remainingAfterNs)}` : ''}
-                  {remainingAfterNs > 0 && remainingAfterNs < enrolled
-                    ? ` · will trim ${enrolled - remainingAfterNs} checked-in seat(s)`
-                    : ''}
-                </p>
-                {error ? <p className="text-sm text-rose-700">{error}</p> : null}
-                <Button
-                  size="sm"
-                  disabled={saving || nsTotal < 1}
-                  onClick={applyPartialNoShow}
-                >
-                  Apply no-show
-                </Button>
-              </div>
+              ) : null}
+
+              {action === 'date' ? (
+                <div className="rounded-xl px-3 py-3 ring-1 ring-teal-900/10">
+                  <p className="text-sm font-semibold text-teal-950">Change date</p>
+                  <div className="mt-2 grid grid-cols-2 gap-1 rounded-xl bg-teal-950/[0.04] p-1">
+                    <button
+                      type="button"
+                      onClick={() => setDateMode('whole')}
+                      className={cn(
+                        'rounded-lg px-3 py-1.5 text-sm font-semibold transition-all',
+                        dateMode === 'whole'
+                          ? 'bg-white text-teal-950 shadow-sm'
+                          : 'text-teal-900/55 hover:text-teal-950',
+                      )}
+                    >
+                      Whole
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDateMode('partial')}
+                      className={cn(
+                        'rounded-lg px-3 py-1.5 text-sm font-semibold transition-all',
+                        dateMode === 'partial'
+                          ? 'bg-white text-teal-950 shadow-sm'
+                          : 'text-teal-900/55 hover:text-teal-950',
+                      )}
+                    >
+                      Some guests
+                    </button>
+                  </div>
+                  {dateMode === 'partial' ? (
+                    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      <PaxStepper label="AD" value={moveAdults} min={0} max={booking.adults} onChange={setMoveAdults} />
+                      <PaxStepper label="CH" value={moveChildren} min={0} max={booking.children} onChange={setMoveChildren} />
+                      <PaxStepper label="INF" value={moveInfants} min={0} max={booking.infants} onChange={setMoveInfants} />
+                      <PaxStepper
+                        label="TL"
+                        value={moveTourLeaders}
+                        min={0}
+                        max={booking.tourLeaders}
+                        onChange={setMoveTourLeaders}
+                      />
+                    </div>
+                  ) : null}
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    <div>
+                      <p className="mb-1.5 text-[11px] font-semibold tracking-wide text-teal-800/55 uppercase">
+                        New date
+                      </p>
+                      <Input
+                        type="date"
+                        value={newDate}
+                        min={today}
+                        onChange={(event) => setNewDate(event.target.value)}
+                        className="h-10"
+                      />
+                    </div>
+                    <div>
+                      <p className="mb-1.5 text-[11px] font-semibold tracking-wide text-teal-800/55 uppercase">
+                        Extra charge (THB)
+                      </p>
+                      <Input
+                        type="number"
+                        min={0}
+                        inputMode="numeric"
+                        placeholder="0"
+                        value={extraCharge}
+                        onChange={(event) => setExtraCharge(event.target.value)}
+                        className="h-10"
+                      />
+                    </div>
+                  </div>
+                  <p className="mt-2 text-xs text-teal-900/55">
+                    {dateMode === 'whole'
+                      ? `Moves all ${currentTotal} guest${currentTotal === 1 ? '' : 's'}`
+                      : `Move ${moveTotal} · stay ${Math.max(0, currentTotal - moveTotal)}`}
+                    {extraChargeAmount > 0
+                      ? ` · extra ${extraChargeAmount.toLocaleString('en-US')} THB`
+                      : ''}
+                  </p>
+                  {dateError ? <p className="text-sm text-rose-700">{dateError}</p> : null}
+                  <Button
+                    size="sm"
+                    className="mt-2"
+                    disabled={dateSaving || !newDate || (dateMode === 'partial' && moveTotal < 1)}
+                    onClick={applyDateChange}
+                  >
+                    Apply date change
+                  </Button>
+                </div>
+              ) : null}
+
+              {action === 'own-arrival' ? (
+                <div className="rounded-xl px-3 py-3 ring-1 ring-sky-200/80">
+                  <p className="text-sm font-semibold text-sky-950">Own arrival</p>
+                  <p className="mt-1 text-xs text-teal-900/55">
+                    They still check in here. This frees the van seat — boat stays assigned.
+                  </p>
+                  <div className="mt-2 grid grid-cols-2 gap-1 rounded-xl bg-teal-950/[0.04] p-1">
+                    <button
+                      type="button"
+                      onClick={() => setArrivalMode('whole')}
+                      className={cn(
+                        'rounded-lg px-3 py-1.5 text-sm font-semibold transition-all',
+                        arrivalMode === 'whole'
+                          ? 'bg-white text-teal-950 shadow-sm'
+                          : 'text-teal-900/55 hover:text-teal-950',
+                      )}
+                    >
+                      Whole booking
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setArrivalMode('partial')}
+                      className={cn(
+                        'rounded-lg px-3 py-1.5 text-sm font-semibold transition-all',
+                        arrivalMode === 'partial'
+                          ? 'bg-white text-teal-950 shadow-sm'
+                          : 'text-teal-900/55 hover:text-teal-950',
+                      )}
+                    >
+                      Some guests
+                    </button>
+                  </div>
+                  {arrivalMode === 'partial' ? (
+                    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      <PaxStepper label="AD" value={arrAdults} min={0} max={booking.adults} onChange={setArrAdults} />
+                      <PaxStepper label="CH" value={arrChildren} min={0} max={booking.children} onChange={setArrChildren} />
+                      <PaxStepper label="INF" value={arrInfants} min={0} max={booking.infants} onChange={setArrInfants} />
+                      <PaxStepper
+                        label="TL"
+                        value={arrTourLeaders}
+                        min={0}
+                        max={booking.tourLeaders}
+                        onChange={setArrTourLeaders}
+                      />
+                    </div>
+                  ) : null}
+                  <p className="mt-2 text-xs text-teal-900/55">
+                    {arrivalMode === 'whole'
+                      ? `Release van seats for all ${currentTotal} guest${currentTotal === 1 ? '' : 's'}`
+                      : `Release ${arrTotal} van seat${arrTotal === 1 ? '' : 's'}`}
+                  </p>
+                  {arrivalError ? <p className="text-sm text-rose-700">{arrivalError}</p> : null}
+                  <Button
+                    size="sm"
+                    className="mt-2"
+                    disabled={arrivalSaving || (arrivalMode === 'partial' && arrTotal < 1)}
+                    onClick={applyOwnArrival}
+                  >
+                    Free van seat
+                  </Button>
+                </div>
+              ) : null}
             </>
           )}
         </div>
-
-        {!isWholeNoShow ? (
-          <div className="space-y-3 rounded-2xl px-4 py-3.5 ring-1 ring-teal-900/10">
-            <div>
-              <p className="text-xs font-semibold tracking-wide text-teal-800/55 uppercase">
-                Change date
-              </p>
-              <p className="mt-0.5 text-xs text-teal-900/55">
-                Move whole booking or some guests to another day. Optional extra charge goes to cash
-                on tour.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-1 rounded-xl bg-teal-950/[0.04] p-1">
-              <button
-                type="button"
-                onClick={() => setDateMode('whole')}
-                className={cn(
-                  'rounded-lg px-3 py-2 text-sm font-semibold transition-all',
-                  dateMode === 'whole'
-                    ? 'bg-white text-teal-950 shadow-sm'
-                    : 'text-teal-900/55 hover:text-teal-950',
-                )}
-              >
-                Whole booking
-              </button>
-              <button
-                type="button"
-                onClick={() => setDateMode('partial')}
-                className={cn(
-                  'rounded-lg px-3 py-2 text-sm font-semibold transition-all',
-                  dateMode === 'partial'
-                    ? 'bg-white text-teal-950 shadow-sm'
-                    : 'text-teal-900/55 hover:text-teal-950',
-                )}
-              >
-                Partial
-              </button>
-            </div>
-
-            {dateMode === 'partial' ? (
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                <PaxStepper
-                  label="AD"
-                  value={moveAdults}
-                  min={0}
-                  max={booking.adults}
-                  onChange={setMoveAdults}
-                />
-                <PaxStepper
-                  label="CH"
-                  value={moveChildren}
-                  min={0}
-                  max={booking.children}
-                  onChange={setMoveChildren}
-                />
-                <PaxStepper
-                  label="INF"
-                  value={moveInfants}
-                  min={0}
-                  max={booking.infants}
-                  onChange={setMoveInfants}
-                />
-                <PaxStepper
-                  label="TL"
-                  value={moveTourLeaders}
-                  min={0}
-                  max={booking.tourLeaders}
-                  onChange={setMoveTourLeaders}
-                />
-              </div>
-            ) : null}
-
-            <div className="grid gap-2 sm:grid-cols-2">
-              <div>
-                <p className="mb-1.5 text-[11px] font-semibold tracking-wide text-teal-800/55 uppercase">
-                  New date
-                </p>
-                <Input
-                  type="date"
-                  value={newDate}
-                  min={today}
-                  onChange={(event) => setNewDate(event.target.value)}
-                  className="h-10"
-                />
-              </div>
-              <div>
-                <p className="mb-1.5 text-[11px] font-semibold tracking-wide text-teal-800/55 uppercase">
-                  Extra charge (THB)
-                </p>
-                <Input
-                  type="number"
-                  min={0}
-                  inputMode="numeric"
-                  placeholder="0"
-                  value={extraCharge}
-                  onChange={(event) => setExtraCharge(event.target.value)}
-                  className="h-10"
-                />
-              </div>
-            </div>
-
-            <p className="text-xs text-teal-900/55">
-              {dateMode === 'whole'
-                ? `Moves all ${currentTotal} guest${currentTotal === 1 ? '' : 's'}`
-                : `Move ${moveTotal} · stay ${Math.max(0, currentTotal - moveTotal)}`}
-              {extraChargeAmount > 0
-                ? ` · extra ${extraChargeAmount.toLocaleString('en-US')} THB`
-                : ''}
-            </p>
-            {dateError ? <p className="text-sm text-rose-700">{dateError}</p> : null}
-            <Button
-              size="sm"
-              disabled={
-                dateSaving ||
-                !newDate ||
-                (dateMode === 'partial' && moveTotal < 1)
-              }
-              onClick={applyDateChange}
-            >
-              Apply date change
-            </Button>
-          </div>
-        ) : null}
 
         <div className="space-y-2">
           <p className="text-xs font-semibold tracking-wide text-teal-800/55 uppercase">
@@ -654,8 +832,9 @@ export function AdminCheckInBookingPanel({
             {waiting} seat{waiting === 1 ? '' : 's'} still waiting to check in.
           </p>
         ) : null}
+        </div>
 
-        <DialogFooter>
+        <DialogFooter className="mx-0 mb-0 shrink-0">
           <p className="mr-auto hidden text-[11px] text-teal-900/45 sm:block">
             {formatLongDate(today)}
           </p>
@@ -668,9 +847,65 @@ export function AdminCheckInBookingPanel({
   )
 }
 
+function ActionChoice({
+  icon,
+  title,
+  hint,
+  tone,
+  disabled,
+  onSelect,
+}: {
+  icon: ReactNode
+  title: string
+  hint: string
+  tone: 'rose' | 'teal' | 'sky'
+  disabled?: boolean
+  onSelect: () => void
+}) {
+  const tones = {
+    rose: {
+      ring: 'ring-rose-200/70',
+      icon: 'bg-rose-100 text-rose-800',
+      title: 'text-rose-950',
+    },
+    teal: {
+      ring: 'ring-teal-900/10',
+      icon: 'bg-teal-100 text-teal-800',
+      title: 'text-teal-950',
+    },
+    sky: {
+      ring: 'ring-sky-200/80',
+      icon: 'bg-sky-100 text-sky-800',
+      title: 'text-sky-950',
+    },
+  }
+  const t = tones[tone]
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onSelect}
+      className={cn(
+        'flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left ring-1',
+        t.ring,
+        disabled && 'opacity-50',
+      )}
+    >
+      <span className={cn('flex size-7 shrink-0 items-center justify-center rounded-lg', t.icon)}>
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className={cn('block text-sm font-semibold', t.title)}>{title}</span>
+        <span className="mt-0.5 block text-[11px] text-teal-900/50">{hint}</span>
+      </span>
+      <ChevronRight className="size-4 shrink-0 text-teal-900/35" />
+    </button>
+  )
+}
+
 function MetaChip({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div className="rounded-xl bg-teal-950/[0.04] px-2.5 py-2">
+    <div className="rounded-lg bg-teal-950/[0.04] px-2 py-1.5">
       <p className="text-[10px] font-semibold tracking-wide text-teal-800/50 uppercase">
         {label}
       </p>

@@ -44,6 +44,7 @@ import {
   guestDisplayName,
   type CheckInEnrollment,
 } from '@/lib/check-in-enrollment'
+import { hasPartialNoShow, originalBookedPax } from '@/lib/check-in-booked-pax'
 import {
   guestCheckInQrImageUrl,
   guestCheckInUrl,
@@ -1231,10 +1232,22 @@ function DriverGroupCard({
             <TableHead className="w-11 px-1 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
               QR
             </TableHead>
-            <TableHead className="w-[24%] px-1.5 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
+            <TableHead className="w-[16%] px-1.5 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
               Booking
             </TableHead>
-            <TableHead className="w-[18%] px-1.5 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
+            <TableHead className="w-7 px-0.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
+              AD
+            </TableHead>
+            <TableHead className="w-7 px-0.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
+              CH
+            </TableHead>
+            <TableHead className="w-7 px-0.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
+              INF
+            </TableHead>
+            <TableHead className="w-7 px-0.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
+              TL
+            </TableHead>
+            <TableHead className="w-[16%] px-1.5 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
               Hotel
             </TableHead>
             <TableHead className="w-12 px-1 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
@@ -1265,6 +1278,14 @@ function DriverGroupCard({
             const hotel = line.booking.pickupHotel || line.booking.pickupZone || '—'
             const expanded = Boolean(expandedCodes[line.booking.code])
             const progressLabel = `${line.checkedInCount}/${line.seatsTotal}`
+            const booked = originalBookedPax(today, line.booking.program, line.booking)
+            const wholeNoShow = line.status === 'no-show'
+            const partialNoShow = !wholeNoShow && hasPartialNoShow(booked, line.booking)
+            const missingPax =
+              Math.max(0, booked.adults - line.booking.adults) +
+              Math.max(0, booked.children - line.booking.children) +
+              Math.max(0, booked.infants - line.booking.infants) +
+              Math.max(0, booked.tourLeaders - line.booking.tourLeaders)
             const services = getCheckInServices(
               today,
               line.booking.program,
@@ -1334,11 +1355,13 @@ function DriverGroupCard({
                               : 'text-amber-900/80',
                         )}
                       >
-                        {line.status === 'no-show'
-                          ? `No-show · ${progressLabel}`
+                        {wholeNoShow
+                          ? 'Whole booking no-show'
                           : line.status === 'checked'
                             ? `Checked in · ${progressLabel}`
-                            : `Waiting · ${progressLabel}`}
+                            : partialNoShow
+                              ? `Waiting · ${progressLabel} left · ${missingPax} NS`
+                              : `Waiting · ${progressLabel}`}
                       </p>
 
                       {expanded ? (
@@ -1393,6 +1416,34 @@ function DriverGroupCard({
                       ) : null}
                     </div>
                   </div>
+                </TableCell>
+                <TableCell className="px-0.5 text-center align-top tabular-nums">
+                  <PaxCount
+                    original={booked.adults}
+                    current={line.booking.adults}
+                    wholeNoShow={wholeNoShow}
+                  />
+                </TableCell>
+                <TableCell className="px-0.5 text-center align-top tabular-nums">
+                  <PaxCount
+                    original={booked.children}
+                    current={line.booking.children}
+                    wholeNoShow={wholeNoShow}
+                  />
+                </TableCell>
+                <TableCell className="px-0.5 text-center align-top tabular-nums">
+                  <PaxCount
+                    original={booked.infants}
+                    current={line.booking.infants}
+                    wholeNoShow={wholeNoShow}
+                  />
+                </TableCell>
+                <TableCell className="px-0.5 text-center align-top tabular-nums">
+                  <PaxCount
+                    original={booked.tourLeaders}
+                    current={line.booking.tourLeaders}
+                    wholeNoShow={wholeNoShow}
+                  />
                 </TableCell>
                 <TableCell className="max-w-0 whitespace-normal px-1.5 align-top">
                   <p className="truncate text-teal-900/80" title={hotel}>
@@ -1477,20 +1528,30 @@ function DriverGroupCard({
                   onClick={(event) => event.stopPropagation()}
                   onKeyDown={(event) => event.stopPropagation()}
                 >
-                  <input
-                    type="checkbox"
-                    aria-label={`Done for ${line.leaderName || line.booking.code}`}
-                    className="size-4 rounded border-teal-900/25 text-teal-800 focus-visible:ring-teal-700/30"
-                    checked={paid}
-                    onChange={(event) =>
-                      setCheckInPayment(
-                        today,
-                        line.booking.program,
-                        line.booking.code,
-                        event.target.checked ? 'paid' : null,
-                      )
-                    }
-                  />
+                  {wholeNoShow ? (
+                    <span
+                      className="inline-flex rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800"
+                      title="Whole booking no-show — do not give any ticket"
+                    >
+                      All NS
+                    </span>
+                  ) : (
+                    <input
+                      type="checkbox"
+                      aria-label={`Ticket given for ${line.leaderName || line.booking.code}`}
+                      title="Tick when the guest has checked in and received their ticket"
+                      className="size-4 rounded border-teal-900/25 text-teal-800 focus-visible:ring-teal-700/30"
+                      checked={paid}
+                      onChange={(event) =>
+                        setCheckInPayment(
+                          today,
+                          line.booking.program,
+                          line.booking.code,
+                          event.target.checked ? 'paid' : null,
+                        )
+                      }
+                    />
+                  )}
                 </TableCell>
               </TableRow>
             )
@@ -1864,6 +1925,34 @@ function BookingServicesDialog({
   )
 }
 
+function PaxCount({
+  original,
+  current,
+  wholeNoShow = false,
+}: {
+  original: number
+  current: number
+  wholeNoShow?: boolean
+}) {
+  const bookedCount = Math.max(original, current)
+  if (wholeNoShow && bookedCount > 0) {
+    return (
+      <span className="inline-flex flex-col items-center leading-none">
+        <span>{bookedCount}</span>
+        <span className="mt-0.5 text-[10px] font-semibold text-orange-700">-all</span>
+      </span>
+    )
+  }
+  const missing = original - current
+  if (missing <= 0) return <>{current || ''}</>
+  return (
+    <span className="inline-flex flex-col items-center leading-none">
+      <span>{original}</span>
+      <span className="mt-0.5 text-[10px] font-semibold text-orange-700">-{missing}</span>
+    </span>
+  )
+}
+
 function StatusBadge({ status }: { status: GuestLineStatus }) {
   if (status === 'checked') {
     return (
@@ -1874,8 +1963,11 @@ function StatusBadge({ status }: { status: GuestLineStatus }) {
   }
   if (status === 'no-show') {
     return (
-      <span className="inline-flex rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800">
-        NS
+      <span
+        className="inline-flex rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800"
+        title="Whole booking no-show"
+      >
+        All NS
       </span>
     )
   }

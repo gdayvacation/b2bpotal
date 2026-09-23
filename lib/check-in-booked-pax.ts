@@ -42,6 +42,54 @@ function snapshotTotal(row: BookedPaxSnapshot) {
   return row.adults + row.children + row.infants + row.tourLeaders
 }
 
+export function getBookedPaxSnapshot(
+  date: string,
+  program: Program,
+  bookingCode: string,
+): BookedPaxSnapshot | null {
+  return loadMap()[bookingKey(date, program, bookingCode)] ?? null
+}
+
+export function hasPartialNoShow(
+  original: BookedPaxSnapshot,
+  current: BookedPaxSnapshot,
+) {
+  return (
+    original.adults > current.adults ||
+    original.children > current.children ||
+    original.infants > current.infants ||
+    original.tourLeaders > current.tourLeaders
+  )
+}
+
+export function originalBookedPax(
+  date: string,
+  program: Program,
+  booking: BookedPaxSnapshot & { code: string },
+): BookedPaxSnapshot {
+  return (
+    getBookedPaxSnapshot(date, program, booking.code) ?? {
+      adults: booking.adults,
+      children: booking.children,
+      infants: booking.infants,
+      tourLeaders: booking.tourLeaders,
+    }
+  )
+}
+
+/** Treat current pax as the live booking — clears no-show minus display. */
+export function replaceBookedPaxSnapshot(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  current: BookedPaxSnapshot,
+) {
+  const map = loadMap()
+  map[bookingKey(date, program, bookingCode)] = { ...current }
+  saveMap(map)
+  return map[bookingKey(date, program, bookingCode)]!
+}
+
 /** Capture first-seen booked pax; grow snapshot if agent later adds guests. */
 export function getOrCaptureBookedPaxSnapshot(
   date: string,

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowLeft, ArrowUp, CalendarIcon, Check, ClipboardList, Pencil, Printer, Ship } from 'lucide-react'
 import { EditVanDetailsDialog } from '@/components/edit-van-details-dialog'
+import { PickupNoShowDialog } from '@/components/admin/pickup-no-show-dialog'
 import { usePortal } from '@/components/portal-provider'
 import { EmptyState, PageHeader, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
@@ -16,7 +17,23 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import {
+  getOrCaptureBookedPaxSnapshot,
+  hasPartialNoShow,
+  originalBookedPax,
+  replaceBookedPaxSnapshot,
+} from '@/lib/check-in-booked-pax'
 import { formatIncludeLabel, formatCollectTotal, collectTotal, formatLongDate, formatParkFeeTotal, formatShortDate, toISODate } from '@/lib/format'
+import {
+  getJobOrderAction,
+  loadJobOrderActionMap,
+  resolvePickupAction,
+  saveJobOrderActionMap,
+  takeLocalPickupNoShows,
+  withJobOrderAction,
+  type DayJobOrderActionMap,
+  type JobOrderAction,
+} from '@/lib/job-order-action'
 import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
 import {
   DEFAULT_VAN_CAPACITY,
@@ -24,7 +41,6 @@ import {
   isNoTransfer,
   totalPassengers,
   type Booking,
-  type CheckInAttendance,
   type DayVehiclePlan,
   type Program,
   type VanMeta,
@@ -133,14 +149,38 @@ export function AdminDailyJobOrder({
   onBack: () => void
   audience?: JobAudience
 }) {
-  const { bookings, getDayVehiclePlan, getDayBoatPlan, resolveVanMeta, getCheckInAttendance, setCheckInAttendance, getCheckInEnrollments } =
-    usePortal()
+  const {
+    bookings,
+    getDayVehiclePlan,
+    getDayBoatPlan,
+    resolveVanMeta,
+    getCheckInAttendance,
+    setCheckInAttendance,
+  } = usePortal()
   const [selectedDate, setSelectedDate, portalToday] = usePortalDefaultDateISO()
   const [program, setProgram] = useState<Program | null>(null)
   const [calendarOpen, setCalendarOpen] = useState(false)
   const [pickupSortDir, setPickupSortDir] = useState<PickupSortDir>('asc')
   const [editVan, setEditVan] = useState<number | null>(null)
   const [agentFilter, setAgentFilter] = useState<string>('all')
+  const [jobOrderActions, setJobOrderActions] = useState<DayJobOrderActionMap>({})
+  const [noShowBooking, setNoShowBooking] = useState<Booking | null>(null)
+  const [paxRevision, setPaxRevision] = useState(0)
+
+  const migratedPickupNoShows = useRef(false)
+  useEffect(() => {
+    if (migratedPickupNoShows.current) return
+    migratedPickupNoShows.current = true
+    const loaded = loadJobOrderActionMap()
+    const { next, noShows } = takeLocalPickupNoShows(loaded)
+    for (const item of noShows) {
+      if (getCheckInAttendance(item.date, item.program, item.bookingCode) !== 'no-show') {
+        setCheckInAttendance(item.date, item.program, item.bookingCode, 'no-show')
+      }
+    }
+    setJobOrderActions(next)
+    if (noShows.length > 0) saveJobOrderActionMap(next)
+  }, [getCheckInAttendance, setCheckInAttendance])
 
   const selectedDateObj = new Date(`${selectedDate}T12:00:00`)
   const isAgentView = audience === 'agent'
@@ -250,7 +290,7 @@ export function AdminDailyJobOrder({
             isAgentView
               ? 'Agent Job Order'
               : isCheckInView
-                ? 'Check in Report'
+                ? 'Guest Pick up'
                 : 'Driver Job Order'
           }
           description={
@@ -427,25 +467,52 @@ export function AdminDailyJobOrder({
                     <VanGroupSection
                       group={group}
                       variant={sheetVariant}
+                      date={selectedDate}
                       program={program}
+                      paxRevision={paxRevision}
                       boatAssignments={boatAssignments}
-                      getAttendance={
-                        isCheckInView
-                          ? (code) => getCheckInAttendance(selectedDate, program, code)
+                      getAction={
+                        isCheckInView && program
+                          ? (code) =>
+                              resolvePickupAction(
+                                getJobOrderAction(jobOrderActions, selectedDate, program, code),
+                                getCheckInAttendance(selectedDate, program, code),
+                              )
                           : undefined
                       }
-                      getQrSeats={
-                        isCheckInView
-                          ? (code) => {
-                              const enrolled = getCheckInEnrollments(selectedDate, program, code)
-                              return enrolled.reduce((sum, item) => sum + item.seats, 0)
+                      onActionChange={
+                        isCheckInView && program
+                          ? (code, status) => {
+                              const attendance = getCheckInAttendance(
+                                selectedDate,
+                                program,
+                                code,
+                              )
+                              if (status === 'no-show') {
+                                const booking =
+                                  groups
+                                    .flatMap((group) => group.rows)
+                                    .find((row) => row.booking.code === code)?.booking ??
+                                  bookings.find((item) => item.code === code) ??
+                                  null
+                                if (booking) setNoShowBooking(booking)
+                                return
+                              }
+                              if (attendance === 'no-show') {
+                                setCheckInAttendance(selectedDate, program, code, null)
+                              }
+                              setJobOrderActions((current) => {
+                                const next = withJobOrderAction(
+                                  current,
+                                  selectedDate,
+                                  program,
+                                  code,
+                                  status,
+                                )
+                                saveJobOrderActionMap(next)
+                                return next
+                              })
                             }
-                          : undefined
-                      }
-                      onAttendanceChange={
-                        isCheckInView
-                          ? (code, status) =>
-                              setCheckInAttendance(selectedDate, program, code, status)
                           : undefined
                       }
                       pickupSortDir={pickupSortDir}
@@ -467,6 +534,62 @@ export function AdminDailyJobOrder({
               date={selectedDate}
               program={program}
               van={editVan}
+            />
+
+            <PickupNoShowDialog
+              open={noShowBooking !== null}
+              booking={noShowBooking}
+              today={selectedDate}
+              onOpenChange={(open) => {
+                if (!open) setNoShowBooking(null)
+              }}
+              onWholeNoShow={(booking) => {
+                getOrCaptureBookedPaxSnapshot(selectedDate, booking.program, booking.code, {
+                  adults: booking.adults,
+                  children: booking.children,
+                  infants: booking.infants,
+                  tourLeaders: booking.tourLeaders,
+                })
+                if (getCheckInAttendance(selectedDate, booking.program, booking.code) !== 'no-show') {
+                  setCheckInAttendance(selectedDate, booking.program, booking.code, 'no-show')
+                }
+                setJobOrderActions((current) => {
+                  const next = withJobOrderAction(
+                    current,
+                    selectedDate,
+                    booking.program,
+                    booking.code,
+                    null,
+                  )
+                  saveJobOrderActionMap(next)
+                  return next
+                })
+              }}
+              onPickedUpAll={(booking, options) => {
+                if (options?.settle) {
+                  replaceBookedPaxSnapshot(selectedDate, booking.program, booking.code, {
+                    adults: booking.adults,
+                    children: booking.children,
+                    infants: booking.infants,
+                    tourLeaders: booking.tourLeaders,
+                  })
+                  setPaxRevision((current) => current + 1)
+                }
+                if (getCheckInAttendance(selectedDate, booking.program, booking.code) === 'no-show') {
+                  setCheckInAttendance(selectedDate, booking.program, booking.code, null)
+                }
+                setJobOrderActions((current) => {
+                  const next = withJobOrderAction(
+                    current,
+                    selectedDate,
+                    booking.program,
+                    booking.code,
+                    'picked-up',
+                  )
+                  saveJobOrderActionMap(next)
+                  return next
+                })
+              }}
             />
           </>
         ) : null}
@@ -550,9 +673,13 @@ export function AdminDailyJobOrder({
           usingMockAssignments={usingMockAssignments}
           variant={sheetVariant}
           boatAssignments={boatAssignments}
-          getAttendance={
-            isCheckInView
-              ? (code) => getCheckInAttendance(selectedDate, program, code)
+          getAction={
+            isCheckInView && program
+              ? (code) =>
+                  resolvePickupAction(
+                    getJobOrderAction(jobOrderActions, selectedDate, program, code),
+                    getCheckInAttendance(selectedDate, program, code),
+                  )
               : undefined
           }
         />
@@ -715,150 +842,147 @@ function CheckInGuestCopyCell({
   )
 }
 
-function CheckInActionCell({
-  status,
-  onChange,
+const PICKUP_ACTIONS: {
+  value: JobOrderAction
+  label: string
+  title: string
+  tone: 'amber' | 'teal' | 'orange'
+}[] = [
+  {
+    value: 'stand-by',
+    label: 'Stand by',
+    title: 'Van has arrived at this guest',
+    tone: 'amber',
+  },
+  {
+    value: 'picked-up',
+    label: 'Picked up',
+    title: 'Guest has been picked up',
+    tone: 'teal',
+  },
+  {
+    value: 'no-show',
+    label: 'No show',
+    title: 'Guest is a no-show',
+    tone: 'orange',
+  },
+]
+
+function PickupActionTick({
+  action,
+  active,
+  onToggle,
 }: {
-  status: CheckInAttendance | null
-  onChange: (status: CheckInAttendance | null) => void
+  action: (typeof PICKUP_ACTIONS)[number]
+  active: boolean
+  onToggle?: () => void
 }) {
-  const [menuOpen, setMenuOpen] = useState(false)
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const longPressedRef = useRef(false)
-  const rootRef = useRef<HTMLDivElement>(null)
-
-  const clearPress = () => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current)
-      longPressTimer.current = null
-    }
-  }
-
-  const startPress = () => {
-    longPressedRef.current = false
-    clearPress()
-    longPressTimer.current = setTimeout(() => {
-      longPressedRef.current = true
-      setMenuOpen(true)
-    }, 480)
-  }
-
-  const endPress = () => {
-    clearPress()
-  }
-
-  useEffect(() => {
-    if (!menuOpen) return
-    function onPointerDown(event: PointerEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setMenuOpen(false)
-      }
-    }
-    document.addEventListener('pointerdown', onPointerDown)
-    return () => document.removeEventListener('pointerdown', onPointerDown)
-  }, [menuOpen])
-
   return (
-    <div ref={rootRef} className="relative inline-flex justify-center">
-      <button
-        type="button"
-        className={cn(
-          'inline-flex size-7 items-center justify-center rounded-md border transition-colors',
-          status === 'checked' && 'border-teal-700/40 bg-teal-700 text-white',
-          status === 'no-show' && 'border-orange-500/50 bg-orange-500 text-white',
-          !status && 'border-teal-900/30 bg-white text-transparent hover:border-teal-800/45',
-        )}
-        aria-label={
-          status === 'checked'
-            ? 'Checked in. Long-press for No Show options.'
-            : status === 'no-show'
-              ? 'No show. Long-press for options.'
-              : 'Not marked. Click to tick, long-press for No Show.'
-        }
-        title="Click to tick · Long-press for No Show"
-        onPointerDown={startPress}
-        onPointerUp={endPress}
-        onPointerLeave={endPress}
-        onPointerCancel={endPress}
-        onContextMenu={(event) => {
-          event.preventDefault()
-          setMenuOpen(true)
-        }}
-        onClick={(event) => {
-          if (longPressedRef.current) {
-            event.preventDefault()
-            longPressedRef.current = false
-            return
-          }
-          setMenuOpen(false)
-          onChange(status === 'checked' ? null : 'checked')
-        }}
-      >
-        {status === 'checked' ? (
-          <Check className="size-3.5" strokeWidth={3} />
-        ) : status === 'no-show' ? (
-          <span className="text-[9px] font-bold tracking-wide text-white">NS</span>
-        ) : (
-          <span className="size-3.5" />
-        )}
-      </button>
-      {menuOpen ? (
-        <div className="absolute top-full right-0 z-30 mt-1 w-36 overflow-hidden rounded-lg border border-teal-900/10 bg-white py-1 shadow-md">
-          <button
-            type="button"
-            className="w-full px-3 py-2 text-left text-sm font-medium text-orange-800 transition-colors hover:bg-orange-50"
-            onClick={() => {
-              onChange('no-show')
-              setMenuOpen(false)
-            }}
-          >
-            No Show
-          </button>
-          {status ? (
-            <button
-              type="button"
-              className="w-full px-3 py-2 text-left text-sm font-medium text-teal-900/70 transition-colors hover:bg-teal-50"
-              onClick={() => {
-                onChange(null)
-                setMenuOpen(false)
-              }}
-            >
-              Clear
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
+    <button
+      type="button"
+      disabled={!onToggle}
+      aria-pressed={active}
+      aria-label={action.title}
+      title={action.title}
+      onClick={() => onToggle?.()}
+      className={cn(
+        'inline-flex size-7 items-center justify-center rounded-md border transition-colors',
+        active && action.tone === 'amber' && 'border-amber-500/50 bg-amber-500 text-white',
+        active && action.tone === 'teal' && 'border-teal-700/40 bg-teal-700 text-white',
+        active && action.tone === 'orange' && 'border-orange-500/50 bg-orange-500 text-white',
+        !active && 'border-teal-900/30 bg-white hover:border-teal-800/45',
+        !onToggle && 'cursor-default',
+      )}
+    >
+      {active ? <Check className="size-3.5" strokeWidth={3} /> : <span className="size-3.5" />}
+    </button>
+  )
+}
+
+function PaxWithNoShow({
+  original,
+  current,
+  wholeNoShow = false,
+}: {
+  original: number
+  current: number
+  wholeNoShow?: boolean
+}) {
+  const bookedCount = Math.max(original, current)
+  if (wholeNoShow && bookedCount > 0) {
+    return (
+      <span className="inline-flex flex-col items-center leading-none">
+        <span>{bookedCount}</span>
+        <span className="mt-0.5 text-[10px] font-semibold text-orange-700">-all</span>
+      </span>
+    )
+  }
+  const missing = original - current
+  if (missing <= 0) return <>{current || ''}</>
+  return (
+    <span className="inline-flex flex-col items-center leading-none">
+      <span>{original}</span>
+      <span className="mt-0.5 text-[10px] font-semibold text-orange-700">-{missing}</span>
+    </span>
   )
 }
 
 function VanGroupSection({
   group,
   variant = 'driver',
+  date,
   program,
+  paxRevision = 0,
   boatAssignments = {},
-  getAttendance,
-  getQrSeats,
-  onAttendanceChange,
+  getAction,
+  onActionChange,
   pickupSortDir,
   onTogglePickupSort,
   onEditVan,
 }: {
   group: VanGroup
   variant?: 'driver' | 'check-in'
+  date: string
   program: Program
+  paxRevision?: number
   boatAssignments?: Record<string, number>
-  getAttendance?: (bookingCode: string) => CheckInAttendance | null
-  getQrSeats?: (bookingCode: string) => number
-  onAttendanceChange?: (bookingCode: string, status: CheckInAttendance | null) => void
+  getAction?: (bookingCode: string) => JobOrderAction | null
+  onActionChange?: (bookingCode: string, status: JobOrderAction | null) => void
   pickupSortDir: PickupSortDir
   onTogglePickupSort: () => void
   onEditVan?: (van: number) => void
 }) {
+  void paxRevision
   const title = group.van === null ? 'No Transfer / Unassigned' : `Van ${group.van}`
   const SortIcon = pickupSortDir === 'asc' ? ArrowUp : ArrowDown
   const isCheckIn = variant === 'check-in'
   const showCanoe = isCheckIn && program === 'James Bond'
+  const originalTotals = isCheckIn
+    ? group.rows.reduce(
+        (acc, { booking }) => {
+          const booked = originalBookedPax(date, program, booking)
+          acc.adults += booked.adults
+          acc.children += booked.children
+          acc.infants += booked.infants
+          acc.tourLeaders += booked.tourLeaders
+          return acc
+        },
+        { adults: 0, children: 0, infants: 0, tourLeaders: 0 },
+      )
+    : group.totals
+  const remainingTotals = isCheckIn
+    ? group.rows.reduce(
+        (acc, { booking }) => {
+          if (getAction?.(booking.code) === 'no-show') return acc
+          acc.adults += booking.adults
+          acc.children += booking.children
+          acc.infants += booking.infants
+          acc.tourLeaders += booking.tourLeaders
+          return acc
+        },
+        { adults: 0, children: 0, infants: 0, tourLeaders: 0 },
+      )
+    : group.totals
 
   return (
     <div>
@@ -970,15 +1094,17 @@ function VanGroupSection({
                   <TableHead className="w-[4.5%] px-0.5 pl-0 text-right text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Total
                   </TableHead>
-                  <TableHead className="w-[8%] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[6%] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Remark
                   </TableHead>
-                  <TableHead className="w-[7%] px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    Status
-                  </TableHead>
-                  <TableHead className="w-[4.5%] px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    Action
-                  </TableHead>
+                  {PICKUP_ACTIONS.map((action) => (
+                    <TableHead
+                      key={action.value}
+                      className="w-[4%] px-0.5 text-center text-[10px] font-bold leading-tight tracking-wide text-teal-900/80 uppercase"
+                    >
+                      {action.label}
+                    </TableHead>
+                  ))}
                 </>
               ) : (
                 <>
@@ -1024,11 +1150,18 @@ function VanGroupSection({
           </TableHeader>
           <TableBody>
             {group.rows.map(({ no, booking }) => {
-              const attendance = getAttendance?.(booking.code) ?? null
+              const action = getAction?.(booking.code) ?? null
+              const booked = isCheckIn ? originalBookedPax(date, program, booking) : null
+              const partialNoShow = Boolean(booked && hasPartialNoShow(booked, booking))
+              const wholeNoShow = action === 'no-show'
               return (
               <TableRow
                 key={`${group.van ?? 'none'}-${booking.code}`}
-                className={cn(attendance === 'no-show' && 'bg-orange-50/70 hover:bg-orange-50/90')}
+                className={cn(
+                  action === 'stand-by' && 'bg-amber-50/70 hover:bg-amber-50/90',
+                  action === 'picked-up' && 'bg-teal-50/70 hover:bg-teal-50/90',
+                  wholeNoShow && 'bg-orange-50/70 hover:bg-orange-50/90',
+                )}
               >
                 <TableCell className="tabular-nums text-teal-900/55">{no}</TableCell>
                 {isCheckIn ? (
@@ -1050,16 +1183,32 @@ function VanGroupSection({
                       </div>
                     </TableCell>
                     <TableCell className="px-1 text-center tabular-nums">
-                      {booking.adults || ''}
+                      <PaxWithNoShow
+                        original={booked?.adults ?? booking.adults}
+                        current={booking.adults}
+                        wholeNoShow={wholeNoShow}
+                      />
                     </TableCell>
                     <TableCell className="px-1 text-center tabular-nums">
-                      {booking.children || ''}
+                      <PaxWithNoShow
+                        original={booked?.children ?? booking.children}
+                        current={booking.children}
+                        wholeNoShow={wholeNoShow}
+                      />
                     </TableCell>
                     <TableCell className="px-1 text-center tabular-nums">
-                      {booking.infants || ''}
+                      <PaxWithNoShow
+                        original={booked?.infants ?? booking.infants}
+                        current={booking.infants}
+                        wholeNoShow={wholeNoShow}
+                      />
                     </TableCell>
                     <TableCell className="px-1 text-center tabular-nums">
-                      {booking.tourLeaders || ''}
+                      <PaxWithNoShow
+                        original={booked?.tourLeaders ?? booking.tourLeaders}
+                        current={booking.tourLeaders}
+                        wholeNoShow={wholeNoShow}
+                      />
                     </TableCell>
                     <TableCell className="px-1 text-center">
                       <BoatFleetBadge boat={boatAssignments[booking.code]} />
@@ -1102,35 +1251,37 @@ function VanGroupSection({
                         {booking.note || ''}
                       </div>
                     </TableCell>
-                    <TableCell className="px-1 text-center text-xs text-teal-900/70">
-                      {(() => {
-                        const qrSeats = getQrSeats?.(booking.code) ?? 0
-                        const pax = totalPassengers(booking)
-                        if (attendance === 'checked' || qrSeats >= pax) {
-                          return (
-                            <span className="font-semibold text-emerald-700">QR {pax}/{pax}</span>
-                          )
-                        }
-                        if (qrSeats > 0) {
-                          return (
-                            <span className="font-medium text-amber-700">
-                              QR {qrSeats}/{pax}
-                            </span>
-                          )
-                        }
-                        return <span className="text-teal-900/30">—</span>
-                      })()}
-                    </TableCell>
-                    <TableCell className="px-1 text-center">
-                      {onAttendanceChange ? (
-                        <CheckInActionCell
-                          status={attendance}
-                          onChange={(next) => onAttendanceChange(booking.code, next)}
+                    {PICKUP_ACTIONS.map((item) => {
+                      const active =
+                        item.value === 'no-show'
+                          ? wholeNoShow || partialNoShow
+                          : !wholeNoShow && action === item.value
+                      return (
+                      <TableCell key={item.value} className="px-0.5 text-center">
+                        <PickupActionTick
+                          action={item}
+                          active={active}
+                          onToggle={
+                            onActionChange
+                              ? () => {
+                                  if (item.value === 'no-show') {
+                                    onActionChange(
+                                      booking.code,
+                                      wholeNoShow ? null : 'no-show',
+                                    )
+                                    return
+                                  }
+                                  onActionChange(
+                                    booking.code,
+                                    active ? null : item.value,
+                                  )
+                                }
+                              : undefined
+                          }
                         />
-                      ) : (
-                        <span className="inline-block size-3.5 rounded-sm border border-teal-900/35" />
-                      )}
-                    </TableCell>
+                      </TableCell>
+                      )
+                    })}
                   </>
                 ) : (
                   <>
@@ -1173,16 +1324,32 @@ function VanGroupSection({
                     Group total
                   </TableCell>
                   <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
-                    {group.totals.adults}
+                    <PaxWithNoShow
+                      original={originalTotals.adults}
+                      current={remainingTotals.adults}
+                      wholeNoShow={originalTotals.adults > 0 && remainingTotals.adults === 0}
+                    />
                   </TableCell>
                   <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
-                    {group.totals.children}
+                    <PaxWithNoShow
+                      original={originalTotals.children}
+                      current={remainingTotals.children}
+                      wholeNoShow={originalTotals.children > 0 && remainingTotals.children === 0}
+                    />
                   </TableCell>
                   <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
-                    {group.totals.infants}
+                    <PaxWithNoShow
+                      original={originalTotals.infants}
+                      current={remainingTotals.infants}
+                      wholeNoShow={originalTotals.infants > 0 && remainingTotals.infants === 0}
+                    />
                   </TableCell>
                   <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
-                    {group.totals.tourLeaders}
+                    <PaxWithNoShow
+                      original={originalTotals.tourLeaders}
+                      current={remainingTotals.tourLeaders}
+                      wholeNoShow={originalTotals.tourLeaders > 0 && remainingTotals.tourLeaders === 0}
+                    />
                   </TableCell>
                   <TableCell colSpan={showCanoe ? 5 : 4} />
                   <TableCell className="px-0.5 pl-0 text-right tabular-nums text-xs font-semibold text-teal-950">
@@ -1190,7 +1357,7 @@ function VanGroupSection({
                       ? group.totals.collect.toLocaleString('en-US')
                       : ''}
                   </TableCell>
-                  <TableCell colSpan={3} />
+                  <TableCell colSpan={4} />
                 </>
               ) : (
                 <>
@@ -1285,8 +1452,11 @@ function AgentGroupSection({
                   Canoe
                 </TableHead>
               ) : null}
-              <TableHead className="w-[7rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+              <TableHead className="w-[6.5rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 COT
+              </TableHead>
+              <TableHead className="w-[7rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                Extra Charge
               </TableHead>
               <TableHead className="w-[5.5rem] px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 Total
@@ -1357,6 +1527,14 @@ function AgentGroupSection({
                       {cashOnTour || ''}
                     </div>
                   </TableCell>
+                  <TableCell className="px-1 text-center">
+                    <div
+                      className="truncate text-xs font-medium text-teal-950"
+                      title={booking.transferExtraCharge}
+                    >
+                      {booking.transferExtraCharge.trim() || ''}
+                    </div>
+                  </TableCell>
                   <TableCell className="px-1 text-center tabular-nums text-xs font-medium text-teal-950">
                     {formatCollectTotal(
                       booking.parkFee,
@@ -1413,7 +1591,7 @@ function AgentGroupSection({
               <TableCell className="px-0.5 text-center tabular-nums text-xs font-semibold">
                 {group.totals.tourLeaders}
               </TableCell>
-              <TableCell colSpan={showCanoe ? 5 : 4} />
+              <TableCell colSpan={showCanoe ? 6 : 5} />
               <TableCell className="px-1 text-center tabular-nums text-xs font-semibold text-teal-950">
                 {group.totals.collect > 0
                   ? group.totals.collect.toLocaleString('en-US')
@@ -1521,6 +1699,7 @@ function AgentJobOrderPrintSheet({
                         <th className={cn(th, 'w-14 text-center')}>Canoe</th>
                       ) : null}
                       <th className={cn(th, 'w-14')}>COT</th>
+                      <th className={cn(th, 'w-16')}>Extra Charge</th>
                       <th className={cn(th, 'w-14 text-center')}>Total</th>
                       <th className={th}>Detail</th>
                     </tr>
@@ -1574,6 +1753,9 @@ function AgentJobOrderPrintSheet({
                               </td>
                             ) : null}
                             <td className={cn(td, 'font-medium')}>{cashOnTour}</td>
+                            <td className={cn(td, 'font-medium')}>
+                              {booking.transferExtraCharge.trim() || ''}
+                            </td>
                             <td className={cn(td, 'text-center tabular-nums font-medium')}>
                               {formatCollectTotal(
                                 booking.parkFee,
@@ -1617,7 +1799,7 @@ function AgentJobOrderPrintSheet({
                       <td className={cn(td, 'text-center tabular-nums')}>
                         {group.totals.tourLeaders}
                       </td>
-                      <td className={td} colSpan={showCanoe ? 5 : 4} />
+                      <td className={td} colSpan={showCanoe ? 6 : 5} />
                       <td className={cn(td, 'text-center tabular-nums')}>
                         {group.totals.collect > 0
                           ? group.totals.collect.toLocaleString('en-US')
@@ -1687,7 +1869,7 @@ function JobOrderPrintSheet({
   usingMockAssignments,
   variant = 'driver',
   boatAssignments = {},
-  getAttendance,
+  getAction,
 }: {
   date: string
   program: Program
@@ -1698,12 +1880,12 @@ function JobOrderPrintSheet({
   usingMockAssignments: boolean
   variant?: 'driver' | 'check-in'
   boatAssignments?: Record<string, number>
-  getAttendance?: (bookingCode: string) => CheckInAttendance | null
+  getAction?: (bookingCode: string) => JobOrderAction | null
 }) {
   const isCheckIn = variant === 'check-in'
   const showCanoe = isCheckIn && program === 'James Bond'
   const trailingBeforeTotal = isCheckIn ? (showCanoe ? 5 : 4) : 0
-  const trailingAfterTotal = isCheckIn ? 3 : 0
+  const trailingAfterTotal = isCheckIn ? 4 : 0
   const leadingColSpan = isCheckIn ? 4 : 5
 
   return (
@@ -1711,7 +1893,7 @@ function JobOrderPrintSheet({
       <div className="mb-3 flex items-end justify-between gap-4 border-b-2 border-teal-900/25 pb-2.5">
         <div>
           <p className="text-[10px] font-semibold tracking-[0.16em] text-teal-700/70 uppercase">
-            G&apos;Day Tours Phuket · {isCheckIn ? 'Check in Report' : 'Driver Job Order'}
+            G&apos;Day Tours Phuket · {isCheckIn ? 'Guest Pick up' : 'Driver Job Order'}
           </p>
           <h1 className="mt-0.5 text-lg font-bold text-teal-950">
             {program === 'PP' ? 'PP' : 'JB'} · {programLabel}
@@ -1740,6 +1922,32 @@ function JobOrderPrintSheet({
         <>
           {groups.map((group) => {
             const tall = group.rows.length > 12
+            const originalTotals = isCheckIn
+              ? group.rows.reduce(
+                  (acc, { booking }) => {
+                    const booked = originalBookedPax(date, program, booking)
+                    acc.adults += booked.adults
+                    acc.children += booked.children
+                    acc.infants += booked.infants
+                    acc.tourLeaders += booked.tourLeaders
+                    return acc
+                  },
+                  { adults: 0, children: 0, infants: 0, tourLeaders: 0 },
+                )
+              : group.totals
+            const remainingTotals = isCheckIn
+              ? group.rows.reduce(
+                  (acc, { booking }) => {
+                    if (getAction?.(booking.code) === 'no-show') return acc
+                    acc.adults += booking.adults
+                    acc.children += booking.children
+                    acc.infants += booking.infants
+                    acc.tourLeaders += booking.tourLeaders
+                    return acc
+                  },
+                  { adults: 0, children: 0, infants: 0, tourLeaders: 0 },
+                )
+              : group.totals
             return (
               <div
                 key={group.id}
@@ -1839,14 +2047,17 @@ function JobOrderPrintSheet({
                           <th className="w-12 border border-teal-900/20 px-0.5 py-1 text-right font-semibold">
                             TOTAL
                           </th>
-                          <th className="w-16 border border-teal-900/20 px-1 py-1 font-semibold">
+                          <th className="w-14 border border-teal-900/20 px-1 py-1 font-semibold">
                             REMARK
                           </th>
-                          <th className="w-16 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
-                            STATUS
+                          <th className="w-12 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
+                            STAND BY
                           </th>
-                          <th className="w-14 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
-                            ACTION
+                          <th className="w-12 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
+                            PICKED UP
+                          </th>
+                          <th className="w-12 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
+                            NO SHOW
                           </th>
                         </>
                       ) : (
@@ -1891,16 +2102,48 @@ function JobOrderPrintSheet({
                           </>
                         )}
                         <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums">
-                          {blankIfZero(booking.adults)}
+                          {isCheckIn
+                            ? (
+                              <PaxWithNoShow
+                                original={originalBookedPax(date, program, booking).adults}
+                                current={booking.adults}
+                                wholeNoShow={getAction?.(booking.code) === 'no-show'}
+                              />
+                            )
+                            : blankIfZero(booking.adults)}
                         </td>
                         <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums">
-                          {blankIfZero(booking.children)}
+                          {isCheckIn
+                            ? (
+                              <PaxWithNoShow
+                                original={originalBookedPax(date, program, booking).children}
+                                current={booking.children}
+                                wholeNoShow={getAction?.(booking.code) === 'no-show'}
+                              />
+                            )
+                            : blankIfZero(booking.children)}
                         </td>
                         <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums">
-                          {blankIfZero(booking.infants)}
+                          {isCheckIn
+                            ? (
+                              <PaxWithNoShow
+                                original={originalBookedPax(date, program, booking).infants}
+                                current={booking.infants}
+                                wholeNoShow={getAction?.(booking.code) === 'no-show'}
+                              />
+                            )
+                            : blankIfZero(booking.infants)}
                         </td>
                         <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums">
-                          {blankIfZero(booking.tourLeaders)}
+                          {isCheckIn
+                            ? (
+                              <PaxWithNoShow
+                                original={originalBookedPax(date, program, booking).tourLeaders}
+                                current={booking.tourLeaders}
+                                wholeNoShow={getAction?.(booking.code) === 'no-show'}
+                              />
+                            )
+                            : blankIfZero(booking.tourLeaders)}
                         </td>
                         {isCheckIn ? (
                           <>
@@ -1938,14 +2181,24 @@ function JobOrderPrintSheet({
                             <td className="border border-teal-900/20 px-1 py-0.5">
                               {booking.note || ''}
                             </td>
-                            <td className="border border-teal-900/20 px-1 py-0.5 text-center" />
-                            <td className="border border-teal-900/20 px-1 py-0.5 text-center font-semibold">
-                              {getAttendance?.(booking.code) === 'checked'
-                                ? '✓'
-                                : getAttendance?.(booking.code) === 'no-show'
-                                  ? 'NS'
-                                  : '□'}
-                            </td>
+                            {PICKUP_ACTIONS.map((item) => {
+                              const rowAction = getAction?.(booking.code) ?? null
+                              const bookedPax = originalBookedPax(date, program, booking)
+                              const printNoShow =
+                                rowAction === 'no-show' || hasPartialNoShow(bookedPax, booking)
+                              const printActive =
+                                item.value === 'no-show'
+                                  ? printNoShow
+                                  : rowAction === item.value
+                              return (
+                              <td
+                                key={item.value}
+                                className="border border-teal-900/20 px-1 py-0.5 text-center font-semibold"
+                              >
+                                {printActive ? '✓' : '□'}
+                              </td>
+                              )
+                            })}
                           </>
                         ) : (
                           <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums font-semibold">
@@ -1959,16 +2212,50 @@ function JobOrderPrintSheet({
                         Group total
                       </td>
                       <td className="border border-teal-900/20 px-1 py-1 text-center tabular-nums">
-                        {group.totals.adults}
+                        {isCheckIn ? (
+                          <PaxWithNoShow
+                            original={originalTotals.adults}
+                            current={remainingTotals.adults}
+                            wholeNoShow={originalTotals.adults > 0 && remainingTotals.adults === 0}
+                          />
+                        ) : (
+                          group.totals.adults
+                        )}
                       </td>
                       <td className="border border-teal-900/20 px-1 py-1 text-center tabular-nums">
-                        {group.totals.children}
+                        {isCheckIn ? (
+                          <PaxWithNoShow
+                            original={originalTotals.children}
+                            current={remainingTotals.children}
+                            wholeNoShow={originalTotals.children > 0 && remainingTotals.children === 0}
+                          />
+                        ) : (
+                          group.totals.children
+                        )}
                       </td>
                       <td className="border border-teal-900/20 px-1 py-1 text-center tabular-nums">
-                        {group.totals.infants}
+                        {isCheckIn ? (
+                          <PaxWithNoShow
+                            original={originalTotals.infants}
+                            current={remainingTotals.infants}
+                            wholeNoShow={originalTotals.infants > 0 && remainingTotals.infants === 0}
+                          />
+                        ) : (
+                          group.totals.infants
+                        )}
                       </td>
                       <td className="border border-teal-900/20 px-1 py-1 text-center tabular-nums">
-                        {group.totals.tourLeaders}
+                        {isCheckIn ? (
+                          <PaxWithNoShow
+                            original={originalTotals.tourLeaders}
+                            current={remainingTotals.tourLeaders}
+                            wholeNoShow={
+                              originalTotals.tourLeaders > 0 && remainingTotals.tourLeaders === 0
+                            }
+                          />
+                        ) : (
+                          group.totals.tourLeaders
+                        )}
                       </td>
                       {isCheckIn ? (
                         <>
