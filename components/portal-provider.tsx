@@ -1371,19 +1371,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
 
         const pax = totalPassengers(input)
-        if (!options?.bypassCutoff) {
-          const caps = getCapacity(input.date)
-          const capacity = input.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
-          const booked = bookedPaxFor(input.date, input.program)
-          const seatsLeft = Math.max(0, capacity - booked)
-          if (pax > seatsLeft) {
-            return {
-              ok: false,
-              error:
-                seatsLeft === 0
-                  ? `${input.program} is sold out on this date (${capacity} seats).`
-                  : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${input.program} on this date (capacity ${capacity}).`,
-            }
+        const caps = getCapacity(input.date)
+        const capacity = input.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
+        const booked = bookedPaxFor(input.date, input.program)
+        const seatsLeft = Math.max(0, capacity - booked)
+        if (pax > seatsLeft) {
+          return {
+            ok: false,
+            error:
+              seatsLeft === 0
+                ? `${input.program} is sold out on this date (${capacity} seats).`
+                : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${input.program} on this date (capacity ${capacity}).`,
           }
         }
 
@@ -1514,20 +1512,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
 
         const pax = totalPassengers(existing)
-        if (!options?.bypassCutoff) {
-          const caps = getCapacity(trimmedDate)
-          const capacity =
-            existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
-          const booked = bookedPaxFor(trimmedDate, existing.program)
-          const seatsLeft = Math.max(0, capacity - booked)
-          if (pax > seatsLeft) {
-            return {
-              ok: false,
-              error:
-                seatsLeft === 0
-                  ? `${existing.program} is sold out on ${trimmedDate} (${capacity} seats).`
-                  : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${existing.program} on ${trimmedDate}.`,
-            }
+        const caps = getCapacity(trimmedDate)
+        const capacity =
+          existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
+        const booked = bookedPaxFor(trimmedDate, existing.program)
+        const seatsLeft = Math.max(0, capacity - booked)
+        if (pax > seatsLeft) {
+          return {
+            ok: false,
+            error:
+              seatsLeft === 0
+                ? `${existing.program} is sold out on ${trimmedDate} (${capacity} seats).`
+                : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${existing.program} on ${trimmedDate}.`,
           }
         }
 
@@ -1608,20 +1604,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
 
         const pax = totalPassengers(existing)
-        if (!options?.bypassCutoff) {
-          const caps = getCapacity(trimmedDate)
-          const capacity =
-            existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
-          const booked = bookedPaxFor(trimmedDate, existing.program)
-          const seatsLeft = Math.max(0, capacity - booked)
-          if (pax > seatsLeft) {
-            return {
-              ok: false,
-              error:
-                seatsLeft === 0
-                  ? `${existing.program} is sold out on this date (${capacity} seats).`
-                  : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${existing.program} on this date (capacity ${capacity}).`,
-            }
+        const caps = getCapacity(trimmedDate)
+        const capacity =
+          existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
+        const booked = bookedPaxFor(trimmedDate, existing.program)
+        const seatsLeft = Math.max(0, capacity - booked)
+        if (pax > seatsLeft) {
+          return {
+            ok: false,
+            error:
+              seatsLeft === 0
+                ? `${existing.program} is sold out on this date (${capacity} seats).`
+                : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${existing.program} on this date (capacity ${capacity}).`,
           }
         }
 
@@ -1781,7 +1775,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
         const oldPax = totalPassengers(existing)
         const delta = newPax - oldPax
-        if (delta > 0 && !options?.bypassCutoff) {
+        if (delta > 0) {
           const caps = getCapacity(existing.date)
           const capacity =
             existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity

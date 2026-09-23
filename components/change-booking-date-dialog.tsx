@@ -79,7 +79,7 @@ export function ChangeBookingDateDialog({
     if (!bypassCutoff && iso < todayIso) return true
     if (!bypassCutoff && !isBookingOpen(iso)) return true
     if (!bypassCutoff && isProgramClosed(iso, booking.program)) return true
-    if (!bypassCutoff && seatsLeftOn(iso) < pax) return true
+    if (iso !== booking.date && seatsLeftOn(iso) < pax) return true
     return false
   }
 
@@ -143,22 +143,22 @@ export function ChangeBookingDateDialog({
     onOpenChange(false)
   }
 
+  const dateDialogCopy = booking
+    ? isRebook
+      ? `${booking.code} · ${pax} pax · was ${formatLongDate(booking.date)}. Grey days are closed or do not have enough seats.`
+      : `${booking.code} · ${pax} pax · currently ${formatLongDate(booking.date)}. ${
+          bypassCutoff
+            ? 'Admin can move any date, including closed or past days, if seats are left.'
+            : 'Grey days are closed or do not have enough seats.'
+        }`
+    : null
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{isRebook ? 'Rebook' : 'Change travel date'}</DialogTitle>
-          <DialogDescription>
-            {booking
-              ? isRebook
-                ? `${booking.code} · ${pax} pax · was ${formatLongDate(booking.date)}. Grey days are closed${bypassCutoff ? '' : ' or don’t have enough seats'}.`
-                : `${booking.code} · ${pax} pax · currently ${formatLongDate(booking.date)}. ${
-                    bypassCutoff
-                      ? 'Admin can move any date, including closed or past days.'
-                      : 'Grey days are closed or don’t have enough seats.'
-                  }`
-              : null}
-          </DialogDescription>
+          <DialogDescription>{dateDialogCopy}</DialogDescription>
         </DialogHeader>
         <div className="flex flex-col items-center gap-3">
           <Calendar
@@ -178,18 +178,10 @@ export function ChangeBookingDateDialog({
                 This date is closed for booking.
               </p>
             ) : selectedInfo.seatsLeft < pax ? (
-              bypassCutoff ? (
-                <p className="w-full rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-                  Over capacity — need {pax}, only {selectedInfo.seatsLeft} of{' '}
-                  {selectedInfo.capacity} seats left. Admin can still move; confirm boat capacity
-                  offline.
-                </p>
-              ) : (
-                <p className="w-full rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
-                  Not enough seats — need {pax}, only {selectedInfo.seatsLeft} left
-                  {selectedInfo.capacity > 0 ? ` (capacity ${selectedInfo.capacity})` : ''}.
-                </p>
-              )
+              <p className="w-full rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+                Not enough seats — need {pax}, only {selectedInfo.seatsLeft} left
+                {selectedInfo.capacity > 0 ? ` (boat limit ${selectedInfo.capacity})` : ''}.
+              </p>
             ) : (
               <p className="w-full rounded-xl border border-teal-200 bg-teal-50/80 px-3 py-2 text-sm text-teal-900/75">
                 <span className="font-semibold text-teal-950">{selectedInfo.seatsLeft}</span> of{' '}

@@ -200,11 +200,9 @@ export function BookingWizard({
     return { capacity, booked, seatsLeft }
   }, [program, isoDate, getCapacity, bookedPaxFor])
   const seatsLeft = capacityInfo?.seatsLeft ?? null
-  const enforceCapacity = !selectAgent
-  const overCapacity =
-    enforceCapacity && seatsLeft !== null ? total > seatsLeft : false
+  const overCapacity = seatsLeft !== null ? total > seatsLeft : false
   const dateSelectable = selectAgent
-    ? Boolean(date)
+    ? Boolean(date) && (seatsLeft === null || seatsLeft > 0)
     : bookingOpen && !programClosed && (seatsLeft === null || seatsLeft > 0)
   const pickupTime = pickupZone && !isNoTransfer(pickupZone) ? getZoneTime(pickupZone) : ''
   const selectedZone = zones.find((zone) => zone.name === pickupZone)
@@ -287,7 +285,7 @@ export function BookingWizard({
                   ? closureNote
                     ? `Booking closed for this program — ${closureNote}`
                     : 'Booking is closed for this program on this date.'
-                  : enforceCapacity && seatsLeft === 0
+                  : seatsLeft === 0
                     ? 'This date is sold out for the selected program.'
                     : 'Please choose a tour date.'
               : step === guestsStep
@@ -590,8 +588,8 @@ export function BookingWizard({
             </Popover>
             {selectAgent ? (
               <p className="rounded-xl border border-teal-200 bg-teal-50/80 px-3.5 py-2.5 text-xs leading-relaxed text-teal-900/70">
-                Admin can book any date, including today (same-day travel), closed days, and sold-out
-                dates. Confirm boat capacity offline when needed.
+                Admin can book any date, including today (same-day travel) and closed days. Boat
+                capacity still applies — cannot exceed the seats left.
               </p>
             ) : (
               <AmendmentPolicyNotice settings={bookingCutoffs} variant="compact" />
@@ -618,17 +616,10 @@ export function BookingWizard({
                     : 'This date is closed for agents. Admin can still book.'}
                 </div>
               ) : seatsLeft === 0 ? (
-                selectAgent ? (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-                    Sold out for agents — {program} is at capacity ({capacityInfo.capacity} seats,{' '}
-                    {capacityInfo.booked} booked). Admin can still add a booking; confirm boat
-                    capacity offline.
-                  </div>
-                ) : (
-                  <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-                    Sold out — {program} has no seats left on this date.
-                  </div>
-                )
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                  Sold out — {program} is at the boat limit ({capacityInfo.capacity} seats,{' '}
+                  {capacityInfo.booked} booked). Choose another date.
+                </div>
               ) : (
                 <div className="rounded-xl border border-teal-200 bg-teal-50/80 px-4 py-3 text-sm text-teal-900/75">
                   {selectAgent ? (
@@ -653,31 +644,20 @@ export function BookingWizard({
           <div className="space-y-5">
             {seatsLeft !== null ? (
               seatsLeft === 0 ? (
-                selectAgent ? (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-                    Sold out for agents (capacity {capacityInfo?.capacity}). Admin can still add
-                    guests — confirm boat capacity offline.
-                  </div>
-                ) : (
-                  <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-                    Sold out — go back and choose another date.
-                  </div>
-                )
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                  Sold out — go back and choose another date.
+                </div>
               ) : (
                 <div
                   className={cn(
                     'rounded-xl border px-4 py-3 text-sm',
                     total > seatsLeft
-                      ? selectAgent
-                        ? 'border-amber-200 bg-amber-50 text-amber-950'
-                        : 'border-rose-200 bg-rose-50 text-rose-800'
+                      ? 'border-rose-200 bg-rose-50 text-rose-800'
                       : 'border-teal-200 bg-teal-50/80 text-teal-900/75',
                   )}
                 >
                   {total > seatsLeft
-                    ? selectAgent
-                      ? `Over capacity — need ${total}, only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left. Admin can still book; confirm boat capacity offline.`
-                      : `Too many guests — only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left.`
+                    ? `Too many guests — only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left (boat limit ${capacityInfo?.capacity}).`
                     : `${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for this departure.`}
                 </div>
               )
@@ -688,7 +668,7 @@ export function BookingWizard({
                 hint="12 years and above"
                 value={adults}
                 max={
-                  enforceCapacity && seatsLeft !== null
+                  seatsLeft !== null
                     ? Math.max(0, seatsLeft - children - infants - tourLeaders)
                     : undefined
                 }
@@ -699,7 +679,7 @@ export function BookingWizard({
                 hint="3–11 years"
                 value={children}
                 max={
-                  enforceCapacity && seatsLeft !== null
+                  seatsLeft !== null
                     ? Math.max(0, seatsLeft - adults - infants - tourLeaders)
                     : undefined
                 }
@@ -710,7 +690,7 @@ export function BookingWizard({
                 hint="Under 3 years"
                 value={infants}
                 max={
-                  enforceCapacity && seatsLeft !== null
+                  seatsLeft !== null
                     ? Math.max(0, seatsLeft - adults - children - tourLeaders)
                     : undefined
                 }
@@ -721,7 +701,7 @@ export function BookingWizard({
                 hint="Accompanying guides"
                 value={tourLeaders}
                 max={
-                  enforceCapacity && seatsLeft !== null
+                  seatsLeft !== null
                     ? Math.max(0, seatsLeft - adults - children - infants)
                     : undefined
                 }
@@ -892,10 +872,11 @@ export function BookingWizard({
 
         {step === reviewStep && (
           <div className="space-y-4">
-            {selectAgent && seatsLeft !== null && total > seatsLeft ? (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-                Over capacity — {total} pax vs {seatsLeft} seat{seatsLeft === 1 ? '' : 's'} left
-                (capacity {capacityInfo?.capacity}). Confirm boat capacity offline before sending.
+            {seatsLeft !== null && total > seatsLeft ? (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                Over the boat limit — {total} pax vs {seatsLeft} seat
+                {seatsLeft === 1 ? '' : 's'} left (capacity {capacityInfo?.capacity}). Reduce guests
+                or choose another date.
               </div>
             ) : null}
             <div className="rounded-2xl bg-gradient-to-br from-teal-800 via-teal-700 to-cyan-700 px-5 py-5 text-white sm:px-6 sm:py-6">

@@ -253,6 +253,15 @@ export function EditBookingDialog({
       }
     }
 
+    if (seatsHint && pax > seatsHint.seatsLeft) {
+      setError(
+        seatsHint.seatsLeft === 0
+          ? `No seats left on this date (boat limit ${seatsHint.capacity}).`
+          : `Only ${seatsHint.seatsLeft} seat${seatsHint.seatsLeft === 1 ? '' : 's'} left on this date (boat limit ${seatsHint.capacity}).`,
+      )
+      return
+    }
+
     if (reduceCharge && !confirmLate) {
       setConfirmLate(true)
       return
@@ -354,21 +363,14 @@ export function EditBookingDialog({
               ) : null}
               {seatsHint ? (
                 pax > seatsHint.seatsLeft ? (
-                  <p
-                    className={cn(
-                      'text-xs',
-                      bypassCutoff ? 'text-amber-800' : 'text-rose-700',
-                    )}
-                  >
+                  <p className="text-xs text-rose-700">
                     {pax} pax total · {seatsHint.seatsLeft} of {seatsHint.capacity} seats available
-                    {bypassCutoff
-                      ? ' — admin can overbook; confirm boat capacity offline'
-                      : ' — reduce guests to save'}
+                    — reduce guests to stay within the boat limit
                   </p>
                 ) : (
                   <p className="text-xs text-teal-900/50">
                     {pax} pax total · up to {seatsHint.seatsLeft} seats available on this date
-                    (capacity {seatsHint.capacity})
+                    (boat limit {seatsHint.capacity})
                   </p>
                 )
               ) : null}
@@ -636,7 +638,14 @@ export function EditBookingDialog({
           >
             {confirmLate ? 'Back' : 'Cancel'}
           </Button>
-          <Button type="button" onClick={handleSave} disabled={transferLockedPrivate && noTransfer}>
+          <Button
+            type="button"
+            onClick={handleSave}
+            disabled={
+              (transferLockedPrivate && noTransfer) ||
+              Boolean(seatsHint && pax > seatsHint.seatsLeft)
+            }
+          >
             {startWithTransfer
               ? 'Save transfer'
               : confirmLate
