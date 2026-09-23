@@ -221,6 +221,7 @@ create table if not exists public.van_meta (
   plate text not null default '',
   driver text not null default '',
   phone text not null default '',
+  capacity int check (capacity is null or (capacity >= 1 and capacity <= 40)),
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now()),
   primary key (date, program, van_number),

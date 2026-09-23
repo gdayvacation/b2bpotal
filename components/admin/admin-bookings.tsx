@@ -18,8 +18,10 @@ import {
   Pencil,
   Plus,
   Search,
+  Ticket,
   X,
 } from 'lucide-react'
+import { VoucherPreview } from '@/components/agent/voucher-view'
 import { BookingHistoryDialog } from '@/components/booking-history-dialog'
 import { ChangeBookingDateDialog } from '@/components/change-booking-date-dialog'
 import { EditBookingDialog } from '@/components/edit-booking-dialog'
@@ -133,9 +135,10 @@ function BookingPickupCell({
   const awaiting = booking.status === 'Pending Pickup Time'
 
   if (cancelled) {
+    const line = `${booking.pickupZone} ${booking.pickupTime}`.trim()
     return (
-      <span>
-        {booking.pickupZone} · {booking.pickupTime}
+      <span className="block truncate" title={line}>
+        {line}
       </span>
     )
   }
@@ -144,45 +147,38 @@ function BookingPickupCell({
     return (
       <button
         type="button"
-        className="inline-flex max-w-full items-center gap-1 rounded-md text-left text-teal-900 transition-colors hover:bg-teal-50 focus-visible:ring-2 focus-visible:ring-teal-700/25"
+        className="block w-full truncate rounded-md text-left text-teal-900 transition-colors hover:bg-teal-50 focus-visible:ring-2 focus-visible:ring-teal-700/25"
         onClick={() => onAddTransfer(booking)}
         aria-label={`Add transfer for ${booking.code}`}
+        title="No Transfer · Add transfer"
       >
-        <span className="truncate">
-          {booking.pickupZone}
-          {' · '}
-          <span className="font-medium underline decoration-teal-400/80 underline-offset-2">
-            Add transfer
-          </span>
-        </span>
+        No Transfer
       </button>
     )
   }
 
   if (privateTransfer) {
     const vehicle = booking.privateTransferVehicle || 'Private'
-    const price = booking.privateTransferPrice.trim()
+    const line = [booking.pickupTime, vehicle].filter(Boolean).join(' ')
     return (
       <button
         type="button"
-        className="inline-flex max-w-full items-center gap-1 rounded-md text-left text-teal-900 transition-colors hover:bg-teal-50 focus-visible:ring-2 focus-visible:ring-teal-700/25"
+        className="block w-full truncate rounded-md text-left text-teal-900 transition-colors hover:bg-teal-50 focus-visible:ring-2 focus-visible:ring-teal-700/25"
         onClick={() => onEditPrivate(booking)}
         aria-label={`Edit private transfer for ${booking.code}`}
+        title={`Private ${line}`}
       >
-        <span className="truncate">
-          Private · {booking.pickupTime}
-          {vehicle ? ` · ${vehicle}` : ''}
-          {price ? ` · ${price}` : ''}
-        </span>
+        Pvt {line}
       </button>
     )
   }
 
+  const line = awaiting ? `${booking.pickupZone} · set time` : `${booking.pickupZone} ${booking.pickupTime}`
   return (
     <button
       type="button"
       className={cn(
-        'inline-flex max-w-full items-center gap-1 rounded-md text-left transition-colors hover:bg-teal-50 focus-visible:ring-2 focus-visible:ring-teal-700/25',
+        'block w-full truncate rounded-md text-left transition-colors hover:bg-teal-50 focus-visible:ring-2 focus-visible:ring-teal-700/25',
         awaiting && 'text-amber-800',
       )}
       onClick={() => onSetPickup(booking)}
@@ -191,14 +187,9 @@ function BookingPickupCell({
           ? `Add pickup time for ${booking.code}`
           : `Edit pickup time for ${booking.code}`
       }
+      title={line}
     >
-      <span className="truncate">
-        {booking.pickupZone}
-        {' · '}
-        <span className={cn(awaiting && 'font-medium underline decoration-amber-400/80 underline-offset-2')}>
-          {awaiting ? 'Add pickup time' : booking.pickupTime}
-        </span>
-      </span>
+      {line}
     </button>
   )
 }
@@ -210,6 +201,7 @@ function BookingStatusMenu({
   onRebook,
   onEdit,
   onHistory,
+  onVoucher,
 }: {
   booking: Booking
   onCancel: (code: string) => void
@@ -217,6 +209,7 @@ function BookingStatusMenu({
   onRebook: (booking: Booking) => void
   onEdit: (booking: Booking) => void
   onHistory: (booking: Booking) => void
+  onVoucher: (booking: Booking) => void
 }) {
   const [open, setOpen] = useState(false)
   const cancelled = booking.status === 'Cancelled'
@@ -236,6 +229,17 @@ function BookingStatusMenu({
         <ChevronDown className="size-3.5 text-teal-800/45" />
       </PopoverTrigger>
       <PopoverContent align="end" className="w-52 gap-1 p-1.5">
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-teal-950 hover:bg-teal-50"
+          onClick={() => {
+            setOpen(false)
+            onVoucher(booking)
+          }}
+        >
+          <Ticket className="size-3.5 text-teal-800/50" />
+          View voucher
+        </button>
         {cancelled ? (
           <button
             type="button"
@@ -320,6 +324,7 @@ export function AdminBookings() {
   const [editTarget, setEditTarget] = useState<Booking | null>(null)
   const [editStartWithTransfer, setEditStartWithTransfer] = useState(false)
   const [historyTarget, setHistoryTarget] = useState<Booking | null>(null)
+  const [voucherTarget, setVoucherTarget] = useState<Booking | null>(null)
 
   const adminActor = { role: 'admin' as const, name: 'Admin' }
 
@@ -690,50 +695,57 @@ export function AdminBookings() {
           </div>
         ) : (
           <>
-            <Table>
+            <Table className="table-fixed text-[13px]" containerClassName="overflow-x-hidden">
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <SortableHead
                     column="code"
-                    className="w-px whitespace-normal px-2 leading-tight"
+                    className="w-[11%] px-2"
                     active={sortKey === 'code'}
                     dir={sortDir}
                     onSort={toggleSort}
                   >
-                    Booking Number
+                    Booking
                   </SortableHead>
                   <SortableHead
                     column="date"
+                    className="w-[9%] px-2"
                     active={sortKey === 'date'}
                     dir={sortDir}
                     onSort={toggleSort}
                   >
                     Date
                   </SortableHead>
-                  <TableHead className="w-px px-1.5 text-center text-teal-800/50" title="Program">
+                  <TableHead className="w-[4%] px-1 text-center text-teal-800/50" title="Program">
                     PG
                   </TableHead>
                   <SortableHead
                     column="agent"
+                    className="w-[13%] px-2"
                     active={sortKey === 'agent'}
                     dir={sortDir}
                     onSort={toggleSort}
                   >
                     Agent
                   </SortableHead>
-                  <TableHead className="text-teal-800/50">Voucher Number</TableHead>
-                  <TableHead className="text-teal-800/50">Guest Name</TableHead>
-                  <TableHead className="text-teal-800/50">Total Pax</TableHead>
-                  <TableHead className="text-teal-800/50">Hotel Name</TableHead>
+                  <TableHead className="w-[8%] px-2 text-teal-800/50" title="Voucher number">
+                    VC No.
+                  </TableHead>
+                  <TableHead className="w-[13%] px-2 text-teal-800/50">Guest</TableHead>
+                  <TableHead className="w-[5%] px-1 text-center text-teal-800/50" title="Total pax">
+                    Pax
+                  </TableHead>
+                  <TableHead className="w-[16%] px-2 text-teal-800/50">Hotel</TableHead>
                   <SortableHead
                     column="zone"
+                    className="w-[11%] px-2"
                     active={sortKey === 'zone'}
                     dir={sortDir}
                     onSort={toggleSort}
                   >
                     Pickup
                   </SortableHead>
-                  <TableHead className="px-4 text-teal-800/50">Status</TableHead>
+                  <TableHead className="w-[10%] px-2 text-teal-800/50">Status</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -741,30 +753,49 @@ export function AdminBookings() {
                   <TableRow
                     key={booking.code}
                     className={cn(
+                      'cursor-pointer',
                       createdCode === booking.code && 'bg-emerald-50/70',
                       booking.status === 'Cancelled' && 'bg-rose-50/70 text-rose-900/80',
                     )}
+                    onClick={() => setVoucherTarget(booking)}
                   >
                     <TableCell
                       className={cn(
-                        'w-px px-2 font-mono text-[13px] font-medium',
+                        'truncate px-2 font-mono text-[12px] font-medium hover:underline',
                         booking.status === 'Cancelled' && 'text-rose-800 line-through decoration-rose-300',
                       )}
+                      title={booking.code}
                     >
                       {booking.code}
                     </TableCell>
-                    <TableCell>{formatShortDate(booking.date)}</TableCell>
-                    <TableCell className="w-px px-1.5 text-center font-semibold tabular-nums text-teal-900/80">
+                    <TableCell className="truncate px-2 hover:underline" title={formatShortDate(booking.date)}>
+                      {formatShortDate(booking.date)}
+                    </TableCell>
+                    <TableCell className="px-1 text-center font-semibold tabular-nums text-teal-900/80">
                       {booking.program === 'PP' ? 'PP' : 'JB'}
                     </TableCell>
-                    <TableCell>{booking.agentName}</TableCell>
-                    <TableCell className="font-mono text-[13px] text-teal-900/70">
+                    <TableCell className="truncate px-2 hover:underline" title={booking.agentName}>
+                      {booking.agentName}
+                    </TableCell>
+                    <TableCell
+                      className="truncate px-2 font-mono text-[12px] text-teal-900/70 hover:underline"
+                      title={booking.agentRef?.trim() || undefined}
+                    >
                       {booking.agentRef?.trim() ? booking.agentRef : '—'}
                     </TableCell>
-                    <TableCell>{booking.leadGuest}</TableCell>
-                    <TableCell>{totalPassengers(booking)}</TableCell>
-                    <TableCell>{booking.pickupHotel.trim() || '—'}</TableCell>
-                    <TableCell>
+                    <TableCell className="truncate px-2 hover:underline" title={booking.leadGuest}>
+                      {booking.leadGuest}
+                    </TableCell>
+                    <TableCell className="px-1 text-center tabular-nums">
+                      {totalPassengers(booking)}
+                    </TableCell>
+                    <TableCell
+                      className="truncate px-2"
+                      title={booking.pickupHotel.trim() || undefined}
+                    >
+                      {booking.pickupHotel.trim() || '—'}
+                    </TableCell>
+                    <TableCell className="px-2" onClick={(event) => event.stopPropagation()}>
                       <BookingPickupCell
                         booking={booking}
                         onSetPickup={openPickupDialog}
@@ -772,7 +803,7 @@ export function AdminBookings() {
                         onEditPrivate={openEditDetails}
                       />
                     </TableCell>
-                    <TableCell className="px-4">
+                    <TableCell className="px-2" onClick={(event) => event.stopPropagation()}>
                       <BookingStatusMenu
                         booking={booking}
                         onCancel={handleCancel}
@@ -780,6 +811,7 @@ export function AdminBookings() {
                         onRebook={setRebookTarget}
                         onEdit={openEditDetails}
                         onHistory={setHistoryTarget}
+                        onVoucher={setVoucherTarget}
                       />
                     </TableCell>
                   </TableRow>
@@ -869,6 +901,20 @@ export function AdminBookings() {
               <Button type="submit">Save pickup time</Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={voucherTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setVoucherTarget(null)
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+          <DialogTitle className="sr-only">Voucher confirmation</DialogTitle>
+          {voucherTarget ? (
+            <VoucherPreview booking={voucherTarget} slug={voucherTarget.agentSlug} embedded />
+          ) : null}
         </DialogContent>
       </Dialog>
 

@@ -127,6 +127,7 @@ type VanMetaRow = {
   plate: string
   driver: string
   phone?: string | null
+  capacity?: number | null
 }
 
 type FleetVanRow = {
@@ -419,10 +420,12 @@ function buildVehiclePlans(
     const date = asDateString(meta.date)
     const key = dayVehiclePlanKey(date, meta.program)
     const plan = next[key] ?? emptyDayVehiclePlan(date, meta.program)
+    const capacity = Number(meta.capacity)
     plan.vanMeta[String(meta.van_number)] = {
       plate: meta.plate ?? '',
       driver: meta.driver ?? '',
       phone: meta.phone ?? '',
+      ...(Number.isFinite(capacity) && capacity >= 1 ? { capacity: Math.floor(capacity) } : {}),
     }
     next[key] = plan
   }
@@ -646,9 +649,34 @@ export async function updateBookingDetails(booking: Booking) {
       transfer_extra_charge: row.transfer_extra_charge,
       pickup_time: row.pickup_time,
       status: row.status,
+      late_change_fee: row.late_change_fee,
     })
     .eq('code', booking.code)
-  if (error) throw new Error(`update booking details: ${error.message}`)
+  if (!error) return
+  const { late_change_fee: _lateChangeFee, ...withoutFee } = {
+    agent_ref: row.agent_ref,
+    park_fee: row.park_fee,
+    canoe: row.canoe,
+    adults: row.adults,
+    children: row.children,
+    infants: row.infants,
+    tour_leaders: row.tour_leaders,
+    lead_guest: row.lead_guest,
+    pickup_zone: row.pickup_zone,
+    pickup_hotel: row.pickup_hotel,
+    room_number: row.room_number,
+    note: row.note,
+    cash_on_tour: row.cash_on_tour,
+    transfer_extra_charge: row.transfer_extra_charge,
+    pickup_time: row.pickup_time,
+    status: row.status,
+    late_change_fee: row.late_change_fee,
+  }
+  const { error: fallbackError } = await supabase
+    .from('bookings')
+    .update(withoutFee)
+    .eq('code', booking.code)
+  if (fallbackError) throw new Error(`update booking details: ${fallbackError.message}`)
 }
 
 type BookingEventRow = {
@@ -936,17 +964,26 @@ export async function saveDayVehiclePlan(plan: DayVehiclePlan) {
     .eq('program', plan.program)
   if (delMetaError) throw new Error(`clear van meta: ${delMetaError.message}`)
 
-  const metaRows = Object.entries(plan.vanMeta ?? {}).map(([van, meta]) => ({
-    date: plan.date,
-    program: plan.program,
-    van_number: Number(van),
-    plate: (meta as VanMeta).plate ?? '',
-    driver: (meta as VanMeta).driver ?? '',
-    phone: (meta as VanMeta).phone ?? '',
-  }))
+  const metaRows = Object.entries(plan.vanMeta ?? {}).map(([van, meta]) => {
+    const row: VanMetaRow = {
+      date: plan.date,
+      program: plan.program,
+      van_number: Number(van),
+      plate: (meta as VanMeta).plate ?? '',
+      driver: (meta as VanMeta).driver ?? '',
+      phone: (meta as VanMeta).phone ?? '',
+    }
+    const capacity = Number((meta as VanMeta).capacity)
+    if (Number.isFinite(capacity) && capacity >= 1) row.capacity = Math.floor(capacity)
+    return row
+  })
   if (metaRows.length > 0) {
     const { error } = await supabase.from('van_meta').insert(metaRows)
-    if (error) throw new Error(`insert van meta: ${error.message}`)
+    if (error) {
+      const fallback = metaRows.map(({ capacity: _capacity, ...row }) => row)
+      const { error: retryError } = await supabase.from('van_meta').insert(fallback)
+      if (retryError) throw new Error(`insert van meta: ${retryError.message}`)
+    }
   }
 
   const assignRows: Array<{

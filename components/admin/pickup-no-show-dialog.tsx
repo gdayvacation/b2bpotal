@@ -119,7 +119,7 @@ export function PickupNoShowDialog({
         infants: nextInfants,
         tourLeaders: nextTourLeaders,
       },
-      { actor: { role: 'admin', name: 'Guest pick up' } },
+      { actor: { role: 'admin', name: 'Guest pick up' }, bypassCutoff: true, lateChangeFee: 0 },
     )
     setSaving(false)
     if (!result.ok) {

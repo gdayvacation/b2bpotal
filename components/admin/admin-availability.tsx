@@ -293,7 +293,8 @@ export function AdminAvailability() {
             <h2 className="text-sm font-semibold text-teal-950">3. Extra charges after</h2>
             <p className="mt-1 text-xs leading-relaxed text-teal-950/50">
               After this time on the modify day, agents can still change until the modify cutoff,
-              but extra charges apply. Infant is free on date change.
+              but extra charges apply. Reducing AD / CH or changing the date is charged. Adding
+              guests is free. Infant and TL are free.
             </p>
             <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_7.5rem]">
               <div>
@@ -327,8 +328,9 @@ export function AdminAvailability() {
               </div>
             </div>
             <p className="mt-3 text-xs text-teal-800/65">
-              Date change: +{formatThbAmount(bookingCutoffs.dateChangeFeePerPerson)} per AD / CH /
-              TL. Cancel person or whole booking: full price (no refund).
+              Reduce AD / CH or change date: +{formatThbAmount(bookingCutoffs.dateChangeFeePerPerson)}{' '}
+              per AD / CH (forced for agents). Adding guests is free. Infant and TL are free. Cancel
+              the whole booking: full price (no refund).
             </p>
           </Surface>
 

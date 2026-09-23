@@ -35,6 +35,11 @@ export type BookingActionOptions = {
   /** Admin back-office override: skip agent cutoffs, program closures, and seat capacity. */
   bypassCutoff?: boolean
   actor?: BookingActor
+  /**
+   * Extra late-change fee (THB) to add on this action.
+   * Admin can set 0 (complimentary) or any amount; agents ignore this and use the rule.
+   */
+  lateChangeFee?: number
 }
 
 export const CORE_PICKUP_ZONE_NAMES = ['Patong', 'Kata', 'Karon', 'Other'] as const
@@ -144,7 +149,7 @@ export type Booking = {
   status: BookingStatus
   /**
    * Accumulated late date-change fee billed to the agency (THB).
-   * +300 per AD / CH / TL after the late-fee time; infant is free.
+   * +300 per AD / CH after the late-fee time; infant and tour leader are free.
    */
   lateChangeFee?: number
 }
@@ -353,6 +358,16 @@ export type VanMeta = {
   driver: string
   /** Driver telephone. */
   phone: string
+  /** Seats for this van on this day. Omit to use the day default. */
+  capacity?: number
+}
+
+export const MIN_VAN_CAPACITY = 1
+export const MAX_VAN_CAPACITY = 40
+
+export function clampVanCapacity(value: number) {
+  if (!Number.isFinite(value)) return DEFAULT_VAN_CAPACITY
+  return Math.min(MAX_VAN_CAPACITY, Math.max(MIN_VAN_CAPACITY, Math.floor(value)))
 }
 
 /** Remembered van roster — reused across days when day meta is empty. */
@@ -392,6 +407,18 @@ export function emptyVanMeta(): VanMeta {
   return { plate: '', driver: '', phone: '' }
 }
 
+/** Per-van seats for a day — custom if set, otherwise the day default. */
+export function vanSeatCapacity(
+  plan: Pick<DayVehiclePlan, 'vanCapacity' | 'vanMeta'>,
+  van: number,
+) {
+  const custom = plan.vanMeta[String(van)]?.capacity
+  if (typeof custom === 'number' && Number.isFinite(custom) && custom >= MIN_VAN_CAPACITY) {
+    return clampVanCapacity(custom)
+  }
+  return plan.vanCapacity || DEFAULT_VAN_CAPACITY
+}
+
 export type NewBookingDraft = {
   program: Program | null
   parkFee: IncludeOption
@@ -413,11 +440,9 @@ export function totalPassengers(booking: Pick<Booking, 'adults' | 'children' | '
   return booking.adults + booking.children + booking.infants + booking.tourLeaders
 }
 
-/** AD + CH + TL — infants are free for late date-change fees. */
-export function chargeablePax(
-  booking: Pick<Booking, 'adults' | 'children' | 'tourLeaders'>,
-) {
-  return Math.max(0, booking.adults + booking.children + booking.tourLeaders)
+/** AD + CH only — infants and tour leaders are free for late date-change fees. */
+export function chargeablePax(booking: Pick<Booking, 'adults' | 'children'>) {
+  return Math.max(0, booking.adults + booking.children)
 }
 
 /** Active bookings occupy seats / boats / vans. Cancelled ones free capacity. */

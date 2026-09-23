@@ -261,7 +261,7 @@ export function AdminCheckInBookingPanel({
         infants: nextInfants,
         tourLeaders: nextTourLeaders,
       },
-      { actor },
+      { actor, bypassCutoff: true, lateChangeFee: 0 },
     )
     setSaving(false)
     if (!result.ok) {
@@ -292,6 +292,7 @@ export function AdminCheckInBookingPanel({
       const moved = changeBookingDate(booking.code, newDate, {
         bypassCutoff: true,
         actor,
+        lateChangeFee: extraChargeAmount,
       })
       if (!moved.ok) {
         setDateSaving(false)
@@ -343,6 +344,7 @@ export function AdminCheckInBookingPanel({
       const moved = changeBookingDate(booking.code, newDate, {
         bypassCutoff: true,
         actor,
+        lateChangeFee: extraChargeAmount,
       })
       if (!moved.ok) {
         setDateSaving(false)
@@ -373,7 +375,7 @@ export function AdminCheckInBookingPanel({
         infants: stayInfants,
         tourLeaders: stayTourLeaders,
       },
-      { actor },
+      { actor, bypassCutoff: true, lateChangeFee: 0 },
     )
     if (!shrink.ok) {
       setDateSaving(false)

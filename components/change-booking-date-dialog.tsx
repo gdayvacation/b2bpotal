@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import {
+  AdminExtraChargeField,
   AmendmentPolicyNotice,
   LateDateChangeNotice,
 } from '@/components/amendment-policy-notice'
@@ -49,6 +50,7 @@ export function ChangeBookingDateDialog({
   const [selected, setSelected] = useState<Date | undefined>()
   const [error, setError] = useState('')
   const [confirmLate, setConfirmLate] = useState(false)
+  const [adminFee, setAdminFee] = useState('0')
   const isRebook = mode === 'rebook'
   const today = startOfToday()
   const todayIso = todayISO()
@@ -59,7 +61,8 @@ export function ChangeBookingDateDialog({
     setSelected(dateFromISO(booking.date))
     setError('')
     setConfirmLate(false)
-  }, [open, booking])
+    setAdminFee(String(dateChangeFeeAmount(bookingCutoffs, booking)))
+  }, [open, booking?.code])
 
   function seatsLeftOn(iso: string) {
     if (!booking) return 0
@@ -73,7 +76,7 @@ export function ChangeBookingDateDialog({
   function dayUnavailable(day: Date) {
     if (!booking) return true
     const iso = toISODate(day)
-    if (iso < todayIso) return true
+    if (!bypassCutoff && iso < todayIso) return true
     if (!bypassCutoff && !isBookingOpen(iso)) return true
     if (!bypassCutoff && isProgramClosed(iso, booking.program)) return true
     if (!bypassCutoff && seatsLeftOn(iso) < pax) return true
@@ -82,7 +85,10 @@ export function ChangeBookingDateDialog({
 
   const lateChange =
     !bypassCutoff && !isRebook && Boolean(booking) && isLateAmendment(booking!.date)
-  const lateFee = booking && lateChange ? dateChangeFeeAmount(bookingCutoffs, booking) : 0
+  const suggestedFee = booking ? dateChangeFeeAmount(bookingCutoffs, booking) : 0
+  const lateFee = booking && lateChange ? suggestedFee : 0
+  const parsedAdminFee = Math.max(0, Math.floor(Number(adminFee.replace(/,/g, '')) || 0))
+  const needsAdminConfirm = bypassCutoff && !isRebook && Boolean(booking)
   const selectedIso = selected ? toISODate(selected) : null
   const selectedInfo = useMemo(() => {
     if (!booking || !selectedIso) return null
@@ -119,13 +125,17 @@ export function ChangeBookingDateDialog({
       return
     }
     const nextIso = toISODate(selected)
-    if (lateChange && !confirmLate) {
+    if ((lateChange || needsAdminConfirm) && !confirmLate) {
       setConfirmLate(true)
       return
     }
     const result = isRebook
       ? rebookBooking(booking.code, nextIso, { bypassCutoff, actor })
-      : changeBookingDate(booking.code, nextIso, { bypassCutoff, actor })
+      : changeBookingDate(booking.code, nextIso, {
+          bypassCutoff,
+          actor,
+          lateChangeFee: needsAdminConfirm ? parsedAdminFee : undefined,
+        })
     if (!result.ok) {
       setError(result.error)
       return
@@ -142,7 +152,11 @@ export function ChangeBookingDateDialog({
             {booking
               ? isRebook
                 ? `${booking.code} · ${pax} pax · was ${formatLongDate(booking.date)}. Grey days are closed${bypassCutoff ? '' : ' or don’t have enough seats'}.`
-                : `${booking.code} · ${pax} pax · currently ${formatLongDate(booking.date)}. Grey days are closed${bypassCutoff ? '' : ' or don’t have enough seats'}.`
+                : `${booking.code} · ${pax} pax · currently ${formatLongDate(booking.date)}. ${
+                    bypassCutoff
+                      ? 'Admin can move any date, including closed or past days.'
+                      : 'Grey days are closed or don’t have enough seats.'
+                  }`
               : null}
           </DialogDescription>
         </DialogHeader>
@@ -184,7 +198,17 @@ export function ChangeBookingDateDialog({
               </p>
             )
           ) : null}
-          {!bypassCutoff ? (
+          {bypassCutoff && !isRebook && booking ? (
+            <AdminExtraChargeField
+              suggested={suggestedFee}
+              value={adminFee}
+              onChange={setAdminFee}
+              alreadyCharged={booking.lateChangeFee ?? 0}
+              adults={booking.adults}
+              childrenCount={booking.children}
+              perPerson={bookingCutoffs.dateChangeFeePerPerson}
+            />
+          ) : !bypassCutoff ? (
             lateChange && booking ? (
               <LateDateChangeNotice settings={bookingCutoffs} booking={booking} className="w-full" />
             ) : (
@@ -214,14 +238,22 @@ export function ChangeBookingDateDialog({
           <Button
             type="button"
             onClick={handleSave}
-            disabled={!selected || (selected ? dayUnavailable(selected) : true)}
+            disabled={
+              !selected ||
+              (selected ? dayUnavailable(selected) : true) ||
+              selectedIso === booking?.date
+            }
           >
             {isRebook
               ? 'Confirm rebook'
               : confirmLate
-                ? `Confirm +${formatThbAmount(lateFee)}`
-                : lateChange
-                  ? 'Continue with extra charge'
+                ? needsAdminConfirm
+                  ? parsedAdminFee > 0
+                    ? `Confirm +${formatThbAmount(parsedAdminFee)}`
+                    : 'Confirm — complimentary'
+                  : `Confirm +${formatThbAmount(lateFee)}`
+                : lateChange || needsAdminConfirm
+                  ? 'Continue'
                   : 'Save new date'}
           </Button>
         </DialogFooter>

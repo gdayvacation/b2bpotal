@@ -16,7 +16,7 @@ export type BookingCutoffSettings = {
   cancelUntilTime: string
   /** Local time HH:mm on the modify-before day when extra charges start. */
   lateFeeFromTime: string
-  /** THB per chargeable guest (AD / CH / TL) for a late date change. */
+  /** THB per chargeable guest (AD / CH) for a late date change. Infant and TL are free. */
   dateChangeFeePerPerson: number
 }
 
@@ -163,12 +163,11 @@ export function isCancelOpenForDate(
  * Extra charges apply once the clock reaches lateFeeFromTime on the modify
  * deadline day, while modify is still open.
  */
-export function isLateAmendmentForDate(
+export function isLateFeeTimeForDate(
   settings: BookingCutoffSettings,
   travelDate: string,
   now: Date = new Date(),
 ): boolean {
-  if (!isCancelOpenForDate(settings, travelDate, now)) return false
   const deadlineDate = addCalendarDays(travelDate, -settings.cancelBeforeDays)
   const { date: nowDate, time: nowTime } = zonedParts(now, settings.timezone)
   const nowKey = `${nowDate}T${nowTime}`
@@ -176,9 +175,18 @@ export function isLateAmendmentForDate(
   return nowKey >= lateKey
 }
 
+export function isLateAmendmentForDate(
+  settings: BookingCutoffSettings,
+  travelDate: string,
+  now: Date = new Date(),
+): boolean {
+  if (!isCancelOpenForDate(settings, travelDate, now)) return false
+  return isLateFeeTimeForDate(settings, travelDate, now)
+}
+
 export function dateChangeFeeAmount(
   settings: BookingCutoffSettings,
-  booking: Pick<Booking, 'adults' | 'children' | 'tourLeaders'>,
+  booking: Pick<Booking, 'adults' | 'children'>,
 ): number {
   return chargeablePax(booking) * settings.dateChangeFeePerPerson
 }
@@ -211,19 +219,23 @@ export function cancelClosedMessage(
 
 export function lateDateChangeNotice(
   settings: BookingCutoffSettings,
-  booking: Pick<Booking, 'adults' | 'children' | 'tourLeaders'>,
+  booking: Pick<Booking, 'adults' | 'children'>,
 ): string {
   const count = chargeablePax(booking)
   const fee = dateChangeFeeAmount(settings, booking)
-  return `This change is after ${settings.lateFeeFromTime} Thailand time. Extra charge: ${formatThbAmount(fee)} (${count} AD/CH/TL × ${formatThbAmount(settings.dateChangeFeePerPerson)}). Infant is free.`
+  return `This change is after ${settings.lateFeeFromTime} Thailand time. Extra charge: ${formatThbAmount(fee)} (${booking.adults} AD + ${booking.children} CH × ${formatThbAmount(settings.dateChangeFeePerPerson)}). Infant and TL are free.`
 }
 
 export function lateCancelNotice(settings: BookingCutoffSettings): string {
-  return `Cancel after ${settings.lateFeeFromTime} Thailand time is charged at full price (no refund) for any person or the whole booking.`
+  return `Cancel the whole booking after ${settings.lateFeeFromTime} Thailand time is charged at full price (no refund).`
 }
 
-export function lateAddNotice(settings: BookingCutoffSettings): string {
-  return `Adding guests after ${settings.lateFeeFromTime} Thailand time is billed at full price for each added AD / CH / TL (infant free).`
+export function lateReduceNotice(
+  settings: BookingCutoffSettings,
+  removed: Pick<Booking, 'adults' | 'children'>,
+): string {
+  const fee = dateChangeFeeAmount(settings, removed)
+  return `Reducing guests after ${settings.lateFeeFromTime} Thailand time is a forced extra charge: ${formatThbAmount(fee)} (${removed.adults} AD + ${removed.children} CH × ${formatThbAmount(settings.dateChangeFeePerPerson)}). Infant and TL are free. Adding guests has no extra charge.`
 }
 
 export function summarizeCutoffRule(
@@ -239,6 +251,6 @@ export function amendmentPolicyLines(settings: BookingCutoffSettings): string[] 
   return [
     `New bookings for the next day stay open until ${summarizeCutoffRule(settings.bookBeforeDays, settings.bookUntilTime)}. After midnight, that day is closed — book the following day only.`,
     `You can modify, add guests, cancel, or change the date until ${summarizeCutoffRule(settings.cancelBeforeDays, settings.cancelUntilTime)}.`,
-    `After ${settings.lateFeeFromTime} Thailand time on that modify day: change date +${formatThbAmount(settings.dateChangeFeePerPerson)} per AD / CH / TL (infant free). Cancel any person or the whole booking — full price charged (no refund).`,
+    `After ${settings.lateFeeFromTime} Thailand time: reducing AD / CH or changing the date is +${formatThbAmount(settings.dateChangeFeePerPerson)} per AD / CH (infant and TL free). Adding guests has no extra charge. Cancel the whole booking — full price (no refund).`,
   ]
 }

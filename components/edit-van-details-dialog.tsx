@@ -13,7 +13,15 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import type { Program, VanMeta } from '@/lib/types'
+import {
+  DEFAULT_VAN_CAPACITY,
+  MAX_VAN_CAPACITY,
+  MIN_VAN_CAPACITY,
+  clampVanCapacity,
+  vanSeatCapacity,
+  type Program,
+  type VanMeta,
+} from '@/lib/types'
 
 export function EditVanDetailsDialog({
   open,
@@ -34,14 +42,17 @@ export function EditVanDetailsDialog({
   const [driver, setDriver] = useState('')
   const [phone, setPhone] = useState('')
   const [plate, setPlate] = useState('')
+  const [seats, setSeats] = useState(DEFAULT_VAN_CAPACITY)
 
   useEffect(() => {
     if (!open || van === null) return
-    const dayMeta = getDayVehiclePlan(date, program).vanMeta[String(van)]
+    const plan = getDayVehiclePlan(date, program)
+    const dayMeta = plan.vanMeta[String(van)]
     const resolved = resolveVanMeta(van, dayMeta ?? null)
     setDriver(initial?.driver ?? resolved.driver)
     setPhone(initial?.phone ?? resolved.phone)
     setPlate(initial?.plate ?? resolved.plate)
+    setSeats(vanSeatCapacity(plan, van))
   }, [open, van, date, program, initial, getDayVehiclePlan, resolveVanMeta])
 
   function handleSave() {
@@ -50,6 +61,7 @@ export function EditVanDetailsDialog({
       driver: driver.trim(),
       phone: phone.trim(),
       plate: plate.trim(),
+      capacity: clampVanCapacity(seats),
     })
     onOpenChange(false)
   }
@@ -60,7 +72,8 @@ export function EditVanDetailsDialog({
         <DialogHeader>
           <DialogTitle>{van !== null ? `Van ${van} details` : 'Van details'}</DialogTitle>
           <DialogDescription>
-            Saved for this day and remembered for the same van number next time.
+            Driver, plate, and phone are remembered for the next day. Seat count is only for this
+            day.
           </DialogDescription>
         </DialogHeader>
 
@@ -92,6 +105,18 @@ export function EditVanDetailsDialog({
               value={plate}
               onChange={(event) => setPlate(event.target.value)}
               placeholder="e.g. กข 4521"
+              className="h-10"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="van-seats-today">Seats today</Label>
+            <Input
+              id="van-seats-today"
+              type="number"
+              min={MIN_VAN_CAPACITY}
+              max={MAX_VAN_CAPACITY}
+              value={seats}
+              onChange={(event) => setSeats(clampVanCapacity(Number(event.target.value)))}
               className="h-10"
             />
           </div>

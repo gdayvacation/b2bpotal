@@ -54,6 +54,7 @@ import {
   isBookingOpenForDate,
   isCancelOpenForDate,
   isLateAmendmentForDate,
+  isLateFeeTimeForDate,
   normalizeBeforeDays,
   normalizeCutoffTime,
   normalizeDateChangeFee,
@@ -134,6 +135,7 @@ import {
   PRIVATE_TRANSFER_ZONE,
   bookingClosureKey,
   chargeablePax,
+  clampVanCapacity,
   dayBoatPlanKey,
   dayVehiclePlanKey,
   defaultBoatCapacities,
@@ -180,6 +182,7 @@ type PortalContextValue = {
   isCancelOpen: (travelDate: string) => boolean
   /** Extra charges apply after the late-fee time while modify is still open. */
   isLateAmendment: (travelDate: string) => boolean
+  isLateFeeTime: (travelDate: string) => boolean
   addBooking: (
     booking: Omit<
       Booking,
@@ -449,7 +452,12 @@ type PortalContextValue = {
     van: number,
     orderedCodes: string[],
   ) => void
-  setVanMeta: (date: string, program: Program, van: number, meta: Partial<VanMeta>) => void
+  setVanMeta: (
+    date: string,
+    program: Program,
+    van: number,
+    meta: Partial<VanMeta> & { capacity?: number | null },
+  ) => void
   getFleetVan: (van: number) => FleetVan | null
   resolveVanMeta: (van: number, dayMeta?: VanMeta | null) => VanMeta & { fromFleet: boolean; incomplete: boolean }
   autoAssignDayVans: (date: string, program: Program) => void
@@ -942,16 +950,36 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     const getFleetVan = (van: number) =>
       fleetVans.find((item) => item.vanNumber === van) ?? null
 
-    const resolveVanMeta = (van: number, dayMeta?: VanMeta | null) => {
+    const lastKnownVanCrew = (van: number): VanMeta | null => {
       const fleet = getFleetVan(van)
-      const plate = dayMeta?.plate?.trim() || fleet?.plate?.trim() || ''
-      const driver = dayMeta?.driver?.trim() || fleet?.driver?.trim() || ''
-      const phone = dayMeta?.phone?.trim() || fleet?.phone?.trim() || ''
+      if (fleet && (fleet.driver.trim() || fleet.plate.trim() || fleet.phone.trim())) {
+        return { plate: fleet.plate, driver: fleet.driver, phone: fleet.phone }
+      }
+      const previous = Object.values(dayVehiclePlans)
+        .filter((plan) => {
+          const meta = plan.vanMeta[String(van)]
+          return Boolean(
+            meta && (meta.driver.trim() || meta.plate.trim() || meta.phone.trim()),
+          )
+        })
+        .sort((a, b) => b.date.localeCompare(a.date))[0]
+      return previous?.vanMeta[String(van)] ?? null
+    }
+
+    const resolveVanMeta = (van: number, dayMeta?: VanMeta | null) => {
+      const remembered = lastKnownVanCrew(van)
+      const plate = dayMeta?.plate?.trim() || remembered?.plate?.trim() || ''
+      const driver = dayMeta?.driver?.trim() || remembered?.driver?.trim() || ''
+      const phone = dayMeta?.phone?.trim() || remembered?.phone?.trim() || ''
       return {
         plate,
         driver,
         phone,
-        fromFleet: !dayMeta?.driver?.trim() && !dayMeta?.plate?.trim() && Boolean(fleet),
+        capacity: dayMeta?.capacity,
+        fromFleet:
+          !dayMeta?.driver?.trim() &&
+          !dayMeta?.plate?.trim() &&
+          Boolean(remembered?.driver?.trim() || remembered?.plate?.trim()),
         incomplete: !driver.trim() || !plate.trim(),
       }
     }
@@ -1259,6 +1287,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       earliestBookableDate: () => earliestBookableTravelDate(bookingCutoffs),
       isCancelOpen: (travelDate) => isCancelOpenForDate(bookingCutoffs, travelDate),
       isLateAmendment: (travelDate) => isLateAmendmentForDate(bookingCutoffs, travelDate),
+      isLateFeeTime: (travelDate) => isLateFeeTimeForDate(bookingCutoffs, travelDate),
       updateBookingCutoffs: (patch) => {
         setBookingCutoffs((current) => {
           const next: BookingCutoffSettings = {
@@ -1504,9 +1533,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
         const oldDate = existing.date
         const program = existing.program
-        const lateChange =
-          !options?.bypassCutoff && isLateAmendmentForDate(bookingCutoffs, existing.date)
-        const extraFee = lateChange ? dateChangeFeeAmount(bookingCutoffs, existing) : 0
+        const extraFee =
+          options?.lateChangeFee !== undefined
+            ? Math.max(0, Math.floor(options.lateChangeFee))
+            : !options?.bypassCutoff && isLateAmendmentForDate(bookingCutoffs, existing.date)
+              ? dateChangeFeeAmount(bookingCutoffs, existing)
+              : 0
         const nextLateFee = (existing.lateChangeFee ?? 0) + extraFee
 
         setBookings((current) =>
@@ -1524,8 +1556,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           code,
           'date_changed',
           extraFee > 0
-            ? `Date changed ${oldDate} → ${trimmedDate} · late fee ${formatThbAmount(extraFee)}`
-            : `Date changed ${oldDate} → ${trimmedDate}`,
+            ? `Date changed ${oldDate} → ${trimmedDate} · extra charge ${formatThbAmount(extraFee)}`
+            : options?.lateChangeFee === 0
+              ? `Date changed ${oldDate} → ${trimmedDate} · extra charge waived`
+              : `Date changed ${oldDate} → ${trimmedDate}`,
           options?.actor,
         )
 
@@ -1766,7 +1800,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
         const changes: string[] = []
         if (next.leadGuest !== existing.leadGuest) changes.push('guest')
-        if (newPax !== oldPax) changes.push(`pax ${oldPax}→${newPax}`)
+        if (
+          next.adults !== existing.adults ||
+          next.children !== existing.children ||
+          next.infants !== existing.infants ||
+          next.tourLeaders !== existing.tourLeaders
+        ) {
+          changes.push(
+            newPax !== oldPax
+              ? `pax ${oldPax}→${newPax}`
+              : `pax mix ${existing.adults}AD/${existing.children}CH→${next.adults}AD/${next.children}CH`,
+          )
+        }
         if (next.pickupZone !== existing.pickupZone) {
           changes.push(
             isNoTransfer(next.pickupZone)
@@ -1790,18 +1835,27 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         if (next.agentRef !== existing.agentRef) changes.push('voucher number')
         if (next.parkFee !== existing.parkFee) changes.push('park fee')
         if (next.canoe !== existing.canoe) changes.push('canoe')
-        if (changes.length === 0) return { ok: false, error: 'No changes to save.' }
 
-        const lateEdit =
-          !options?.bypassCutoff && isLateAmendmentForDate(bookingCutoffs, existing.date)
-        const removedAny = Math.max(0, oldPax - newPax)
-        const addedChargeable = Math.max(0, chargeablePax(next) - chargeablePax(existing))
-        if (lateEdit && removedAny > 0) {
-          changes.push(`late cancel ${removedAny} guest${removedAny === 1 ? '' : 's'} · full price charged (no refund)`)
+        const lateFeeWindow = isLateFeeTimeForDate(bookingCutoffs, existing.date)
+        const removedAdults = Math.max(0, existing.adults - next.adults)
+        const removedChildren = Math.max(0, existing.children - next.children)
+        const removedChargeable = removedAdults + removedChildren
+        const extraFee =
+          options?.lateChangeFee !== undefined
+            ? Math.max(0, Math.floor(options.lateChangeFee))
+            : !options?.bypassCutoff && lateFeeWindow && removedChargeable > 0
+              ? removedChargeable * bookingCutoffs.dateChangeFeePerPerson
+              : 0
+        if (extraFee > 0) {
+          next.lateChangeFee = (existing.lateChangeFee ?? 0) + extraFee
+          changes.push(
+            `extra charge ${formatThbAmount(extraFee)} (reduce ${removedAdults} AD + ${removedChildren} CH × ${formatThbAmount(bookingCutoffs.dateChangeFeePerPerson)})`,
+          )
+        } else if (options?.lateChangeFee === 0 && options.bypassCutoff) {
+          changes.push('extra charge waived')
         }
-        if (lateEdit && addedChargeable > 0) {
-          changes.push(`late add ${addedChargeable} AD/CH/TL · billed at full price`)
-        }
+
+        if (changes.length === 0) return { ok: false, error: 'No changes to save.' }
 
         setBookings((current) =>
           current.map((booking) => (booking.code === code ? next : booking)),
@@ -2443,19 +2497,34 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const plan = dayVehiclePlans[planKey] ?? emptyDayVehiclePlan(date, program)
         const prev = plan.vanMeta[String(van)] ?? emptyVanMeta()
         const fleet = fleetVans.find((item) => item.vanNumber === van)
+        const previousCrew = Object.values(dayVehiclePlans)
+          .filter((item) => {
+            const row = item.vanMeta[String(van)]
+            return Boolean(
+              row && (row.driver.trim() || row.plate.trim() || row.phone.trim()),
+            )
+          })
+          .sort((a, b) => b.date.localeCompare(a.date))[0]?.vanMeta[String(van)]
+        const nextCapacity =
+          meta.capacity === null
+            ? undefined
+            : meta.capacity !== undefined
+              ? clampVanCapacity(meta.capacity)
+              : prev.capacity
         const next: VanMeta = {
           plate:
             meta.plate !== undefined
               ? meta.plate.trim()
-              : prev.plate.trim() || fleet?.plate?.trim() || '',
+              : prev.plate.trim() || fleet?.plate?.trim() || previousCrew?.plate?.trim() || '',
           driver:
             meta.driver !== undefined
               ? meta.driver.trim()
-              : prev.driver.trim() || fleet?.driver?.trim() || '',
+              : prev.driver.trim() || fleet?.driver?.trim() || previousCrew?.driver?.trim() || '',
           phone:
             meta.phone !== undefined
               ? meta.phone.trim()
-              : prev.phone.trim() || fleet?.phone?.trim() || '',
+              : prev.phone.trim() || fleet?.phone?.trim() || previousCrew?.phone?.trim() || '',
+          ...(nextCapacity !== undefined ? { capacity: nextCapacity } : {}),
         }
 
         upsertVehiclePlan(date, program, (current) => ({

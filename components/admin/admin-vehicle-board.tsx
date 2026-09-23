@@ -6,6 +6,7 @@ import {
   Bus,
   CalendarIcon,
   GripVertical,
+  Pencil,
   Plus,
   Printer,
   Search,
@@ -36,18 +37,23 @@ import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
 import {
   DEFAULT_BOAT_CAPACITY,
   DEFAULT_VAN_CAPACITY,
+  MIN_VAN_CAPACITY,
+  MAX_VAN_CAPACITY,
   boatDisplayName,
   boatNumbersForPlan,
+  clampVanCapacity,
   emptyVanMeta,
   formatPaxBreakdown,
   isActiveBooking,
   isNoTransfer,
   totalPassengers,
+  vanSeatCapacity,
   type BoatNumber,
   type Booking,
   type DayBoatPlan,
   type DayVehiclePlan,
   type Program,
+  type VanMeta,
   type VanSplit,
 } from '@/lib/types'
 import {
@@ -384,6 +390,184 @@ function DriverJobOrderLaunchCard({ onClick }: { onClick: () => void }) {
   )
 }
 
+function VanCrewDetails({
+  van,
+  crew,
+  onChange,
+}: {
+  van: number
+  crew: VanMeta & { fromFleet?: boolean }
+  onChange: (patch: Partial<VanMeta>) => void
+}) {
+  const driver = crew.driver.trim()
+  const plate = crew.plate.trim()
+  const phone = crew.phone.trim()
+  const contact = [plate || null, phone || null].filter(Boolean).join(' · ')
+
+  return (
+    <Popover>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            className="mt-2 flex w-full items-start justify-between gap-2 rounded-lg px-0.5 py-0.5 text-left hover:bg-teal-50/80"
+            onClick={(event) => event.stopPropagation()}
+          />
+        }
+      >
+        <div className="min-w-0">
+          <p
+            className={cn(
+              'truncate text-[12px] font-semibold leading-tight',
+              driver ? 'text-teal-950' : 'text-amber-800/80',
+            )}
+          >
+            {driver || 'Assign driver'}
+          </p>
+          <p className="mt-0.5 truncate text-[11px] leading-tight text-teal-900/55">
+            {contact || 'Plate · Tel'}
+          </p>
+        </div>
+        <Pencil className="mt-0.5 size-3 shrink-0 text-teal-800/35" />
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-72 space-y-3 p-3"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <p className="text-[11px] font-semibold tracking-wide text-teal-700/60 uppercase">
+          Van {van} · driver
+        </p>
+        <div className="space-y-1.5">
+          <Label htmlFor={`card-driver-${van}`}>Driver name</Label>
+          <Input
+            id={`card-driver-${van}`}
+            value={crew.driver}
+            onChange={(event) => onChange({ driver: event.target.value })}
+            placeholder="e.g. พี่แขก"
+            className="h-9"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`card-phone-${van}`}>Telephone</Label>
+          <Input
+            id={`card-phone-${van}`}
+            value={crew.phone}
+            onChange={(event) => onChange({ phone: event.target.value })}
+            placeholder="e.g. 098-903-8477"
+            className="h-9"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`card-plate-${van}`}>Plate number</Label>
+          <Input
+            id={`card-plate-${van}`}
+            value={crew.plate}
+            onChange={(event) => onChange({ plate: event.target.value })}
+            placeholder="e.g. 31-7558"
+            className="h-9"
+          />
+        </div>
+        <p className="text-[11px] leading-relaxed text-teal-800/55">
+          {crew.fromFleet
+            ? 'Filled from the last day this van was used. Change here to update today and tomorrow.'
+            : 'Saved for this day and remembered for the same van number next time.'}
+        </p>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function VanCapacityButton({
+  van,
+  pax,
+  seats,
+  defaultSeats,
+  over,
+  preview,
+  onChange,
+}: {
+  van: number
+  pax: number
+  seats: number
+  defaultSeats: number
+  over: boolean
+  preview: string | null
+  onChange: (next: number | null) => void
+}) {
+  return (
+    <Popover>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            className={cn(
+              'rounded-lg px-2 py-1 text-xs font-semibold tabular-nums',
+              over ? 'bg-amber-50 text-amber-900' : 'bg-teal-50 text-teal-800',
+            )}
+            onClick={(event) => event.stopPropagation()}
+            title="Change seats for this van today"
+          />
+        }
+      >
+        {preview ? `${preview}/${seats}` : `${pax}/${seats}`}
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        className="w-56 space-y-3 p-3"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <p className="text-[11px] font-semibold tracking-wide text-teal-700/60 uppercase">
+          Van {van} · seats today
+        </p>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="size-8 p-0"
+            disabled={seats <= MIN_VAN_CAPACITY}
+            onClick={() => onChange(seats - 1)}
+          >
+            −
+          </Button>
+          <Input
+            type="number"
+            min={MIN_VAN_CAPACITY}
+            max={MAX_VAN_CAPACITY}
+            value={seats}
+            onChange={(event) => onChange(clampVanCapacity(Number(event.target.value)))}
+            className="h-8 text-center tabular-nums"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="size-8 p-0"
+            disabled={seats >= MAX_VAN_CAPACITY}
+            onClick={() => onChange(seats + 1)}
+          >
+            +
+          </Button>
+        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-8 w-full text-xs"
+          disabled={seats === defaultSeats}
+          onClick={() => onChange(null)}
+        >
+          Reset to {defaultSeats}
+        </Button>
+        <p className="text-[11px] leading-relaxed text-teal-800/55">
+          Only for this day. Other vans keep their own seat count.
+        </p>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function VehicleBoard({
   date,
   program,
@@ -413,7 +597,7 @@ function VehicleBoard({
   onAutoAssignBoats: () => void
   onClearBoats: () => void
   onSaveSplits: (code: string, legs: VanSplit[]) => void
-  onVanMeta: (van: number, meta: { plate?: string; driver?: string; phone?: string }) => void
+  onVanMeta: (van: number, meta: Partial<VanMeta> & { capacity?: number | null }) => void
   onReorderVan: (van: number, orderedCodes: string[]) => void
   onAutoAssign: () => void
   onClear: () => void
@@ -612,7 +796,8 @@ function VehicleBoard({
       if (!booking) return false
       if (van === null) return true
       const legs = plan.assignments[code]
-      const needsSplit = totalPassengers(booking) > capacity && (legs?.length ?? 0) <= 1
+      const vanCap = vanSeatCapacity(plan, van)
+      const needsSplit = totalPassengers(booking) > vanCap && (legs?.length ?? 0) <= 1
       return !needsSplit
     })
     if (unique.length === 0) return
@@ -647,6 +832,8 @@ function VehicleBoard({
           a.booking.code.localeCompare(b.booking.code),
       )
     const pax = items.reduce((sum, item) => sum + item.paxOnVan, 0)
+    const seats = vanSeatCapacity(plan, van)
+    const crew = resolveVanMeta(van, plan.vanMeta[String(van)])
     const zone =
       items.length > 0
         ? [...new Set(items.map((item) => item.booking.pickupZone))].join(', ')
@@ -667,7 +854,9 @@ function VehicleBoard({
       items,
       pax,
       zone: items.length > 0 ? zone : isExtraSlot ? 'Drop guests here' : `Van ${van} ready`,
-      over: pax > capacity,
+      over: pax > seats,
+      seats,
+      crew,
       assignedBoat,
       boatMixed,
       isEmptySlot: isExtraSlot && items.length === 0,
@@ -713,8 +902,8 @@ function VehicleBoard({
               {program === 'PP' ? 'PP · Phi Phi Islands' : 'James Bond · Phang Nga Bay'}
             </h2>
             <p className="mt-1.5 text-base text-teal-900/55">
-              {bookings.length} bookings · {totalPax} pax · {assignedCount} on vans · van ≤{' '}
-              {capacity}
+              {bookings.length} bookings · {totalPax} pax · {assignedCount} on vans · default{' '}
+              {capacity} seats / van
               {noTransferBookings.length > 0
                 ? ` · ${noTransferBookings.length} no transfer (${noTransferPax} pax)`
                 : ''}
@@ -1105,6 +1294,8 @@ function VehicleBoard({
                     zone,
                     items,
                     over,
+                    seats,
+                    crew,
                     assignedBoat,
                     boatMixed,
                     isEmptySlot,
@@ -1112,7 +1303,7 @@ function VehicleBoard({
                   }) => {
                     const isDrop = dropTarget === van && !!dragCodes?.length
                     const projected = isDrop ? pax + draggingPax : pax
-                    const projectedOver = projected > capacity
+                    const projectedOver = projected > seats
                     const isVacant = items.length === 0
 
                     return (
@@ -1156,11 +1347,11 @@ function VehicleBoard({
                         }}
                       >
                         <div className="border-b border-teal-900/6 px-3.5 py-3">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex min-w-0 items-start gap-2">
                               <span
                                 className={cn(
-                                  'flex size-9 items-center justify-center rounded-xl text-sm font-bold',
+                                  'flex size-9 shrink-0 items-center justify-center rounded-xl text-sm font-bold',
                                   isEmptySlot
                                     ? 'bg-teal-950/[0.04] text-teal-800/50'
                                     : isPreparedEmpty
@@ -1170,24 +1361,30 @@ function VehicleBoard({
                               >
                                 {isEmptySlot ? <Plus className="size-4" /> : van}
                               </span>
-                              <div>
+                              <div className="min-w-0">
                                 <p className="text-sm font-semibold text-teal-950">
                                   {isEmptySlot ? `New van ${van}` : `Van ${van}`}
                                 </p>
-                                <p className="truncate text-[11px] text-teal-900/50">{zone}</p>
+                                <p className="truncate text-[11px] text-teal-900/50">
+                                  {items.length > 0 ? zone : isEmptySlot ? 'New van' : 'Ready'}
+                                </p>
                               </div>
                             </div>
-                            <span
-                              className={cn(
-                                'rounded-lg px-2 py-1 text-xs font-semibold tabular-nums',
-                                projectedOver
-                                  ? 'bg-amber-50 text-amber-900'
-                                  : 'bg-teal-50 text-teal-800',
-                              )}
-                            >
-                              {isDrop ? `${pax}→${projected}` : pax}/{capacity}
-                            </span>
+                            <VanCapacityButton
+                              van={van}
+                              pax={isDrop ? projected : pax}
+                              seats={seats}
+                              defaultSeats={capacity}
+                              over={projectedOver}
+                              preview={isDrop ? `${pax}→${projected}` : null}
+                              onChange={(next) => onVanMeta(van, { capacity: next })}
+                            />
                           </div>
+                          <VanCrewDetails
+                            van={van}
+                            crew={crew}
+                            onChange={(patch) => onVanMeta(van, patch)}
+                          />
                           {!isEmptySlot ? (
                             <div className="mt-2 flex flex-wrap gap-1.5">
                               <Button
@@ -1203,7 +1400,7 @@ function VehicleBoard({
                                 Details
                               </Button>
                               {items.some(
-                                (item) => totalPassengers(item.booking) > capacity,
+                                (item) => totalPassengers(item.booking) > seats,
                               ) ? (
                                 <Button
                                   type="button"
@@ -1213,7 +1410,7 @@ function VehicleBoard({
                                   onClick={(event) => {
                                     event.stopPropagation()
                                     const oversized = items.find(
-                                      (item) => totalPassengers(item.booking) > capacity,
+                                      (item) => totalPassengers(item.booking) > seats,
                                     )
                                     if (oversized) setSplitCode(oversized.booking.code)
                                   }}
@@ -1453,12 +1650,12 @@ function VehicleBoard({
                 </DialogTitle>
                 <DialogDescription className="text-sm text-teal-900/55">
                   {formatLongDate(date)} · {program} · {openDetail.zone} · {openDetail.pax}/
-                  {capacity} pax · {openDetail.items.length} booking
+                  {openDetail.seats} pax · {openDetail.items.length} booking
                   {openDetail.items.length === 1 ? '' : 's'}
                 </DialogDescription>
               </DialogHeader>
 
-              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="space-y-1.5">
                   <Label htmlFor={`van-driver-${openVan}`}>Driver name</Label>
                   <Input
@@ -1489,15 +1686,30 @@ function VehicleBoard({
                     className="h-10"
                   />
                 </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`van-seats-${openVan}`}>Seats today</Label>
+                  <Input
+                    id={`van-seats-${openVan}`}
+                    type="number"
+                    min={MIN_VAN_CAPACITY}
+                    max={MAX_VAN_CAPACITY}
+                    value={openDetail.seats}
+                    onChange={(event) =>
+                      onVanMeta(openVan, { capacity: clampVanCapacity(Number(event.target.value)) })
+                    }
+                    className="h-10"
+                  />
+                </div>
               </div>
               {openMeta.fromFleet ? (
                 <p className="mt-2 text-xs text-teal-800/55">
-                  Prefilling from remembered Van {openVan} details. Changes save for this day and
-                  for next time.
+                  Driver, plate, and phone are filled from the last day Van {openVan} was used.
+                  Seats are only for today. Changes save for this day and for next time.
                 </p>
               ) : (
                 <p className="mt-2 text-xs text-teal-800/55">
-                  Saved for this day and remembered for the same van number next time.
+                  Driver, plate, and phone are remembered for the next day. Seat count is only for
+                  this day.
                 </p>
               )}
 

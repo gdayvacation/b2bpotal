@@ -16,13 +16,13 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import {
+  AdminExtraChargeField,
   AmendmentPolicyNotice,
-  LateAddNotice,
-  LateCancelNotice,
+  LateReduceNotice,
 } from '@/components/amendment-policy-notice'
+import { formatThbAmount } from '@/lib/booking-cutoffs'
 import { formatShortDate } from '@/lib/format'
 import {
-  chargeablePax,
   isNoTransfer,
   isPrivateTransfer,
   NO_TRANSFER_ZONE,
@@ -74,7 +74,7 @@ export function EditBookingDialog({
     bookingCutoffs,
     getCapacity,
     getZoneTime,
-    isLateAmendment,
+    isLateFeeTime,
   } = usePortal()
   const [leadGuest, setLeadGuest] = useState('')
   const [adults, setAdults] = useState(0)
@@ -96,6 +96,7 @@ export function EditBookingDialog({
   const [canoe, setCanoe] = useState<IncludeOption>('Included')
   const [error, setError] = useState('')
   const [confirmLate, setConfirmLate] = useState(false)
+  const [adminFee, setAdminFee] = useState('0')
 
   const canUsePrivate = allowPrivateTransfer || bypassCutoff
 
@@ -155,23 +156,25 @@ export function EditBookingDialog({
     setCanoe(booking.canoe ?? 'Included')
     setError('')
     setConfirmLate(false)
-  }, [open, booking, startWithTransfer, zones])
+    setAdminFee('0')
+  }, [open, booking?.code, startWithTransfer, zones])
 
   useEffect(() => {
     setConfirmLate(false)
   }, [adults, children, infants, tourLeaders])
 
-  const lateEdit = Boolean(booking) && !bypassCutoff && isLateAmendment(booking!.date)
-  const removedAny = booking
-    ? Math.max(
-        0,
-        totalPassengers(booking) - (adults + children + infants + tourLeaders),
-      )
-    : 0
-  const addedChargeable = booking
-    ? Math.max(0, chargeablePax({ adults, children, tourLeaders }) - chargeablePax(booking))
-    : 0
-  const needsLateConfirm = lateEdit && (removedAny > 0 || addedChargeable > 0)
+  const lateFeeWindow = Boolean(booking) && isLateFeeTime(booking!.date)
+  const removedAdults = Math.max(0, (booking?.adults ?? 0) - adults)
+  const removedChildren = Math.max(0, (booking?.children ?? 0) - children)
+  const removedChargeable = removedAdults + removedChildren
+  const reduceCharge = lateFeeWindow && removedChargeable > 0 && !startWithTransfer
+  const suggestedReduceFee = removedChargeable * bookingCutoffs.dateChangeFeePerPerson
+  const parsedAdminFee = Math.max(0, Math.floor(Number(adminFee.replace(/,/g, '')) || 0))
+
+  useEffect(() => {
+    if (!open) return
+    setAdminFee(reduceCharge ? String(suggestedReduceFee) : '0')
+  }, [open, reduceCharge, suggestedReduceFee])
   const pax = adults + children + infants + tourLeaders
   const isJamesBond = booking?.program === 'James Bond'
   const noTransfer = transferKind === 'none'
@@ -250,7 +253,7 @@ export function EditBookingDialog({
       }
     }
 
-    if (needsLateConfirm && !confirmLate) {
+    if (reduceCharge && !confirmLate) {
       setConfirmLate(true)
       return
     }
@@ -285,7 +288,15 @@ export function EditBookingDialog({
         parkFee,
         canoe: booking.program === 'James Bond' ? canoe : null,
       },
-      { bypassCutoff, actor },
+      {
+        bypassCutoff,
+        actor,
+        lateChangeFee: reduceCharge
+          ? bypassCutoff
+            ? parsedAdminFee
+            : suggestedReduceFee
+          : undefined,
+      },
     )
     if (!result.ok) {
       setError(result.error)
@@ -305,7 +316,9 @@ export function EditBookingDialog({
           <DialogTitle>{startWithTransfer ? 'Add transfer' : 'Edit booking'}</DialogTitle>
           <DialogDescription>
             {booking
-              ? `${booking.code} · ${formatShortDate(booking.date)} · ${booking.program}`
+              ? `${booking.code} · ${formatShortDate(booking.date)} · ${booking.program}${
+                  bypassCutoff ? ' · Admin can edit any date or time' : ''
+                }`
               : null}
             {startWithTransfer
               ? '. Join shared vans, or book a Private transfer billed to the agent.'
@@ -332,6 +345,13 @@ export function EditBookingDialog({
                 <NumberField label="Infants" value={infants} onChange={setInfants} />
                 <NumberField label="TL" value={tourLeaders} onChange={setTourLeaders} />
               </div>
+              {lateFeeWindow && !startWithTransfer ? (
+                <p className="text-[11px] leading-relaxed text-amber-800/85">
+                  After {bookingCutoffs.lateFeeFromTime} Thailand time, reducing AD or CH is{' '}
+                  {formatThbAmount(bookingCutoffs.dateChangeFeePerPerson)} per person (infant and
+                  TL free). Adding guests has no extra charge.
+                </p>
+              ) : null}
               {seatsHint ? (
                 pax > seatsHint.seatsLeft ? (
                   <p
@@ -579,14 +599,24 @@ export function EditBookingDialog({
             </div>
           )}
 
-          {!bypassCutoff && !startWithTransfer ? (
-            needsLateConfirm && removedAny > 0 ? (
-              <LateCancelNotice settings={bookingCutoffs} />
-            ) : needsLateConfirm && addedChargeable > 0 ? (
-              <LateAddNotice settings={bookingCutoffs} />
-            ) : (
-              <AmendmentPolicyNotice settings={bookingCutoffs} variant="compact" />
-            )
+          {reduceCharge && bypassCutoff ? (
+            <AdminExtraChargeField
+              suggested={suggestedReduceFee}
+              value={adminFee}
+              onChange={setAdminFee}
+              alreadyCharged={booking?.lateChangeFee ?? 0}
+              adults={removedAdults}
+              childrenCount={removedChildren}
+              perPerson={bookingCutoffs.dateChangeFeePerPerson}
+            />
+          ) : reduceCharge ? (
+            <LateReduceNotice
+              settings={bookingCutoffs}
+              removedAdults={removedAdults}
+              removedChildren={removedChildren}
+            />
+          ) : !bypassCutoff && !startWithTransfer ? (
+            <AmendmentPolicyNotice settings={bookingCutoffs} variant="compact" />
           ) : null}
 
           {error ? <p className="text-sm text-red-600">{error}</p> : null}
@@ -610,10 +640,12 @@ export function EditBookingDialog({
             {startWithTransfer
               ? 'Save transfer'
               : confirmLate
-                ? removedAny > 0
-                  ? 'Confirm full-price cancel'
-                  : 'Confirm add at full price'
-                : needsLateConfirm
+                ? bypassCutoff
+                  ? parsedAdminFee > 0
+                    ? `Confirm +${formatThbAmount(parsedAdminFee)}`
+                    : 'Confirm — complimentary'
+                  : `Confirm +${formatThbAmount(suggestedReduceFee)}`
+                : reduceCharge
                   ? 'Continue'
                   : 'Save changes'}
           </Button>

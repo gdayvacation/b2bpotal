@@ -109,13 +109,19 @@ export function BookingWizard({
   const [draftCanoe, setDraftCanoe] = useState<IncludeOption>('Included')
   const portalToday = usePortalTodayISO()
   const prevTodayRef = useRef(portalToday)
-  const [date, setDate] = useState<Date | undefined>(() => defaultTourDate(earliestBookableDate))
+  const [date, setDate] = useState<Date | undefined>(() =>
+    selectAgent ? dateFromISO(todayISO()) : defaultTourDate(earliestBookableDate),
+  )
 
-  // Bangkok day change or cutoff settings: closed today → next open travel day (usually tomorrow).
+  // Bangkok day change or cutoff settings: agents jump off a closed today; admin may keep any date.
   useEffect(() => {
     prevTodayRef.current = portalToday
     setDate((current) => {
       const currentIso = current ? toISODate(current) : ''
+      if (selectAgent) {
+        if (currentIso) return current
+        return dateFromISO(portalToday)
+      }
       if (currentIso && isBookingOpen(currentIso) && currentIso >= portalToday) {
         return current
       }
@@ -123,6 +129,7 @@ export function BookingWizard({
     })
   }, [
     portalToday,
+    selectAgent,
     bookingCutoffs.bookBeforeDays,
     bookingCutoffs.bookUntilTime,
     earliestBookableDate,
@@ -196,8 +203,9 @@ export function BookingWizard({
   const enforceCapacity = !selectAgent
   const overCapacity =
     enforceCapacity && seatsLeft !== null ? total > seatsLeft : false
-  const dateSelectable =
-    bookingOpen && !programClosed && (!enforceCapacity || seatsLeft === null || seatsLeft > 0)
+  const dateSelectable = selectAgent
+    ? Boolean(date)
+    : bookingOpen && !programClosed && (seatsLeft === null || seatsLeft > 0)
   const pickupTime = pickupZone && !isNoTransfer(pickupZone) ? getZoneTime(pickupZone) : ''
   const selectedZone = zones.find((zone) => zone.name === pickupZone)
   const pendingPickup = !isNoTransfer(pickupZone) && (selectedZone?.pending ?? false)
@@ -567,6 +575,8 @@ export function BookingWizard({
                   selected={date}
                   onSelect={setDate}
                   disabled={(day) => {
+                    // Admin can book any date, including the same travel day.
+                    if (selectAgent) return false
                     if (toISODate(day) < todayISO()) return true
                     const dayIso = toISODate(day)
                     // Today closes at 23:59 Bangkok the day before — after midnight only next day+ is open.
@@ -578,13 +588,22 @@ export function BookingWizard({
                 />
               </PopoverContent>
             </Popover>
-            {!selectAgent ? (
+            {selectAgent ? (
+              <p className="rounded-xl border border-teal-200 bg-teal-50/80 px-3.5 py-2.5 text-xs leading-relaxed text-teal-900/70">
+                Admin can book any date, including today (same-day travel), closed days, and sold-out
+                dates. Confirm boat capacity offline when needed.
+              </p>
+            ) : (
               <AmendmentPolicyNotice settings={bookingCutoffs} variant="compact" />
-            ) : null}
+            )}
             {program && capacityInfo ? (
-              !bookingOpen ? (
+              !bookingOpen && !selectAgent ? (
                 <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
                   Booking closed for this travel date — choose another day.
+                </div>
+              ) : !bookingOpen && selectAgent ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                  This date is closed for agents. Admin can still book today or any other day.
                 </div>
               ) : programClosed ? (
                 <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
