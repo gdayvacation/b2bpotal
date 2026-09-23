@@ -45,14 +45,29 @@ import {
   type DayVehiclePlan,
   type Program,
   type VanMeta,
+  type VanSplit,
 } from '@/lib/types'
-import { autoAssignVans, listVanNumbers, primaryVan, sortOrderOnVan } from '@/lib/vehicle-assign'
+import {
+  allocatePaxBreakdown,
+  autoAssignVans,
+  formatVanLegs,
+  listVanNumbers,
+  paxBreakdownTotal,
+  paxOnVan,
+  primaryVan,
+  sortOrderOnVan,
+  type PaxBreakdown,
+} from '@/lib/vehicle-assign'
 import { BoatFleetBadge } from '@/components/boat-badge'
 import { cn } from '@/lib/utils'
 
 type JobOrderRow = {
   no: number
   booking: Booking
+  /** Pax on this van (split bookings only count the guests assigned here). */
+  pax: PaxBreakdown
+  legs: VanSplit[]
+  split: boolean
 }
 
 type VanGroup = {
@@ -146,9 +161,15 @@ function detailRowSpans(rows: AgentJobRow[]): number[] {
 export function AdminDailyJobOrder({
   onBack,
   audience = 'ops',
+  initialDate,
+  initialProgram,
+  backLabel = 'Report',
 }: {
   onBack: () => void
   audience?: JobAudience
+  initialDate?: string
+  initialProgram?: Program
+  backLabel?: string
 }) {
   const {
     bookings,
@@ -159,7 +180,12 @@ export function AdminDailyJobOrder({
     setCheckInAttendance,
   } = usePortal()
   const [selectedDate, setSelectedDate, portalToday] = usePortalDefaultDateISO()
-  const [program, setProgram] = useState<Program | null>(null)
+  const [program, setProgram] = useState<Program | null>(initialProgram ?? null)
+  const seededDate = useRef(false)
+  if (initialDate && !seededDate.current) {
+    seededDate.current = true
+    if (selectedDate !== initialDate) setSelectedDate(initialDate)
+  }
   const [calendarOpen, setCalendarOpen] = useState(false)
   const [pickupSortDir, setPickupSortDir] = useState<PickupSortDir>('asc')
   const [editVan, setEditVan] = useState<number | null>(null)
@@ -237,13 +263,13 @@ export function AdminDailyJobOrder({
       groups: built.groups,
       agentGroups: buildAgentGroups(built.groups),
       usingMockAssignments: built.usingMockAssignments,
-      bookingCount: allRows.length,
+      bookingCount: new Set(allRows.map((row) => row.booking.code)).size,
       totals: allRows.reduce(
         (acc, row) => {
-          acc.adults += row.booking.adults
-          acc.children += row.booking.children
-          acc.infants += row.booking.infants
-          acc.tourLeaders += row.booking.tourLeaders
+          acc.adults += row.pax.adults
+          acc.children += row.pax.children
+          acc.infants += row.pax.infants
+          acc.tourLeaders += row.pax.tourLeaders
           return acc
         },
         { adults: 0, children: 0, infants: 0, tourLeaders: 0 },
@@ -294,7 +320,7 @@ export function AdminDailyJobOrder({
         <div className="mb-4">
           <Button type="button" variant="ghost" size="sm" className="gap-1.5" onClick={onBack}>
             <ArrowLeft className="size-3.5" />
-            Report
+            {backLabel}
           </Button>
         </div>
 
@@ -978,8 +1004,12 @@ function VanGroupSection({
   const showCanoe = isCheckIn && program === 'James Bond'
   const originalTotals = isCheckIn
     ? group.rows.reduce(
-        (acc, { booking }) => {
-          const booked = originalBookedPax(date, program, booking)
+        (acc, row) => {
+          const booked = allocatePaxBreakdown(
+            originalBookedPax(date, program, row.booking),
+            row.legs,
+            group.van,
+          )
           acc.adults += booked.adults
           acc.children += booked.children
           acc.infants += booked.infants
@@ -991,12 +1021,12 @@ function VanGroupSection({
     : group.totals
   const remainingTotals = isCheckIn
     ? group.rows.reduce(
-        (acc, { booking }) => {
-          if (getAction?.(booking.code) === 'no-show') return acc
-          acc.adults += booking.adults
-          acc.children += booking.children
-          acc.infants += booking.infants
-          acc.tourLeaders += booking.tourLeaders
+        (acc, row) => {
+          if (getAction?.(row.booking.code) === 'no-show') return acc
+          acc.adults += row.pax.adults
+          acc.children += row.pax.children
+          acc.infants += row.pax.infants
+          acc.tourLeaders += row.pax.tourLeaders
           return acc
         },
         { adults: 0, children: 0, infants: 0, tourLeaders: 0 },
@@ -1168,11 +1198,16 @@ function VanGroupSection({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {group.rows.map(({ no, booking }) => {
+            {group.rows.map((row) => {
+              const { no, booking, pax, legs, split } = row
               const action = getAction?.(booking.code) ?? null
-              const booked = isCheckIn ? originalBookedPax(date, program, booking) : null
-              const partialNoShow = Boolean(booked && hasPartialNoShow(booked, booking))
+              const bookedFull = isCheckIn ? originalBookedPax(date, program, booking) : null
+              const booked = bookedFull
+                ? allocatePaxBreakdown(bookedFull, legs, group.van)
+                : null
+              const partialNoShow = Boolean(bookedFull && hasPartialNoShow(bookedFull, booking))
               const wholeNoShow = action === 'no-show'
+              const showBookingMoney = !split || primaryVan(legs) === group.van
               return (
               <TableRow
                 key={`${group.van ?? 'none'}-${booking.code}`}
@@ -1191,10 +1226,17 @@ function VanGroupSection({
                       </div>
                     </TableCell>
                     <TableCell>
-                      <CheckInGuestCopyCell
-                        guestName={booking.leadGuest}
-                        vcNo={booking.agentRef}
-                      />
+                      <div className="flex min-w-0 items-center gap-1">
+                        <CheckInGuestCopyCell
+                          guestName={booking.leadGuest}
+                          vcNo={booking.agentRef}
+                        />
+                        {split ? (
+                          <span className="shrink-0 text-[10px] font-semibold text-teal-700/55">
+                            split
+                          </span>
+                        ) : null}
+                      </div>
                     </TableCell>
                     <TableCell>
                       <div className="truncate" title={booking.pickupHotel}>
@@ -1203,29 +1245,29 @@ function VanGroupSection({
                     </TableCell>
                     <TableCell className="px-1 text-center tabular-nums">
                       <PaxWithNoShow
-                        original={booked?.adults ?? booking.adults}
-                        current={booking.adults}
+                        original={booked?.adults ?? pax.adults}
+                        current={pax.adults}
                         wholeNoShow={wholeNoShow}
                       />
                     </TableCell>
                     <TableCell className="px-1 text-center tabular-nums">
                       <PaxWithNoShow
-                        original={booked?.children ?? booking.children}
-                        current={booking.children}
+                        original={booked?.children ?? pax.children}
+                        current={pax.children}
                         wholeNoShow={wholeNoShow}
                       />
                     </TableCell>
                     <TableCell className="px-1 text-center tabular-nums">
                       <PaxWithNoShow
-                        original={booked?.infants ?? booking.infants}
-                        current={booking.infants}
+                        original={booked?.infants ?? pax.infants}
+                        current={pax.infants}
                         wholeNoShow={wholeNoShow}
                       />
                     </TableCell>
                     <TableCell className="px-1 text-center tabular-nums">
                       <PaxWithNoShow
-                        original={booked?.tourLeaders ?? booking.tourLeaders}
-                        current={booking.tourLeaders}
+                        original={booked?.tourLeaders ?? pax.tourLeaders}
+                        current={pax.tourLeaders}
                         wholeNoShow={wholeNoShow}
                       />
                     </TableCell>
@@ -1239,8 +1281,8 @@ function VanGroupSection({
                       {formatParkFeeTotal(
                         booking.parkFee,
                         program,
-                        booking.adults,
-                        booking.children,
+                        pax.adults,
+                        pax.children,
                       )}
                     </TableCell>
                     {showCanoe ? (
@@ -1251,18 +1293,18 @@ function VanGroupSection({
                     <TableCell className="pr-0.5">
                       <div
                         className="truncate text-xs font-medium text-teal-950"
-                        title={booking.cashOnTour}
+                        title={showBookingMoney ? booking.cashOnTour : undefined}
                       >
-                        {booking.cashOnTour.trim() || ''}
+                        {showBookingMoney ? booking.cashOnTour.trim() || '' : ''}
                       </div>
                     </TableCell>
                     <TableCell className="px-0.5 pl-0 text-right tabular-nums text-xs font-medium text-teal-950">
                       {formatCollectTotal(
                         booking.parkFee,
                         program,
-                        booking.adults,
-                        booking.children,
-                        booking.cashOnTour,
+                        pax.adults,
+                        pax.children,
+                        showBookingMoney ? booking.cashOnTour : '',
                       )}
                     </TableCell>
                     <TableCell>
@@ -1312,6 +1354,11 @@ function VanGroupSection({
                     <TableCell>
                       <div className="truncate font-medium" title={booking.leadGuest}>
                         {booking.leadGuest}
+                        {split ? (
+                          <span className="ml-1 text-[10px] font-semibold text-teal-700/55">
+                            split
+                          </span>
+                        ) : null}
                       </div>
                     </TableCell>
                     <TableCell className="px-1 whitespace-nowrap tabular-nums text-teal-950">
@@ -1322,14 +1369,14 @@ function VanGroupSection({
                         {booking.pickupZone || '—'}
                       </div>
                     </TableCell>
-                    <TableCell className="px-0.5 text-center tabular-nums">{booking.adults || ''}</TableCell>
-                    <TableCell className="px-0.5 text-center tabular-nums">{booking.children || ''}</TableCell>
-                    <TableCell className="px-0.5 text-center tabular-nums">{booking.infants || ''}</TableCell>
+                    <TableCell className="px-0.5 text-center tabular-nums">{pax.adults || ''}</TableCell>
+                    <TableCell className="px-0.5 text-center tabular-nums">{pax.children || ''}</TableCell>
+                    <TableCell className="px-0.5 text-center tabular-nums">{pax.infants || ''}</TableCell>
                     <TableCell className="px-0.5 text-center tabular-nums">
-                      {booking.tourLeaders || ''}
+                      {pax.tourLeaders || ''}
                     </TableCell>
                     <TableCell className="px-0.5 text-center font-medium tabular-nums text-teal-950">
-                      {totalPassengers(booking)}
+                      {paxBreakdownTotal(pax)}
                     </TableCell>
                   </>
                 )}
@@ -1943,8 +1990,12 @@ function JobOrderPrintSheet({
             const tall = group.rows.length > 12
             const originalTotals = isCheckIn
               ? group.rows.reduce(
-                  (acc, { booking }) => {
-                    const booked = originalBookedPax(date, program, booking)
+                  (acc, row) => {
+                    const booked = allocatePaxBreakdown(
+                      originalBookedPax(date, program, row.booking),
+                      row.legs,
+                      group.van,
+                    )
                     acc.adults += booked.adults
                     acc.children += booked.children
                     acc.infants += booked.infants
@@ -1956,12 +2007,12 @@ function JobOrderPrintSheet({
               : group.totals
             const remainingTotals = isCheckIn
               ? group.rows.reduce(
-                  (acc, { booking }) => {
-                    if (getAction?.(booking.code) === 'no-show') return acc
-                    acc.adults += booking.adults
-                    acc.children += booking.children
-                    acc.infants += booking.infants
-                    acc.tourLeaders += booking.tourLeaders
+                  (acc, row) => {
+                    if (getAction?.(row.booking.code) === 'no-show') return acc
+                    acc.adults += row.pax.adults
+                    acc.children += row.pax.children
+                    acc.infants += row.pax.infants
+                    acc.tourLeaders += row.pax.tourLeaders
                     return acc
                   },
                   { adults: 0, children: 0, infants: 0, tourLeaders: 0 },
@@ -2087,7 +2138,15 @@ function JobOrderPrintSheet({
                     </tr>
                   </thead>
                   <tbody>
-                    {group.rows.map(({ no, booking }) => (
+                    {group.rows.map((row) => {
+                      const { no, booking, pax, legs, split } = row
+                      const bookedOnVan = allocatePaxBreakdown(
+                        originalBookedPax(date, program, booking),
+                        legs,
+                        group.van,
+                      )
+                      const showBookingMoney = !split || primaryVan(legs) === group.van
+                      return (
                       <tr key={`${group.van ?? 'none'}-${booking.code}`}>
                         <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums">
                           {no}
@@ -2098,7 +2157,7 @@ function JobOrderPrintSheet({
                               {booking.agentRef || '—'}
                             </td>
                             <td className="border border-teal-900/20 px-1 py-0.5">
-                              {booking.leadGuest}
+                              {split ? `${booking.leadGuest} · split` : booking.leadGuest}
                             </td>
                             <td className="border border-teal-900/20 px-1 py-0.5">
                               {booking.pickupHotel || '—'}
@@ -2111,6 +2170,7 @@ function JobOrderPrintSheet({
                             </td>
                             <td className="border border-teal-900/20 px-1 py-0.5 font-medium">
                               {booking.leadGuest}
+                              {split ? ' · split' : ''}
                             </td>
                             <td className="border border-teal-900/20 px-1 py-0.5 tabular-nums">
                               {formatPickupTime(booking.pickupTime)}
@@ -2124,45 +2184,45 @@ function JobOrderPrintSheet({
                           {isCheckIn
                             ? (
                               <PaxWithNoShow
-                                original={originalBookedPax(date, program, booking).adults}
-                                current={booking.adults}
+                                original={bookedOnVan.adults}
+                                current={pax.adults}
                                 wholeNoShow={getAction?.(booking.code) === 'no-show'}
                               />
                             )
-                            : blankIfZero(booking.adults)}
+                            : blankIfZero(pax.adults)}
                         </td>
                         <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums">
                           {isCheckIn
                             ? (
                               <PaxWithNoShow
-                                original={originalBookedPax(date, program, booking).children}
-                                current={booking.children}
+                                original={bookedOnVan.children}
+                                current={pax.children}
                                 wholeNoShow={getAction?.(booking.code) === 'no-show'}
                               />
                             )
-                            : blankIfZero(booking.children)}
+                            : blankIfZero(pax.children)}
                         </td>
                         <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums">
                           {isCheckIn
                             ? (
                               <PaxWithNoShow
-                                original={originalBookedPax(date, program, booking).infants}
-                                current={booking.infants}
+                                original={bookedOnVan.infants}
+                                current={pax.infants}
                                 wholeNoShow={getAction?.(booking.code) === 'no-show'}
                               />
                             )
-                            : blankIfZero(booking.infants)}
+                            : blankIfZero(pax.infants)}
                         </td>
                         <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums">
                           {isCheckIn
                             ? (
                               <PaxWithNoShow
-                                original={originalBookedPax(date, program, booking).tourLeaders}
-                                current={booking.tourLeaders}
+                                original={bookedOnVan.tourLeaders}
+                                current={pax.tourLeaders}
                                 wholeNoShow={getAction?.(booking.code) === 'no-show'}
                               />
                             )
-                            : blankIfZero(booking.tourLeaders)}
+                            : blankIfZero(pax.tourLeaders)}
                         </td>
                         {isCheckIn ? (
                           <>
@@ -2176,8 +2236,8 @@ function JobOrderPrintSheet({
                               {formatParkFeeTotal(
                                 booking.parkFee,
                                 program,
-                                booking.adults,
-                                booking.children,
+                                pax.adults,
+                                pax.children,
                               )}
                             </td>
                             {showCanoe ? (
@@ -2186,15 +2246,15 @@ function JobOrderPrintSheet({
                               </td>
                             ) : null}
                             <td className="border border-teal-900/20 px-1 py-0.5 font-medium">
-                              {booking.cashOnTour.trim() || ''}
+                              {showBookingMoney ? booking.cashOnTour.trim() || '' : ''}
                             </td>
                             <td className="border border-teal-900/20 px-1 py-0.5 text-right tabular-nums font-semibold">
                               {formatCollectTotal(
                                 booking.parkFee,
                                 program,
-                                booking.adults,
-                                booking.children,
-                                booking.cashOnTour,
+                                pax.adults,
+                                pax.children,
+                                showBookingMoney ? booking.cashOnTour : '',
                               )}
                             </td>
                             <td className="border border-teal-900/20 px-1 py-0.5">
@@ -2221,11 +2281,12 @@ function JobOrderPrintSheet({
                           </>
                         ) : (
                           <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums font-semibold">
-                            {totalPassengers(booking)}
+                            {paxBreakdownTotal(pax)}
                           </td>
                         )}
                       </tr>
-                    ))}
+                      )
+                    })}
                     <tr className="bg-teal-50/80 font-semibold">
                       <td className="border border-teal-900/20 px-1 py-1" colSpan={leadingColSpan}>
                         Group total
@@ -2386,7 +2447,7 @@ export function DailyJobOrderModeCard({
 function buildAgentGroups(vanGroups: VanGroup[]): AgentGroup[] {
   const vanInfoByCode = new Map<
     string,
-    { label: string; driver: string; plate: string; phone: string }
+    { label: string; driver: string; plate: string; phone: string; booking: Booking }
   >()
   for (const group of vanGroups) {
     const label =
@@ -2397,23 +2458,23 @@ function buildAgentGroups(vanGroups: VanGroup[]): AgentGroup[] {
           : '—'
     const crew = displayVanCrew(group)
     for (const row of group.rows) {
+      if (vanInfoByCode.has(row.booking.code)) continue
       vanInfoByCode.set(row.booking.code, {
-        label,
+        label: row.split ? formatVanLegs(row.legs) : label,
         driver: crew.driver,
         plate: crew.plate,
         phone: crew.phone,
+        booking: row.booking,
       })
     }
   }
 
   const byAgent = new Map<string, { name: string; bookings: Booking[] }>()
-  for (const group of vanGroups) {
-    for (const { booking } of group.rows) {
-      const key = booking.agentSlug || booking.agentName
-      const existing = byAgent.get(key)
-      if (existing) existing.bookings.push(booking)
-      else byAgent.set(key, { name: booking.agentName, bookings: [booking] })
-    }
+  for (const { booking } of vanInfoByCode.values()) {
+    const key = booking.agentSlug || booking.agentName
+    const existing = byAgent.get(key)
+    if (existing) existing.bookings.push(booking)
+    else byAgent.set(key, { name: booking.agentName, bookings: [booking] })
   }
 
   return [...byAgent.entries()]
@@ -2488,7 +2549,7 @@ function buildVanGroups(
 
   for (const van of vanNumbers) {
     const vanBookings = transferBookings
-      .filter((booking) => primaryVan(assignments[booking.code]) === van)
+      .filter((booking) => paxOnVan(assignments[booking.code], van) > 0)
       .sort((a, b) => {
         const orderA = sortOrderOnVan(assignments[a.code], van)
         const orderB = sortOrderOnVan(assignments[b.code], van)
@@ -2507,6 +2568,7 @@ function buildVanGroups(
         meta.phone,
         meta.incomplete,
         vanBookings,
+        assignments,
       ),
     )
   }
@@ -2586,8 +2648,19 @@ function makeGroup(
   phone: string,
   mockMeta: boolean,
   bookings: Booking[],
+  assignments?: Record<string, VanSplit[]>,
 ): VanGroup {
-  const rows = bookings.map((booking, index) => ({ no: index + 1, booking }))
+  const rows = bookings.map((booking, index) => {
+    const legs = assignments?.[booking.code] ?? []
+    const pax = allocatePaxBreakdown(booking, legs, van)
+    return {
+      no: index + 1,
+      booking,
+      pax,
+      legs,
+      split: legs.length > 1,
+    }
+  })
   return {
     id,
     van,
@@ -2597,16 +2670,24 @@ function makeGroup(
     mockMeta,
     rows,
     totals: {
-      adults: bookings.reduce((sum, b) => sum + b.adults, 0),
-      children: bookings.reduce((sum, b) => sum + b.children, 0),
-      infants: bookings.reduce((sum, b) => sum + b.infants, 0),
-      tourLeaders: bookings.reduce((sum, b) => sum + b.tourLeaders, 0),
-      pax: bookings.reduce((sum, b) => sum + totalPassengers(b), 0),
-      collect: bookings.reduce(
-        (sum, b) =>
-          sum + collectTotal(b.parkFee, b.program, b.adults, b.children, b.cashOnTour),
-        0,
-      ),
+      adults: rows.reduce((sum, row) => sum + row.pax.adults, 0),
+      children: rows.reduce((sum, row) => sum + row.pax.children, 0),
+      infants: rows.reduce((sum, row) => sum + row.pax.infants, 0),
+      tourLeaders: rows.reduce((sum, row) => sum + row.pax.tourLeaders, 0),
+      pax: rows.reduce((sum, row) => sum + paxBreakdownTotal(row.pax), 0),
+      collect: rows.reduce((sum, row) => {
+        const showMoney = !row.split || primaryVan(row.legs) === van
+        return (
+          sum +
+          collectTotal(
+            row.booking.parkFee,
+            row.booking.program,
+            row.pax.adults,
+            row.pax.children,
+            showMoney ? row.booking.cashOnTour : '',
+          )
+        )
+      }, 0),
     },
   }
 }

@@ -3,6 +3,7 @@ import {
   DEFAULT_BOOKING_CUTOFFS,
   normalizeBeforeDays,
   normalizeCutoffTime,
+  normalizeDateChangeFee,
   type BookingCutoffSettings,
 } from '@/lib/booking-cutoffs'
 import type {
@@ -86,6 +87,7 @@ type BookingRow = {
   private_driver_phone?: string | null
   pickup_time: string
   status: Booking['status']
+  late_change_fee?: number | null
 }
 
 type AvailabilityRow = {
@@ -150,6 +152,8 @@ type BookingCutoffRow = {
   book_until_time: string
   cancel_before_days: number
   cancel_until_time: string
+  late_fee_from_time?: string | null
+  date_change_fee_thb?: number | null
 }
 
 type BookingClosureRow = {
@@ -232,6 +236,7 @@ function mapBooking(row: BookingRow): Booking {
     privateDriverPhone: row.private_driver_phone ?? '',
     pickupTime: row.pickup_time,
     status: row.status,
+    lateChangeFee: Math.max(0, Math.floor(Number(row.late_change_fee) || 0)),
   }
 }
 
@@ -262,6 +267,7 @@ function bookingToRow(booking: Booking): BookingRow {
     private_driver_phone: booking.privateDriverPhone ?? '',
     pickup_time: booking.pickupTime,
     status: booking.status,
+    late_change_fee: Math.max(0, Math.floor(Number(booking.lateChangeFee) || 0)),
   }
 }
 
@@ -278,12 +284,19 @@ function mapBookingCutoffs(row: BookingCutoffRow | null | undefined): BookingCut
   const bookUntil = normalizeCutoffTime(row.book_until_time) ?? DEFAULT_BOOKING_CUTOFFS.bookUntilTime
   const cancelUntil =
     normalizeCutoffTime(row.cancel_until_time) ?? DEFAULT_BOOKING_CUTOFFS.cancelUntilTime
+  const lateFeeFrom =
+    normalizeCutoffTime(row.late_fee_from_time ?? '') ?? DEFAULT_BOOKING_CUTOFFS.lateFeeFromTime
+  const dateChangeFee = Number.isFinite(Number(row.date_change_fee_thb))
+    ? Math.max(0, Math.min(20_000, Math.floor(Number(row.date_change_fee_thb))))
+    : DEFAULT_BOOKING_CUTOFFS.dateChangeFeePerPerson
   return {
     timezone: DEFAULT_BOOKING_CUTOFFS.timezone,
     bookBeforeDays: normalizeBeforeDays(row.book_before_days),
     bookUntilTime: bookUntil,
     cancelBeforeDays: normalizeBeforeDays(row.cancel_before_days),
     cancelUntilTime: cancelUntil,
+    lateFeeFromTime: lateFeeFrom,
+    dateChangeFeePerPerson: dateChangeFee,
   }
 }
 
@@ -551,8 +564,12 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
 
 export async function insertBooking(booking: Booking) {
   const supabase = getSupabaseBrowserClient()
-  const { error } = await supabase.from('bookings').insert(bookingToRow(booking))
-  if (error) throw new Error(`insert booking: ${error.message}`)
+  const row = bookingToRow(booking)
+  const { error } = await supabase.from('bookings').insert(row)
+  if (!error) return
+  const { late_change_fee: _lateChangeFee, ...withoutFee } = row
+  const { error: fallbackError } = await supabase.from('bookings').insert(withoutFee)
+  if (fallbackError) throw new Error(`insert booking: ${fallbackError.message}`)
 }
 
 export async function updateBookingStatus(code: string, status: Booking['status']) {
@@ -574,10 +591,27 @@ export async function updateBookingPickup(
   if (error) throw new Error(`update booking pickup: ${error.message}`)
 }
 
-export async function updateBookingDate(code: string, date: string) {
+export async function updateBookingDate(
+  code: string,
+  date: string,
+  extra?: { lateChangeFee?: number },
+) {
   const supabase = getSupabaseBrowserClient()
-  const { error } = await supabase.from('bookings').update({ date }).eq('code', code)
-  if (error) throw new Error(`update booking date: ${error.message}`)
+  const patch: Record<string, unknown> = { date }
+  if (extra?.lateChangeFee !== undefined) {
+    patch.late_change_fee = Math.max(0, Math.floor(extra.lateChangeFee))
+  }
+  const { error } = await supabase.from('bookings').update(patch).eq('code', code)
+  if (!error) return
+  if (extra?.lateChangeFee !== undefined) {
+    const { error: fallbackError } = await supabase
+      .from('bookings')
+      .update({ date })
+      .eq('code', code)
+    if (!fallbackError) return
+    throw new Error(`update booking date: ${fallbackError.message}`)
+  }
+  throw new Error(`update booking date: ${error.message}`)
 }
 
 export async function updateBookingRebook(
@@ -947,15 +981,25 @@ export async function upsertBookingCutoffs(settings: BookingCutoffSettings) {
     normalizeCutoffTime(settings.bookUntilTime) ?? DEFAULT_BOOKING_CUTOFFS.bookUntilTime
   const cancelUntil =
     normalizeCutoffTime(settings.cancelUntilTime) ?? DEFAULT_BOOKING_CUTOFFS.cancelUntilTime
-  const { error } = await supabase.from('booking_cutoffs').upsert({
+  const lateFeeFrom =
+    normalizeCutoffTime(settings.lateFeeFromTime) ?? DEFAULT_BOOKING_CUTOFFS.lateFeeFromTime
+  const dateChangeFee = normalizeDateChangeFee(settings.dateChangeFeePerPerson)
+  const base = {
     id: 'default',
     timezone: DEFAULT_BOOKING_CUTOFFS.timezone,
     book_before_days: normalizeBeforeDays(settings.bookBeforeDays),
     book_until_time: bookUntil,
     cancel_before_days: normalizeBeforeDays(settings.cancelBeforeDays),
     cancel_until_time: cancelUntil,
+  }
+  const { error } = await supabase.from('booking_cutoffs').upsert({
+    ...base,
+    late_fee_from_time: lateFeeFrom,
+    date_change_fee_thb: dateChangeFee,
   })
-  if (error) throw new Error(`upsert booking cutoffs: ${error.message}`)
+  if (!error) return
+  const { error: fallbackError } = await supabase.from('booking_cutoffs').upsert(base)
+  if (fallbackError) throw new Error(`upsert booking cutoffs: ${fallbackError.message}`)
 }
 
 export async function upsertBookingClosures(rows: BookingClosure[]) {

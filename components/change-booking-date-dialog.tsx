@@ -1,6 +1,10 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import {
+  AmendmentPolicyNotice,
+  LateDateChangeNotice,
+} from '@/components/amendment-policy-notice'
 import { usePortal } from '@/components/portal-provider'
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
@@ -12,6 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { dateChangeFeeAmount, formatThbAmount } from '@/lib/booking-cutoffs'
 import { dateFromISO, formatLongDate, startOfToday, toISODate, todayISO } from '@/lib/format'
 import { totalPassengers, type Booking, type BookingActor } from '@/lib/types'
 
@@ -35,12 +40,15 @@ export function ChangeBookingDateDialog({
     changeBookingDate,
     rebookBooking,
     bookedPaxFor,
+    bookingCutoffs,
     getCapacity,
     isBookingOpen,
+    isLateAmendment,
     isProgramClosed,
   } = usePortal()
   const [selected, setSelected] = useState<Date | undefined>()
   const [error, setError] = useState('')
+  const [confirmLate, setConfirmLate] = useState(false)
   const isRebook = mode === 'rebook'
   const today = startOfToday()
   const todayIso = todayISO()
@@ -50,6 +58,7 @@ export function ChangeBookingDateDialog({
     if (!open || !booking) return
     setSelected(dateFromISO(booking.date))
     setError('')
+    setConfirmLate(false)
   }, [open, booking])
 
   function seatsLeftOn(iso: string) {
@@ -71,6 +80,9 @@ export function ChangeBookingDateDialog({
     return false
   }
 
+  const lateChange =
+    !bypassCutoff && !isRebook && Boolean(booking) && isLateAmendment(booking!.date)
+  const lateFee = booking && lateChange ? dateChangeFeeAmount(bookingCutoffs, booking) : 0
   const selectedIso = selected ? toISODate(selected) : null
   const selectedInfo = useMemo(() => {
     if (!booking || !selectedIso) return null
@@ -107,6 +119,10 @@ export function ChangeBookingDateDialog({
       return
     }
     const nextIso = toISODate(selected)
+    if (lateChange && !confirmLate) {
+      setConfirmLate(true)
+      return
+    }
     const result = isRebook
       ? rebookBooking(booking.code, nextIso, { bypassCutoff, actor })
       : changeBookingDate(booking.code, nextIso, { bypassCutoff, actor })
@@ -137,6 +153,7 @@ export function ChangeBookingDateDialog({
             onSelect={(day) => {
               setSelected(day)
               setError('')
+              setConfirmLate(false)
             }}
             defaultMonth={selected ?? today}
             disabled={dayUnavailable}
@@ -168,23 +185,44 @@ export function ChangeBookingDateDialog({
             )
           ) : null}
           {!bypassCutoff ? (
-            <p className="w-full rounded-xl border border-amber-200/80 bg-amber-50/90 px-3 py-2 text-xs leading-relaxed text-amber-950/80">
-              After midnight Thailand time, for any adding or modifying bookings please contact land
-              service offline.
-            </p>
+            lateChange && booking ? (
+              <LateDateChangeNotice settings={bookingCutoffs} booking={booking} className="w-full" />
+            ) : (
+              <AmendmentPolicyNotice
+                settings={bookingCutoffs}
+                variant="compact"
+                className="w-full"
+              />
+            )
           ) : null}
         </div>
         {error ? <p className="text-sm text-red-600">{error}</p> : null}
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              if (confirmLate) {
+                setConfirmLate(false)
+                return
+              }
+              onOpenChange(false)
+            }}
+          >
+            {confirmLate ? 'Back' : 'Cancel'}
           </Button>
           <Button
             type="button"
             onClick={handleSave}
             disabled={!selected || (selected ? dayUnavailable(selected) : true)}
           >
-            {isRebook ? 'Confirm rebook' : 'Save new date'}
+            {isRebook
+              ? 'Confirm rebook'
+              : confirmLate
+                ? `Confirm +${formatThbAmount(lateFee)}`
+                : lateChange
+                  ? 'Continue with extra charge'
+                  : 'Save new date'}
           </Button>
         </DialogFooter>
       </DialogContent>

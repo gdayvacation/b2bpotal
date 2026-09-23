@@ -15,6 +15,7 @@ import {
   Ship,
   Users,
 } from 'lucide-react'
+import { AmendmentPolicyNotice } from '@/components/amendment-policy-notice'
 import { usePortal } from '@/components/portal-provider'
 import { HotelCombobox } from '@/components/hotel-combobox'
 import { Button } from '@/components/ui/button'
@@ -578,10 +579,7 @@ export function BookingWizard({
               </PopoverContent>
             </Popover>
             {!selectAgent ? (
-              <p className="rounded-xl border border-amber-200/80 bg-amber-50/90 px-3.5 py-2.5 text-xs leading-relaxed text-amber-950/80">
-                After midnight Thailand time, for any adding or modifying bookings please contact
-                land service offline.
-              </p>
+              <AmendmentPolicyNotice settings={bookingCutoffs} variant="compact" />
             ) : null}
             {program && capacityInfo ? (
               !bookingOpen ? (
@@ -977,6 +975,10 @@ export function BookingWizard({
                 />
               </dl>
             </ReviewSection>
+
+            {!selectAgent ? (
+              <AmendmentPolicyNotice settings={bookingCutoffs} title="Please note before you confirm" />
+            ) : null}
           </div>
         )}
 

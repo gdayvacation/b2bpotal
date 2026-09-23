@@ -92,6 +92,67 @@ export function paxOnVan(legs: VanSplit[] | undefined, van: number): number {
   return legs.filter((leg) => leg.van === van).reduce((sum, leg) => sum + leg.pax, 0)
 }
 
+export type PaxBreakdown = {
+  adults: number
+  children: number
+  infants: number
+  tourLeaders: number
+}
+
+export function paxBreakdownTotal(pax: PaxBreakdown) {
+  return pax.adults + pax.children + pax.infants + pax.tourLeaders
+}
+
+function takePaxTypes(from: PaxBreakdown, n: number): PaxBreakdown {
+  let left = Math.max(0, Math.floor(n))
+  const adults = Math.min(from.adults, left)
+  left -= adults
+  const children = Math.min(from.children, left)
+  left -= children
+  const infants = Math.min(from.infants, left)
+  left -= infants
+  const tourLeaders = Math.min(from.tourLeaders, left)
+  return { adults, children, infants, tourLeaders }
+}
+
+function subtractPax(from: PaxBreakdown, take: PaxBreakdown): PaxBreakdown {
+  return {
+    adults: from.adults - take.adults,
+    children: from.children - take.children,
+    infants: from.infants - take.infants,
+    tourLeaders: from.tourLeaders - take.tourLeaders,
+  }
+}
+
+/**
+ * Split AD / CHD / INF / TL across van legs so each van’s types sum to that
+ * leg’s pax, and every van together still matches the booking.
+ */
+export function allocatePaxBreakdown(
+  breakdown: PaxBreakdown,
+  legs: VanSplit[] | undefined,
+  van: number | null,
+): PaxBreakdown {
+  const empty = { adults: 0, children: 0, infants: 0, tourLeaders: 0 }
+  if (van === null || !legs || legs.length === 0) return { ...breakdown }
+  const vanNums = [...new Set(legs.map((leg) => leg.van).filter((n) => n > 0))].sort(
+    (a, b) => a - b,
+  )
+  if (!vanNums.includes(van)) return empty
+  if (vanNums.length === 1) return { ...breakdown }
+
+  let remaining: PaxBreakdown = { ...breakdown }
+  const byVan = new Map<number, PaxBreakdown>()
+  for (let i = 0; i < vanNums.length; i += 1) {
+    const currentVan = vanNums[i]
+    const isLast = i === vanNums.length - 1
+    const slice = isLast ? remaining : takePaxTypes(remaining, paxOnVan(legs, currentVan))
+    byVan.set(currentVan, slice)
+    remaining = subtractPax(remaining, slice)
+  }
+  return byVan.get(van) ?? empty
+}
+
 export function sortOrderOnVan(legs: VanSplit[] | undefined, van: number): number {
   const leg = legs?.find((item) => item.van === van)
   return leg?.sortOrder ?? Number.MAX_SAFE_INTEGER

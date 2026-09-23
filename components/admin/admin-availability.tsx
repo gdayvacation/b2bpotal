@@ -10,8 +10,10 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   addCalendarDays,
   formatCutoffDeadline,
+  formatThbAmount,
   isBookingOpenForDate,
   isCancelOpenForDate,
+  isLateAmendmentForDate,
   summarizeCutoffRule,
 } from '@/lib/booking-cutoffs'
 import { formatLongDate, formatShortDate, startOfThisMonth, toISODate } from '@/lib/format'
@@ -168,7 +170,7 @@ export function AdminAvailability() {
 
   const headerDescription =
     tab === 'cutoffs'
-      ? `Agents may book or cancel until a set time relative to the travel date (${bookingCutoffs.timezone}). Admin can always bypass.`
+      ? `One time control per rule (${bookingCutoffs.timezone}). Agents may book or modify until the set time. After the late-fee time, date changes and cancels are charged. Admin can always bypass.`
       : tab === 'close'
         ? 'Close booking on specific dates for PP, James Bond, or both — for weather, boat issues, or other ops holds. Agents cannot book closed dates; admin can still bypass.'
         : `Default every day: PP ${DEFAULT_PP_CAPACITY} · James Bond ${DEFAULT_JB_CAPACITY}. Adjust per day or view live booking status.`
@@ -209,13 +211,12 @@ export function AdminAvailability() {
       </SegmentedControl>
 
       {tab === 'cutoffs' ? (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid gap-4 lg:grid-cols-3">
           <Surface className="p-5 sm:p-6">
-            <h2 className="text-sm font-semibold text-teal-950">Last book time</h2>
+            <h2 className="text-sm font-semibold text-teal-950">1. New bookings</h2>
             <p className="mt-1 text-xs leading-relaxed text-teal-950/50">
-              Agents can create bookings until this deadline the day before travel (Asia/Bangkok).
-              Default closes at 23:59 the day before — so after midnight, today is closed and
-              tomorrow is already open.
+              Agents can book the next-day trip until this time today. After midnight, that day is
+              closed — they must book the following day.
             </p>
             <div className="mt-4 grid gap-3 sm:grid-cols-[7.5rem_1fr]">
               <div>
@@ -249,9 +250,10 @@ export function AdminAvailability() {
           </Surface>
 
           <Surface className="p-5 sm:p-6">
-            <h2 className="text-sm font-semibold text-teal-950">Last cancel time</h2>
+            <h2 className="text-sm font-semibold text-teal-950">2. Modify bookings</h2>
             <p className="mt-1 text-xs leading-relaxed text-teal-950/50">
-              Agents can cancel their own bookings until this deadline for that travel date.
+              Agents can edit, add guests, cancel, or change the date until this time. After that,
+              changes close and they must contact land service.
             </p>
             <div className="mt-4 grid gap-3 sm:grid-cols-[7.5rem_1fr]">
               <div>
@@ -287,13 +289,56 @@ export function AdminAvailability() {
             </p>
           </Surface>
 
-          <Surface className="p-5 sm:p-6 lg:col-span-2">
+          <Surface className="p-5 sm:p-6">
+            <h2 className="text-sm font-semibold text-teal-950">3. Extra charges after</h2>
+            <p className="mt-1 text-xs leading-relaxed text-teal-950/50">
+              After this time on the modify day, agents can still change until the modify cutoff,
+              but extra charges apply. Infant is free on date change.
+            </p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_7.5rem]">
+              <div>
+                <SoftLabel htmlFor="late-fee-from-time">From time</SoftLabel>
+                <Input
+                  id="late-fee-from-time"
+                  type="time"
+                  className="mt-1.5 h-10"
+                  value={bookingCutoffs.lateFeeFromTime}
+                  onChange={(event) =>
+                    updateBookingCutoffs({ lateFeeFromTime: event.target.value })
+                  }
+                />
+              </div>
+              <div>
+                <SoftLabel htmlFor="date-change-fee">THB / person</SoftLabel>
+                <Input
+                  id="date-change-fee"
+                  type="number"
+                  min={0}
+                  max={20000}
+                  step={50}
+                  className="mt-1.5 h-10"
+                  value={bookingCutoffs.dateChangeFeePerPerson}
+                  onChange={(event) =>
+                    updateBookingCutoffs({
+                      dateChangeFeePerPerson: Number(event.target.value) || 0,
+                    })
+                  }
+                />
+              </div>
+            </div>
+            <p className="mt-3 text-xs text-teal-800/65">
+              Date change: +{formatThbAmount(bookingCutoffs.dateChangeFeePerPerson)} per AD / CH /
+              TL. Cancel person or whole booking: full price (no refund).
+            </p>
+          </Surface>
+
+          <Surface className="p-5 sm:p-6 lg:col-span-3">
             <h2 className="text-sm font-semibold text-teal-950">Live preview</h2>
             <p className="mt-1 text-xs text-teal-950/50">
               Example travel date {formatLongDate(previewTravelDate)} (tomorrow in{' '}
               {bookingCutoffs.timezone}).
             </p>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
               <CutoffPreviewCard
                 label="Book"
                 open={isBookingOpenForDate(bookingCutoffs, previewTravelDate)}
@@ -304,13 +349,22 @@ export function AdminAvailability() {
                 )}
               />
               <CutoffPreviewCard
-                label="Cancel"
+                label="Modify"
                 open={isCancelOpenForDate(bookingCutoffs, previewTravelDate)}
                 deadline={formatCutoffDeadline(
                   previewTravelDate,
                   bookingCutoffs.cancelBeforeDays,
                   bookingCutoffs.cancelUntilTime,
                 )}
+              />
+              <LateFeePreviewCard
+                modifyOpen={isCancelOpenForDate(bookingCutoffs, previewTravelDate)}
+                charging={isLateAmendmentForDate(bookingCutoffs, previewTravelDate)}
+                deadline={`From ${formatCutoffDeadline(
+                  previewTravelDate,
+                  bookingCutoffs.cancelBeforeDays,
+                  bookingCutoffs.lateFeeFromTime,
+                )}`}
               />
             </div>
           </Surface>
@@ -729,6 +783,38 @@ function CutoffPreviewCard({
         </span>
       </div>
       <p className="mt-2 text-xs leading-relaxed text-teal-950/55">Until {deadline}</p>
+    </div>
+  )
+}
+
+function LateFeePreviewCard({
+  modifyOpen,
+  charging,
+  deadline,
+}: {
+  modifyOpen: boolean
+  charging: boolean
+  deadline: string
+}) {
+  const label = !modifyOpen ? 'Closed' : charging ? 'Charging now' : 'Free now'
+  return (
+    <div className="rounded-xl border border-teal-900/8 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-medium text-teal-950">Extra charges</p>
+        <span
+          className={cn(
+            'rounded-md px-2 py-0.5 text-[11px] font-semibold',
+            !modifyOpen
+              ? 'bg-rose-50 text-rose-800'
+              : charging
+                ? 'bg-amber-50 text-amber-900'
+                : 'bg-emerald-50 text-emerald-800',
+          )}
+        >
+          {label}
+        </span>
+      </div>
+      <p className="mt-2 text-xs leading-relaxed text-teal-950/55">{deadline}</p>
     </div>
   )
 }

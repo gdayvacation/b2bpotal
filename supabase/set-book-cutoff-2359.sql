@@ -6,5 +6,7 @@ update public.booking_cutoffs
 set
   book_before_days = 1,
   book_until_time = '23:59',
+  cancel_before_days = 1,
+  cancel_until_time = '23:59',
   updated_at = timezone('utc', now())
 where id = 'default';

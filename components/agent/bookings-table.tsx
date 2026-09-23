@@ -2,6 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CalendarDays, ChevronDown, History, Pencil, Search, X } from 'lucide-react'
+import {
+  AmendmentPolicyNotice,
+  LateCancelNotice,
+} from '@/components/amendment-policy-notice'
 import { BookingHistoryDialog } from '@/components/booking-history-dialog'
 import { ChangeBookingDateDialog } from '@/components/change-booking-date-dialog'
 import { EditBookingDialog } from '@/components/edit-booking-dialog'
@@ -17,7 +21,14 @@ import {
 import { VoucherPreview } from '@/components/agent/voucher-view'
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
@@ -58,7 +69,7 @@ function AgentStatusMenu({
   onHistory,
 }: {
   booking: Booking
-  onCancel: (code: string, travelDate: string, program: Booking['program']) => void
+  onCancel: (booking: Booking) => void
   onChangeDate: (booking: Booking) => void
   onRebook: (booking: Booking) => void
   onEdit: (booking: Booking) => void
@@ -133,7 +144,7 @@ function AgentStatusMenu({
               className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-rose-700 hover:bg-rose-50"
               onClick={() => {
                 setOpen(false)
-                onCancel(booking.code, booking.date, booking.program)
+                onCancel(booking)
               }}
             >
               Cancel booking
@@ -167,12 +178,15 @@ export function BookingsTable({
   slug?: string
   showAgent?: boolean
 }) {
-  const { agents, cancelBooking, isCancelOpen, isProgramClosed } = usePortal()
+  const { agents, bookingCutoffs, cancelBooking, isCancelOpen, isLateAmendment, isProgramClosed } =
+    usePortal()
   const [dateTarget, setDateTarget] = useState<Booking | null>(null)
   const [rebookTarget, setRebookTarget] = useState<Booking | null>(null)
   const [editTarget, setEditTarget] = useState<Booking | null>(null)
   const [historyTarget, setHistoryTarget] = useState<Booking | null>(null)
   const [voucherTarget, setVoucherTarget] = useState<Booking | null>(null)
+  const [cancelTarget, setCancelTarget] = useState<Booking | null>(null)
+  const [cancelError, setCancelError] = useState('')
   const portalToday = usePortalTodayISO()
   const prevTodayRef = useRef(portalToday)
   const [dayFilter, setDayFilter] = useState<string | null>(() => portalToday)
@@ -240,24 +254,27 @@ export function BookingsTable({
   const showCanoe = programFilter !== 'PP'
   const columnCount = (showAgent ? 11 : 10) + (showCanoe ? 1 : 0)
 
-  function handleCancel(code: string, travelDate: string, program: Booking['program']) {
-    if (isProgramClosed(travelDate, program)) {
+  function requestCancel(booking: Booking) {
+    if (isProgramClosed(booking.date, booking.program)) {
       window.alert('Booking closed by admin for this date.')
       return
     }
-    if (!isCancelOpen(travelDate)) {
+    if (!isCancelOpen(booking.date)) {
       window.alert('Cancel is closed for this travel date.')
       return
     }
-    if (
-      !window.confirm(
-        `Cancel booking ${code}? Seats on that departure will become available again.`,
-      )
-    ) {
+    setCancelError('')
+    setCancelTarget(booking)
+  }
+
+  function confirmCancel() {
+    if (!cancelTarget) return
+    const result = cancelBooking(cancelTarget.code, { actor })
+    if (!result.ok) {
+      setCancelError(result.error)
       return
     }
-    const result = cancelBooking(code, { actor })
-    if (!result.ok) window.alert(result.error)
+    setCancelTarget(null)
   }
 
   function selectDay(date: Date | undefined) {
@@ -588,7 +605,7 @@ export function BookingsTable({
                         variant="outline"
                         size="sm"
                         className="h-9 border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-900"
-                        onClick={() => handleCancel(booking.code, booking.date, booking.program)}
+                        onClick={() => requestCancel(booking)}
                       >
                         Cancel
                       </Button>
@@ -747,7 +764,7 @@ export function BookingsTable({
                   <TableCell className="px-4">
                     <AgentStatusMenu
                       booking={booking}
-                      onCancel={handleCancel}
+                      onCancel={requestCancel}
                       onChangeDate={setDateTarget}
                       onRebook={setRebookTarget}
                       onEdit={setEditTarget}
@@ -772,6 +789,50 @@ export function BookingsTable({
           {voucherTarget && slug ? (
             <VoucherPreview booking={voucherTarget} slug={slug} embedded />
           ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={cancelTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setCancelTarget(null)
+            setCancelError('')
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cancel booking</DialogTitle>
+            <DialogDescription>
+              {cancelTarget
+                ? `${cancelTarget.code} · ${formatShortDate(cancelTarget.date)} · ${totalPassengers(cancelTarget)} pax. Seats on that departure will become available again.`
+                : null}
+            </DialogDescription>
+          </DialogHeader>
+          {cancelTarget && isLateAmendment(cancelTarget.date) ? (
+            <LateCancelNotice settings={bookingCutoffs} />
+          ) : cancelTarget ? (
+            <AmendmentPolicyNotice settings={bookingCutoffs} variant="compact" />
+          ) : null}
+          {cancelError ? <p className="text-sm text-red-600">{cancelError}</p> : null}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setCancelTarget(null)
+                setCancelError('')
+              }}
+            >
+              Keep booking
+            </Button>
+            <Button type="button" variant="destructive" onClick={confirmCancel}>
+              {cancelTarget && isLateAmendment(cancelTarget.date)
+                ? 'Cancel — charge full price'
+                : 'Cancel booking'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

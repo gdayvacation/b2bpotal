@@ -7,12 +7,14 @@ import {
   CalendarIcon,
   GripVertical,
   Plus,
+  Printer,
   Search,
   Sparkles,
   SplitSquareVertical,
   Trash2,
   Users,
 } from 'lucide-react'
+import { AdminDailyJobOrder } from '@/components/admin/admin-daily-job-order'
 import { usePortal } from '@/components/portal-provider'
 import { PageHeader, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
@@ -97,6 +99,7 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
   const [selectedDate, setSelectedDate] = usePortalDefaultDateISO()
   const [program, setProgram] = useState<Program | null>(null)
   const [calendarOpen, setCalendarOpen] = useState(false)
+  const [jobOrderOpen, setJobOrderOpen] = useState(false)
 
   const selectedDateObj = new Date(`${selectedDate}T12:00:00`)
 
@@ -138,6 +141,18 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
     setCalendarOpen(false)
   }
 
+  if (jobOrderOpen) {
+    return (
+      <AdminDailyJobOrder
+        audience="ops"
+        backLabel="Arrange vehicles"
+        initialDate={selectedDate}
+        initialProgram={program ?? undefined}
+        onBack={() => setJobOrderOpen(false)}
+      />
+    )
+  }
+
   return (
     <div className="w-full">
       <div className="print:hidden">
@@ -153,6 +168,15 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
           actions={
             program ? (
               <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setJobOrderOpen(true)}
+                >
+                  <Printer data-icon="inline-start" />
+                  Driver Job Order
+                </Button>
                 <Button
                   type="button"
                   variant="outline"
@@ -246,6 +270,10 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
               onClick={() => setProgram('James Bond')}
             />
           </div>
+
+          <div className="mt-4 print:hidden">
+            <DriverJobOrderLaunchCard onClick={() => setJobOrderOpen(true)} />
+          </div>
         </>
       ) : null}
 
@@ -272,6 +300,7 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
           }
           onAutoAssign={() => autoAssignDayVans(selectedDate, program)}
           onClear={() => clearDayVanAssignments(selectedDate, program)}
+          onOpenJobOrder={() => setJobOrderOpen(true)}
         />
       ) : null}
     </div>
@@ -321,6 +350,40 @@ function ProgramPickCard({
   )
 }
 
+function DriverJobOrderLaunchCard({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group relative w-full overflow-hidden rounded-[1.45rem] border border-amber-900/10 bg-gradient-to-br from-amber-50/90 via-white to-orange-50/35 p-6 text-left transition-all duration-200 hover:border-amber-600/30 hover:shadow-lg hover:shadow-amber-900/8 active:scale-[0.985] sm:p-7"
+    >
+      <div
+        className="pointer-events-none absolute inset-0 bg-gradient-to-br from-amber-500/12 via-transparent to-transparent opacity-80"
+        aria-hidden
+      />
+      <div className="relative">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex size-14 items-center justify-center rounded-2xl bg-gradient-to-br from-amber-500 to-orange-700 text-white shadow-md shadow-amber-700/25 transition-transform duration-200 group-hover:scale-105">
+            <Bus className="size-7" strokeWidth={1.75} />
+          </div>
+          <p className="rounded-lg bg-amber-950/6 px-2.5 py-1 text-[11px] font-semibold text-amber-900">
+            For drivers
+          </p>
+        </div>
+        <p className="font-display mt-6 text-2xl font-semibold tracking-tight text-amber-950 sm:text-[1.7rem]">
+          Driver Job Order
+        </p>
+        <p className="mt-2 text-[15px] leading-relaxed text-amber-950/55">
+          Day sheet grouped by van with driver and plate — from Arrange vehicles.
+        </p>
+        <p className="mt-6 text-sm font-semibold tracking-wide text-amber-800 transition-transform duration-200 group-hover:translate-x-0.5">
+          Continue →
+        </p>
+      </div>
+    </button>
+  )
+}
+
 function VehicleBoard({
   date,
   program,
@@ -337,6 +400,7 @@ function VehicleBoard({
   onReorderVan,
   onAutoAssign,
   onClear,
+  onOpenJobOrder,
 }: {
   date: string
   program: Program
@@ -353,6 +417,7 @@ function VehicleBoard({
   onReorderVan: (van: number, orderedCodes: string[]) => void
   onAutoAssign: () => void
   onClear: () => void
+  onOpenJobOrder: () => void
 }) {
   const { resolveVanMeta } = usePortal()
   const [openVan, setOpenVan] = useState<number | null>(null)
@@ -660,6 +725,10 @@ function VehicleBoard({
             </p>
           </div>
           <div className="flex flex-wrap gap-2 sm:hidden">
+            <Button type="button" variant="outline" onClick={onOpenJobOrder}>
+              <Printer data-icon="inline-start" />
+              Driver Job Order
+            </Button>
             <Button type="button" variant="outline" onClick={onClear}>
               Clear
             </Button>
@@ -1353,6 +1422,10 @@ function VehicleBoard({
           ) : null}
         </div>
       )}
+
+      <div className="mt-5 print:hidden">
+        <DriverJobOrderLaunchCard onClick={onOpenJobOrder} />
+      </div>
 
       <SeparateVanDialog
         booking={splitBooking}

@@ -9,6 +9,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { voucherUrl } from '@/components/voucher-share-actions'
 import { BRAND_LEGAL } from '@/lib/brand'
+import { formatThbAmount } from '@/lib/booking-cutoffs'
 import { formatIncludeLabel, formatLongDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { formatPaxBreakdown, isNoTransfer, totalPassengers, type Booking } from '@/lib/types'
@@ -197,6 +198,12 @@ export function VoucherPreview({
               />
               {live.note.trim() ? (
                 <DetailCell label="Note" value={live.note.trim()} wrap />
+              ) : null}
+              {(live.lateChangeFee ?? 0) > 0 ? (
+                <DetailCell
+                  label="Late date-change fee"
+                  value={formatThbAmount(live.lateChangeFee ?? 0)}
+                />
               ) : null}
             </dl>
           </Section>

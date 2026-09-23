@@ -15,8 +15,14 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import {
+  AmendmentPolicyNotice,
+  LateAddNotice,
+  LateCancelNotice,
+} from '@/components/amendment-policy-notice'
 import { formatShortDate } from '@/lib/format'
 import {
+  chargeablePax,
   isNoTransfer,
   isPrivateTransfer,
   NO_TRANSFER_ZONE,
@@ -60,8 +66,16 @@ export function EditBookingDialog({
   startWithTransfer?: boolean
   allowPrivateTransfer?: boolean
 }) {
-  const { updateBookingDetails, hotels, zones, bookedPaxFor, getCapacity, getZoneTime } =
-    usePortal()
+  const {
+    updateBookingDetails,
+    hotels,
+    zones,
+    bookedPaxFor,
+    bookingCutoffs,
+    getCapacity,
+    getZoneTime,
+    isLateAmendment,
+  } = usePortal()
   const [leadGuest, setLeadGuest] = useState('')
   const [adults, setAdults] = useState(0)
   const [children, setChildren] = useState(0)
@@ -81,6 +95,7 @@ export function EditBookingDialog({
   const [parkFee, setParkFee] = useState<IncludeOption>('Included')
   const [canoe, setCanoe] = useState<IncludeOption>('Included')
   const [error, setError] = useState('')
+  const [confirmLate, setConfirmLate] = useState(false)
 
   const canUsePrivate = allowPrivateTransfer || bypassCutoff
 
@@ -139,8 +154,24 @@ export function EditBookingDialog({
     setParkFee(booking.parkFee)
     setCanoe(booking.canoe ?? 'Included')
     setError('')
+    setConfirmLate(false)
   }, [open, booking, startWithTransfer, zones])
 
+  useEffect(() => {
+    setConfirmLate(false)
+  }, [adults, children, infants, tourLeaders])
+
+  const lateEdit = Boolean(booking) && !bypassCutoff && isLateAmendment(booking!.date)
+  const removedAny = booking
+    ? Math.max(
+        0,
+        totalPassengers(booking) - (adults + children + infants + tourLeaders),
+      )
+    : 0
+  const addedChargeable = booking
+    ? Math.max(0, chargeablePax({ adults, children, tourLeaders }) - chargeablePax(booking))
+    : 0
+  const needsLateConfirm = lateEdit && (removedAny > 0 || addedChargeable > 0)
   const pax = adults + children + infants + tourLeaders
   const isJamesBond = booking?.program === 'James Bond'
   const noTransfer = transferKind === 'none'
@@ -217,6 +248,11 @@ export function EditBookingDialog({
         setError('Set the private transfer pickup time.')
         return
       }
+    }
+
+    if (needsLateConfirm && !confirmLate) {
+      setConfirmLate(true)
+      return
     }
 
     const result = updateBookingDetails(
@@ -543,15 +579,43 @@ export function EditBookingDialog({
             </div>
           )}
 
+          {!bypassCutoff && !startWithTransfer ? (
+            needsLateConfirm && removedAny > 0 ? (
+              <LateCancelNotice settings={bookingCutoffs} />
+            ) : needsLateConfirm && addedChargeable > 0 ? (
+              <LateAddNotice settings={bookingCutoffs} />
+            ) : (
+              <AmendmentPolicyNotice settings={bookingCutoffs} variant="compact" />
+            )
+          ) : null}
+
           {error ? <p className="text-sm text-red-600">{error}</p> : null}
         </div>
 
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              if (confirmLate) {
+                setConfirmLate(false)
+                return
+              }
+              onOpenChange(false)
+            }}
+          >
+            {confirmLate ? 'Back' : 'Cancel'}
           </Button>
           <Button type="button" onClick={handleSave} disabled={transferLockedPrivate && noTransfer}>
-            {startWithTransfer ? 'Save transfer' : 'Save changes'}
+            {startWithTransfer
+              ? 'Save transfer'
+              : confirmLate
+                ? removedAny > 0
+                  ? 'Confirm full-price cancel'
+                  : 'Confirm add at full price'
+                : needsLateConfirm
+                  ? 'Continue'
+                  : 'Save changes'}
           </Button>
         </DialogFooter>
       </DialogContent>

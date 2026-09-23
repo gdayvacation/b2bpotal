@@ -142,6 +142,11 @@ export type Booking = {
   privateDriverPhone: string
   pickupTime: string
   status: BookingStatus
+  /**
+   * Accumulated late date-change fee billed to the agency (THB).
+   * +300 per AD / CH / TL after the late-fee time; infant is free.
+   */
+  lateChangeFee?: number
 }
 
 export function isPrivateTransfer(
@@ -406,6 +411,13 @@ export type NewBookingDraft = {
 
 export function totalPassengers(booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>) {
   return booking.adults + booking.children + booking.infants + booking.tourLeaders
+}
+
+/** AD + CH + TL — infants are free for late date-change fees. */
+export function chargeablePax(
+  booking: Pick<Booking, 'adults' | 'children' | 'tourLeaders'>,
+) {
+  return Math.max(0, booking.adults + booking.children + booking.tourLeaders)
 }
 
 /** Active bookings occupy seats / boats / vans. Cancelled ones free capacity. */

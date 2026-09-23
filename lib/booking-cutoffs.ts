@@ -1,4 +1,6 @@
 import { formatLongDate } from '@/lib/format'
+import type { Booking } from '@/lib/types'
+import { chargeablePax } from '@/lib/types'
 
 export const BOOKING_CUTOFF_TIMEZONE = 'Asia/Bangkok' as const
 
@@ -8,10 +10,14 @@ export type BookingCutoffSettings = {
   bookBeforeDays: number
   /** Local time HH:mm on the book-before day. */
   bookUntilTime: string
-  /** Days before travel date when agent cancel closes. */
+  /** Days before travel date when agent modify / cancel closes. */
   cancelBeforeDays: number
-  /** Local time HH:mm on the cancel-before day. */
+  /** Local time HH:mm on the modify-before day. */
   cancelUntilTime: string
+  /** Local time HH:mm on the modify-before day when extra charges start. */
+  lateFeeFromTime: string
+  /** THB per chargeable guest (AD / CH / TL) for a late date change. */
+  dateChangeFeePerPerson: number
 }
 
 export const DEFAULT_BOOKING_CUTOFFS: BookingCutoffSettings = {
@@ -20,7 +26,9 @@ export const DEFAULT_BOOKING_CUTOFFS: BookingCutoffSettings = {
   bookBeforeDays: 1,
   bookUntilTime: '23:59',
   cancelBeforeDays: 1,
-  cancelUntilTime: '16:00',
+  cancelUntilTime: '23:59',
+  lateFeeFromTime: '20:00',
+  dateChangeFeePerPerson: 300,
 }
 
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/
@@ -36,6 +44,11 @@ export function normalizeBeforeDays(value: number): number {
   return Math.max(0, Math.min(30, Math.floor(value)))
 }
 
+export function normalizeDateChangeFee(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_BOOKING_CUTOFFS.dateChangeFeePerPerson
+  return Math.max(0, Math.min(20_000, Math.floor(value)))
+}
+
 /** Shift an ISO calendar date (YYYY-MM-DD) by whole days. */
 export function addCalendarDays(isoDate: string, days: number): string {
   const [y, m, d] = isoDate.split('-').map(Number)
@@ -47,7 +60,7 @@ export function addCalendarDays(isoDate: string, days: number): string {
   return `${year}-${month}-${day}`
 }
 
-function zonedParts(
+export function zonedParts(
   now: Date,
   timeZone: string,
 ): { date: string; time: string } {
@@ -146,6 +159,34 @@ export function isCancelOpenForDate(
   )
 }
 
+/**
+ * Extra charges apply once the clock reaches lateFeeFromTime on the modify
+ * deadline day, while modify is still open.
+ */
+export function isLateAmendmentForDate(
+  settings: BookingCutoffSettings,
+  travelDate: string,
+  now: Date = new Date(),
+): boolean {
+  if (!isCancelOpenForDate(settings, travelDate, now)) return false
+  const deadlineDate = addCalendarDays(travelDate, -settings.cancelBeforeDays)
+  const { date: nowDate, time: nowTime } = zonedParts(now, settings.timezone)
+  const nowKey = `${nowDate}T${nowTime}`
+  const lateKey = `${deadlineDate}T${settings.lateFeeFromTime}`
+  return nowKey >= lateKey
+}
+
+export function dateChangeFeeAmount(
+  settings: BookingCutoffSettings,
+  booking: Pick<Booking, 'adults' | 'children' | 'tourLeaders'>,
+): number {
+  return chargeablePax(booking) * settings.dateChangeFeePerPerson
+}
+
+export function formatThbAmount(amount: number): string {
+  return `${amount.toLocaleString('en-US')} THB`
+}
+
 export function bookingClosedMessage(
   settings: BookingCutoffSettings,
   travelDate: string,
@@ -161,11 +202,28 @@ export function cancelClosedMessage(
   settings: BookingCutoffSettings,
   travelDate: string,
 ): string {
-  return `Cancel closed for this date (closed after ${formatCutoffDeadline(
+  return `Changes closed for this date (closed after ${formatCutoffDeadline(
     travelDate,
     settings.cancelBeforeDays,
     settings.cancelUntilTime,
   )} ${settings.timezone}).`
+}
+
+export function lateDateChangeNotice(
+  settings: BookingCutoffSettings,
+  booking: Pick<Booking, 'adults' | 'children' | 'tourLeaders'>,
+): string {
+  const count = chargeablePax(booking)
+  const fee = dateChangeFeeAmount(settings, booking)
+  return `This change is after ${settings.lateFeeFromTime} Thailand time. Extra charge: ${formatThbAmount(fee)} (${count} AD/CH/TL × ${formatThbAmount(settings.dateChangeFeePerPerson)}). Infant is free.`
+}
+
+export function lateCancelNotice(settings: BookingCutoffSettings): string {
+  return `Cancel after ${settings.lateFeeFromTime} Thailand time is charged at full price (no refund) for any person or the whole booking.`
+}
+
+export function lateAddNotice(settings: BookingCutoffSettings): string {
+  return `Adding guests after ${settings.lateFeeFromTime} Thailand time is billed at full price for each added AD / CH / TL (infant free).`
 }
 
 export function summarizeCutoffRule(
@@ -175,4 +233,12 @@ export function summarizeCutoffRule(
   if (daysBefore === 0) return `${untilTime} on the travel day`
   if (daysBefore === 1) return `${untilTime} the day before travel`
   return `${untilTime}, ${daysBefore} days before travel`
+}
+
+export function amendmentPolicyLines(settings: BookingCutoffSettings): string[] {
+  return [
+    `New bookings for the next day stay open until ${summarizeCutoffRule(settings.bookBeforeDays, settings.bookUntilTime)}. After midnight, that day is closed — book the following day only.`,
+    `You can modify, add guests, cancel, or change the date until ${summarizeCutoffRule(settings.cancelBeforeDays, settings.cancelUntilTime)}.`,
+    `After ${settings.lateFeeFromTime} Thailand time on that modify day: change date +${formatThbAmount(settings.dateChangeFeePerPerson)} per AD / CH / TL (infant free). Cancel any person or the whole booking — full price charged (no refund).`,
+  ]
 }

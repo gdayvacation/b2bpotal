@@ -47,12 +47,16 @@ import { autoAssignVans, nextSortOrderForVan, normalizeAssignments, paxOnVan, re
 import {
   bookingClosedMessage,
   cancelClosedMessage,
+  dateChangeFeeAmount,
   DEFAULT_BOOKING_CUTOFFS,
   earliestBookableTravelDate,
+  formatThbAmount,
   isBookingOpenForDate,
   isCancelOpenForDate,
+  isLateAmendmentForDate,
   normalizeBeforeDays,
   normalizeCutoffTime,
+  normalizeDateChangeFee,
   type BookingCutoffSettings,
 } from '@/lib/booking-cutoffs'
 import {
@@ -129,6 +133,7 @@ import {
   NO_TRANSFER_TIME,
   PRIVATE_TRANSFER_ZONE,
   bookingClosureKey,
+  chargeablePax,
   dayBoatPlanKey,
   dayVehiclePlanKey,
   defaultBoatCapacities,
@@ -173,6 +178,8 @@ type PortalContextValue = {
   /** Soonest travel date open for agent booking (Bangkok; usually tomorrow after midnight). */
   earliestBookableDate: () => string
   isCancelOpen: (travelDate: string) => boolean
+  /** Extra charges apply after the late-fee time while modify is still open. */
+  isLateAmendment: (travelDate: string) => boolean
   addBooking: (
     booking: Omit<
       Booking,
@@ -184,6 +191,7 @@ type PortalContextValue = {
       | 'privateTransferPrice'
       | 'privateDriverName'
       | 'privateDriverPhone'
+      | 'lateChangeFee'
     > & {
       pickupTime?: string
       transferExtraCharge?: string
@@ -1250,6 +1258,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       isBookingOpen: (travelDate) => isBookingOpenForDate(bookingCutoffs, travelDate),
       earliestBookableDate: () => earliestBookableTravelDate(bookingCutoffs),
       isCancelOpen: (travelDate) => isCancelOpenForDate(bookingCutoffs, travelDate),
+      isLateAmendment: (travelDate) => isLateAmendmentForDate(bookingCutoffs, travelDate),
       updateBookingCutoffs: (patch) => {
         setBookingCutoffs((current) => {
           const next: BookingCutoffSettings = {
@@ -1268,6 +1277,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             cancelUntilTime:
               normalizeCutoffTime(patch.cancelUntilTime ?? current.cancelUntilTime) ??
               current.cancelUntilTime,
+            lateFeeFromTime:
+              normalizeCutoffTime(patch.lateFeeFromTime ?? current.lateFeeFromTime) ??
+              current.lateFeeFromTime,
+            dateChangeFeePerPerson: normalizeDateChangeFee(
+              patch.dateChangeFeePerPerson ?? current.dateChangeFeePerPerson,
+            ),
           }
           persistQuietly('upsertBookingCutoffs', upsertBookingCutoffs(next))
           return next
@@ -1371,6 +1386,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           code,
           pickupTime,
           status: pending ? 'Pending Pickup Time' : 'Confirmed',
+          lateChangeFee: 0,
         }
         setBookings((current) => [booking, ...current])
         persistBookingWrite(
@@ -1409,7 +1425,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           ),
         )
         persistBookingWrite('updateBookingStatus', updateBookingStatus(code, 'Cancelled'))
-        logBookingEvent(code, 'cancelled', `Cancelled · was ${existing.date}`, options?.actor)
+        const lateCancel =
+          !options?.bypassCutoff && isLateAmendmentForDate(bookingCutoffs, existing.date)
+        logBookingEvent(
+          code,
+          'cancelled',
+          lateCancel
+            ? `Cancelled after ${bookingCutoffs.lateFeeFromTime} · full price charged (no refund) · was ${existing.date}`
+            : `Cancelled · was ${existing.date}`,
+          options?.actor,
+        )
 
         upsertPlan(existing.date, existing.program, (plan) => {
           if (!(code in plan.assignments)) return plan
@@ -1479,17 +1504,28 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
         const oldDate = existing.date
         const program = existing.program
+        const lateChange =
+          !options?.bypassCutoff && isLateAmendmentForDate(bookingCutoffs, existing.date)
+        const extraFee = lateChange ? dateChangeFeeAmount(bookingCutoffs, existing) : 0
+        const nextLateFee = (existing.lateChangeFee ?? 0) + extraFee
 
         setBookings((current) =>
           current.map((booking) =>
-            booking.code === code ? { ...booking, date: trimmedDate } : booking,
+            booking.code === code
+              ? { ...booking, date: trimmedDate, lateChangeFee: nextLateFee }
+              : booking,
           ),
         )
-        persistBookingWrite('updateBookingDate', updateBookingDate(code, trimmedDate))
+        persistBookingWrite(
+          'updateBookingDate',
+          updateBookingDate(code, trimmedDate, { lateChangeFee: nextLateFee }),
+        )
         logBookingEvent(
           code,
           'date_changed',
-          `Date changed ${oldDate} → ${trimmedDate}`,
+          extraFee > 0
+            ? `Date changed ${oldDate} → ${trimmedDate} · late fee ${formatThbAmount(extraFee)}`
+            : `Date changed ${oldDate} → ${trimmedDate}`,
           options?.actor,
         )
 
@@ -1755,6 +1791,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         if (next.parkFee !== existing.parkFee) changes.push('park fee')
         if (next.canoe !== existing.canoe) changes.push('canoe')
         if (changes.length === 0) return { ok: false, error: 'No changes to save.' }
+
+        const lateEdit =
+          !options?.bypassCutoff && isLateAmendmentForDate(bookingCutoffs, existing.date)
+        const removedAny = Math.max(0, oldPax - newPax)
+        const addedChargeable = Math.max(0, chargeablePax(next) - chargeablePax(existing))
+        if (lateEdit && removedAny > 0) {
+          changes.push(`late cancel ${removedAny} guest${removedAny === 1 ? '' : 's'} · full price charged (no refund)`)
+        }
+        if (lateEdit && addedChargeable > 0) {
+          changes.push(`late add ${addedChargeable} AD/CH/TL · billed at full price`)
+        }
 
         setBookings((current) =>
           current.map((booking) => (booking.code === code ? next : booking)),

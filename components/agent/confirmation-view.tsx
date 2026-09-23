@@ -2,15 +2,19 @@
 
 import Link from 'next/link'
 import { Check, Ticket } from 'lucide-react'
+import { AmendmentPolicyNotice } from '@/components/amendment-policy-notice'
+import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
 import { buttonVariants } from '@/components/ui/button'
 import { VoucherShareActions } from '@/components/voucher-share-actions'
+import { formatThbAmount } from '@/lib/booking-cutoffs'
 import { formatIncludeLabel, formatLongDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { formatPaxBreakdown, isNoTransfer, totalPassengers } from '@/lib/types'
 import type { Booking } from '@/lib/types'
 
 export function ConfirmationView({ booking, slug }: { booking: Booking; slug: string }) {
+  const { bookingCutoffs } = usePortal()
   const total = totalPassengers(booking)
 
   return (
@@ -58,9 +62,20 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
             <Item label="Extra Charge Transfer" value={booking.transferExtraCharge.trim()} />
           ) : null}
           <Item label="Cash on tour" value={booking.cashOnTour || '—'} />
+          {(booking.lateChangeFee ?? 0) > 0 ? (
+            <Item
+              label="Late date-change fee"
+              value={formatThbAmount(booking.lateChangeFee ?? 0)}
+            />
+          ) : null}
           {booking.note.trim() ? <Item label="Note" value={booking.note.trim()} /> : null}
           <Item label="Agent" value={booking.agentName} />
         </dl>
+        <AmendmentPolicyNotice
+          settings={bookingCutoffs}
+          className="mt-5"
+          title="Change & cancel policy"
+        />
       </div>
 
       <div className="mt-6 flex flex-col items-center justify-center gap-3">
