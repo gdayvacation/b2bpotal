@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from 'next'
 import { Plus_Jakarta_Sans, Sora } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import { Providers } from '@/components/providers'
-import { BRAND_LEGAL, BRAND_PRODUCT } from '@/lib/brand'
+import { BRAND_LEGAL, BRAND_PRODUCT, BRAND_SHORT } from '@/lib/brand'
 import './globals.css'
 
 const jakarta = Plus_Jakarta_Sans({
@@ -18,6 +18,16 @@ const sora = Sora({
 export const metadata: Metadata = {
   title: BRAND_PRODUCT,
   description: `B2B tour booking portal for overseas travel agents — ${BRAND_LEGAL}.`,
+  applicationName: BRAND_SHORT,
+  appleWebApp: {
+    capable: true,
+    title: BRAND_SHORT,
+    statusBarStyle: 'default',
+  },
+  icons: {
+    icon: [{ url: '/icon.png', type: 'image/png', sizes: '1024x1024' }],
+    apple: [{ url: '/apple-icon.png', type: 'image/png', sizes: '180x180' }],
+  },
 }
 
 export const viewport: Viewport = {
