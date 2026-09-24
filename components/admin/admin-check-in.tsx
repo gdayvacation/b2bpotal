@@ -1247,11 +1247,11 @@ function TodayBoardTab({
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+    <div className="space-y-3 sm:space-y-4">
+      <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap items-center gap-2">
           {isHelper ? (
-            <p className="rounded-xl bg-white px-3 py-2 text-sm font-semibold text-teal-950 ring-1 ring-teal-900/10">
+            <p className="hidden rounded-xl bg-white px-3 py-2 text-sm font-semibold text-teal-950 ring-1 ring-teal-900/10 sm:block">
               {formatShortDate(boardDate)}
             </p>
           ) : (
@@ -1292,26 +1292,27 @@ function TodayBoardTab({
               Today
             </Button>
           ) : null}
-          <div className="flex flex-wrap gap-1.5 rounded-2xl bg-teal-950/[0.04] p-1">
+          <div className="flex flex-1 gap-1 rounded-2xl bg-teal-950/[0.04] p-1 sm:flex-none sm:gap-1.5">
             {(
               [
-                ['all', 'All programs'],
-                ['PP', 'Phi Phi'],
-                ['James Bond', 'James Bond'],
+                ['all', 'All programs', 'All'],
+                ['PP', 'Phi Phi', 'Phi Phi'],
+                ['James Bond', 'James Bond', 'JB'],
               ] as const
-            ).map(([value, label]) => (
+            ).map(([value, label, shortLabel]) => (
               <button
                 key={value}
                 type="button"
                 onClick={() => onProgramFilter(value)}
                 className={cn(
-                  'rounded-xl px-3 py-2 text-sm font-semibold transition-all',
+                  'min-h-9 flex-1 rounded-xl px-2.5 py-1.5 text-[13px] font-semibold transition-all sm:min-h-0 sm:flex-none sm:px-3 sm:py-2 sm:text-sm',
                   programFilter === value
                     ? 'bg-white text-teal-950 shadow-sm'
                     : 'text-teal-900/55 hover:text-teal-950',
                 )}
               >
-                {label}
+                <span className="sm:hidden">{shortLabel}</span>
+                <span className="hidden sm:inline">{label}</span>
               </button>
             ))}
           </div>
@@ -1319,37 +1320,39 @@ function TodayBoardTab({
             <CheckInSearchField value={boardQuery} onChange={setBoardQuery} />
           ) : null}
         </div>
-        <div className="flex flex-wrap gap-2 text-xs font-semibold">
-          <StatPill tone="emerald" label="Checked in" value={summary.checked} />
-          <StatPill tone="amber" label="Waiting" value={summary.waiting} />
-          <StatPill tone="rose" label="No-show" value={summary.noShow} />
-          <StatPill tone="teal" label="Total seats" value={summary.total} />
+        <div className="flex flex-wrap gap-1.5 text-[11px] font-semibold sm:gap-2 sm:text-xs">
+          <StatPill tone="emerald" label="Checked in" shortLabel="In" value={summary.checked} />
+          <StatPill tone="amber" label="Waiting" shortLabel="Wait" value={summary.waiting} />
+          <StatPill tone="rose" label="No-show" shortLabel="NS" value={summary.noShow} />
+          <StatPill tone="teal" label="Total seats" shortLabel="Total" value={summary.total} />
         </div>
       </div>
 
       {isHelper && groups.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5 rounded-2xl bg-teal-950/[0.04] p-1.5">
-          {groups.map((group) => {
-            const active = group.id === activeHelperGroupId
-            return (
-              <button
-                key={group.id}
-                type="button"
-                onClick={() => setHelperGroupId(group.id)}
-                className={cn(
-                  'rounded-xl px-3 py-2 text-sm font-semibold transition-all',
-                  active
-                    ? 'bg-white text-teal-950 shadow-sm'
-                    : 'text-teal-900/55 hover:text-teal-950',
-                )}
-              >
-                {driverGroupTitle(group, programFilter === 'all')}
-                <span className="ml-1.5 text-xs font-medium text-teal-900/45">
-                  {group.seatsTotal}
-                </span>
-              </button>
-            )
-          })}
+        <div className="-mx-3 overflow-x-auto px-3 [scrollbar-width:thin] sm:mx-0 sm:overflow-visible sm:px-0">
+          <div className="flex w-max min-w-full gap-1.5 rounded-2xl bg-teal-950/[0.04] p-1 sm:w-auto sm:flex-wrap">
+            {groups.map((group) => {
+              const active = group.id === activeHelperGroupId
+              return (
+                <button
+                  key={group.id}
+                  type="button"
+                  onClick={() => setHelperGroupId(group.id)}
+                  className={cn(
+                    'min-h-9 shrink-0 rounded-xl px-2.5 py-1.5 text-[13px] font-semibold whitespace-nowrap transition-all sm:min-h-0 sm:px-3 sm:py-2 sm:text-sm',
+                    active
+                      ? 'bg-white text-teal-950 shadow-sm'
+                      : 'text-teal-900/55 hover:text-teal-950',
+                  )}
+                >
+                  {driverGroupTitle(group, programFilter === 'all')}
+                  <span className="ml-1.5 text-[11px] font-medium text-teal-900/45 sm:text-xs">
+                    {group.seatsTotal}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
         </div>
       ) : null}
 
@@ -1492,13 +1495,13 @@ function CheckInSearchField({
   onChange: (value: string) => void
 }) {
   return (
-    <div className="relative w-full min-w-[14rem] sm:w-[20rem]">
+    <div className="relative w-full min-w-0 sm:min-w-[14rem] sm:w-[20rem]">
       <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-teal-900/35" />
       <Input
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder="Seq, hotel, or guest name"
-        className="h-9 pl-8 text-sm"
+        className="h-10 pl-8 text-base sm:h-9 sm:text-sm"
         aria-label="Search sequence, hotel, or guest name"
       />
     </div>
@@ -1567,13 +1570,13 @@ function DriverGroupCard({
   }
 
   return (
-    <div className="gday-sheet overflow-hidden rounded-[1.5rem]">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-900/8 bg-gradient-to-r from-teal-50 to-white px-4 py-3 sm:px-5">
+    <div className="gday-sheet overflow-hidden rounded-[1.25rem] sm:rounded-[1.5rem]">
+      <div className="flex items-start justify-between gap-2 border-b border-teal-900/8 bg-gradient-to-r from-teal-50 to-white px-3 py-2.5 sm:px-5 sm:py-3">
         <div className="min-w-0">
           <p
             className={cn(
               'font-semibold text-teal-950',
-              isHelper ? 'font-display text-xl' : 'text-sm',
+              isHelper ? 'font-display text-[17px] sm:text-xl' : 'text-sm',
             )}
           >
             {title}
@@ -1584,26 +1587,30 @@ function DriverGroupCard({
             ) : null}
           </p>
           {group.van !== null ? (
-            <p className="mt-0.5 text-xs text-teal-900/60">
-              Driver:{' '}
+            <p className="mt-0.5 text-[12px] leading-snug text-teal-900/60 sm:text-xs">
               <span className="font-medium text-teal-950">{group.driver || '—'}</span>
               {group.phone ? (
                 <>
                   <span className="mx-1.5 text-teal-900/25">·</span>
-                  Tel: <span className="font-medium text-teal-950">{group.phone}</span>
+                  <a
+                    href={`tel:${group.phone.replace(/\s+/g, '')}`}
+                    className="font-medium text-teal-800 underline-offset-2 hover:underline"
+                  >
+                    {group.phone}
+                  </a>
                 </>
               ) : null}
               <span className="mx-1.5 text-teal-900/25">·</span>
-              Plate: <span className="font-medium text-teal-950">{group.plate || '—'}</span>
+              <span className="font-medium text-teal-950">{group.plate || '—'}</span>
             </p>
           ) : (
-            <p className="mt-0.5 text-xs text-teal-900/55">
+            <p className="mt-0.5 text-[12px] text-teal-900/55 sm:text-xs">
               Guests without a van assignment or with no hotel transfer.
             </p>
           )}
         </div>
-        <p className="rounded-full border border-teal-900/10 bg-white/90 px-2.5 py-1 text-xs font-medium tabular-nums text-teal-800/70">
-          {visibleLines.length} booking{visibleLines.length === 1 ? '' : 's'} · {group.seatsTotal} pax
+        <p className="shrink-0 rounded-full border border-teal-900/10 bg-white/90 px-2 py-1 text-[11px] font-medium tabular-nums text-teal-800/70 sm:px-2.5 sm:text-xs">
+          {visibleLines.length} bk · {group.seatsTotal} pax
           <span className="text-teal-900/40">
             {' '}
             · {visibleLines.filter((line) => line.status === 'checked').length}/{visibleLines.length} in
@@ -1611,8 +1618,224 @@ function DriverGroupCard({
         </p>
       </div>
 
+      <div className="divide-y divide-teal-900/8 md:hidden">
+        {visibleLines.map((line) => {
+          const payment = bookingPayment(line.booking)
+          const sequence = sequences[line.booking.code] ?? null
+          const paid =
+            getCheckInPayment(today, line.booking.program, line.booking.code) === 'paid'
+          const ticketed =
+            getCheckInTicket(today, line.booking.program, line.booking.code) === 'issued'
+          const hotel = line.booking.pickupHotel || line.booking.pickupZone || '—'
+          const expanded = Boolean(expandedCodes[line.key])
+          const progressLabel = `${line.checkedInCount}/${line.bookingSeats}`
+          const booked = line.originalPax
+          const wholeNoShow = line.status === 'no-show'
+          const sequenceLabel = sequenceBoardLabel(sequence, {
+            checkedInCount: line.checkedInCount,
+            fullyChecked: line.status === 'checked',
+            noShow: wholeNoShow,
+          })
+          const partialNoShow = !wholeNoShow && hasPartialNoShow(booked, line.pax)
+          const missingPax =
+            Math.max(0, booked.adults - line.pax.adults) +
+            Math.max(0, booked.children - line.pax.children) +
+            Math.max(0, booked.infants - line.pax.infants) +
+            Math.max(0, booked.tourLeaders - line.pax.tourLeaders)
+          const services = getCheckInServices(today, line.booking.program, line.booking.code)
+          const statusNote = wholeNoShow
+            ? 'Whole booking no-show'
+            : line.status === 'checked'
+              ? `In · ${progressLabel}`
+              : partialNoShow
+                ? `Wait · ${progressLabel} · NS ${missingPax}`
+                : `Wait · ${progressLabel}`
+
+          return (
+            <div
+              key={line.key}
+              className={cn(
+                'px-3 py-2.5',
+                line.status === 'checked' && 'bg-emerald-50/40',
+                line.status === 'waiting' && 'bg-amber-50/25',
+                line.status === 'no-show' && 'bg-rose-50/40',
+                !isHelper && ticketed && 'bg-sky-50/40',
+              )}
+            >
+              <div className="flex items-start gap-2.5">
+                <button
+                  type="button"
+                  aria-expanded={expanded}
+                  className="min-w-0 flex-1 text-left"
+                  onClick={() => toggleExpanded(line.key)}
+                >
+                  <div className="flex items-start gap-2">
+                    <span
+                      className={cn(
+                        'mt-0.5 min-w-9 shrink-0 text-[15px] font-bold tabular-nums',
+                        sequenceLabel ? 'text-teal-800' : 'text-teal-900/30',
+                      )}
+                    >
+                      {sequenceLabel || '—'}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[15px] font-semibold text-teal-950">
+                        {line.leaderName || line.booking.code}
+                        {line.split ? (
+                          <span className="ml-1.5 text-[10px] font-semibold text-teal-700/55">
+                            split
+                          </span>
+                        ) : null}
+                      </p>
+                      <p className="mt-0.5 truncate text-[13px] text-teal-900/70" title={hotel}>
+                        {hotel}
+                      </p>
+                      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-teal-900/65">
+                        <span className="tabular-nums font-medium text-teal-950">
+                          {compactPaxLine(booked, line.pax, wholeNoShow)}
+                        </span>
+                        <BoatFleetBadge boat={line.boat} className="px-1.5 py-0.5 text-sm font-bold" />
+                        <span>Park {formatIncludeShort(line.booking.parkFee)}</span>
+                      </p>
+                      <p
+                        className={cn(
+                          'mt-1 text-[12px] font-medium tabular-nums',
+                          line.status === 'checked'
+                            ? 'text-emerald-800/80'
+                            : line.status === 'no-show'
+                              ? 'text-rose-800/80'
+                              : 'text-amber-900/80',
+                        )}
+                      >
+                        {statusNote}
+                        {payment.kind !== 'none' ? (
+                          <span
+                            className={cn(
+                              'ml-2 font-semibold',
+                              paid
+                                ? 'text-teal-900/45 line-through decoration-2'
+                                : 'text-orange-800',
+                            )}
+                          >
+                            {payment.label}
+                          </span>
+                        ) : null}
+                      </p>
+                    </div>
+                    <StatusBadge status={line.status} compact />
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Show check-in QR for ${line.leaderName || line.booking.code}`}
+                  className="inline-flex size-11 shrink-0 items-center justify-center rounded-xl border border-teal-900/12 bg-white text-teal-800 shadow-sm"
+                  onClick={() => {
+                    setQrCopied(false)
+                    setQrBooking(line.booking)
+                  }}
+                >
+                  <QrCode className="size-5" />
+                </button>
+              </div>
+
+              {expanded ? (
+                <div className="mt-2 space-y-1.5 border-t border-teal-900/8 pt-2">
+                  {partialNoShow || wholeNoShow ? (
+                    <p className="text-[12px] text-teal-900/55">
+                      Original {formatGuestPaxParts(booked)}
+                      {partialNoShow ? ` · pickup NS ${missingPax}` : ''}
+                    </p>
+                  ) : null}
+                  {line.guests.length > 0 ? (
+                    line.guests.map((guest, guestIndex) => {
+                      const details = [
+                        guest.nationality,
+                        guest.birthday ? formatShortDate(guest.birthday) : '',
+                        guest.passportNumber,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')
+                      const seatOffset = line.guests
+                        .slice(0, guestIndex)
+                        .reduce((sum, item) => sum + item.seats, 0)
+                      const guestSeq =
+                        sequence && line.status === 'checked'
+                          ? sequence.seats > 1 && guest.seats > 1
+                            ? formatSequenceRange(
+                                sequenceForSeatOffset(sequence, seatOffset),
+                                sequenceForSeatOffset(sequence, seatOffset + guest.seats - 1),
+                              )
+                            : String(sequenceForSeatOffset(sequence, seatOffset))
+                          : null
+                      return (
+                        <div key={guest.key} className="rounded-lg bg-white/80 px-2.5 py-1.5">
+                          <p className="truncate text-[13px] font-semibold text-teal-950">
+                            {guestSeq ? (
+                              <span className="mr-1.5 tabular-nums text-teal-800/70">#{guestSeq}</span>
+                            ) : null}
+                            {guest.guestName}
+                            {guest.seats > 1 ? (
+                              <span className="ml-1 font-medium text-teal-900/45">
+                                · {guest.seats} seats
+                              </span>
+                            ) : null}
+                          </p>
+                          <p className="mt-0.5 truncate text-[11px] text-teal-900/50">
+                            {formatCheckInTime(guest.checkedInAt)}
+                            {formatCheckInTime(guest.checkedInAt) && details ? ' · ' : null}
+                            {details}
+                          </p>
+                        </div>
+                      )
+                    })
+                  ) : (
+                    <p className="text-[12px] text-teal-900/45">No guests checked in yet.</p>
+                  )}
+                  {line.status === 'waiting' && line.checkedInCount < line.seatsTotal ? (
+                    <p className="text-[12px] text-amber-900/70">
+                      {line.seatsTotal - line.checkedInCount} seat
+                      {line.seatsTotal - line.checkedInCount === 1 ? '' : 's'} still waiting
+                    </p>
+                  ) : null}
+                  {isHelper ? null : (
+                    <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                      <button
+                        type="button"
+                        className="text-[12px] font-semibold text-teal-800 underline-offset-2 hover:underline"
+                        onClick={() => setEditBooking(line.booking)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="text-[12px] font-semibold text-teal-800 underline-offset-2 hover:underline"
+                        onClick={() => setServiceBooking(line.booking)}
+                      >
+                        Services
+                        {services.length > 0
+                          ? ` · ${services
+                              .reduce((sum, item) => sum + serviceLineTotal(item), 0)
+                              .toLocaleString('en-US')}`
+                          : ''}
+                      </button>
+                      <button
+                        type="button"
+                        className="text-[12px] font-semibold text-teal-800 underline-offset-2 hover:underline"
+                        onClick={() => onSelectBooking(line.booking.code)}
+                      >
+                        Open booking
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          )
+        })}
+      </div>
+
       <Table
-        containerClassName="overflow-visible"
+        containerClassName="hidden overflow-visible md:block"
         className="table-fixed text-[12px] leading-snug"
       >
         <TableHeader>
@@ -3003,10 +3226,35 @@ function PaxCount({
   )
 }
 
-function StatusBadge({ status }: { status: GuestLineStatus }) {
+function compactPaxLine(
+  booked: { adults: number; children: number; infants: number; tourLeaders: number },
+  current: { adults: number; children: number; infants: number; tourLeaders: number },
+  wholeNoShow: boolean,
+) {
+  const parts: string[] = []
+  const add = (label: string, bookedCount: number, liveCount: number) => {
+    if (bookedCount <= 0 && liveCount <= 0) return
+    if (wholeNoShow && bookedCount > 0) {
+      parts.push(`${bookedCount}${label}-all`)
+      return
+    }
+    const missing = bookedCount - liveCount
+    parts.push(missing > 0 ? `${bookedCount}${label}-${missing}` : `${liveCount}${label}`)
+  }
+  add('A', booked.adults, current.adults)
+  add('C', booked.children, current.children)
+  add('I', booked.infants, current.infants)
+  add('TL', booked.tourLeaders, current.tourLeaders)
+  return parts.join(' · ') || '—'
+}
+
+function StatusBadge({ status, compact = false }: { status: GuestLineStatus; compact?: boolean }) {
+  const size = compact
+    ? 'px-2 py-0.5 text-[11px] font-bold'
+    : 'px-2.5 py-1 text-sm font-bold'
   if (status === 'checked') {
     return (
-      <span className="inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-sm font-bold text-emerald-800">
+      <span className={cn('inline-flex rounded-full bg-emerald-100 text-emerald-800', size)}>
         In
       </span>
     )
@@ -3014,7 +3262,7 @@ function StatusBadge({ status }: { status: GuestLineStatus }) {
   if (status === 'no-show') {
     return (
       <span
-        className="inline-flex rounded-full bg-rose-100 px-2.5 py-1 text-sm font-bold text-rose-800"
+        className={cn('inline-flex rounded-full bg-rose-100 text-rose-800', size)}
         title="Whole booking no-show"
       >
         All NS
@@ -3022,7 +3270,7 @@ function StatusBadge({ status }: { status: GuestLineStatus }) {
     )
   }
   return (
-    <span className="inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-sm font-bold text-amber-900">
+    <span className={cn('inline-flex rounded-full bg-amber-100 text-amber-900', size)}>
       Wait
     </span>
   )
@@ -3031,10 +3279,12 @@ function StatusBadge({ status }: { status: GuestLineStatus }) {
 function StatPill({
   tone,
   label,
+  shortLabel,
   value,
 }: {
   tone: 'emerald' | 'amber' | 'rose' | 'teal'
   label: string
+  shortLabel?: string
   value: number
 }) {
   const tones = {
@@ -3044,8 +3294,16 @@ function StatPill({
     teal: 'bg-teal-50 text-teal-800 ring-teal-200/70',
   }
   return (
-    <span className={cn('rounded-full px-2.5 py-1 ring-1', tones[tone])}>
-      {label} <span className="tabular-nums">{value}</span>
+    <span className={cn('rounded-full px-2 py-1 ring-1 sm:px-2.5', tones[tone])}>
+      {shortLabel ? (
+        <>
+          <span className="sm:hidden">{shortLabel}</span>
+          <span className="hidden sm:inline">{label}</span>
+        </>
+      ) : (
+        label
+      )}{' '}
+      <span className="tabular-nums">{value}</span>
     </span>
   )
 }

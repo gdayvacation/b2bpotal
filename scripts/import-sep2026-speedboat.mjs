@@ -18,8 +18,10 @@ const WORKBOOK = path.join(
 )
 const SQL_OUT = path.join(SCRIPT_DIR, '../supabase/seed-sep2026-pp-excel.sql')
 
-const PP_ADULT_PARK = 400
-const PP_CHILD_PARK = 200
+const PARK_RATES = {
+  PP: { adult: 400, child: 200 },
+  'James Bond': { adult: 300, child: 150 },
+}
 
 function cell(row, i) {
   return String(row[i] ?? '')
@@ -122,6 +124,47 @@ function parkIncludedRemark(remark) {
   return /inc(?:luding)?\s*npf|inc\s*npf|including national/i.test(remark)
 }
 
+function canoeFromRemark(remark, program) {
+  if (program !== 'James Bond') return null
+  if (/no canoe|exc(?:luded|luding)?\s*(?:sea\s*)?canoe|exc\s*canoe/i.test(remark)) {
+    return 'Not Included'
+  }
+  return 'Included'
+}
+
+function rowLine(row, end = 6) {
+  return Array.from({ length: end }, (_, i) => cell(row, i)).filter(Boolean).join(' | ')
+}
+
+function isJameBondMarker(row) {
+  const line = rowLine(row).toLowerCase()
+  return /jame\s*bond/.test(line) && !/phi phi/.test(line)
+}
+
+function isPhiPhiProduct(row) {
+  const text = `${cell(row, 0)} ${cell(row, 3)}`
+  return /phi phi/i.test(text) && /private speed|island tour/i.test(text)
+}
+
+function isJamesBondProduct(row) {
+  return /james bond island/i.test(`${cell(row, 0)} ${cell(row, 3)}`)
+}
+
+function isTotalsRow(row) {
+  return !cell(row, 1) && !cell(row, 3) && num(row, 7) > 0
+}
+
+function peekSectionProgram(rows, start) {
+  for (let index = start; index < Math.min(start + 10, rows.length); index += 1) {
+    if (isPhiPhiProduct(rows[index])) return 'PP'
+    if (isJamesBondProduct(rows[index]) || isJameBondMarker(rows[index])) return 'James Bond'
+    const agent = cell(rows[index], 1)
+    const remark = cell(rows[index], 12)
+    if (agent && agent.toLowerCase() !== 'agent' && /canoe/i.test(remark)) return 'James Bond'
+  }
+  return 'PP'
+}
+
 function extraChargeFromRemark(remark) {
   const pax = remark.match(/extra\s*charge\s*(\d+)\s*\/?\s*pax/i)
   if (pax) return `Extra Charge ${pax[1]}/pax`
@@ -152,6 +195,9 @@ function noteParts({ wa, remark, van, extra, hotelRaw }) {
     .replace(/extra\s*charge\s*\d+\s*\/?\s*pax/gi, '')
     .replace(/(?:ชาร์จค่ารถ|charge car)\s*\d+(?:\s*thb)?/gi, '')
     .replace(/cash on tour/gi, '')
+    .replace(/\b(?:no\s+)?(?:sea\s+)?canoe\b/gi, '')
+    .replace(/\bexc(?:luded|luding)?\s*(?:sea\s*)?canoe\b/gi, '')
+    .replace(/\binc(?:luding)?\s*(?:sea\s*)?canoe\b/gi, '')
     .replace(/\bcxl\b/gi, '')
     .replace(/[/\-–|,]+/g, ' ')
     .replace(/\s+/g, ' ')
@@ -216,8 +262,41 @@ export function parseWorkbook(filePath = WORKBOOK) {
       raw: false,
     })
 
-    for (const row of rows) {
+    let program = 'PP'
+    let justSawJameBond = false
+    let lastWasTotals = false
+
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+      const row = rows[rowIndex]
+      if (isJameBondMarker(row)) {
+        program = 'James Bond'
+        justSawJameBond = true
+        lastWasTotals = false
+        continue
+      }
+      if (isPhiPhiProduct(row)) {
+        program = 'PP'
+        justSawJameBond = false
+        continue
+      }
+      if (isJamesBondProduct(row)) {
+        program = 'James Bond'
+        justSawJameBond = false
+        continue
+      }
+      if (cell(row, 0).startsWith('ใบงาน')) {
+        if (!justSawJameBond && lastWasTotals) {
+          program = peekSectionProgram(rows, rowIndex + 1)
+        }
+        justSawJameBond = false
+        continue
+      }
       if (isHeader(row)) continue
+      if (isTotalsRow(row)) {
+        lastWasTotals = true
+        continue
+      }
+
       const agentRaw = cell(row, 1)
       const voucher = cell(row, 2).replace(/^-+$/, '')
       const guest = cell(row, 3)
@@ -239,12 +318,16 @@ export function parseWorkbook(filePath = WORKBOOK) {
       if (!guest || isJunkGuest(guest)) continue
       if (adults + children + infants + tourLeaders < 1) continue
 
+      lastWasTotals = false
+      justSawJameBond = false
+
       const agentName = normalizeAgent(agentRaw)
       const pickupZone = normalizeZone(zoneRaw, hotelRaw)
       const pickupHotel = cleanHotel(hotelRaw)
       const parkFee =
         parkExcluded(remark) && !parkIncludedRemark(remark) ? 'Not Included' : 'Included'
-      const parkTotal = adults * PP_ADULT_PARK + children * PP_CHILD_PARK
+      const rates = PARK_RATES[program]
+      const parkTotal = adults * rates.adult + children * rates.child
       const cotNum = parseCotAmount(cotRaw)
       const cashOnTour =
         cotNum > 0 && !(parkFee === 'Not Included' && cotNum === parkTotal)
@@ -253,16 +336,17 @@ export function parseWorkbook(filePath = WORKBOOK) {
       const transferExtra = extraChargeFromRemark(remark)
       const pickupTime = mapPickupTime(pickupZone, pickup) || 'Awaiting pickup time'
       const priv = mapPrivate(pickupZone, van, remark)
-      const note = noteParts({ wa, remark, van, extra, hotelRaw })
+      // From 24 Sept the portal is live — leave Note empty so staff type it in.
+      const note = date >= '2026-09-24' ? '' : noteParts({ wa, remark, van, extra, hotelRaw })
 
       bookings.push({
         date,
         agentSlug: slugify(agentName),
         agentName,
         agentRef: voucher === '-' ? '' : voucher,
-        program: 'PP',
+        program,
         parkFee,
-        canoe: null,
+        canoe: canoeFromRemark(remark, program),
         adults,
         children,
         infants,
@@ -286,6 +370,18 @@ export function parseWorkbook(filePath = WORKBOOK) {
   }
 
   return bookings
+}
+
+function assignCodes(bookings) {
+  const sequence = { PP: 0, 'James Bond': 0 }
+  return bookings.map((booking) => {
+    sequence[booking.program] += 1
+    const prefix = booking.program === 'PP' ? 'PP' : 'JB'
+    return {
+      ...booking,
+      code: `${prefix}2609-${String(sequence[booking.program]).padStart(4, '0')}`,
+    }
+  })
 }
 
 function collectAgents(bookings) {
@@ -360,10 +456,7 @@ function bookingSqlRow(b, code) {
 export function buildSql(bookings) {
   const agents = collectAgents(bookings)
   const zones = collectZones(bookings)
-  const coded = bookings.map((b, i) => ({
-    ...b,
-    code: `PP2609-${String(i + 1).padStart(4, '0')}`,
-  }))
+  const coded = assignCodes(bookings)
 
   const agentSql = agents
     .map(
@@ -395,9 +488,14 @@ export function buildSql(bookings) {
 ${slice.map((b) => bookingSqlRow(b, b.code)).join(',\n')};`)
   }
 
-  return `-- Phi Phi bookings from September'26 Goodday Speedboat.xlsx
--- ${coded.length} rows, 1–30 Sept 2026. Safe to re-run (replaces PP on these dates).
+  const ppCount = coded.filter((b) => b.program === 'PP').length
+  const jbCount = coded.filter((b) => b.program === 'James Bond').length
+  return `-- September'26 Goodday Speedboat.xlsx → PP + James Bond
+-- ${coded.length} rows (${ppCount} PP, ${jbCount} JB), 1–30 Sept 2026.
+-- Safe to re-run: replaces all bookings on these dates.
+-- "Jame bond" blocks (and canoe-only second sections) go to program = James Bond.
 -- Park-fee-only COT is stored as park_fee = Not Included, not duplicated in cash_on_tour.
+-- Notes from the old sheet are imported only through 23 Sept. 24 Sept onward stays blank.
 
 insert into public.agents (slug, name, country, status) values
 ${agentSql}
@@ -428,25 +526,25 @@ where date between '2026-09-01' and '2026-09-30';
 delete from public.boat_assignments
 where booking_code in (
   select code from public.bookings
-  where date between '2026-09-01' and '2026-09-30' and program = 'PP'
+  where date between '2026-09-01' and '2026-09-30'
 );
 delete from public.van_assignments
 where booking_code in (
   select code from public.bookings
-  where date between '2026-09-01' and '2026-09-30' and program = 'PP'
+  where date between '2026-09-01' and '2026-09-30'
 );
 
 delete from public.bookings
-where date between '2026-09-01' and '2026-09-30' and program = 'PP';
+where date between '2026-09-01' and '2026-09-30';
 
 ${chunks.join('\n\n')}
 
-select date, count(*) as bookings,
+select date, program, count(*) as bookings,
   sum(adults) as adl, sum(children) as chd, sum(infants) as inf, sum(tour_leaders) as foc
 from public.bookings
-where date between '2026-09-01' and '2026-09-30' and program = 'PP'
-group by date
-order by date;
+where date between '2026-09-01' and '2026-09-30'
+group by date, program
+order by date, program;
 `
 }
 
@@ -471,10 +569,7 @@ async function apply(bookings) {
   const supabase = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
   const agents = collectAgents(bookings)
   const zones = collectZones(bookings)
-  const coded = bookings.map((b, i) => ({
-    ...b,
-    code: `PP2609-${String(i + 1).padStart(4, '0')}`,
-  }))
+  const coded = assignCodes(bookings)
 
   const { error: agentErr } = await supabase.from('agents').upsert(
     agents.map((a) => ({ slug: a.slug, name: a.name, country: '', status: 'Active' })),
@@ -498,7 +593,6 @@ async function apply(bookings) {
     .select('code')
     .gte('date', '2026-09-01')
     .lte('date', '2026-09-30')
-    .eq('program', 'PP')
   if (existErr) throw new Error('existing: ' + existErr.message)
   const oldCodes = (existing || []).map((r) => r.code)
 
@@ -537,7 +631,6 @@ async function apply(bookings) {
       .delete()
       .gte('date', '2026-09-01')
       .lte('date', '2026-09-30')
-      .eq('program', 'PP')
     if (delErr) throw new Error('delete bookings: ' + delErr.message)
   }
 
@@ -582,13 +675,22 @@ async function apply(bookings) {
 if (process.argv[1] && process.argv[1].includes('import-sep2026-speedboat')) {
   const bookings = parseWorkbook()
   const byDate = {}
+  let pp = 0
+  let jb = 0
   for (const b of bookings) {
-    byDate[b.date] = (byDate[b.date] || 0) + 1
+    byDate[b.date] = byDate[b.date] || { PP: 0, JB: 0 }
+    if (b.program === 'James Bond') {
+      byDate[b.date].JB += 1
+      jb += 1
+    } else {
+      byDate[b.date].PP += 1
+      pp += 1
+    }
   }
-  console.log('parsed', bookings.length, 'bookings')
+  console.log('parsed', bookings.length, 'bookings ·', pp, 'PP ·', jb, 'JB')
   console.log(
     Object.entries(byDate)
-      .map(([d, n]) => `${d.slice(8)}:${n}`)
+      .map(([d, n]) => `${d.slice(8)}:PP${n.PP}${n.JB ? `/JB${n.JB}` : ''}`)
       .join(' '),
   )
   fs.writeFileSync(SQL_OUT, buildSql(bookings))

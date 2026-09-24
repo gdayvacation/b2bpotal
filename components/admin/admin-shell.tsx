@@ -1,12 +1,13 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useSearchParams } from 'next/navigation'
 import {
   CalendarClock,
   ClipboardList,
   FileSpreadsheet,
+  FileText,
   LayoutDashboard,
   LogOut,
   MapPin,
@@ -100,7 +101,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     return <AdminLogin onSuccess={signIn} />
   }
 
-  const current =
+  const current = billingLabel(pathname) ??
     nav.find((item) =>
       item.href === '/admin' ? pathname === '/admin' : pathname.startsWith(item.href),
     )?.label ?? 'Admin'
@@ -118,6 +119,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           {nav.map((item) => (
             <NavLink key={item.href} item={item} pathname={pathname} />
           ))}
+          <InvoiceReceiptNav pathname={pathname} />
         </nav>
         <div className="border-t border-teal-900/8 p-4">
           <div className="rounded-2xl bg-gradient-to-br from-teal-50 via-white to-sky-50 px-3.5 py-3 ring-1 ring-teal-900/6">
@@ -165,6 +167,80 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         </header>
         <main className="gday-admin-main relative px-4 py-5 sm:py-7 lg:px-8">{children}</main>
       </div>
+    </div>
+  )
+}
+
+function billingLabel(pathname: string) {
+  if (pathname.startsWith('/admin/invoices/setup')) return 'Invoice setup'
+  if (pathname.startsWith('/admin/invoices') || pathname.startsWith('/admin/receipts')) {
+    return 'Invoice / Receipt'
+  }
+  return null
+}
+
+function InvoiceReceiptNav({ pathname }: { pathname: string }) {
+  return (
+    <Suspense fallback={<InvoiceReceiptLinks pathname={pathname} tab={null} />}>
+      <InvoiceReceiptNavSearch pathname={pathname} />
+    </Suspense>
+  )
+}
+
+function InvoiceReceiptNavSearch({ pathname }: { pathname: string }) {
+  const searchParams = useSearchParams()
+  return <InvoiceReceiptLinks pathname={pathname} tab={searchParams.get('tab')} />
+}
+
+function InvoiceReceiptLinks({
+  pathname,
+  tab,
+}: {
+  pathname: string
+  tab: string | null
+}) {
+  const active = pathname.startsWith('/admin/invoices') || pathname.startsWith('/admin/receipts')
+  const receiptActive =
+    pathname.startsWith('/admin/receipts') ||
+    (pathname.startsWith('/admin/invoices') && tab === 'receipts')
+  const invoiceActive = active && !receiptActive
+
+  return (
+    <div
+      className={cn(
+        'flex items-center gap-0.5 rounded-2xl px-2 py-1.5 text-sm font-medium transition-all',
+        active
+          ? 'bg-gradient-to-r from-teal-700 to-cyan-700 text-white shadow-md shadow-teal-700/25'
+          : 'text-teal-900/65 hover:bg-white/70 hover:text-teal-950',
+      )}
+    >
+      <span
+        className={cn(
+          'flex size-8 shrink-0 items-center justify-center rounded-xl transition-colors',
+          active ? 'bg-white/20 text-white' : 'bg-fuchsia-100 text-fuchsia-700',
+        )}
+      >
+        <FileText className="size-4" strokeWidth={active ? 2.4 : 2} />
+      </span>
+      <Link
+        href="/admin/invoices"
+        className={cn(
+          'rounded-xl px-2 py-1 transition-colors',
+          invoiceActive ? 'bg-white/15 text-white' : active ? 'text-white/80 hover:text-white' : 'hover:text-teal-950',
+        )}
+      >
+        Invoice
+      </Link>
+      <span className={active ? 'text-white/35' : 'text-teal-900/25'}>/</span>
+      <Link
+        href="/admin/invoices?tab=receipts"
+        className={cn(
+          'rounded-xl px-2 py-1 transition-colors',
+          receiptActive ? 'bg-white/15 text-white' : active ? 'text-white/80 hover:text-white' : 'hover:text-teal-950',
+        )}
+      >
+        Receipt
+      </Link>
     </div>
   )
 }
@@ -219,6 +295,7 @@ function MobileNav({ pathname, onSignOut }: { pathname: string; onSignOut: () =>
           {nav.map((item) => (
             <NavLink key={item.href} item={item} pathname={pathname} />
           ))}
+          <InvoiceReceiptNav pathname={pathname} />
         </div>
         <div className="mt-auto border-t border-teal-900/8 px-4 py-4">
           <p className="text-sm font-semibold text-teal-950">admin</p>

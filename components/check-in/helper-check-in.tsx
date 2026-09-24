@@ -10,7 +10,7 @@ import {
   isValidHelperBoardToken,
   normalizeHelperBoardHours,
 } from '@/lib/check-in-helper'
-import { formatLongDate } from '@/lib/format'
+import { formatLongDate, formatShortDate } from '@/lib/format'
 
 export function HelperCheckIn({
   date,
@@ -50,16 +50,16 @@ export function HelperCheckIn({
 
   return (
     <div className="gday-app min-h-dvh">
-      <header className="border-b border-teal-900/8 bg-white/80 px-4 py-3 backdrop-blur-md sm:px-6">
+      <header className="border-b border-teal-900/8 bg-white/85 px-3 py-2 backdrop-blur-md sm:px-6 sm:py-3">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
           <BrandMark />
-          <p className="text-xs font-semibold tracking-wide text-teal-800/70 uppercase">
+          <p className="text-[10px] font-semibold tracking-wide text-teal-800/70 uppercase sm:text-xs">
             Helper check-in
           </p>
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-7">
+      <main className="mx-auto max-w-6xl px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6 sm:py-7">
         {!allowed || expired || tooEarly ? (
           <LockedHelperBoard
             date={allowed ? date : ''}
@@ -69,15 +69,23 @@ export function HelperCheckIn({
             expired={expired}
           />
         ) : (
-          <div className="space-y-5">
-            <div>
-              <p className="gday-soft-label">Marina helper</p>
-              <h1 className="font-display mt-1 text-2xl font-semibold tracking-tight text-teal-950">
-                Guest check-in
-              </h1>
-              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-teal-950/55">
-                Van list for {formatLongDate(date)}. Make a guest QR from each row. This board is
-                open from {hours.open} until {hours.close} Thailand time.
+          <div className="space-y-3 sm:space-y-5">
+            <div className="flex items-end justify-between gap-3">
+              <div className="min-w-0">
+                <p className="gday-soft-label hidden sm:block">Marina helper</p>
+                <h1 className="font-display text-xl font-semibold tracking-tight text-teal-950 sm:mt-1 sm:text-2xl">
+                  Guest check-in
+                </h1>
+                <p className="mt-1 hidden max-w-2xl text-sm leading-relaxed text-teal-950/55 sm:block">
+                  Van list for {formatLongDate(date)}. Make a guest QR from each row. This board is
+                  open from {hours.open} until {hours.close} Thailand time.
+                </p>
+                <p className="mt-0.5 text-[13px] text-teal-900/50 sm:hidden">
+                  Open {hours.open}–{hours.close}
+                </p>
+              </div>
+              <p className="shrink-0 rounded-full bg-white px-2.5 py-1 text-[13px] font-semibold text-teal-950 ring-1 ring-teal-900/10 sm:hidden">
+                {formatShortDate(date)}
               </p>
             </div>
             <HelperCheckInBoard date={date} origin={origin} />

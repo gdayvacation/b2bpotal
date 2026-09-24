@@ -789,23 +789,23 @@ function BookingReportSection({
         </div>
       ) : null}
       <div className="overflow-x-auto">
-        <Table>
+        <Table className="table-fixed">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="min-w-[11rem]">Agent</TableHead>
-              <TableHead className="min-w-[9rem]">VC No.</TableHead>
-              <TableHead className="min-w-[12rem]">Guest</TableHead>
-              <TableHead className="min-w-[14rem]">Hotel</TableHead>
+              <TableHead className="w-[8rem]">Agent</TableHead>
+              <TableHead className="w-[6.25rem]">VC No.</TableHead>
+              <TableHead className="w-[11rem]">Guest</TableHead>
+              <TableHead className="w-[11rem]">Hotel</TableHead>
               <TableHead className="w-8 px-0.5 text-center">AD</TableHead>
               <TableHead className="w-8 px-0.5 text-center">CH</TableHead>
               <TableHead className="w-7 px-0.5 text-center">IF</TableHead>
               <TableHead className="w-7 px-0.5 text-center">TL</TableHead>
               <TableHead className="w-9 px-0.5 text-center">Total</TableHead>
-              <TableHead className="min-w-[5rem]">COT</TableHead>
-              <TableHead className="w-[4.5rem]">Park</TableHead>
-              <TableHead className="w-[4.5rem] text-right">Total</TableHead>
-              {showCanoe ? <TableHead className="w-[4.5rem]">Canoe</TableHead> : null}
-              <TableHead className="w-[6.5rem] max-w-[6.5rem]">Note</TableHead>
+              <TableHead className="w-[4.5rem]">COT</TableHead>
+              <TableHead className="w-[3.75rem]">Park</TableHead>
+              <TableHead className="w-[4rem] text-right">Total</TableHead>
+              {showCanoe ? <TableHead className="w-[4rem]">Canoe</TableHead> : null}
+              <TableHead className="w-[14rem]">Note</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -814,20 +814,20 @@ function BookingReportSection({
                 key={booking.code}
                 className={cn(!isActiveBooking(booking) && 'opacity-55')}
               >
-                <TableCell className="min-w-[11rem] whitespace-normal">
+                <TableCell className="whitespace-normal">
                   <div className="break-words leading-snug" title={booking.agentName}>
                     {booking.agentName}
                   </div>
                 </TableCell>
-                <TableCell className="whitespace-nowrap font-mono text-xs text-teal-900/70">
+                <TableCell className="truncate font-mono text-[11px] text-teal-900/70" title={booking.agentRef || undefined}>
                   {booking.agentRef || '—'}
                 </TableCell>
-                <TableCell className="min-w-[12rem] whitespace-normal">
+                <TableCell className="whitespace-normal">
                   <div className="break-words leading-snug font-medium text-teal-950">
                     {booking.leadGuest}
                   </div>
                 </TableCell>
-                <TableCell className="min-w-[14rem] whitespace-normal">
+                <TableCell className="whitespace-normal">
                   <div className="break-words leading-snug text-teal-900/80">
                     {booking.pickupHotel || '—'}
                   </div>
@@ -860,9 +860,9 @@ function BookingReportSection({
                 {showCanoe ? (
                   <TableCell className="text-xs">{formatIncludeLabel(booking.canoe)}</TableCell>
                 ) : null}
-                <TableCell className="max-w-[6.5rem]">
+                <TableCell className="whitespace-normal">
                   <div
-                    className="truncate text-xs leading-snug text-teal-900/55"
+                    className="break-words text-xs leading-snug text-teal-900/55"
                     title={booking.note || undefined}
                   >
                     {booking.note || '—'}
@@ -977,7 +977,7 @@ function BookingPrintSection({
                 Canoe
               </th>
             ) : null}
-            <th className="w-[10%] border border-teal-900/15 px-1.5 py-1.5 font-bold tracking-wide text-teal-900/80 uppercase">
+            <th className="w-[16%] border border-teal-900/15 px-1.5 py-1.5 font-bold tracking-wide text-teal-900/80 uppercase">
               Note
             </th>
           </tr>
@@ -1038,7 +1038,7 @@ function BookingPrintSection({
                   {formatIncludeLabel(booking.canoe)}
                 </td>
               ) : null}
-              <td className="max-w-[4.5rem] truncate border border-teal-900/10 px-1.5 py-1">
+              <td className="border border-teal-900/10 px-1.5 py-1 whitespace-normal break-words">
                 {booking.note || '—'}
               </td>
             </tr>
