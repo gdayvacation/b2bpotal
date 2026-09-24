@@ -243,8 +243,7 @@ export function sequenceRangeForCheckedIn(
 
 /**
  * Board / ticket label.
- * Checked-in seats show immediately (1, or 4–6).
- * The reserved group block (1–22) only replaces that once the whole party is in.
+ * Numbers stay hidden until every seat on the booking is checked in.
  */
 export function sequenceBoardLabel(
   block: GuestSequenceBlock | null | undefined,
@@ -254,10 +253,8 @@ export function sequenceBoardLabel(
     noShow?: boolean
   },
 ) {
-  if (!block || options.noShow) return null
-  if (options.fullyChecked) return formatSequenceRange(block.start, block.end)
-  const partial = sequenceRangeForCheckedIn(block, options.checkedInCount)
-  return partial ? formatSequenceRange(partial.start, partial.end) : null
+  if (!block || options.noShow || !options.fullyChecked) return null
+  return formatSequenceRange(block.start, block.end)
 }
 
 export function sequenceJustCheckedInLabel(
@@ -268,18 +265,6 @@ export function sequenceJustCheckedInLabel(
     fullyChecked: boolean
   },
 ) {
-  if (!block) return null
-  if (options.fullyChecked && block.seats > 1) {
-    return formatSequenceRange(block.start, block.end)
-  }
-  const just = Math.max(0, Math.floor(options.justChecked))
-  if (just <= 0) {
-    return sequenceBoardLabel(block, {
-      checkedInCount: options.alreadyChecked,
-      fullyChecked: options.fullyChecked,
-    })
-  }
-  const from = sequenceForSeatOffset(block, options.alreadyChecked)
-  const to = sequenceForSeatOffset(block, options.alreadyChecked + just - 1)
-  return formatSequenceRange(from, to)
+  if (!block || !options.fullyChecked) return null
+  return formatSequenceRange(block.start, block.end)
 }

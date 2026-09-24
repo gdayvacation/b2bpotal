@@ -60,6 +60,8 @@ type Step =
   | 'details'
   | 'confirm'
   | 'done'
+  | 'edit-pick'
+  | 'edit'
 
 type FindMode = 'van' | 'hotel'
 type Scope = 'one' | 'group'
@@ -83,6 +85,25 @@ function emptyGuestDraft(): GuestDraft {
     birthMonth: '',
     birthDay: '',
     passportNumber: '',
+  }
+}
+
+function enrollmentToDraft(enrollment: {
+  firstName: string
+  lastName: string
+  nationality: string
+  birthday: string
+  passportNumber: string
+}): GuestDraft {
+  const [year = '', month = '', day = ''] = enrollment.birthday.split('-')
+  return {
+    firstName: enrollment.firstName,
+    lastName: enrollment.lastName,
+    nationality: enrollment.nationality,
+    birthYear: year,
+    birthMonth: month,
+    birthDay: day,
+    passportNumber: enrollment.passportNumber,
   }
 }
 
@@ -154,6 +175,9 @@ function GuestCheckInForm({
     getCheckInAttendance,
     getGuestSequence,
     recordGuestCheckIns,
+    updateCheckInEnrollment,
+    getCheckInGuestEditIds,
+    setCheckInGuestEditOpen,
     hydrated,
   } = usePortal()
 
@@ -182,6 +206,7 @@ function GuestCheckInForm({
   const [detailsAttempted, setDetailsAttempted] = useState(false)
   const [doneNeedsPayment, setDoneNeedsPayment] = useState(false)
   const [lockedReady, setLockedReady] = useState(!lockedCode)
+  const [editEnrollmentId, setEditEnrollmentId] = useState<string | null>(null)
   const lockedBootstrappedRef = useRef(false)
 
   const detailsReady = guests.length > 0 && guests.every(guestDraftReady)
@@ -355,6 +380,15 @@ function GuestCheckInForm({
       setDetailsAttempted(false)
       setStep('scope')
     } else if (step === 'confirm') setStep('details')
+    else if (step === 'edit') {
+      setDetailsAttempted(false)
+      setEditEnrollmentId(null)
+      setGuests([emptyGuestDraft()])
+      setStep('done')
+    } else if (step === 'edit-pick') {
+      setEditEnrollmentId(null)
+      setStep('done')
+    }
   }
 
   function startOver() {
@@ -364,6 +398,7 @@ function GuestCheckInForm({
     setDetailsAttempted(false)
     setError('')
     setDoneNeedsPayment(false)
+    setEditEnrollmentId(null)
     if (isLocked && lockedBooking && isActiveBooking(lockedBooking)) {
       setProgram(lockedBooking.program)
       setBookingCode(lockedBooking.code)
@@ -454,6 +489,87 @@ function GuestCheckInForm({
     }
 
     setDoneNeedsPayment(paymentDue(selectedBooking).needsStaff)
+    setStep('done')
+  }
+
+  function beginGuestEdit(enrollmentId?: string) {
+    if (!selectedBooking) return
+    const openIds = new Set(
+      getCheckInGuestEditIds(
+        selectedBooking.date,
+        selectedBooking.program,
+        selectedBooking.code,
+      ),
+    )
+    const enrollments = getCheckInEnrollments(
+      selectedBooking.date,
+      selectedBooking.program,
+      selectedBooking.code,
+    ).filter((item) => openIds.has(item.id))
+    if (enrollments.length === 0) return
+    const target =
+      (enrollmentId
+        ? enrollments.find((item) => item.id === enrollmentId)
+        : enrollments.length === 1
+          ? enrollments[0]
+          : null) ?? null
+    setError('')
+    setDetailsAttempted(false)
+    if (!target) {
+      setEditEnrollmentId(null)
+      setStep('edit-pick')
+      return
+    }
+    setEditEnrollmentId(target.id)
+    setGuests([enrollmentToDraft(target)])
+    setScope('one')
+    setStep('edit')
+  }
+
+  function saveGuestEdit() {
+    if (!selectedBooking || !editEnrollmentId) return
+    const guest = guests[0]
+    if (!guest || !guestDraftReady(guest)) {
+      setDetailsAttempted(true)
+      setError(t('allFieldsRequired'))
+      return
+    }
+    const existing = getCheckInEnrollments(
+      selectedBooking.date,
+      selectedBooking.program,
+      selectedBooking.code,
+    ).find((item) => item.id === editEnrollmentId)
+    if (!existing) {
+      setError(t('checkInUnavailable'))
+      return
+    }
+    const result = updateCheckInEnrollment({
+      date: selectedBooking.date,
+      program: selectedBooking.program,
+      bookingCode: selectedBooking.code,
+      enrollment: {
+        ...existing,
+        firstName: guest.firstName,
+        lastName: guest.lastName,
+        nationality: matchNationality(guest.nationality) ?? guest.nationality.trim(),
+        birthday: buildBirthdayIso(guest.birthYear, guest.birthMonth, guest.birthDay) ?? '',
+        passportNumber: guest.passportNumber,
+      },
+    })
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    setCheckInGuestEditOpen(
+      selectedBooking.date,
+      selectedBooking.program,
+      selectedBooking.code,
+      editEnrollmentId,
+      false,
+    )
+    setError('')
+    setDetailsAttempted(false)
+    setEditEnrollmentId(null)
     setStep('done')
   }
 
@@ -1018,6 +1134,140 @@ function GuestCheckInForm({
           />
         ) : null}
 
+        {step === 'edit-pick' && selectedBooking ? (
+          <section className="space-y-4">
+            <StepHeading title={t('editGuestTitle')} subtitle={t('chooseGuestToEdit')} />
+            <div className="space-y-2">
+              {getCheckInEnrollments(
+                selectedBooking.date,
+                selectedBooking.program,
+                selectedBooking.code,
+              )
+                .filter((enrollment) =>
+                  getCheckInGuestEditIds(
+                    selectedBooking.date,
+                    selectedBooking.program,
+                    selectedBooking.code,
+                  ).includes(enrollment.id),
+                )
+                .map((enrollment) => (
+                <button
+                  key={enrollment.id}
+                  type="button"
+                  className="gday-sheet flex w-full flex-col items-start rounded-[1.25rem] px-4 py-3.5 text-left"
+                  onClick={() => beginGuestEdit(enrollment.id)}
+                >
+                  <p className="font-semibold text-teal-950">{guestDisplayName(enrollment)}</p>
+                  <p className="mt-0.5 text-xs text-teal-900/55">
+                    {enrollment.nationality}
+                    {enrollment.passportNumber ? ` · ${enrollment.passportNumber}` : ''}
+                  </p>
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {step === 'edit' && selectedBooking ? (
+          <section className="space-y-4">
+            <StepHeading title={t('editGuestTitle')} subtitle={t('editGuestSub')} />
+            <div
+              role="alert"
+              className="rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3.5 text-sm leading-relaxed text-rose-900"
+            >
+              <p className="font-semibold text-rose-950">{t('passportOnlyTitle')}</p>
+              <p className="mt-1 text-rose-900/85">{t('passportOnlyBody')}</p>
+            </div>
+            {guests[0] ? (
+              <div className="gday-sheet space-y-3.5 rounded-[1.5rem] p-5">
+                <div className="grid grid-cols-2 gap-3">
+                  <Field
+                    label={t('firstName')}
+                    value={guests[0].firstName}
+                    onChange={(value) =>
+                      updateGuest(0, { firstName: sanitizeEnglishName(value) })
+                    }
+                    required
+                    showError={detailsAttempted && !isEnglishName(guests[0].firstName)}
+                    errorText={
+                      guests[0].firstName.trim() ? t('nameEnglishOnly') : t('firstNameRequired')
+                    }
+                  />
+                  <Field
+                    label={t('lastName')}
+                    value={guests[0].lastName}
+                    onChange={(value) =>
+                      updateGuest(0, { lastName: sanitizeEnglishName(value) })
+                    }
+                    required
+                    showError={detailsAttempted && !isEnglishName(guests[0].lastName)}
+                    errorText={
+                      guests[0].lastName.trim() ? t('nameEnglishOnly') : t('lastNameRequired')
+                    }
+                  />
+                </div>
+                <NationalityCombobox
+                  id="edit-nationality"
+                  value={guests[0].nationality}
+                  onChange={(value) => updateGuest(0, { nationality: value })}
+                  required
+                  showError={detailsAttempted}
+                  label={t('nationality')}
+                  placeholder={t('nationalityPlaceholder')}
+                  noMatchText={t('nationalityNoMatch')}
+                  errorText={t('nationalityRequired')}
+                />
+                <BirthdayPickers
+                  year={guests[0].birthYear}
+                  month={guests[0].birthMonth}
+                  day={guests[0].birthDay}
+                  required
+                  showError={
+                    detailsAttempted &&
+                    !buildBirthdayIso(
+                      guests[0].birthYear,
+                      guests[0].birthMonth,
+                      guests[0].birthDay,
+                    )
+                  }
+                  onYearChange={(value) =>
+                    updateGuest(0, {
+                      birthYear: value,
+                      birthDay: clampDay(guests[0]!.birthDay, value, guests[0]!.birthMonth),
+                    })
+                  }
+                  onMonthChange={(value) =>
+                    updateGuest(0, {
+                      birthMonth: value,
+                      birthDay: clampDay(guests[0]!.birthDay, guests[0]!.birthYear, value),
+                    })
+                  }
+                  onDayChange={(value) => updateGuest(0, { birthDay: value })}
+                />
+                <Field
+                  label={t('passportNumber')}
+                  value={guests[0].passportNumber}
+                  onChange={(value) =>
+                    updateGuest(0, { passportNumber: sanitizeEnglishPassport(value) })
+                  }
+                  placeholder={t('passportPlaceholder')}
+                  required
+                  showError={detailsAttempted && !isEnglishPassport(guests[0].passportNumber)}
+                  errorText={
+                    guests[0].passportNumber.trim()
+                      ? t('passportEnglishOnly')
+                      : t('passportRequired')
+                  }
+                />
+              </div>
+            ) : null}
+            {error ? <p className="text-sm text-rose-700">{error}</p> : null}
+            <Button className="h-12 w-full text-base" onClick={saveGuestEdit}>
+              {t('saveChanges')}
+            </Button>
+          </section>
+        ) : null}
+
         {step === 'done' ? (
           <DoneStep
             needsPayment={doneNeedsPayment}
@@ -1079,6 +1329,16 @@ function GuestCheckInForm({
                 : null
             }
             onAgain={startOver}
+            onEdit={
+              selectedBooking &&
+              getCheckInGuestEditIds(
+                selectedBooking.date,
+                selectedBooking.program,
+                selectedBooking.code,
+              ).length > 0
+                ? () => beginGuestEdit()
+                : undefined
+            }
           />
         ) : null}
       </main>
@@ -1223,6 +1483,7 @@ function DoneStep({
   boat,
   boatPlan,
   onAgain,
+  onEdit,
 }: {
   needsPayment: boolean
   booking: Booking | null
@@ -1231,6 +1492,7 @@ function DoneStep({
   boat: number | null
   boatPlan: ReturnType<ReturnType<typeof usePortal>['getDayBoatPlan']> | null
   onAgain: () => void
+  onEdit?: () => void
 }) {
   const { t } = useCheckInI18n()
   const due = booking ? paymentDue(booking) : null
@@ -1271,6 +1533,11 @@ function DoneStep({
             </p>
           </div>
           {boarding}
+          {onEdit ? (
+            <Button variant="outline" className="h-11 w-full" onClick={onEdit}>
+              {t('editInformation')}
+            </Button>
+          ) : null}
           <Button variant="outline" className="h-11 w-full" onClick={onAgain}>
             {t('checkInAnother')}
           </Button>
@@ -1305,6 +1572,11 @@ function DoneStep({
         <p className="mt-2 text-sm leading-relaxed text-emerald-950/70">{t('successBody')}</p>
       </div>
       {boarding}
+      {onEdit ? (
+        <Button variant="outline" className="h-11 w-full" onClick={onEdit}>
+          {t('editInformation')}
+        </Button>
+      ) : null}
       <Button variant="outline" className="h-11 w-full" onClick={onAgain}>
         {t('checkInAnother')}
       </Button>
@@ -1353,7 +1625,7 @@ function BoardingSummary({
           <ul className="mt-1 space-y-0.5">
             {names.map((name, index) => (
               <li key={`${name}-${index}`} className="text-base font-semibold text-teal-950">
-                {name}
+                <span className="tabular-nums text-teal-800/55">{index + 1}.</span> {name}
               </li>
             ))}
           </ul>

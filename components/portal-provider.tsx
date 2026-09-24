@@ -51,6 +51,15 @@ import {
   type GuestSequenceBlock,
 } from '@/lib/check-in-sequence'
 import {
+  CHECK_IN_GUEST_EDIT_STORAGE_KEY,
+  getCheckInGuestEditIds,
+  isCheckInGuestEditOpen,
+  loadCheckInGuestEditMap,
+  saveCheckInGuestEditMap,
+  withCheckInGuestEdit,
+  type DayCheckInGuestEditMap,
+} from '@/lib/check-in-guest-edit'
+import {
   CHECK_IN_ENROLLMENT_STORAGE_KEY,
   enrolledSeatCount,
   getCheckInEnrollments,
@@ -60,6 +69,7 @@ import {
   trimCheckInEnrollmentsToSeats,
   withoutCheckInEnrollment,
   withCheckInEnrollment,
+  withUpdatedCheckInEnrollment,
   type CheckInEnrollment,
   type CheckInScope,
   type DayCheckInEnrollmentMap,
@@ -122,7 +132,9 @@ import {
   upsertCheckInPaymentRow,
   upsertCheckInSequenceStart,
   upsertCheckInTicketRow,
+  upsertCheckInGuestEdit,
   deleteCheckInSequenceStart,
+  deleteCheckInGuestEdit,
   upsertDriver as upsertDriverRow,
   upsertHotel,
   upsertZone,
@@ -377,6 +389,26 @@ type PortalContextValue = {
     program: Program,
     bookingCode: string,
   ) => CheckInEnrollment[]
+  updateCheckInEnrollment: (input: {
+    date: string
+    program: Program
+    bookingCode: string
+    enrollment: CheckInEnrollment
+  }) => { ok: true } | { ok: false; error: string }
+  getCheckInGuestEditIds: (date: string, program: Program, bookingCode: string) => string[]
+  isCheckInGuestEditOpen: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    enrollmentId: string,
+  ) => boolean
+  setCheckInGuestEditOpen: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    enrollmentId: string,
+    open: boolean,
+  ) => void
   removeCheckInEnrollment: (
     date: string,
     program: Program,
@@ -534,7 +566,8 @@ function checkInMapsHaveData(maps: CheckInMapsSnapshot) {
     Object.keys(maps.payments).length > 0 ||
     Object.keys(maps.tickets).length > 0 ||
     Object.keys(maps.services).length > 0 ||
-    Object.keys(maps.sequences).length > 0
+    Object.keys(maps.sequences).length > 0 ||
+    Object.keys(maps.guestEdits).length > 0
   )
 }
 
@@ -545,6 +578,7 @@ function applyCheckInMapsToStorage(maps: CheckInMapsSnapshot) {
   saveCheckInTicketMap(maps.tickets)
   saveCheckInServiceMap(maps.services)
   saveCheckInSequenceMap(maps.sequences)
+  saveCheckInGuestEditMap(maps.guestEdits)
 }
 
 export function PortalProvider({ children }: { children: ReactNode }) {
@@ -565,6 +599,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [checkInTicket, setCheckInTicketMap] = useState<DayCheckInTicketMap>({})
   const [checkInServices, setCheckInServiceMap] = useState<DayCheckInServiceMap>({})
   const [checkInSequence, setCheckInSequenceMap] = useState<DayCheckInSequenceMap>({})
+  const [checkInGuestEdit, setCheckInGuestEditMap] = useState<DayCheckInGuestEditMap>({})
   const [fleetVans, setFleetVans] = useState<FleetVan[]>([])
   const [drivers, setDrivers] = useState<DriverRosterEntry[]>(() => mergeDriverRoster(loadLocalDrivers()))
   const [bookingCutoffs, setBookingCutoffs] = useState<BookingCutoffSettings>(DEFAULT_BOOKING_CUTOFFS)
@@ -617,6 +652,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     setCheckInTicketMap(maps.tickets)
     setCheckInServiceMap(maps.services)
     setCheckInSequenceMap(maps.sequences)
+    setCheckInGuestEditMap(maps.guestEdits)
     applyCheckInMapsToStorage(maps)
   }
 
@@ -646,6 +682,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     setCheckInTicketMap(split.tickets)
     setCheckInServiceMap(loadCheckInServiceMap())
     setCheckInSequenceMap(loadCheckInSequenceMap())
+    setCheckInGuestEditMap(loadCheckInGuestEditMap())
   }, [])
 
   useEffect(() => {
@@ -795,6 +832,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       setCheckInTicketMap(loadCheckInTicketMap())
       setCheckInServiceMap(loadCheckInServiceMap())
       setCheckInSequenceMap(loadCheckInSequenceMap())
+      setCheckInGuestEditMap(loadCheckInGuestEditMap())
     }
 
     async function syncCheckInFromCloud(allowMigrate: boolean) {
@@ -818,6 +856,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             tickets: loadCheckInTicketMap(),
             services: loadCheckInServiceMap(),
             sequences: loadCheckInSequenceMap(),
+            guestEdits: loadCheckInGuestEditMap(),
           }
           // First cloud sync: upload this browser's local-only check-ins when remote is empty.
           if (!checkInMapsHaveData(remote) && checkInMapsHaveData(local)) {
@@ -848,7 +887,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         event.key === CHECK_IN_PAYMENT_STORAGE_KEY ||
         event.key === CHECK_IN_TICKET_STORAGE_KEY ||
         event.key === CHECK_IN_SERVICE_STORAGE_KEY ||
-        event.key === CHECK_IN_SEQUENCE_STORAGE_KEY
+        event.key === CHECK_IN_SEQUENCE_STORAGE_KEY ||
+        event.key === CHECK_IN_GUEST_EDIT_STORAGE_KEY
       ) {
         reloadCheckInMapsFromStorage()
       }
@@ -1332,6 +1372,79 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       },
       getCheckInEnrollments: (date, program, bookingCode) =>
         getCheckInEnrollments(checkInEnrollment, date, program, bookingCode),
+      updateCheckInEnrollment: (input) => {
+        const firstName = input.enrollment.firstName.trim()
+        const lastName = input.enrollment.lastName.trim()
+        const nationality = matchNationality(input.enrollment.nationality.trim())
+        const birthday = input.enrollment.birthday.trim()
+        const passportNumber = input.enrollment.passportNumber.trim()
+        if (!firstName) return { ok: false, error: 'Enter first name.' }
+        if (!lastName) return { ok: false, error: 'Enter last name.' }
+        if (!nationality) return { ok: false, error: 'Select a nationality from the list.' }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(birthday)) return { ok: false, error: 'Select birthday.' }
+        if (!passportNumber) return { ok: false, error: 'Enter passport number.' }
+
+        const existing = getCheckInEnrollments(
+          checkInEnrollment,
+          input.date,
+          input.program,
+          input.bookingCode,
+        )
+        const current = existing.find((item) => item.id === input.enrollment.id)
+        if (!current) return { ok: false, error: 'Guest check-in not found.' }
+
+        const nextEnrollment: CheckInEnrollment = {
+          ...current,
+          firstName,
+          lastName,
+          nationality,
+          birthday,
+          passportNumber,
+        }
+
+        setCheckInEnrollmentMap((map) => {
+          const next = withUpdatedCheckInEnrollment(
+            map,
+            input.date,
+            input.program,
+            input.bookingCode,
+            nextEnrollment,
+          )
+          saveCheckInEnrollmentMap(next)
+          return next
+        })
+        persistCheckInWrite(
+          'upsertCheckInEnrollments',
+          upsertCheckInEnrollments(input.date, input.program, input.bookingCode, [
+            nextEnrollment,
+          ]),
+        )
+        return { ok: true }
+      },
+      getCheckInGuestEditIds: (date, program, bookingCode) =>
+        getCheckInGuestEditIds(checkInGuestEdit, date, program, bookingCode),
+      isCheckInGuestEditOpen: (date, program, bookingCode, enrollmentId) =>
+        isCheckInGuestEditOpen(checkInGuestEdit, date, program, bookingCode, enrollmentId),
+      setCheckInGuestEditOpen: (date, program, bookingCode, enrollmentId, open) => {
+        setCheckInGuestEditMap((current) => {
+          const next = withCheckInGuestEdit(
+            current,
+            date,
+            program,
+            bookingCode,
+            enrollmentId,
+            open,
+          )
+          saveCheckInGuestEditMap(next)
+          return next
+        })
+        persistCheckInWrite(
+          open ? 'upsertCheckInGuestEdit' : 'deleteCheckInGuestEdit',
+          open
+            ? upsertCheckInGuestEdit(date, program, bookingCode, enrollmentId)
+            : deleteCheckInGuestEdit(date, program, bookingCode, enrollmentId),
+        )
+      },
       removeCheckInEnrollment: (date, program, bookingCode, enrollmentId) => {
         setCheckInEnrollmentMap((current) => {
           const next = withoutCheckInEnrollment(
@@ -2717,7 +2830,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }))
       },
     }
-  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
+  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }

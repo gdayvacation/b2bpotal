@@ -115,6 +115,22 @@ export function withCheckInEnrollment(
   return { ...map, [key]: day }
 }
 
+export function withUpdatedCheckInEnrollment(
+  map: DayCheckInEnrollmentMap,
+  date: string,
+  program: Program,
+  bookingCode: string,
+  enrollment: CheckInEnrollment,
+): DayCheckInEnrollmentMap {
+  const key = dayBoatPlanKey(date, program)
+  const existing = map[key]?.[bookingCode] ?? []
+  const index = existing.findIndex((item) => item.id === enrollment.id)
+  if (index < 0) return map
+  const nextList = existing.slice()
+  nextList[index] = enrollment
+  return { ...map, [key]: { ...(map[key] ?? {}), [bookingCode]: nextList } }
+}
+
 export function withoutCheckInEnrollment(
   map: DayCheckInEnrollmentMap,
   date: string,

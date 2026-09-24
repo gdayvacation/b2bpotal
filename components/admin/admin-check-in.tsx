@@ -9,6 +9,7 @@ import {
   ClipboardList,
   Copy,
   ExternalLink,
+  Pencil,
   Plus,
   Printer,
   QrCode,
@@ -41,11 +42,19 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { NationalityCombobox } from '@/components/check-in/nationality-combobox'
 import {
   enrolledSeatCount,
   guestDisplayName,
   type CheckInEnrollment,
 } from '@/lib/check-in-enrollment'
+import { matchNationality } from '@/lib/nationalities'
+import {
+  isEnglishName,
+  isEnglishPassport,
+  sanitizeEnglishName,
+  sanitizeEnglishPassport,
+} from '@/lib/check-in-i18n'
 import {
   SEQUENCE_START_PRESETS,
   formatSequenceRange,
@@ -1306,6 +1315,9 @@ function TodayBoardTab({
               </button>
             ))}
           </div>
+          {groups.length > 0 ? (
+            <CheckInSearchField value={boardQuery} onChange={setBoardQuery} />
+          ) : null}
         </div>
         <div className="flex flex-wrap gap-2 text-xs font-semibold">
           <StatPill tone="emerald" label="Checked in" value={summary.checked} />
@@ -1349,11 +1361,8 @@ function TodayBoardTab({
       ) : (
         <div className="space-y-4">
           {listedGroups.length === 0 ? (
-            <div className="gday-sheet space-y-3 rounded-[1.5rem] px-4 py-5 sm:px-5">
-              <CheckInSearchField value={boardQuery} onChange={setBoardQuery} />
-              <p className="text-sm text-teal-900/55">
-                No bookings match “{boardQuery.trim()}”.
-              </p>
+            <div className="gday-sheet rounded-[1.5rem] px-4 py-8 text-center text-sm text-teal-900/55 sm:px-5">
+              No bookings match “{boardQuery.trim()}”.
             </div>
           ) : (
             listedGroups.map((group) => (
@@ -1366,7 +1375,6 @@ function TodayBoardTab({
                 variant={variant}
                 sequences={getGuestSequences(boardDate, group.program)}
                 searchQuery={boardQuery}
-                onSearchQueryChange={setBoardQuery}
                 onSetBookingSequenceStart={
                   isHelper
                     ? undefined
@@ -1484,7 +1492,7 @@ function CheckInSearchField({
   onChange: (value: string) => void
 }) {
   return (
-    <div className="relative min-w-[12rem] flex-1 sm:max-w-[20rem]">
+    <div className="relative w-full min-w-[14rem] sm:w-[20rem]">
       <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-teal-900/35" />
       <Input
         value={value}
@@ -1506,7 +1514,6 @@ function DriverGroupCard({
   variant = 'admin',
   sequences,
   searchQuery,
-  onSearchQueryChange,
   onSetBookingSequenceStart,
 }: {
   group: DriverGroup
@@ -1517,7 +1524,6 @@ function DriverGroupCard({
   variant?: CheckInBoardVariant
   sequences: Record<string, GuestSequenceBlock>
   searchQuery: string
-  onSearchQueryChange: (value: string) => void
   onSetBookingSequenceStart?: (bookingCode: string, start: number | null) => void
 }) {
   const isHelper = variant === 'helper'
@@ -1532,6 +1538,7 @@ function DriverGroupCard({
   const [expandedCodes, setExpandedCodes] = useState<Record<string, boolean>>({})
   const [qrBooking, setQrBooking] = useState<Booking | null>(null)
   const [qrCopied, setQrCopied] = useState(false)
+  const [editBooking, setEditBooking] = useState<Booking | null>(null)
   const [serviceBooking, setServiceBooking] = useState<Booking | null>(null)
   const title = driverGroupTitle(group, showProgram)
   const visibleLines = useMemo(() => {
@@ -1595,16 +1602,13 @@ function DriverGroupCard({
             </p>
           )}
         </div>
-        <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
-          <CheckInSearchField value={searchQuery} onChange={onSearchQueryChange} />
-          <p className="rounded-full border border-teal-900/10 bg-white/90 px-2.5 py-1 text-xs font-medium tabular-nums text-teal-800/70">
-            {visibleLines.length} booking{visibleLines.length === 1 ? '' : 's'} · {group.seatsTotal} pax
-            <span className="text-teal-900/40">
-              {' '}
-              · {visibleLines.filter((line) => line.status === 'checked').length}/{visibleLines.length} in
-            </span>
-          </p>
-        </div>
+        <p className="rounded-full border border-teal-900/10 bg-white/90 px-2.5 py-1 text-xs font-medium tabular-nums text-teal-800/70">
+          {visibleLines.length} booking{visibleLines.length === 1 ? '' : 's'} · {group.seatsTotal} pax
+          <span className="text-teal-900/40">
+            {' '}
+            · {visibleLines.filter((line) => line.status === 'checked').length}/{visibleLines.length} in
+          </span>
+        </p>
       </div>
 
       <Table
@@ -1740,17 +1744,28 @@ function DriverGroupCard({
                   onClick={(event) => event.stopPropagation()}
                   onKeyDown={(event) => event.stopPropagation()}
                 >
-                  <button
-                    type="button"
-                    aria-label={`Show check-in QR for ${line.leaderName || line.booking.code}`}
-                    className="inline-flex size-8 items-center justify-center rounded-lg border border-teal-900/12 bg-white text-teal-800 shadow-sm transition-colors hover:bg-teal-50"
-                    onClick={() => {
-                      setQrCopied(false)
-                      setQrBooking(line.booking)
-                    }}
-                  >
-                    <QrCode className="size-3.5" />
-                  </button>
+                  <div className="flex flex-col items-center gap-1">
+                    <button
+                      type="button"
+                      aria-label={`Show check-in QR for ${line.leaderName || line.booking.code}`}
+                      className="inline-flex size-8 items-center justify-center rounded-lg border border-teal-900/12 bg-white text-teal-800 shadow-sm transition-colors hover:bg-teal-50"
+                      onClick={() => {
+                        setQrCopied(false)
+                        setQrBooking(line.booking)
+                      }}
+                    >
+                      <QrCode className="size-3.5" />
+                    </button>
+                    {isHelper ? null : (
+                      <button
+                        type="button"
+                        className="text-[10px] font-semibold text-teal-800 underline-offset-2 hover:underline"
+                        onClick={() => setEditBooking(line.booking)}
+                      >
+                        Edit
+                      </button>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell className="max-w-0 whitespace-normal px-1.5 align-top">
                   <div className="flex items-start gap-1.5">
@@ -1808,17 +1823,18 @@ function DriverGroupCard({
                               const seatOffset = line.guests
                                 .slice(0, guestIndex)
                                 .reduce((sum, item) => sum + item.seats, 0)
-                              const guestSeq = sequence
-                                ? sequence.seats > 1 && guest.seats > 1
-                                  ? formatSequenceRange(
-                                      sequenceForSeatOffset(sequence, seatOffset),
-                                      sequenceForSeatOffset(
-                                        sequence,
-                                        seatOffset + guest.seats - 1,
-                                      ),
-                                    )
-                                  : String(sequenceForSeatOffset(sequence, seatOffset))
-                                : null
+                              const guestSeq =
+                                sequence && line.status === 'checked'
+                                  ? sequence.seats > 1 && guest.seats > 1
+                                    ? formatSequenceRange(
+                                        sequenceForSeatOffset(sequence, seatOffset),
+                                        sequenceForSeatOffset(
+                                          sequence,
+                                          seatOffset + guest.seats - 1,
+                                        ),
+                                      )
+                                    : String(sequenceForSeatOffset(sequence, seatOffset))
+                                  : null
                               return (
                                 <div key={guest.key} className="rounded-lg bg-white/70 px-2 py-1.5">
                                   <p className="truncate text-[12px] font-semibold text-teal-950">
@@ -1828,6 +1844,18 @@ function DriverGroupCard({
                                       </span>
                                     ) : null}
                                     {guest.guestName}
+                                    {isHelper ? null : (
+                                      <button
+                                        type="button"
+                                        className="ml-1.5 text-[10px] font-semibold text-teal-800 underline-offset-2 hover:underline"
+                                        onClick={(event) => {
+                                          event.stopPropagation()
+                                          setEditBooking(line.booking)
+                                        }}
+                                      >
+                                        Edit
+                                      </button>
+                                    )}
                                     {guest.seats > 1 ? (
                                       <span className="ml-1 font-medium text-teal-900/45">
                                         · {guest.seats} seats
@@ -2044,7 +2072,7 @@ function DriverGroupCard({
             </DialogTitle>
             <DialogDescription className="text-teal-900/60">
               {qrBooking
-                ? `${qrBooking.leadGuest} · ${qrBooking.code}`
+                ? `${qrBooking.leadGuest} · ${qrBooking.code}. Guest can scan to check in or edit details.`
                 : 'Show this code to the guest.'}
             </DialogDescription>
           </DialogHeader>
@@ -2092,6 +2120,16 @@ function DriverGroupCard({
           ) : null}
         </DialogContent>
       </Dialog>
+
+      {isHelper ? null : (
+        <GuestEditDialog
+          booking={editBooking}
+          open={Boolean(editBooking)}
+          onOpenChange={(open) => {
+            if (!open) setEditBooking(null)
+          }}
+        />
+      )}
 
       {isHelper ? null : (
         <BookingServicesDialog
@@ -2443,6 +2481,312 @@ function TicketToggle({
     >
       <Check className="size-4" strokeWidth={on ? 2.75 : 2} />
     </button>
+  )
+}
+
+function GuestEditDialog({
+  booking,
+  open,
+  onOpenChange,
+}: {
+  booking: Booking | null
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  const {
+    getCheckInEnrollments,
+    updateCheckInEnrollment,
+    isCheckInGuestEditOpen,
+    setCheckInGuestEditOpen,
+  } = usePortal()
+  const enrollments = booking
+    ? getCheckInEnrollments(booking.date, booking.program, booking.code)
+    : []
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [draft, setDraft] = useState({
+    firstName: '',
+    lastName: '',
+    nationality: '',
+    birthday: '',
+    passportNumber: '',
+  })
+  const [error, setError] = useState('')
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    if (!open) {
+      setActiveId(null)
+      setError('')
+      setSaved(false)
+    }
+  }, [open])
+
+  function startEdit(enrollment: CheckInEnrollment) {
+    if (!booking) return
+    setActiveId(enrollment.id)
+    setDraft({
+      firstName: enrollment.firstName,
+      lastName: enrollment.lastName,
+      nationality: enrollment.nationality,
+      birthday: enrollment.birthday,
+      passportNumber: enrollment.passportNumber,
+    })
+    setError('')
+    setSaved(false)
+    setCheckInGuestEditOpen(
+      booking.date,
+      booking.program,
+      booking.code,
+      enrollment.id,
+      true,
+    )
+  }
+
+  function togglePhoneEdit(enrollment: CheckInEnrollment, open: boolean) {
+    if (!booking) return
+    setCheckInGuestEditOpen(
+      booking.date,
+      booking.program,
+      booking.code,
+      enrollment.id,
+      open,
+    )
+  }
+
+  function save() {
+    if (!booking || !activeId) return
+    const enrollment = enrollments.find((item) => item.id === activeId)
+    if (!enrollment) return
+    const firstName = sanitizeEnglishName(draft.firstName)
+    const lastName = sanitizeEnglishName(draft.lastName)
+    const passportNumber = sanitizeEnglishPassport(draft.passportNumber)
+    const nationality = matchNationality(draft.nationality) ?? draft.nationality.trim()
+    if (!isEnglishName(firstName) || !isEnglishName(lastName)) {
+      setError('Use English names as on the passport.')
+      return
+    }
+    if (!nationality) {
+      setError('Select a nationality from the list.')
+      return
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(draft.birthday)) {
+      setError('Select birthday.')
+      return
+    }
+    if (!isEnglishPassport(passportNumber)) {
+      setError('Use the passport number as written on the passport.')
+      return
+    }
+    const result = updateCheckInEnrollment({
+      date: booking.date,
+      program: booking.program,
+      bookingCode: booking.code,
+      enrollment: {
+        ...enrollment,
+        firstName,
+        lastName,
+        nationality,
+        birthday: draft.birthday,
+        passportNumber,
+      },
+    })
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    setError('')
+    setSaved(true)
+    setActiveId(null)
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md" showCloseButton>
+        <DialogHeader>
+          <DialogTitle className="pr-8 font-display text-lg font-semibold text-teal-950">
+            Edit guest information
+          </DialogTitle>
+          <DialogDescription className="text-teal-900/60">
+            {booking
+              ? `${booking.leadGuest} · ${booking.code}. Open phone edit per guest — the success screen only shows Edit after you open it.`
+              : 'Fix checked-in guest details.'}
+          </DialogDescription>
+        </DialogHeader>
+        {enrollments.length === 0 ? (
+          <p className="text-sm text-teal-900/55">No guests checked in yet.</p>
+        ) : (
+          <div className="space-y-2">
+            {enrollments.map((enrollment) => {
+              const editing = activeId === enrollment.id
+              return (
+                <div
+                  key={enrollment.id}
+                  className="rounded-xl bg-teal-950/[0.03] px-3 py-2.5 ring-1 ring-teal-900/8"
+                >
+                  {editing ? (
+                    <div className="space-y-2.5">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <Label className="mb-1 text-[11px]">First name</Label>
+                          <Input
+                            className="h-9"
+                            value={draft.firstName}
+                            onChange={(event) =>
+                              setDraft((current) => ({
+                                ...current,
+                                firstName: sanitizeEnglishName(event.target.value),
+                              }))
+                            }
+                          />
+                        </div>
+                        <div>
+                          <Label className="mb-1 text-[11px]">Last name</Label>
+                          <Input
+                            className="h-9"
+                            value={draft.lastName}
+                            onChange={(event) =>
+                              setDraft((current) => ({
+                                ...current,
+                                lastName: sanitizeEnglishName(event.target.value),
+                              }))
+                            }
+                          />
+                        </div>
+                      </div>
+                      <NationalityCombobox
+                        id={`admin-edit-nat-${enrollment.id}`}
+                        value={draft.nationality}
+                        onChange={(value) =>
+                          setDraft((current) => ({ ...current, nationality: value }))
+                        }
+                        label="Nationality"
+                        placeholder="Type to search"
+                        noMatchText="No match"
+                        errorText="Required"
+                      />
+                      <div>
+                        <Label className="mb-1 text-[11px]">Birthday</Label>
+                        <Input
+                          className="h-9"
+                          type="date"
+                          value={draft.birthday}
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              birthday: event.target.value,
+                            }))
+                          }
+                        />
+                      </div>
+                      <div>
+                        <Label className="mb-1 text-[11px]">Passport number</Label>
+                        <Input
+                          className="h-9"
+                          value={draft.passportNumber}
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              passportNumber: sanitizeEnglishPassport(event.target.value),
+                            }))
+                          }
+                        />
+                      </div>
+                      {error ? <p className="text-sm text-rose-700">{error}</p> : null}
+                      <div className="flex gap-2">
+                        <Button type="button" size="sm" onClick={save}>
+                          Save
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setActiveId(null)
+                            setError('')
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-teal-950">
+                          {guestDisplayName(enrollment)}
+                          {booking &&
+                          isCheckInGuestEditOpen(
+                            booking.date,
+                            booking.program,
+                            booking.code,
+                            enrollment.id,
+                          ) ? (
+                            <span className="ml-1.5 rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900">
+                              Phone open
+                            </span>
+                          ) : null}
+                        </p>
+                        <p className="mt-0.5 truncate text-[11px] text-teal-900/55">
+                          {[
+                            enrollment.nationality,
+                            enrollment.birthday ? formatShortDate(enrollment.birthday) : '',
+                            enrollment.passportNumber,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-1">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => startEdit(enrollment)}
+                        >
+                          <Pencil data-icon="inline-start" />
+                          Edit
+                        </Button>
+                        <button
+                          type="button"
+                          className="text-[10px] font-semibold text-teal-800 underline-offset-2 hover:underline"
+                          onClick={() =>
+                            togglePhoneEdit(
+                              enrollment,
+                              !(
+                                booking &&
+                                isCheckInGuestEditOpen(
+                                  booking.date,
+                                  booking.program,
+                                  booking.code,
+                                  enrollment.id,
+                                )
+                              ),
+                            )
+                          }
+                        >
+                          {booking &&
+                          isCheckInGuestEditOpen(
+                            booking.date,
+                            booking.program,
+                            booking.code,
+                            enrollment.id,
+                          )
+                            ? 'Lock phone'
+                            : 'Open phone'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+            {saved ? (
+              <p className="text-sm font-medium text-emerald-800">Details updated.</p>
+            ) : null}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 
