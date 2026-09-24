@@ -10,6 +10,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { DriverNameField } from '@/components/driver-name-field'
+import { OutsourceCompanyField } from '@/components/outsource-company-field'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Segment, SegmentedControl } from '@/components/ui-primitives'
@@ -164,16 +166,18 @@ export function SpecialTransferDialog({
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor="special-driver">Driver name</Label>
-              <Input
-                id="special-driver"
-                value={driver}
-                onChange={(event) => setDriver(event.target.value)}
-                placeholder="e.g. Somchai"
-                className="h-10"
-              />
-            </div>
+            <DriverNameField
+              id="special-driver"
+              value={driver}
+              phone={phone}
+              plate={plate}
+              onSelect={(entry) => {
+                setDriver(entry.name)
+                setPhone(entry.phone)
+                setPlate(entry.plate)
+              }}
+              onNameChange={setDriver}
+            />
             <div className="space-y-1.5">
               <Label htmlFor="special-phone">Telephone</Label>
               <Input
@@ -194,16 +198,12 @@ export function SpecialTransferDialog({
                 className="h-10"
               />
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="special-company">Company</Label>
-              <Input
-                id="special-company"
-                value={company}
-                onChange={(event) => setCompany(event.target.value)}
-                placeholder="e.g. Phuket Transfer Co"
-                className="h-10"
-              />
-            </div>
+            <OutsourceCompanyField
+              id="special-company"
+              label="Company"
+              value={company}
+              onChange={setCompany}
+            />
           </div>
 
           <div className="space-y-1.5">

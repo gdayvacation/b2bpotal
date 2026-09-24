@@ -11,6 +11,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { DriverNameField } from '@/components/driver-name-field'
+import { OutsourceCompanyField } from '@/components/outsource-company-field'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Segment, SegmentedControl } from '@/components/ui-primitives'
@@ -105,16 +107,18 @@ export function EditVanDetailsDialog({
         </DialogHeader>
 
         <div className="space-y-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="van-driver-name">Driver name</Label>
-            <Input
-              id="van-driver-name"
-              value={driver}
-              onChange={(event) => setDriver(event.target.value)}
-              placeholder="e.g. Somchai"
-              className="h-10"
-            />
-          </div>
+          <DriverNameField
+            id="van-driver-name"
+            value={driver}
+            phone={phone}
+            plate={plate}
+            onSelect={(entry) => {
+              setDriver(entry.name)
+              setPhone(entry.phone)
+              setPlate(entry.plate)
+            }}
+            onNameChange={setDriver}
+          />
           <div className="space-y-1.5">
             <Label htmlFor="van-driver-phone">Telephone</Label>
             <Input
@@ -160,16 +164,11 @@ export function EditVanDetailsDialog({
             Outsource van company
           </label>
           {outsourced ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="van-outsource-company">Company name</Label>
-              <Input
-                id="van-outsource-company"
-                value={outsourceCompany}
-                onChange={(event) => setOutsourceCompany(event.target.value)}
-                placeholder="e.g. Phuket Transfer Co"
-                className="h-10"
-              />
-            </div>
+            <OutsourceCompanyField
+              id="van-outsource-company"
+              value={outsourceCompany}
+              onChange={setOutsourceCompany}
+            />
           ) : null}
           <label className="flex items-center gap-2 text-sm font-medium text-teal-950">
             <input

@@ -2046,11 +2046,6 @@ function JobOrderPrintSheet({
                   <div>
                     <p className="text-sm font-semibold text-teal-950">
                       {group.van === null ? 'No Transfer / Unassigned' : `Van ${group.van}`}
-                      {group.outsourced ? (
-                        <span className="ml-2 inline-flex rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-violet-900 uppercase">
-                          {vanOutsourceLabel(group)}
-                        </span>
-                      ) : null}
                     </p>
                     {group.van !== null ? (
                       <p className="mt-0.5 text-[10px] text-teal-900/60">
@@ -2064,7 +2059,6 @@ function JobOrderPrintSheet({
                         {' · '}Plate:{' '}
                         <span className="font-medium text-teal-950">{group.plate || '—'}</span>
                         {group.mockMeta ? ' · needs details' : ''}
-                        {group.outsourced ? ` · ${vanOutsourceLabel(group)}` : ''}
                       </p>
                     ) : null}
                   </div>

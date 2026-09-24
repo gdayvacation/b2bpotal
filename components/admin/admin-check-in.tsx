@@ -12,6 +12,7 @@ import {
   Plus,
   Printer,
   QrCode,
+  Search,
   Ship,
   Trash2,
   Users,
@@ -45,6 +46,13 @@ import {
   guestDisplayName,
   type CheckInEnrollment,
 } from '@/lib/check-in-enrollment'
+import {
+  SEQUENCE_START_PRESETS,
+  formatSequenceRange,
+  sequenceBoardLabel,
+  sequenceForSeatOffset,
+  type GuestSequenceBlock,
+} from '@/lib/check-in-sequence'
 import { formatGuestPaxParts, hasPartialNoShow, originalBookedPax } from '@/lib/check-in-booked-pax'
 import {
   DEFAULT_HELPER_BOARD_HOURS,
@@ -167,6 +175,41 @@ type DriverGroup = {
 
 function programLabel(program: Program) {
   return program === 'PP' ? 'Phi Phi' : 'James Bond'
+}
+
+function normalizeBoardQuery(value: string) {
+  return value.trim().toLowerCase().replace(/[–—]/g, '-').replace(/\s+/g, ' ')
+}
+
+function sequenceMatchesQuery(block: GuestSequenceBlock | null | undefined, query: string) {
+  if (!block) return false
+  const range = formatSequenceRange(block.start, block.end).toLowerCase().replace(/[–—]/g, '-')
+  if (range.includes(query) || query.includes(range)) return true
+  const asNum = Number.parseInt(query, 10)
+  if (Number.isFinite(asNum) && query === String(asNum) && asNum >= block.start && asNum <= block.end) {
+    return true
+  }
+  const parts = query.match(/^(\d+)\s*-\s*(\d+)$/)
+  if (!parts) return false
+  const from = Number(parts[1])
+  const to = Number(parts[2])
+  return from <= block.end && to >= block.start
+}
+
+function lineMatchesBoardQuery(
+  line: BookingLine,
+  block: GuestSequenceBlock | null | undefined,
+  query: string,
+) {
+  const q = normalizeBoardQuery(query)
+  if (!q) return true
+  if (sequenceMatchesQuery(block, q)) return true
+  const hotel = `${line.booking.pickupHotel} ${line.booking.pickupZone}`.toLowerCase()
+  if (hotel.includes(q)) return true
+  if (line.leaderName.toLowerCase().includes(q)) return true
+  if (line.booking.leadGuest.toLowerCase().includes(q)) return true
+  if (line.booking.code.toLowerCase().includes(q)) return true
+  return line.guests.some((guest) => guest.guestName.toLowerCase().includes(q))
 }
 
 function driverGroupTitle(group: DriverGroup, showProgram: boolean) {
@@ -1001,12 +1044,15 @@ function TodayBoardTab({
     resolveVanMeta,
     getCheckInEnrollments,
     getCheckInAttendance,
+    getGuestSequences,
+    setCheckInSequenceBookingStart,
     hydrated,
   } = usePortal()
 
   const [selectedCode, setSelectedCode] = useState<string | null>(null)
   const [calendarOpen, setCalendarOpen] = useState(false)
   const [helperGroupId, setHelperGroupId] = useState<string | null>(null)
+  const [boardQuery, setBoardQuery] = useState('')
   const boardDateObj = useMemo(() => new Date(`${boardDate}T12:00:00`), [boardDate])
   const portalTodayObj = useMemo(() => new Date(`${portalToday}T12:00:00`), [portalToday])
   const isToday = boardDate === portalToday
@@ -1170,6 +1216,17 @@ function TodayBoardTab({
     return selected ? [selected] : []
   }, [groups, helperGroupId, isHelper])
 
+  const listedGroups = useMemo(() => {
+    const query = boardQuery.trim()
+    if (!query) return visibleGroups
+    return visibleGroups.filter((group) => {
+      const sequences = getGuestSequences(boardDate, group.program)
+      return group.lines.some((line) =>
+        lineMatchesBoardQuery(line, sequences[line.booking.code], query),
+      )
+    })
+  }, [boardDate, boardQuery, getGuestSequences, visibleGroups])
+
   const activeHelperGroupId = visibleGroups[0]?.id ?? null
 
   if (!hydrated) {
@@ -1291,19 +1348,37 @@ function TodayBoardTab({
         </div>
       ) : (
         <div className="space-y-4">
-          {visibleGroups.map((group) => (
-            <DriverGroupCard
-              key={group.id}
-              group={group}
-              showProgram={programFilter === 'all'}
-              today={boardDate}
-              origin={origin}
-              variant={variant}
-              onSelectBooking={(code) => {
-                if (!isHelper) setSelectedCode(code)
-              }}
-            />
-          ))}
+          {listedGroups.length === 0 ? (
+            <div className="gday-sheet space-y-3 rounded-[1.5rem] px-4 py-5 sm:px-5">
+              <CheckInSearchField value={boardQuery} onChange={setBoardQuery} />
+              <p className="text-sm text-teal-900/55">
+                No bookings match “{boardQuery.trim()}”.
+              </p>
+            </div>
+          ) : (
+            listedGroups.map((group) => (
+              <DriverGroupCard
+                key={group.id}
+                group={group}
+                showProgram={programFilter === 'all'}
+                today={boardDate}
+                origin={origin}
+                variant={variant}
+                sequences={getGuestSequences(boardDate, group.program)}
+                searchQuery={boardQuery}
+                onSearchQueryChange={setBoardQuery}
+                onSetBookingSequenceStart={
+                  isHelper
+                    ? undefined
+                    : (code, start) =>
+                        setCheckInSequenceBookingStart(boardDate, group.program, code, start)
+                }
+                onSelectBooking={(code) => {
+                  if (!isHelper) setSelectedCode(code)
+                }}
+              />
+            ))
+          )}
         </div>
       )}
 
@@ -1401,6 +1476,27 @@ function makeDriverGroup(
   }
 }
 
+function CheckInSearchField({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <div className="relative min-w-[12rem] flex-1 sm:max-w-[20rem]">
+      <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-teal-900/35" />
+      <Input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Seq, hotel, or guest name"
+        className="h-9 pl-8 text-sm"
+        aria-label="Search sequence, hotel, or guest name"
+      />
+    </div>
+  )
+}
+
 function DriverGroupCard({
   group,
   showProgram,
@@ -1408,6 +1504,10 @@ function DriverGroupCard({
   origin,
   onSelectBooking,
   variant = 'admin',
+  sequences,
+  searchQuery,
+  onSearchQueryChange,
+  onSetBookingSequenceStart,
 }: {
   group: DriverGroup
   showProgram: boolean
@@ -1415,6 +1515,10 @@ function DriverGroupCard({
   origin: string
   onSelectBooking: (code: string) => void
   variant?: CheckInBoardVariant
+  sequences: Record<string, GuestSequenceBlock>
+  searchQuery: string
+  onSearchQueryChange: (value: string) => void
+  onSetBookingSequenceStart?: (bookingCode: string, start: number | null) => void
 }) {
   const isHelper = variant === 'helper'
   const {
@@ -1430,6 +1534,12 @@ function DriverGroupCard({
   const [qrCopied, setQrCopied] = useState(false)
   const [serviceBooking, setServiceBooking] = useState<Booking | null>(null)
   const title = driverGroupTitle(group, showProgram)
+  const visibleLines = useMemo(() => {
+    if (!searchQuery.trim()) return group.lines
+    return group.lines.filter((line) =>
+      lineMatchesBoardQuery(line, sequences[line.booking.code], searchQuery),
+    )
+  }, [group.lines, searchQuery, sequences])
 
   const qrUrl = qrBooking && origin ? guestCheckInUrl(origin, qrBooking.code) : ''
   const qrSrc = qrUrl ? guestCheckInQrImageUrl(qrUrl, 512) : ''
@@ -1485,13 +1595,16 @@ function DriverGroupCard({
             </p>
           )}
         </div>
-        <p className="rounded-full border border-teal-900/10 bg-white/90 px-2.5 py-1 text-xs font-medium tabular-nums text-teal-800/70">
-          {group.lines.length} booking{group.lines.length === 1 ? '' : 's'} · {group.seatsTotal} pax
-          <span className="text-teal-900/40">
-            {' '}
-            · {group.lines.filter((line) => line.status === 'checked').length}/{group.lines.length} in
-          </span>
-        </p>
+        <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+          <CheckInSearchField value={searchQuery} onChange={onSearchQueryChange} />
+          <p className="rounded-full border border-teal-900/10 bg-white/90 px-2.5 py-1 text-xs font-medium tabular-nums text-teal-800/70">
+            {visibleLines.length} booking{visibleLines.length === 1 ? '' : 's'} · {group.seatsTotal} pax
+            <span className="text-teal-900/40">
+              {' '}
+              · {visibleLines.filter((line) => line.status === 'checked').length}/{visibleLines.length} in
+            </span>
+          </p>
+        </div>
       </div>
 
       <Table
@@ -1500,8 +1613,11 @@ function DriverGroupCard({
       >
         <TableHeader>
           <TableRow className="border-b border-teal-900/15 bg-teal-950/[0.03] hover:bg-teal-950/[0.03]">
-            <TableHead className="w-8 px-1.5 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
-              No.
+            <TableHead
+              className="w-[4.5rem] px-1.5 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase"
+              title="Boat ticket sequence — reserved in advance, shown after check-in"
+            >
+              Seq
             </TableHead>
             <TableHead className="w-11 px-1 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
               QR
@@ -1524,7 +1640,7 @@ function DriverGroupCard({
             <TableHead className="w-[16%] px-1.5 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
               Hotel
             </TableHead>
-            <TableHead className="w-12 px-1 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
+            <TableHead className="w-14 px-1 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
               Boat
             </TableHead>
             <TableHead className="w-10 px-1 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
@@ -1555,8 +1671,9 @@ function DriverGroupCard({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {group.lines.map((line, index) => {
+          {visibleLines.map((line) => {
             const payment = bookingPayment(line.booking)
+            const sequence = sequences[line.booking.code] ?? null
             const paid =
               getCheckInPayment(today, line.booking.program, line.booking.code) === 'paid'
             const ticketed =
@@ -1566,6 +1683,11 @@ function DriverGroupCard({
             const progressLabel = `${line.checkedInCount}/${line.bookingSeats}`
             const booked = line.originalPax
             const wholeNoShow = line.status === 'no-show'
+            const sequenceLabel = sequenceBoardLabel(sequence, {
+              checkedInCount: line.checkedInCount,
+              fullyChecked: line.status === 'checked',
+              noShow: wholeNoShow,
+            })
             const partialNoShow = !wholeNoShow && hasPartialNoShow(booked, line.pax)
             const missingPax =
               Math.max(0, booked.adults - line.pax.adults) +
@@ -1599,8 +1721,19 @@ function DriverGroupCard({
                   !isHelper && ticketed && 'bg-sky-50/40',
                 )}
               >
-                <TableCell className="px-1.5 align-top tabular-nums text-teal-900/45">
-                  {index + 1}
+                <TableCell
+                  className="px-1 align-top tabular-nums"
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
+                >
+                  <SequenceCell
+                    label={sequenceLabel}
+                    block={sequence}
+                    editable={Boolean(onSetBookingSequenceStart)}
+                    onSetStart={(start) =>
+                      onSetBookingSequenceStart?.(line.booking.code, start)
+                    }
+                  />
                 </TableCell>
                 <TableCell
                   className="px-1 text-center align-top"
@@ -1664,7 +1797,7 @@ function DriverGroupCard({
                             </p>
                           ) : null}
                           {line.guests.length > 0 ? (
-                            line.guests.map((guest) => {
+                            line.guests.map((guest, guestIndex) => {
                               const details = [
                                 guest.nationality,
                                 guest.birthday ? formatShortDate(guest.birthday) : '',
@@ -1672,9 +1805,28 @@ function DriverGroupCard({
                               ]
                                 .filter(Boolean)
                                 .join(' · ')
+                              const seatOffset = line.guests
+                                .slice(0, guestIndex)
+                                .reduce((sum, item) => sum + item.seats, 0)
+                              const guestSeq = sequence
+                                ? sequence.seats > 1 && guest.seats > 1
+                                  ? formatSequenceRange(
+                                      sequenceForSeatOffset(sequence, seatOffset),
+                                      sequenceForSeatOffset(
+                                        sequence,
+                                        seatOffset + guest.seats - 1,
+                                      ),
+                                    )
+                                  : String(sequenceForSeatOffset(sequence, seatOffset))
+                                : null
                               return (
                                 <div key={guest.key} className="rounded-lg bg-white/70 px-2 py-1.5">
                                   <p className="truncate text-[12px] font-semibold text-teal-950">
+                                    {guestSeq ? (
+                                      <span className="mr-1.5 tabular-nums text-teal-800/70">
+                                        #{guestSeq}
+                                      </span>
+                                    ) : null}
                                     {guest.guestName}
                                     {guest.seats > 1 ? (
                                       <span className="ml-1 font-medium text-teal-900/45">
@@ -1750,7 +1902,10 @@ function DriverGroupCard({
                   </p>
                 </TableCell>
                 <TableCell className="px-1 text-center align-top">
-                  <BoatFleetBadge boat={line.boat} />
+                  <BoatFleetBadge
+                    boat={line.boat}
+                    className="px-2 py-1 text-base font-bold"
+                  />
                 </TableCell>
                 <TableCell className="px-1 text-center align-top text-teal-900/70">
                   {formatIncludeShort(line.booking.parkFee)}
@@ -2335,6 +2490,147 @@ function PayableAmount({
   )
 }
 
+function SequenceCell({
+  label,
+  block,
+  editable,
+  onSetStart,
+}: {
+  label: string | null
+  block: GuestSequenceBlock | null
+  editable: boolean
+  onSetStart: (start: number | null) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [custom, setCustom] = useState('')
+
+  const planned = block ? formatSequenceRange(block.start, block.end) : '—'
+  const previewStart = Number.parseInt(custom, 10)
+  const preview =
+    block && Number.isFinite(previewStart) && previewStart >= 1
+      ? formatSequenceRange(previewStart, previewStart + block.seats - 1)
+      : null
+
+  if (!editable) {
+    return (
+      <span
+        className={cn(
+          'block min-h-8 pt-1 text-lg font-bold leading-tight tabular-nums',
+          label ? 'text-teal-950' : 'text-teal-900/30',
+        )}
+        title={block ? `Reserved ${planned}` : undefined}
+      >
+        {label || '—'}
+      </span>
+    )
+  }
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        if (next) setCustom(block ? String(block.start) : '')
+      }}
+    >
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            className={cn(
+              'flex min-h-8 min-w-[2.75rem] items-start rounded-lg px-1 py-1 text-left text-lg font-bold leading-tight tabular-nums transition-colors hover:bg-teal-50',
+              label ? 'text-teal-950' : 'text-teal-900/30',
+            )}
+            title={
+              block
+                ? `Ticket sequence ${planned}. Click to set 1–${block.seats} or 100–${99 + block.seats}.`
+                : 'Set ticket sequence start'
+            }
+          />
+        }
+      >
+        {label || '—'}
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-56 space-y-3 p-3">
+        <div>
+          <p className="text-[11px] font-semibold tracking-wide text-teal-800/55 uppercase">
+            Ticket sequence
+          </p>
+          <p className="mt-1 text-sm font-semibold tabular-nums text-teal-950">
+            {planned}
+            {block?.overridden ? (
+              <span className="ml-1.5 text-[10px] font-medium text-teal-700/55">set</span>
+            ) : (
+              <span className="ml-1.5 text-[10px] font-medium text-teal-700/45">auto</span>
+            )}
+          </p>
+          <p className="mt-1 text-[11px] leading-snug text-teal-900/55">
+            {block && block.seats > 1
+              ? `Group range shows after all ${block.seats} guests check in.`
+              : 'Number shows after this guest checks in.'}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            className="rounded-lg bg-teal-950/[0.06] px-2 py-1 text-[11px] font-semibold text-teal-900/70 hover:bg-teal-950/[0.1]"
+            onClick={() => {
+              onSetStart(null)
+              setOpen(false)
+            }}
+          >
+            Auto
+          </button>
+          {SEQUENCE_START_PRESETS.map((start) => (
+            <button
+              key={start}
+              type="button"
+              className="rounded-lg bg-teal-950/[0.06] px-2 py-1 text-[11px] font-semibold tabular-nums text-teal-900/70 hover:bg-teal-950/[0.1]"
+              onClick={() => {
+                onSetStart(start)
+                setOpen(false)
+              }}
+            >
+              {block ? formatSequenceRange(start, start + block.seats - 1) : String(start)}
+            </button>
+          ))}
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="sequence-start" className="text-[11px] text-teal-900/60">
+            Custom start
+          </Label>
+          <div className="flex gap-1.5">
+            <Input
+              id="sequence-start"
+              inputMode="numeric"
+              className="h-8 tabular-nums"
+              value={custom}
+              onChange={(event) => setCustom(event.target.value.replace(/[^\d]/g, '').slice(0, 4))}
+              placeholder="100"
+            />
+            <Button
+              type="button"
+              size="sm"
+              className="h-8"
+              disabled={!preview}
+              onClick={() => {
+                if (!Number.isFinite(previewStart) || previewStart < 1) return
+                onSetStart(previewStart)
+                setOpen(false)
+              }}
+            >
+              Set
+            </Button>
+          </div>
+          {preview ? (
+            <p className="text-[11px] tabular-nums text-teal-800/70">Preview {preview}</p>
+          ) : null}
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function PaxCount({
   original,
   current,
@@ -2366,7 +2662,7 @@ function PaxCount({
 function StatusBadge({ status }: { status: GuestLineStatus }) {
   if (status === 'checked') {
     return (
-      <span className="inline-flex rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800">
+      <span className="inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-sm font-bold text-emerald-800">
         In
       </span>
     )
@@ -2374,7 +2670,7 @@ function StatusBadge({ status }: { status: GuestLineStatus }) {
   if (status === 'no-show') {
     return (
       <span
-        className="inline-flex rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800"
+        className="inline-flex rounded-full bg-rose-100 px-2.5 py-1 text-sm font-bold text-rose-800"
         title="Whole booking no-show"
       >
         All NS
@@ -2382,7 +2678,7 @@ function StatusBadge({ status }: { status: GuestLineStatus }) {
     )
   }
   return (
-    <span className="inline-flex rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900">
+    <span className="inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-sm font-bold text-amber-900">
       Wait
     </span>
   )

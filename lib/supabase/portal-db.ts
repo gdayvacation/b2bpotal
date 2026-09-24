@@ -24,6 +24,16 @@ import {
   type CheckInServiceLine,
   type DayCheckInServiceMap,
 } from '@/lib/check-in-services'
+import {
+  DEFAULT_SEQUENCE_START,
+  PROGRAM_SEQUENCE_BOOKING_KEY,
+  type DayCheckInSequenceMap,
+} from '@/lib/check-in-sequence'
+import {
+  DEFAULT_DRIVERS,
+  mergeDriverRoster,
+  type DriverRosterEntry,
+} from '@/lib/driver-roster'
 import type {
   Agent,
   AgentStatus,
@@ -161,6 +171,12 @@ type FleetVanRow = {
   phone: string
 }
 
+type DriverRow = {
+  name: string
+  phone: string
+  plate: string
+}
+
 type VanAssignmentRow = {
   date: string
   program: Program
@@ -196,6 +212,7 @@ export type PortalSnapshot = {
   dayBoatPlans: Record<string, DayBoatPlan>
   dayVehiclePlans: Record<string, DayVehiclePlan>
   fleetVans: FleetVan[]
+  drivers: DriverRosterEntry[]
   bookingCutoffs: BookingCutoffSettings
   bookingClosures: BookingClosure[]
 }
@@ -506,6 +523,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     vanMetaRes,
     vanAssignRes,
     fleetVansRes,
+    driversRes,
     cutoffsRes,
     closuresRes,
   ] = await Promise.all([
@@ -520,6 +538,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     supabase.from('van_meta').select('*'),
     supabase.from('van_assignments').select('*'),
     supabase.from('fleet_vans').select('*').order('van_number'),
+    supabase.from('drivers').select('*').order('name'),
     supabase.from('booking_cutoffs').select('*').eq('id', 'default').maybeSingle(),
     supabase.from('booking_closures').select('*').order('date'),
   ])
@@ -559,6 +578,34 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     }))
   }
 
+  let drivers: DriverRosterEntry[] = []
+  if (driversRes.error) {
+    console.warn(
+      '[supabase] drivers table unavailable — run supabase/add-drivers.sql',
+      driversRes.error.message,
+    )
+  } else {
+    drivers = (driversRes.data as DriverRow[]).map((row) => ({
+      name: row.name ?? '',
+      phone: row.phone ?? '',
+      plate: row.plate ?? '',
+    }))
+    if (drivers.length === 0) {
+      persistQuietly(
+        'seedDrivers',
+        Promise.resolve(
+          supabase.from('drivers').upsert(
+            DEFAULT_DRIVERS.map((driver) => ({
+              name: driver.name,
+              phone: driver.phone,
+              plate: driver.plate,
+            })),
+          ),
+        ),
+      )
+    }
+  }
+
   let bookingCutoffs = { ...DEFAULT_BOOKING_CUTOFFS }
   if (cutoffsRes.error) {
     console.warn(
@@ -595,6 +642,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
       vanAssignRes.data as VanAssignmentRow[],
     ),
     fleetVans,
+    drivers: mergeDriverRoster(drivers),
     bookingCutoffs,
     bookingClosures,
   }
@@ -1136,6 +1184,16 @@ export async function upsertFleetVan(van: FleetVan) {
   if (error) throw new Error(`upsert fleet van: ${error.message}`)
 }
 
+export async function upsertDriver(driver: DriverRosterEntry) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase.from('drivers').upsert({
+    name: driver.name.trim(),
+    phone: driver.phone.trim(),
+    plate: driver.plate.trim(),
+  })
+  if (error) throw new Error(`upsert driver: ${error.message}`)
+}
+
 type CheckInEnrollmentRow = {
   id: string
   date: string
@@ -1171,6 +1229,7 @@ export type CheckInMapsSnapshot = {
   payments: DayCheckInPaymentMap
   tickets: DayCheckInTicketMap
   services: DayCheckInServiceMap
+  sequences: DayCheckInSequenceMap
 }
 
 function isProgram(value: unknown): value is Program {
@@ -1401,6 +1460,61 @@ function buildCheckInServiceMap(rows: CheckInServiceRow[]): DayCheckInServiceMap
   return next
 }
 
+type CheckInSequenceRow = {
+  date: string
+  program: Program
+  booking_code: string
+  start_number: number
+}
+
+function buildCheckInSequenceMap(rows: CheckInSequenceRow[]): DayCheckInSequenceMap {
+  const next: DayCheckInSequenceMap = {}
+  for (const row of rows) {
+    if (!isProgram(row.program)) continue
+    const start = Math.floor(Number(row.start_number))
+    if (!Number.isFinite(start) || start < 1) continue
+    const key = dayBoatPlanKey(asDateString(row.date), row.program)
+    const day = next[key] ?? { start: DEFAULT_SEQUENCE_START, bookings: {} }
+    const code = String(row.booking_code ?? '').trim()
+    if (!code || code === PROGRAM_SEQUENCE_BOOKING_KEY) {
+      day.start = Math.min(start, 9999)
+    } else {
+      day.bookings = { ...day.bookings, [code]: Math.min(start, 9999) }
+    }
+    next[key] = day
+  }
+  return next
+}
+
+function flattenCheckInSequenceMap(map: DayCheckInSequenceMap): CheckInSequenceRow[] {
+  const rows: CheckInSequenceRow[] = []
+  for (const [dayKey, starts] of Object.entries(map)) {
+    const sep = dayKey.indexOf('|')
+    if (sep <= 0) continue
+    const date = dayKey.slice(0, sep)
+    const program = dayKey.slice(sep + 1)
+    if (!isProgram(program)) continue
+    if (starts.start !== DEFAULT_SEQUENCE_START) {
+      rows.push({
+        date,
+        program,
+        booking_code: PROGRAM_SEQUENCE_BOOKING_KEY,
+        start_number: starts.start,
+      })
+    }
+    for (const [bookingCode, start] of Object.entries(starts.bookings)) {
+      if (!bookingCode.trim()) continue
+      rows.push({
+        date,
+        program,
+        booking_code: bookingCode,
+        start_number: start,
+      })
+    }
+  }
+  return rows
+}
+
 function flattenCheckInServiceMap(map: DayCheckInServiceMap): CheckInServiceRow[] {
   const rows: CheckInServiceRow[] = []
   for (const [dayKey, byCode] of Object.entries(map)) {
@@ -1421,11 +1535,12 @@ function flattenCheckInServiceMap(map: DayCheckInServiceMap): CheckInServiceRow[
 /** Returns null when core check-in tables are missing (migration not run yet). */
 export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
   const supabase = getSupabaseBrowserClient()
-  const [enrollmentsRes, attendanceRes, paymentsRes, servicesRes] = await Promise.all([
+  const [enrollmentsRes, attendanceRes, paymentsRes, servicesRes, sequencesRes] = await Promise.all([
     supabase.from('check_in_enrollments').select('*'),
     supabase.from('check_in_attendance').select('*'),
     supabase.from('check_in_payments').select('*'),
     supabase.from('check_in_services').select('*'),
+    supabase.from('check_in_sequences').select('*'),
   ])
 
   if (enrollmentsRes.error || attendanceRes.error || paymentsRes.error) {
@@ -1451,6 +1566,16 @@ export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
     services = buildCheckInServiceMap(servicesRes.data as CheckInServiceRow[])
   }
 
+  let sequences: DayCheckInSequenceMap = {}
+  if (sequencesRes.error) {
+    console.warn(
+      '[supabase] check_in_sequences unavailable — run supabase/add-check-in-sequences.sql',
+      sequencesRes.error.message,
+    )
+  } else {
+    sequences = buildCheckInSequenceMap(sequencesRes.data as CheckInSequenceRow[])
+  }
+
   const paymentRows = paymentsRes.data as CheckInPaymentRow[]
   const split = adoptLegacyPaymentsAsTickets(
     buildCheckInPaymentMap(paymentRows),
@@ -1463,6 +1588,7 @@ export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
     payments: split.payments,
     tickets: split.tickets,
     services,
+    sequences,
   }
 
   if (split.migrated) {
@@ -1615,6 +1741,37 @@ export async function rewriteLegacyPaymentTicksAsTickets(snapshot: CheckInMapsSn
   }
 }
 
+export async function upsertCheckInSequenceStart(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  start: number,
+) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase.from('check_in_sequences').upsert({
+    date,
+    program,
+    booking_code: bookingCode.trim() || PROGRAM_SEQUENCE_BOOKING_KEY,
+    start_number: start,
+  })
+  if (error) throw new Error(`upsert check-in sequence: ${error.message}`)
+}
+
+export async function deleteCheckInSequenceStart(
+  date: string,
+  program: Program,
+  bookingCode: string,
+) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase
+    .from('check_in_sequences')
+    .delete()
+    .eq('date', date)
+    .eq('program', program)
+    .eq('booking_code', bookingCode.trim() || PROGRAM_SEQUENCE_BOOKING_KEY)
+  if (error) throw new Error(`delete check-in sequence: ${error.message}`)
+}
+
 export async function replaceCheckInServicesForBooking(
   date: string,
   program: Program,
@@ -1644,6 +1801,7 @@ export async function pushCheckInMaps(snapshot: CheckInMapsSnapshot) {
   const paymentRows = flattenCheckInPaymentMap(snapshot.payments)
   const ticketRows = flattenCheckInTicketMap(snapshot.tickets)
   const serviceRows = flattenCheckInServiceMap(snapshot.services)
+  const sequenceRows = flattenCheckInSequenceMap(snapshot.sequences)
 
   if (enrollmentRows.length > 0) {
     const { error } = await supabase.from('check_in_enrollments').upsert(enrollmentRows)
@@ -1664,6 +1822,10 @@ export async function pushCheckInMaps(snapshot: CheckInMapsSnapshot) {
   if (serviceRows.length > 0) {
     const { error } = await supabase.from('check_in_services').upsert(serviceRows)
     if (error) throw new Error(`push check-in services: ${error.message}`)
+  }
+  if (sequenceRows.length > 0) {
+    const { error } = await supabase.from('check_in_sequences').upsert(sequenceRows)
+    if (error) throw new Error(`push check-in sequences: ${error.message}`)
   }
 }
 

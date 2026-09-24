@@ -22,6 +22,7 @@ import { Label } from '@/components/ui/label'
 import { CheckInI18nProvider, CheckInLanguageSwitch, useCheckInI18n } from '@/components/check-in/check-in-i18n'
 import { NationalityCombobox } from '@/components/check-in/nationality-combobox'
 import { enrolledSeatCount, guestDisplayName } from '@/lib/check-in-enrollment'
+import { sequenceJustCheckedInLabel } from '@/lib/check-in-sequence'
 import { boatTheme } from '@/lib/boat-theme'
 import { matchNationality } from '@/lib/nationalities'
 import {
@@ -151,6 +152,7 @@ function GuestCheckInForm({
     resolveVanMeta,
     getCheckInEnrollments,
     getCheckInAttendance,
+    getGuestSequence,
     recordGuestCheckIns,
     hydrated,
   } = usePortal()
@@ -1031,6 +1033,39 @@ function GuestCheckInForm({
                     ).map((item) => guestDisplayName(item))
                   : []
             }
+            sequenceLabel={
+              selectedBooking
+                ? sequenceJustCheckedInLabel(
+                    getGuestSequence(
+                      selectedBooking.date,
+                      selectedBooking.program,
+                      selectedBooking.code,
+                    ),
+                    (() => {
+                      const enrollments = getCheckInEnrollments(
+                        selectedBooking.date,
+                        selectedBooking.program,
+                        selectedBooking.code,
+                      )
+                      const checked = enrolledSeatCount(enrollments)
+                      const justChecked = guests.filter(
+                        (guest) => guest.firstName.trim() || guest.lastName.trim(),
+                      ).length
+                      const seats = totalPassengers(selectedBooking)
+                      return {
+                        alreadyChecked: Math.max(0, checked - justChecked),
+                        justChecked: justChecked || checked,
+                        fullyChecked:
+                          getCheckInAttendance(
+                            selectedBooking.date,
+                            selectedBooking.program,
+                            selectedBooking.code,
+                          ) === 'checked' || checked >= seats,
+                      }
+                    })(),
+                  )
+                : null
+            }
             boat={
               selectedBooking
                 ? (getDayBoatPlan(selectedBooking.date, selectedBooking.program).assignments[
@@ -1184,6 +1219,7 @@ function DoneStep({
   needsPayment,
   booking,
   guestNames,
+  sequenceLabel,
   boat,
   boatPlan,
   onAgain,
@@ -1191,6 +1227,7 @@ function DoneStep({
   needsPayment: boolean
   booking: Booking | null
   guestNames: string[]
+  sequenceLabel: string | null
   boat: number | null
   boatPlan: ReturnType<ReturnType<typeof usePortal>['getDayBoatPlan']> | null
   onAgain: () => void
@@ -1210,6 +1247,7 @@ function DoneStep({
     <BoardingSummary
       names={displayNames}
       hotelName={booking?.pickupHotel.trim() || ''}
+      sequenceLabel={sequenceLabel}
       boat={boat}
       boatLabel={
         boat && boatPlan ? boatDisplayName(boatPlan, boat) : boat ? `Boat ${boat}` : null
@@ -1277,11 +1315,13 @@ function DoneStep({
 function BoardingSummary({
   names,
   hotelName,
+  sequenceLabel,
   boat,
   boatLabel,
 }: {
   names: string[]
   hotelName: string
+  sequenceLabel: string | null
   boat: number | null
   boatLabel: string | null
 }) {
@@ -1290,6 +1330,19 @@ function BoardingSummary({
 
   return (
     <div className="space-y-3 text-left">
+      <div className="rounded-2xl bg-teal-950 px-4 py-4 text-center text-white shadow-lg shadow-teal-950/20">
+        <p className="text-[11px] font-semibold tracking-wide text-white/60 uppercase">
+          {t('sequence')}
+        </p>
+        {sequenceLabel ? (
+          <p className="mt-1 font-display text-4xl font-semibold tracking-tight tabular-nums">
+            {sequenceLabel}
+          </p>
+        ) : (
+          <p className="mt-1 text-sm font-medium text-white/70">{t('sequencePending')}</p>
+        )}
+        <p className="mt-2 text-xs leading-relaxed text-white/70">{t('sequenceShowStaff')}</p>
+      </div>
       <div className="rounded-2xl bg-white/80 px-4 py-3.5 ring-1 ring-teal-900/8">
         <p className="text-[11px] font-semibold tracking-wide text-teal-800/50 uppercase">
           {names.length === 1 ? t('guest') : t('guests')}

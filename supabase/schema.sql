@@ -256,6 +256,20 @@ create trigger fleet_vans_set_updated_at
 before update on public.fleet_vans
 for each row execute function public.set_updated_at();
 
+-- Remembered drivers (name → phone + plate)
+create table if not exists public.drivers (
+  name text primary key,
+  phone text not null default '',
+  plate text not null default '',
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+drop trigger if exists drivers_set_updated_at on public.drivers;
+create trigger drivers_set_updated_at
+before update on public.drivers
+for each row execute function public.set_updated_at();
+
 -- One booking can split across multiple vans (pax legs)
 create table if not exists public.van_assignments (
   id uuid primary key default gen_random_uuid(),
@@ -376,6 +390,7 @@ alter table public.day_vehicle_plans enable row level security;
 alter table public.van_meta enable row level security;
 alter table public.van_assignments enable row level security;
 alter table public.fleet_vans enable row level security;
+alter table public.drivers enable row level security;
 alter table public.booking_cutoffs enable row level security;
 alter table public.booking_closures enable row level security;
 alter table public.booking_events enable row level security;
@@ -392,7 +407,7 @@ begin
       and tablename in (
         'agents', 'pickup_zones', 'hotels', 'bookings', 'availability',
         'day_boat_plans', 'boat_assignments',
-        'day_vehicle_plans', 'van_meta', 'van_assignments', 'fleet_vans',
+        'day_vehicle_plans', 'van_meta', 'van_assignments', 'fleet_vans', 'drivers',
         'booking_cutoffs', 'booking_closures', 'booking_events'
       )
       and policyname like 'pilot_%'
@@ -432,6 +447,9 @@ create policy pilot_van_assignments_all on public.van_assignments
   for all to anon, authenticated using (true) with check (true);
 
 create policy pilot_fleet_vans_all on public.fleet_vans
+  for all to anon, authenticated using (true) with check (true);
+
+create policy pilot_drivers_all on public.drivers
   for all to anon, authenticated using (true) with check (true);
 
 create policy pilot_booking_cutoffs_all on public.booking_cutoffs

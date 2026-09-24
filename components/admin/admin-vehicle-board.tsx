@@ -21,6 +21,8 @@ import {
   SpecialTransferDialog,
   specialTransferToMeta,
 } from '@/components/admin/special-transfer-dialog'
+import { DriverNameField } from '@/components/driver-name-field'
+import { OutsourceCompanyField } from '@/components/outsource-company-field'
 import { usePortal } from '@/components/portal-provider'
 import { PageHeader, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
@@ -491,16 +493,17 @@ function VanCrewDetails({
         <p className="text-[11px] font-semibold tracking-wide text-teal-700/60 uppercase">
           Van {van} · driver
         </p>
-        <div className="space-y-1.5">
-          <Label htmlFor={`card-driver-${van}`}>Driver name</Label>
-          <Input
-            id={`card-driver-${van}`}
-            value={crew.driver}
-            onChange={(event) => onChange({ driver: event.target.value })}
-            placeholder="e.g. พี่แขก"
-            className="h-9"
-          />
-        </div>
+        <DriverNameField
+          id={`card-driver-${van}`}
+          value={crew.driver}
+          phone={crew.phone}
+          plate={crew.plate}
+          onSelect={(entry) =>
+            onChange({ driver: entry.name, phone: entry.phone, plate: entry.plate })
+          }
+          onNameChange={(driver) => onChange({ driver })}
+          size="sm"
+        />
         <div className="space-y-1.5">
           <Label htmlFor={`card-phone-${van}`}>Telephone</Label>
           <Input
@@ -536,16 +539,12 @@ function VanCrewDetails({
           Outsource van company
         </label>
         {crew.outsourced ? (
-          <div className="space-y-1.5">
-            <Label htmlFor={`card-outsource-${van}`}>Company name</Label>
-            <Input
-              id={`card-outsource-${van}`}
-              value={crew.outsourceCompany ?? ''}
-              onChange={(event) => onChange({ outsourceCompany: event.target.value })}
-              placeholder="e.g. Phuket Transfer Co"
-              className="h-9"
-            />
-          </div>
+          <OutsourceCompanyField
+            id={`card-outsource-${van}`}
+            value={crew.outsourceCompany ?? ''}
+            onChange={(outsourceCompany) => onChange({ outsourceCompany })}
+            size="sm"
+          />
         ) : null}
         <div className="space-y-1.5">
           <Label htmlFor={`card-charge-${van}`}>Charge amount</Label>
@@ -1851,16 +1850,20 @@ function VehicleBoard({
               </DialogHeader>
 
               <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <div className="space-y-1.5">
-                  <Label htmlFor={`van-driver-${openVan}`}>Driver name</Label>
-                  <Input
-                    id={`van-driver-${openVan}`}
-                    value={openMeta.driver}
-                    onChange={(event) => onVanMeta(openVan, { driver: event.target.value })}
-                    placeholder="e.g. Somchai"
-                    className="h-10"
-                  />
-                </div>
+                <DriverNameField
+                  id={`van-driver-${openVan}`}
+                  value={openMeta.driver}
+                  phone={openMeta.phone}
+                  plate={openMeta.plate}
+                  onSelect={(entry) =>
+                    onVanMeta(openVan, {
+                      driver: entry.name,
+                      phone: entry.phone,
+                      plate: entry.plate,
+                    })
+                  }
+                  onNameChange={(driver) => onVanMeta(openVan, { driver })}
+                />
                 <div className="space-y-1.5">
                   <Label htmlFor={`van-phone-${openVan}`}>Telephone</Label>
                   <Input
@@ -1912,18 +1915,11 @@ function VehicleBoard({
                   Outsource van company
                 </label>
                 {openMeta.outsourced ? (
-                  <div className="space-y-1.5">
-                    <Label htmlFor={`van-outsource-${openVan}`}>Company name</Label>
-                    <Input
-                      id={`van-outsource-${openVan}`}
-                      value={openMeta.outsourceCompany ?? ''}
-                      onChange={(event) =>
-                        onVanMeta(openVan, { outsourceCompany: event.target.value })
-                      }
-                      placeholder="e.g. Phuket Transfer Co"
-                      className="h-10"
-                    />
-                  </div>
+                  <OutsourceCompanyField
+                    id={`van-outsource-${openVan}`}
+                    value={openMeta.outsourceCompany ?? ''}
+                    onChange={(outsourceCompany) => onVanMeta(openVan, { outsourceCompany })}
+                  />
                 ) : null}
               </div>
               {isSpecialTransfer(openMeta) ? (

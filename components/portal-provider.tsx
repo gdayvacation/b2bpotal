@@ -39,6 +39,18 @@ import {
   type DayCheckInServiceMap,
 } from '@/lib/check-in-services'
 import {
+  CHECK_IN_SEQUENCE_STORAGE_KEY,
+  buildGuestSequenceMap,
+  getCheckInSequenceStarts,
+  loadCheckInSequenceMap,
+  saveCheckInSequenceMap,
+  withCheckInSequenceBookingStart,
+  withCheckInSequenceProgramStart,
+  PROGRAM_SEQUENCE_BOOKING_KEY,
+  type DayCheckInSequenceMap,
+  type GuestSequenceBlock,
+} from '@/lib/check-in-sequence'
+import {
   CHECK_IN_ENROLLMENT_STORAGE_KEY,
   enrolledSeatCount,
   getCheckInEnrollments,
@@ -108,10 +120,19 @@ import {
   upsertCheckInAttendanceRow,
   upsertCheckInEnrollments,
   upsertCheckInPaymentRow,
+  upsertCheckInSequenceStart,
   upsertCheckInTicketRow,
+  deleteCheckInSequenceStart,
+  upsertDriver as upsertDriverRow,
   upsertHotel,
   upsertZone,
 } from '@/lib/supabase/portal-db'
+import {
+  loadLocalDrivers,
+  mergeDriverRoster,
+  saveLocalDrivers,
+  type DriverRosterEntry,
+} from '@/lib/driver-roster'
 import type {
   Agent,
   AgentStatus,
@@ -183,6 +204,8 @@ type PortalContextValue = {
   dayBoatPlans: Record<string, DayBoatPlan>
   dayVehiclePlans: Record<string, DayVehiclePlan>
   fleetVans: FleetVan[]
+  drivers: DriverRosterEntry[]
+  upsertDriver: (entry: DriverRosterEntry) => void
   bookingCutoffs: BookingCutoffSettings
   updateBookingCutoffs: (patch: Partial<BookingCutoffSettings>) => void
   bookingClosures: BookingClosure[]
@@ -335,6 +358,19 @@ type PortalContextValue = {
     program: Program,
     bookingCode: string,
     services: CheckInServiceLine[],
+  ) => void
+  getGuestSequences: (date: string, program: Program) => Record<string, GuestSequenceBlock>
+  getGuestSequence: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+  ) => GuestSequenceBlock | null
+  setCheckInSequenceProgramStart: (date: string, program: Program, start: number | null) => void
+  setCheckInSequenceBookingStart: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    start: number | null,
   ) => void
   getCheckInEnrollments: (
     date: string,
@@ -497,7 +533,8 @@ function checkInMapsHaveData(maps: CheckInMapsSnapshot) {
     Object.keys(maps.attendance).length > 0 ||
     Object.keys(maps.payments).length > 0 ||
     Object.keys(maps.tickets).length > 0 ||
-    Object.keys(maps.services).length > 0
+    Object.keys(maps.services).length > 0 ||
+    Object.keys(maps.sequences).length > 0
   )
 }
 
@@ -507,6 +544,7 @@ function applyCheckInMapsToStorage(maps: CheckInMapsSnapshot) {
   saveCheckInPaymentMap(maps.payments)
   saveCheckInTicketMap(maps.tickets)
   saveCheckInServiceMap(maps.services)
+  saveCheckInSequenceMap(maps.sequences)
 }
 
 export function PortalProvider({ children }: { children: ReactNode }) {
@@ -526,7 +564,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [checkInPayment, setCheckInPaymentMap] = useState<DayCheckInPaymentMap>({})
   const [checkInTicket, setCheckInTicketMap] = useState<DayCheckInTicketMap>({})
   const [checkInServices, setCheckInServiceMap] = useState<DayCheckInServiceMap>({})
+  const [checkInSequence, setCheckInSequenceMap] = useState<DayCheckInSequenceMap>({})
   const [fleetVans, setFleetVans] = useState<FleetVan[]>([])
+  const [drivers, setDrivers] = useState<DriverRosterEntry[]>(() => mergeDriverRoster(loadLocalDrivers()))
   const [bookingCutoffs, setBookingCutoffs] = useState<BookingCutoffSettings>(DEFAULT_BOOKING_CUTOFFS)
   const [bookingClosures, setBookingClosures] = useState<BookingClosure[]>([])
   const [bookingEventsByCode, setBookingEventsByCode] = useState<Record<string, BookingEvent[]>>({})
@@ -576,6 +616,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     setCheckInPaymentMap(maps.payments)
     setCheckInTicketMap(maps.tickets)
     setCheckInServiceMap(maps.services)
+    setCheckInSequenceMap(maps.sequences)
     applyCheckInMapsToStorage(maps)
   }
 
@@ -604,6 +645,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     setCheckInPaymentMap(split.payments)
     setCheckInTicketMap(split.tickets)
     setCheckInServiceMap(loadCheckInServiceMap())
+    setCheckInSequenceMap(loadCheckInSequenceMap())
   }, [])
 
   useEffect(() => {
@@ -620,6 +662,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         setDayBoatPlans(snapshot.dayBoatPlans)
         setDayVehiclePlans(snapshot.dayVehiclePlans)
         setFleetVans(snapshot.fleetVans)
+        setDrivers(mergeDriverRoster([...snapshot.drivers, ...loadLocalDrivers()]))
         setBookingCutoffs(snapshot.bookingCutoffs)
         setBookingClosures(snapshot.bookingClosures)
         setLoadError(null)
@@ -751,6 +794,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       setCheckInPaymentMap(loadCheckInPaymentMap())
       setCheckInTicketMap(loadCheckInTicketMap())
       setCheckInServiceMap(loadCheckInServiceMap())
+      setCheckInSequenceMap(loadCheckInSequenceMap())
     }
 
     async function syncCheckInFromCloud(allowMigrate: boolean) {
@@ -773,6 +817,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             payments: loadCheckInPaymentMap(),
             tickets: loadCheckInTicketMap(),
             services: loadCheckInServiceMap(),
+            sequences: loadCheckInSequenceMap(),
           }
           // First cloud sync: upload this browser's local-only check-ins when remote is empty.
           if (!checkInMapsHaveData(remote) && checkInMapsHaveData(local)) {
@@ -802,7 +847,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         event.key === CHECK_IN_ATTENDANCE_STORAGE_KEY ||
         event.key === CHECK_IN_PAYMENT_STORAGE_KEY ||
         event.key === CHECK_IN_TICKET_STORAGE_KEY ||
-        event.key === CHECK_IN_SERVICE_STORAGE_KEY
+        event.key === CHECK_IN_SERVICE_STORAGE_KEY ||
+        event.key === CHECK_IN_SEQUENCE_STORAGE_KEY
       ) {
         reloadCheckInMapsFromStorage()
       }
@@ -1142,6 +1188,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       dayBoatPlans,
       dayVehiclePlans,
       fleetVans,
+      drivers,
       bookingCutoffs,
       bookingClosures,
       getZoneTime,
@@ -1229,6 +1276,58 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         persistCheckInWrite(
           'replaceCheckInServices',
           replaceCheckInServicesForBooking(date, program, bookingCode, services),
+        )
+      },
+      getGuestSequences: (date, program) =>
+        buildGuestSequenceMap({
+          bookings: bookings.filter(
+            (booking) =>
+              isActiveBooking(booking) && booking.date === date && booking.program === program,
+          ),
+          vehiclePlan: getDayVehiclePlan(date, program),
+          boatPlan: getDayBoatPlan(date, program),
+          starts: getCheckInSequenceStarts(checkInSequence, date, program),
+        }),
+      getGuestSequence: (date, program, bookingCode) =>
+        buildGuestSequenceMap({
+          bookings: bookings.filter(
+            (booking) =>
+              isActiveBooking(booking) && booking.date === date && booking.program === program,
+          ),
+          vehiclePlan: getDayVehiclePlan(date, program),
+          boatPlan: getDayBoatPlan(date, program),
+          starts: getCheckInSequenceStarts(checkInSequence, date, program),
+        })[bookingCode] ?? null,
+      setCheckInSequenceProgramStart: (date, program, start) => {
+        setCheckInSequenceMap((current) => {
+          const next = withCheckInSequenceProgramStart(current, date, program, start)
+          saveCheckInSequenceMap(next)
+          return next
+        })
+        persistCheckInWrite(
+          start == null ? 'deleteCheckInSequenceStart' : 'upsertCheckInSequenceStart',
+          start == null
+            ? deleteCheckInSequenceStart(date, program, PROGRAM_SEQUENCE_BOOKING_KEY)
+            : upsertCheckInSequenceStart(date, program, PROGRAM_SEQUENCE_BOOKING_KEY, start),
+        )
+      },
+      setCheckInSequenceBookingStart: (date, program, bookingCode, start) => {
+        setCheckInSequenceMap((current) => {
+          const next = withCheckInSequenceBookingStart(
+            current,
+            date,
+            program,
+            bookingCode,
+            start,
+          )
+          saveCheckInSequenceMap(next)
+          return next
+        })
+        persistCheckInWrite(
+          start == null ? 'deleteCheckInSequenceStart' : 'upsertCheckInSequenceStart',
+          start == null
+            ? deleteCheckInSequenceStart(date, program, bookingCode)
+            : upsertCheckInSequenceStart(date, program, bookingCode, start),
         )
       },
       getCheckInEnrollments: (date, program, bookingCode) =>
@@ -1332,6 +1431,20 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       getDayVehiclePlan,
       getFleetVan,
       resolveVanMeta,
+      upsertDriver: (entry) => {
+        const cleaned: DriverRosterEntry = {
+          name: entry.name.trim(),
+          phone: entry.phone.trim(),
+          plate: entry.plate.trim(),
+        }
+        if (!cleaned.name) return
+        setDrivers((current) => {
+          const next = mergeDriverRoster([...current, cleaned])
+          saveLocalDrivers(next)
+          return next
+        })
+        persistQuietly('upsertDriver', upsertDriverRow(cleaned))
+      },
       getBookingClosure,
       isProgramClosed,
       isBookingOpen: (travelDate) => isBookingOpenForDate(bookingCutoffs, travelDate),
@@ -2604,7 +2717,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }))
       },
     }
-  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, fleetVans, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
+  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }

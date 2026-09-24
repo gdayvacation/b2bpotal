@@ -416,6 +416,13 @@ export function vanHasSavedMeta(meta?: VanMeta | null) {
   )
 }
 
+export const VAN_OUTSOURCE_COMPANIES = ['Somjit', '888', 'Ao', 'Cash'] as const
+export type VanOutsourceCompany = (typeof VAN_OUTSOURCE_COMPANIES)[number]
+
+export function isVanOutsourceCompany(value: string): value is VanOutsourceCompany {
+  return (VAN_OUTSOURCE_COMPANIES as readonly string[]).includes(value)
+}
+
 export function vanOutsourceLabel(meta: Pick<VanMeta, 'outsourced' | 'outsourceCompany'>) {
   if (!meta.outsourced) return ''
   const company = meta.outsourceCompany?.trim()
