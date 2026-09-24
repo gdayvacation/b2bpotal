@@ -2,12 +2,69 @@ import { PORTAL_TIMEZONE, addDaysISO, todayISO } from '@/lib/format'
 import { guestCheckInQrImageUrl } from '@/lib/check-in-qr'
 
 const HELPER_BOARD_SALT = 'gday-helper-board-v1'
+const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/
 
-/** Helper board closes at 11:00 Asia/Bangkok on the travel date. */
+export const HELPER_BOARD_HOURS_STORAGE_KEY = 'gday-helper-board-hours'
+
+/** @deprecated Use DEFAULT_HELPER_BOARD_HOURS.close */
 export const HELPER_BOARD_CLOSE_HOUR = 11
 
-export function helperBoardToken(date: string) {
-  const input = `${HELPER_BOARD_SALT}|${date}|helper`
+export type HelperBoardHours = {
+  open: string
+  close: string
+}
+
+export const DEFAULT_HELPER_BOARD_HOURS: HelperBoardHours = {
+  open: '00:00',
+  close: '11:00',
+}
+
+export function normalizeHelperBoardTime(value: string): string | null {
+  const trimmed = value.trim()
+  if (!TIME_RE.test(trimmed)) return null
+  return trimmed
+}
+
+export function normalizeHelperBoardHours(
+  value?: Partial<HelperBoardHours> | null,
+): HelperBoardHours {
+  return {
+    open: normalizeHelperBoardTime(value?.open ?? '') ?? DEFAULT_HELPER_BOARD_HOURS.open,
+    close: normalizeHelperBoardTime(value?.close ?? '') ?? DEFAULT_HELPER_BOARD_HOURS.close,
+  }
+}
+
+export function helperBoardHoursValid(hours: HelperBoardHours) {
+  return timeToMinutes(hours.close) > timeToMinutes(hours.open)
+}
+
+export function formatHelperBoardTime(value: string) {
+  return normalizeHelperBoardTime(value) ?? value
+}
+
+export function loadHelperBoardHours(): HelperBoardHours {
+  if (typeof window === 'undefined') return DEFAULT_HELPER_BOARD_HOURS
+  try {
+    const raw = window.localStorage.getItem(HELPER_BOARD_HOURS_STORAGE_KEY)
+    if (!raw) return DEFAULT_HELPER_BOARD_HOURS
+    return normalizeHelperBoardHours(JSON.parse(raw) as Partial<HelperBoardHours>)
+  } catch {
+    return DEFAULT_HELPER_BOARD_HOURS
+  }
+}
+
+export function saveHelperBoardHours(hours: Partial<HelperBoardHours>) {
+  const next = normalizeHelperBoardHours({ ...loadHelperBoardHours(), ...hours })
+  if (typeof window === 'undefined') return next
+  try {
+    window.localStorage.setItem(HELPER_BOARD_HOURS_STORAGE_KEY, JSON.stringify(next))
+  } catch {
+    // ignore quota / private mode
+  }
+  return next
+}
+
+function hashToken(input: string) {
   let a = 2166136261
   let b = 0x811c9dc5
   for (let i = 0; i < input.length; i += 1) {
@@ -19,21 +76,50 @@ export function helperBoardToken(date: string) {
   return `${(a >>> 0).toString(36).padStart(7, '0')}${(b >>> 0).toString(36).padStart(7, '0')}`
 }
 
-export function isValidHelperBoardToken(date: string, token: string) {
-  return Boolean(date) && token.trim() === helperBoardToken(date)
+export function helperBoardToken(date: string, hours?: Partial<HelperBoardHours>) {
+  const normalized = normalizeHelperBoardHours(hours)
+  return hashToken(`${HELPER_BOARD_SALT}|${date}|helper|${normalized.open}|${normalized.close}`)
 }
 
-export function helperBoardPath(date: string) {
-  const token = helperBoardToken(date)
-  return `/check-in/helper?d=${encodeURIComponent(date)}&t=${encodeURIComponent(token)}`
+function helperBoardTokenLegacy(date: string) {
+  return hashToken(`${HELPER_BOARD_SALT}|${date}|helper`)
 }
 
-export function helperBoardUrl(origin: string, date: string) {
-  return `${origin.replace(/\/$/, '')}${helperBoardPath(date)}`
+export function isValidHelperBoardToken(
+  date: string,
+  token: string,
+  hours?: Partial<HelperBoardHours>,
+) {
+  if (!date || !token.trim()) return false
+  const trimmed = token.trim()
+  return (
+    trimmed === helperBoardToken(date, hours) || trimmed === helperBoardTokenLegacy(date)
+  )
 }
 
-export function helperBoardQrImageUrl(origin: string, date: string, size = 512) {
-  return guestCheckInQrImageUrl(helperBoardUrl(origin, date), size)
+export function helperBoardPath(date: string, hours?: Partial<HelperBoardHours>) {
+  const normalized = normalizeHelperBoardHours(hours)
+  const token = helperBoardToken(date, normalized)
+  const params = new URLSearchParams({
+    d: date,
+    t: token,
+    o: normalized.open,
+    c: normalized.close,
+  })
+  return `/check-in/helper?${params.toString()}`
+}
+
+export function helperBoardUrl(origin: string, date: string, hours?: Partial<HelperBoardHours>) {
+  return `${origin.replace(/\/$/, '')}${helperBoardPath(date, hours)}`
+}
+
+export function helperBoardQrImageUrl(
+  origin: string,
+  date: string,
+  size = 512,
+  hours?: Partial<HelperBoardHours>,
+) {
+  return guestCheckInQrImageUrl(helperBoardUrl(origin, date, hours), size)
 }
 
 function bangkokClock(now: Date) {
@@ -48,23 +134,57 @@ function bangkokClock(now: Date) {
   }).formatToParts(now)
   const value = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((part) => part.type === type)?.value ?? ''
+  const hour = Number(value('hour'))
+  const minute = Number(value('minute'))
   return {
     date: `${value('year')}-${value('month')}-${value('day')}`,
-    hour: Number(value('hour')),
-    minute: Number(value('minute')),
+    hour,
+    minute,
+    minutes: hour * 60 + minute,
   }
 }
 
-export function isHelperBoardClosed(date: string, now: Date = new Date()) {
+function timeToMinutes(value: string) {
+  const normalized = normalizeHelperBoardTime(value)
+  if (!normalized) return 0
+  const [hour, minute] = normalized.split(':').map(Number)
+  return (hour ?? 0) * 60 + (minute ?? 0)
+}
+
+export function isHelperBoardClosed(
+  date: string,
+  now: Date = new Date(),
+  hours?: Partial<HelperBoardHours>,
+) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return true
   const clock = bangkokClock(now)
   if (clock.date > date) return true
   if (clock.date < date) return false
-  return clock.hour >= HELPER_BOARD_CLOSE_HOUR
+  return clock.minutes >= timeToMinutes(normalizeHelperBoardHours(hours).close)
 }
 
-/** After 11:00 today, admin issues tomorrow’s helper QR. */
-export function helperBoardIssueDate(now: Date = new Date()) {
+export function isHelperBoardNotYetOpen(
+  date: string,
+  now: Date = new Date(),
+  hours?: Partial<HelperBoardHours>,
+) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return true
+  const clock = bangkokClock(now)
+  if (clock.date > date) return false
+  if (clock.date < date) return true
+  return clock.minutes < timeToMinutes(normalizeHelperBoardHours(hours).open)
+}
+
+export function isHelperBoardOpen(
+  date: string,
+  now: Date = new Date(),
+  hours?: Partial<HelperBoardHours>,
+) {
+  return !isHelperBoardNotYetOpen(date, now, hours) && !isHelperBoardClosed(date, now, hours)
+}
+
+/** After today’s close time, admin issues tomorrow’s helper QR. */
+export function helperBoardIssueDate(now: Date = new Date(), hours?: Partial<HelperBoardHours>) {
   const today = todayISO(now)
-  return isHelperBoardClosed(today, now) ? addDaysISO(today, 1) : today
+  return isHelperBoardClosed(today, now, hours) ? addDaysISO(today, 1) : today
 }
