@@ -22,7 +22,7 @@ export function loadCheckInPaymentMap(): DayCheckInPaymentMap {
       if (!row || typeof row !== 'object') continue
       const payments: Record<string, CheckInPaymentStatus> = {}
       for (const [code, status] of Object.entries(row as Record<string, unknown>)) {
-        if (status === 'paid') payments[code] = 'paid'
+        if (status === 'paid' && !code.endsWith(':ticket')) payments[code] = 'paid'
       }
       if (Object.keys(payments).length > 0) next[dayKey] = payments
     }

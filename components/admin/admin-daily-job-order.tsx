@@ -44,6 +44,7 @@ import {
   type Booking,
   type DayVehiclePlan,
   type Program,
+  vanOutsourceLabel,
   type VanMeta,
   type VanSplit,
 } from '@/lib/types'
@@ -76,6 +77,8 @@ type VanGroup = {
   driver: string
   plate: string
   phone: string
+  outsourced: boolean
+  outsourceCompany: string
   mockMeta: boolean
   rows: JobOrderRow[]
   totals: {
@@ -1039,6 +1042,11 @@ function VanGroupSection({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <p className="text-sm font-semibold text-teal-950">{title}</p>
+            {group.outsourced ? (
+              <span className="rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-violet-900 uppercase">
+                {vanOutsourceLabel(group)}
+              </span>
+            ) : null}
             {group.mockMeta ? (
               <span className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
                 Needs details
@@ -1067,6 +1075,14 @@ function VanGroupSection({
               ) : null}
               <span className="mx-1.5 text-teal-900/25">·</span>
               Plate: <span className="font-medium text-teal-950">{group.plate || '—'}</span>
+              {group.outsourced ? (
+                <>
+                  <span className="mx-1.5 text-teal-900/25">·</span>
+                  <span className="font-semibold text-violet-800">
+                    {vanOutsourceLabel(group)}
+                  </span>
+                </>
+              ) : null}
             </p>
           ) : (
             <p className="mt-0.5 text-xs text-teal-900/55">No hotel transfer for these bookings.</p>
@@ -2030,6 +2046,11 @@ function JobOrderPrintSheet({
                   <div>
                     <p className="text-sm font-semibold text-teal-950">
                       {group.van === null ? 'No Transfer / Unassigned' : `Van ${group.van}`}
+                      {group.outsourced ? (
+                        <span className="ml-2 inline-flex rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-violet-900 uppercase">
+                          {vanOutsourceLabel(group)}
+                        </span>
+                      ) : null}
                     </p>
                     {group.van !== null ? (
                       <p className="mt-0.5 text-[10px] text-teal-900/60">
@@ -2043,6 +2064,7 @@ function JobOrderPrintSheet({
                         {' · '}Plate:{' '}
                         <span className="font-medium text-teal-950">{group.plate || '—'}</span>
                         {group.mockMeta ? ' · needs details' : ''}
+                        {group.outsourced ? ` · ${vanOutsourceLabel(group)}` : ''}
                       </p>
                     ) : null}
                   </div>
@@ -2452,7 +2474,7 @@ function buildAgentGroups(vanGroups: VanGroup[]): AgentGroup[] {
   for (const group of vanGroups) {
     const label =
       group.van !== null
-        ? `Van ${group.van}`
+        ? `Van ${group.van}${group.outsourced ? ` · ${vanOutsourceLabel(group)}` : ''}`
         : group.id === 'no-transfer'
           ? 'No transfer'
           : '—'
@@ -2569,6 +2591,10 @@ function buildVanGroups(
         meta.incomplete,
         vanBookings,
         assignments,
+        {
+          outsourced: meta.outsourced === true,
+          outsourceCompany: meta.outsourceCompany?.trim() || '',
+        },
       ),
     )
   }
@@ -2649,6 +2675,7 @@ function makeGroup(
   mockMeta: boolean,
   bookings: Booking[],
   assignments?: Record<string, VanSplit[]>,
+  outsource?: { outsourced?: boolean; outsourceCompany?: string },
 ): VanGroup {
   const rows = bookings.map((booking, index) => {
     const legs = assignments?.[booking.code] ?? []
@@ -2667,6 +2694,8 @@ function makeGroup(
     driver,
     plate,
     phone,
+    outsourced: outsource?.outsourced === true,
+    outsourceCompany: outsource?.outsourceCompany?.trim() || '',
     mockMeta,
     rows,
     totals: {

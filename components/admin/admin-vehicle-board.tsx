@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Bus,
   CalendarIcon,
+  Car,
   GripVertical,
   Pencil,
   Plus,
@@ -16,6 +17,10 @@ import {
   Users,
 } from 'lucide-react'
 import { AdminDailyJobOrder } from '@/components/admin/admin-daily-job-order'
+import {
+  SpecialTransferDialog,
+  specialTransferToMeta,
+} from '@/components/admin/special-transfer-dialog'
 import { usePortal } from '@/components/portal-provider'
 import { PageHeader, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
@@ -31,7 +36,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { formatLongDate, formatShortDate, toISODate } from '@/lib/format'
+import { formatLongDate, formatShortDate, formatThb, toISODate } from '@/lib/format'
 import { boatTheme } from '@/lib/boat-theme'
 import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
 import {
@@ -46,7 +51,12 @@ import {
   formatPaxBreakdown,
   isActiveBooking,
   isNoTransfer,
+  isSpecialTransfer,
+  specialTransferDirectionLabel,
+  specialTransferKindLabel,
   totalPassengers,
+  vanHasSavedMeta,
+  vanOutsourceLabel,
   vanSeatCapacity,
   type BoatNumber,
   type Booking,
@@ -67,6 +77,18 @@ import { cn } from '@/lib/utils'
 const DRAG_MIME = 'application/x-gday-van-codes'
 /** Always show this many van cards ready to receive guests. */
 const DEFAULT_DAY_VAN_COUNT = 4
+
+function nextAvailableVan(plan: DayVehiclePlan | null) {
+  if (!plan) return DEFAULT_DAY_VAN_COUNT + 1
+  const assigned = listVanNumbers(plan.assignments)
+  const saved = Object.entries(plan.vanMeta ?? {})
+    .filter(([, meta]) => vanHasSavedMeta(meta))
+    .map(([key]) => Number(key))
+    .filter((van) => Number.isFinite(van) && van >= 1)
+  const maxVan =
+    assigned.length > 0 || saved.length > 0 ? Math.max(0, ...assigned, ...saved) : 0
+  return Math.max(maxVan, DEFAULT_DAY_VAN_COUNT) + 1
+}
 
 function readDragCodes(event: React.DragEvent, fallback: string[] | null): string[] {
   const raw =
@@ -106,6 +128,7 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
   const [program, setProgram] = useState<Program | null>(null)
   const [calendarOpen, setCalendarOpen] = useState(false)
   const [jobOrderOpen, setJobOrderOpen] = useState(false)
+  const [specialVan, setSpecialVan] = useState<number | null>(null)
 
   const selectedDateObj = new Date(`${selectedDate}T12:00:00`)
 
@@ -144,6 +167,7 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
     if (!date) return
     setSelectedDate(toISODate(date))
     setProgram(null)
+    setSpecialVan(null)
     setCalendarOpen(false)
   }
 
@@ -174,6 +198,15 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
           actions={
             program ? (
               <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setSpecialVan(nextAvailableVan(plan))}
+                >
+                  <Car data-icon="inline-start" />
+                  Special Transfers
+                </Button>
                 <Button
                   type="button"
                   variant="outline"
@@ -307,6 +340,8 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
           onAutoAssign={() => autoAssignDayVans(selectedDate, program)}
           onClear={() => clearDayVanAssignments(selectedDate, program)}
           onOpenJobOrder={() => setJobOrderOpen(true)}
+          specialVan={specialVan}
+          onSpecialVan={setSpecialVan}
         />
       ) : null}
     </div>
@@ -427,6 +462,24 @@ function VanCrewDetails({
           <p className="mt-0.5 truncate text-[11px] leading-tight text-teal-900/55">
             {contact || 'Plate · Tel'}
           </p>
+          {isSpecialTransfer(crew) ? (
+            <p className="mt-1 truncate text-[10px] font-semibold tracking-wide text-sky-800 uppercase">
+              {specialTransferKindLabel(crew.specialKind)}
+              {specialTransferDirectionLabel(crew)
+                ? ` · ${specialTransferDirectionLabel(crew)}`
+                : ''}
+              {formatThb(crew.chargeAmount ?? 0) ? ` · ${formatThb(crew.chargeAmount ?? 0)}` : ''}
+            </p>
+          ) : crew.outsourced ? (
+            <p className="mt-1 truncate text-[10px] font-semibold tracking-wide text-violet-800 uppercase">
+              {vanOutsourceLabel(crew)}
+              {formatThb(crew.chargeAmount ?? 0) ? ` · ${formatThb(crew.chargeAmount ?? 0)}` : ''}
+            </p>
+          ) : formatThb(crew.chargeAmount ?? 0) ? (
+            <p className="mt-1 truncate text-[10px] font-semibold tracking-wide text-teal-800 uppercase">
+              {formatThb(crew.chargeAmount ?? 0)}
+            </p>
+          ) : null}
         </div>
         <Pencil className="mt-0.5 size-3 shrink-0 text-teal-800/35" />
       </PopoverTrigger>
@@ -468,10 +521,54 @@ function VanCrewDetails({
             className="h-9"
           />
         </div>
+        <label className="flex items-center gap-2 text-sm font-medium text-teal-950">
+          <input
+            type="checkbox"
+            className="size-3.5 rounded border-teal-900/25 text-violet-700"
+            checked={crew.outsourced === true}
+            onChange={(event) =>
+              onChange({
+                outsourced: event.target.checked,
+                outsourceCompany: event.target.checked ? crew.outsourceCompany : '',
+              })
+            }
+          />
+          Outsource van company
+        </label>
+        {crew.outsourced ? (
+          <div className="space-y-1.5">
+            <Label htmlFor={`card-outsource-${van}`}>Company name</Label>
+            <Input
+              id={`card-outsource-${van}`}
+              value={crew.outsourceCompany ?? ''}
+              onChange={(event) => onChange({ outsourceCompany: event.target.value })}
+              placeholder="e.g. Phuket Transfer Co"
+              className="h-9"
+            />
+          </div>
+        ) : null}
+        <div className="space-y-1.5">
+          <Label htmlFor={`card-charge-${van}`}>Charge amount</Label>
+          <div className="relative">
+            <Input
+              id={`card-charge-${van}`}
+              type="number"
+              min={0}
+              step={100}
+              value={crew.chargeAmount && crew.chargeAmount > 0 ? String(crew.chargeAmount) : ''}
+              onChange={(event) =>
+                onChange({ chargeAmount: event.target.value === '' ? 0 : Number(event.target.value) })
+              }
+              placeholder="e.g. 2500"
+              className="h-9 pr-12"
+            />
+            <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[11px] font-semibold text-teal-800/55">
+              THB
+            </span>
+          </div>
+        </div>
         <p className="text-[11px] leading-relaxed text-teal-800/55">
-          {crew.fromFleet
-            ? 'Filled from the last day this van was used. Change here to update today and tomorrow.'
-            : 'Saved for this day and remembered for the same van number next time.'}
+          Saved for this day only. The next day starts blank.
         </p>
       </PopoverContent>
     </Popover>
@@ -585,6 +682,8 @@ function VehicleBoard({
   onAutoAssign,
   onClear,
   onOpenJobOrder,
+  specialVan,
+  onSpecialVan,
 }: {
   date: string
   program: Program
@@ -597,11 +696,16 @@ function VehicleBoard({
   onAutoAssignBoats: () => void
   onClearBoats: () => void
   onSaveSplits: (code: string, legs: VanSplit[]) => void
-  onVanMeta: (van: number, meta: Partial<VanMeta> & { capacity?: number | null }) => void
+  onVanMeta: (
+    van: number,
+    meta: Partial<VanMeta> & { capacity?: number | null; specialKind?: VanMeta['specialKind'] | null },
+  ) => void
   onReorderVan: (van: number, orderedCodes: string[]) => void
   onAutoAssign: () => void
   onClear: () => void
   onOpenJobOrder: () => void
+  specialVan: number | null
+  onSpecialVan: (van: number | null) => void
 }) {
   const { resolveVanMeta } = usePortal()
   const [openVan, setOpenVan] = useState<number | null>(null)
@@ -616,7 +720,14 @@ function VehicleBoard({
 
   const capacity = plan.vanCapacity || DEFAULT_VAN_CAPACITY
   const vanNumbers = listVanNumbers(plan.assignments)
-  const maxVan = vanNumbers.length > 0 ? Math.max(...vanNumbers) : 0
+  const savedMetaVans = Object.entries(plan.vanMeta ?? {})
+    .filter(([, meta]) => vanHasSavedMeta(meta))
+    .map(([key]) => Number(key))
+    .filter((van) => Number.isFinite(van) && van >= 1)
+  const maxVan =
+    vanNumbers.length > 0 || savedMetaVans.length > 0
+      ? Math.max(0, ...vanNumbers, ...savedMetaVans)
+      : 0
   const nextEmptyVan = Math.max(maxVan, DEFAULT_DAY_VAN_COUNT) + 1
   const boardVans = Array.from(
     { length: Math.max(DEFAULT_DAY_VAN_COUNT, maxVan) },
@@ -849,18 +960,26 @@ function VehicleBoard({
     }
     const boatMixed = boatVotes.size > 1
     const isExtraSlot = van === nextEmptyVan
+    const isSpecial = isSpecialTransfer(crew)
     return {
       van,
       items,
       pax,
-      zone: items.length > 0 ? zone : isExtraSlot ? 'Drop guests here' : `Van ${van} ready`,
+      zone: items.length > 0
+        ? zone
+        : isSpecial
+          ? specialTransferDirectionLabel(crew) || specialTransferKindLabel(crew.specialKind)
+          : isExtraSlot
+            ? 'Drop guests here'
+            : `Van ${van} ready`,
       over: pax > seats,
       seats,
       crew,
       assignedBoat,
       boatMixed,
-      isEmptySlot: isExtraSlot && items.length === 0,
-      isPreparedEmpty: !isExtraSlot && items.length === 0,
+      isSpecial,
+      isEmptySlot: isExtraSlot && items.length === 0 && !isSpecial,
+      isPreparedEmpty: !isExtraSlot && items.length === 0 && !isSpecial,
     }
   })
 
@@ -913,18 +1032,24 @@ function VehicleBoard({
               selected.
             </p>
           </div>
-          <div className="flex flex-wrap gap-2 sm:hidden">
-            <Button type="button" variant="outline" onClick={onOpenJobOrder}>
-              <Printer data-icon="inline-start" />
-              Driver Job Order
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" onClick={() => onSpecialVan(nextEmptyVan)}>
+              <Car data-icon="inline-start" />
+              Special Transfers
             </Button>
-            <Button type="button" variant="outline" onClick={onClear}>
-              Clear
-            </Button>
-            <Button type="button" onClick={onAutoAssign}>
-              <Sparkles data-icon="inline-start" />
-              Auto-assign by AI
-            </Button>
+            <div className="flex flex-wrap gap-2 sm:hidden">
+              <Button type="button" variant="outline" onClick={onOpenJobOrder}>
+                <Printer data-icon="inline-start" />
+                Driver Job Order
+              </Button>
+              <Button type="button" variant="outline" onClick={onClear}>
+                Clear
+              </Button>
+              <Button type="button" onClick={onAutoAssign}>
+                <Sparkles data-icon="inline-start" />
+                Auto-assign by AI
+              </Button>
+            </div>
           </div>
         </div>
       </Surface>
@@ -1300,6 +1425,7 @@ function VehicleBoard({
                     boatMixed,
                     isEmptySlot,
                     isPreparedEmpty,
+                    isSpecial,
                   }) => {
                     const isDrop = dropTarget === van && !!dragCodes?.length
                     const projected = isDrop ? pax + draggingPax : pax
@@ -1331,7 +1457,9 @@ function VehicleBoard({
                             ? 'border-amber-500/45'
                             : isDrop
                               ? 'border-teal-600/50 ring-2 ring-teal-600/25'
-                              : isEmptySlot
+                              : isSpecial
+                                ? 'border-sky-600/25'
+                                : isEmptySlot
                                 ? 'border-dashed border-teal-900/18'
                                 : isPreparedEmpty
                                   ? 'border-dashed border-teal-900/14'
@@ -1354,6 +1482,8 @@ function VehicleBoard({
                                   'flex size-9 shrink-0 items-center justify-center rounded-xl text-sm font-bold',
                                   isEmptySlot
                                     ? 'bg-teal-950/[0.04] text-teal-800/50'
+                                    : isSpecial
+                                      ? 'bg-sky-700 text-white'
                                     : isPreparedEmpty
                                       ? 'bg-teal-800/80 text-white'
                                       : 'bg-teal-800 text-white',
@@ -1363,11 +1493,33 @@ function VehicleBoard({
                               </span>
                               <div className="min-w-0">
                                 <p className="text-sm font-semibold text-teal-950">
-                                  {isEmptySlot ? `New van ${van}` : `Van ${van}`}
+                                  {isEmptySlot
+                                    ? `New van ${van}`
+                                    : isSpecial
+                                      ? `${specialTransferKindLabel(crew.specialKind)} ${van}`
+                                      : `Van ${van}`}
                                 </p>
                                 <p className="truncate text-[11px] text-teal-900/50">
-                                  {items.length > 0 ? zone : isEmptySlot ? 'New van' : 'Ready'}
+                                  {items.length > 0
+                                    ? zone
+                                    : isSpecial
+                                      ? specialTransferDirectionLabel(crew) || 'Special transfer'
+                                      : isEmptySlot
+                                        ? 'New van'
+                                        : 'Ready'}
                                 </p>
+                                {isSpecial ? (
+                                  <span className="mt-1 inline-flex rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-sky-900 uppercase">
+                                    {specialTransferKindLabel(crew.specialKind)}
+                                    {formatThb(crew.chargeAmount ?? 0)
+                                      ? ` · ${formatThb(crew.chargeAmount ?? 0)}`
+                                      : ''}
+                                  </span>
+                                ) : crew.outsourced ? (
+                                  <span className="mt-1 inline-flex rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-violet-900 uppercase">
+                                    {vanOutsourceLabel(crew)}
+                                  </span>
+                                ) : null}
                               </div>
                             </div>
                             <VanCapacityButton
@@ -1385,8 +1537,22 @@ function VehicleBoard({
                             crew={crew}
                             onChange={(patch) => onVanMeta(van, patch)}
                           />
-                          {!isEmptySlot ? (
-                            <div className="mt-2 flex flex-wrap gap-1.5">
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {isEmptySlot || isPreparedEmpty || isSpecial ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-7 px-2 text-[11px]"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  onSpecialVan(van)
+                                }}
+                              >
+                                {isSpecial ? 'Special' : 'Special transfer'}
+                              </Button>
+                            ) : null}
+                            {!isEmptySlot ? (
                               <Button
                                 type="button"
                                 variant="outline"
@@ -1399,6 +1565,7 @@ function VehicleBoard({
                               >
                                 Details
                               </Button>
+                            ) : null}
                               {items.some(
                                 (item) => totalPassengers(item.booking) > seats,
                               ) ? (
@@ -1419,8 +1586,7 @@ function VehicleBoard({
                                   Split
                                 </Button>
                               ) : null}
-                            </div>
-                          ) : null}
+                          </div>
                         </div>
 
                         <div className="flex min-h-0 flex-1 flex-col gap-1.5 p-2.5">
@@ -1435,7 +1601,11 @@ function VehicleBoard({
                             >
                               <Users className="mb-2 size-5 opacity-50" />
                               <p className="text-xs font-medium">
-                                {isDrop ? 'Drop to seat here' : 'Empty — drop guests'}
+                                {isDrop
+                                  ? 'Drop to seat here'
+                                  : isSpecial
+                                    ? 'Special transfer — drop guests if needed'
+                                    : 'Empty — drop guests'}
                               </p>
                             </div>
                           ) : (
@@ -1624,6 +1794,31 @@ function VehicleBoard({
         <DriverJobOrderLaunchCard onClick={onOpenJobOrder} />
       </div>
 
+      <SpecialTransferDialog
+        open={specialVan !== null}
+        van={specialVan}
+        initial={specialVan !== null ? resolveVanMeta(specialVan, plan.vanMeta[String(specialVan)]) : null}
+        onOpenChange={(open) => {
+          if (!open) onSpecialVan(null)
+        }}
+        onSave={(draft) => {
+          if (specialVan === null) return
+          onVanMeta(specialVan, specialTransferToMeta(draft))
+        }}
+        onRemove={
+          specialVan !== null && isSpecialTransfer(plan.vanMeta[String(specialVan)])
+            ? () => {
+                onVanMeta(specialVan, {
+                  specialKind: null,
+                  transferIn: false,
+                  transferOut: false,
+                  chargeAmount: 0,
+                })
+              }
+            : undefined
+        }
+      />
+
       <SeparateVanDialog
         booking={splitBooking}
         capacity={capacity}
@@ -1701,17 +1896,78 @@ function VehicleBoard({
                   />
                 </div>
               </div>
-              {openMeta.fromFleet ? (
-                <p className="mt-2 text-xs text-teal-800/55">
-                  Driver, plate, and phone are filled from the last day Van {openVan} was used.
-                  Seats are only for today. Changes save for this day and for next time.
-                </p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-teal-950">
+                  <input
+                    type="checkbox"
+                    className="size-3.5 rounded border-teal-900/25 text-violet-700"
+                    checked={openMeta.outsourced === true}
+                    onChange={(event) =>
+                      onVanMeta(openVan, {
+                        outsourced: event.target.checked,
+                        outsourceCompany: event.target.checked ? openMeta.outsourceCompany : '',
+                      })
+                    }
+                  />
+                  Outsource van company
+                </label>
+                {openMeta.outsourced ? (
+                  <div className="space-y-1.5">
+                    <Label htmlFor={`van-outsource-${openVan}`}>Company name</Label>
+                    <Input
+                      id={`van-outsource-${openVan}`}
+                      value={openMeta.outsourceCompany ?? ''}
+                      onChange={(event) =>
+                        onVanMeta(openVan, { outsourceCompany: event.target.value })
+                      }
+                      placeholder="e.g. Phuket Transfer Co"
+                      className="h-10"
+                    />
+                  </div>
+                ) : null}
+              </div>
+              {isSpecialTransfer(openMeta) ? (
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-200 bg-sky-50/70 px-3 py-2.5">
+                  <p className="text-sm text-sky-950">
+                    <span className="font-semibold">
+                      {specialTransferKindLabel(openMeta.specialKind)}
+                    </span>
+                    {specialTransferDirectionLabel(openMeta)
+                      ? ` · ${specialTransferDirectionLabel(openMeta)}`
+                      : ''}
+                    {formatThb(openMeta.chargeAmount ?? 0)
+                      ? ` · ${formatThb(openMeta.chargeAmount ?? 0)}`
+                      : ''}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-[11px]"
+                    onClick={() => {
+                      onSpecialVan(openVan)
+                    }}
+                  >
+                    Edit special
+                  </Button>
+                </div>
               ) : (
-                <p className="mt-2 text-xs text-teal-800/55">
-                  Driver, plate, and phone are remembered for the next day. Seat count is only for
-                  this day.
-                </p>
+                <div className="mt-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onSpecialVan(openVan)}
+                  >
+                    <Car data-icon="inline-start" />
+                    Mark as special transfer
+                  </Button>
+                </div>
               )}
+              <p className="mt-2 text-xs text-teal-800/55">
+                Driver, plate, and phone apply to this day only. The next day starts blank. Seat
+                count is also only for this day.
+              </p>
 
               <div className="mt-4 overflow-hidden rounded-xl border border-teal-900/8">
                 <div className="flex items-center justify-between gap-2 border-b border-teal-900/8 bg-teal-950/[0.03] px-3 py-2">

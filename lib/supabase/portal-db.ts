@@ -12,6 +12,14 @@ import type {
 } from '@/lib/check-in-enrollment'
 import type { DayCheckInPaymentMap } from '@/lib/check-in-payment'
 import {
+  adoptLegacyPaymentsAsTickets,
+  bookingCodeFromTicketSeatKey,
+  checkInTicketSeatKey,
+  isCheckInTicketSeatKey,
+  markCheckInTicketMigrationDone,
+  type DayCheckInTicketMap,
+} from '@/lib/check-in-ticket'
+import {
   isCheckInServiceKind,
   type CheckInServiceLine,
   type DayCheckInServiceMap,
@@ -36,7 +44,17 @@ import type {
   VanMeta,
   VanSplit,
 } from '@/lib/types'
-import { dayBoatPlanKey, dayVehiclePlanKey, emptyDayBoatPlan, emptyDayVehiclePlan, normalizeBoatCapacities, normalizeBoatGuides, normalizeBoatNames } from '@/lib/types'
+import {
+  dayBoatPlanKey,
+  dayVehiclePlanKey,
+  emptyDayBoatPlan,
+  emptyDayVehiclePlan,
+  isSpecialTransferKind,
+  normalizeBoatCapacities,
+  normalizeBoatGuides,
+  normalizeBoatNames,
+  normalizeChargeAmount,
+} from '@/lib/types'
 
 type AgentRow = {
   slug: string
@@ -128,6 +146,12 @@ type VanMetaRow = {
   driver: string
   phone?: string | null
   capacity?: number | null
+  outsourced?: boolean | null
+  outsource_company?: string | null
+  special_kind?: string | null
+  transfer_in?: boolean | null
+  transfer_out?: boolean | null
+  charge_amount?: number | null
 }
 
 type FleetVanRow = {
@@ -421,11 +445,22 @@ function buildVehiclePlans(
     const key = dayVehiclePlanKey(date, meta.program)
     const plan = next[key] ?? emptyDayVehiclePlan(date, meta.program)
     const capacity = Number(meta.capacity)
+    const charge = Number(meta.charge_amount)
     plan.vanMeta[String(meta.van_number)] = {
       plate: meta.plate ?? '',
       driver: meta.driver ?? '',
       phone: meta.phone ?? '',
       ...(Number.isFinite(capacity) && capacity >= 1 ? { capacity: Math.floor(capacity) } : {}),
+      ...(meta.outsourced === true
+        ? {
+            outsourced: true,
+            outsourceCompany: String(meta.outsource_company ?? '').trim(),
+          }
+        : {}),
+      ...(isSpecialTransferKind(meta.special_kind) ? { specialKind: meta.special_kind } : {}),
+      ...(meta.transfer_in === true ? { transferIn: true } : {}),
+      ...(meta.transfer_out === true ? { transferOut: true } : {}),
+      ...(Number.isFinite(charge) && charge > 0 ? { chargeAmount: Math.round(charge) } : {}),
     }
     next[key] = plan
   }
@@ -965,24 +1000,49 @@ export async function saveDayVehiclePlan(plan: DayVehiclePlan) {
   if (delMetaError) throw new Error(`clear van meta: ${delMetaError.message}`)
 
   const metaRows = Object.entries(plan.vanMeta ?? {}).map(([van, meta]) => {
+    const typed = meta as VanMeta
     const row: VanMetaRow = {
       date: plan.date,
       program: plan.program,
       van_number: Number(van),
-      plate: (meta as VanMeta).plate ?? '',
-      driver: (meta as VanMeta).driver ?? '',
-      phone: (meta as VanMeta).phone ?? '',
+      plate: typed.plate ?? '',
+      driver: typed.driver ?? '',
+      phone: typed.phone ?? '',
+      outsourced: typed.outsourced === true,
+      outsource_company: typed.outsourced === true ? (typed.outsourceCompany ?? '').trim() : '',
+      special_kind: isSpecialTransferKind(typed.specialKind) ? typed.specialKind : '',
+      transfer_in: typed.transferIn === true,
+      transfer_out: typed.transferOut === true,
+      charge_amount: normalizeChargeAmount(typed.chargeAmount),
     }
-    const capacity = Number((meta as VanMeta).capacity)
+    const capacity = Number(typed.capacity)
     if (Number.isFinite(capacity) && capacity >= 1) row.capacity = Math.floor(capacity)
     return row
   })
   if (metaRows.length > 0) {
     const { error } = await supabase.from('van_meta').insert(metaRows)
     if (error) {
-      const fallback = metaRows.map(({ capacity: _capacity, ...row }) => row)
-      const { error: retryError } = await supabase.from('van_meta').insert(fallback)
-      if (retryError) throw new Error(`insert van meta: ${retryError.message}`)
+      const withoutSpecial = metaRows.map(
+        ({
+          special_kind: _kind,
+          transfer_in: _in,
+          transfer_out: _out,
+          charge_amount: _charge,
+          ...row
+        }) => row,
+      )
+      const { error: specialError } = await supabase.from('van_meta').insert(withoutSpecial)
+      if (specialError) {
+        const withoutOutsource = withoutSpecial.map(
+          ({ outsourced: _outsourced, outsource_company: _company, ...row }) => row,
+        )
+        const { error: retryError } = await supabase.from('van_meta').insert(withoutOutsource)
+        if (retryError) {
+          const fallback = withoutOutsource.map(({ capacity: _capacity, ...row }) => row)
+          const { error: lastError } = await supabase.from('van_meta').insert(fallback)
+          if (lastError) throw new Error(`insert van meta: ${lastError.message}`)
+        }
+      }
     }
   }
 
@@ -1109,6 +1169,7 @@ export type CheckInMapsSnapshot = {
   enrollments: DayCheckInEnrollmentMap
   attendance: DayCheckInAttendanceMap
   payments: DayCheckInPaymentMap
+  tickets: DayCheckInTicketMap
   services: DayCheckInServiceMap
 }
 
@@ -1191,9 +1252,23 @@ function buildCheckInPaymentMap(rows: CheckInPaymentRow[]): DayCheckInPaymentMap
   for (const row of rows) {
     if (!isProgram(row.program)) continue
     if (row.status !== 'paid') continue
+    if (isCheckInTicketSeatKey(row.seat_key)) continue
     const key = dayBoatPlanKey(asDateString(row.date), row.program)
     const day = next[key] ?? {}
     day[row.seat_key] = 'paid'
+    next[key] = day
+  }
+  return next
+}
+
+function buildCheckInTicketMap(rows: CheckInPaymentRow[]): DayCheckInTicketMap {
+  const next: DayCheckInTicketMap = {}
+  for (const row of rows) {
+    if (!isProgram(row.program)) continue
+    if (row.status !== 'paid' || !isCheckInTicketSeatKey(row.seat_key)) continue
+    const key = dayBoatPlanKey(asDateString(row.date), row.program)
+    const day = next[key] ?? {}
+    day[bookingCodeFromTicketSeatKey(row.seat_key)] = 'issued'
     next[key] = day
   }
   return next
@@ -1241,8 +1316,29 @@ function flattenCheckInPaymentMap(map: DayCheckInPaymentMap): CheckInPaymentRow[
     const program = dayKey.slice(sep + 1)
     if (!isProgram(program)) continue
     for (const [seatKey, status] of Object.entries(byKey)) {
-      if (status !== 'paid') continue
+      if (status !== 'paid' || isCheckInTicketSeatKey(seatKey)) continue
       rows.push({ date, program, seat_key: seatKey, status: 'paid' })
+    }
+  }
+  return rows
+}
+
+function flattenCheckInTicketMap(map: DayCheckInTicketMap): CheckInPaymentRow[] {
+  const rows: CheckInPaymentRow[] = []
+  for (const [dayKey, byCode] of Object.entries(map)) {
+    const sep = dayKey.indexOf('|')
+    if (sep <= 0) continue
+    const date = dayKey.slice(0, sep)
+    const program = dayKey.slice(sep + 1)
+    if (!isProgram(program)) continue
+    for (const [bookingCode, status] of Object.entries(byCode)) {
+      if (status !== 'issued') continue
+      rows.push({
+        date,
+        program,
+        seat_key: checkInTicketSeatKey(bookingCode),
+        status: 'paid',
+      })
     }
   }
   return rows
@@ -1355,12 +1451,30 @@ export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
     services = buildCheckInServiceMap(servicesRes.data as CheckInServiceRow[])
   }
 
-  return {
+  const paymentRows = paymentsRes.data as CheckInPaymentRow[]
+  const split = adoptLegacyPaymentsAsTickets(
+    buildCheckInPaymentMap(paymentRows),
+    buildCheckInTicketMap(paymentRows),
+  )
+
+  const snapshot: CheckInMapsSnapshot = {
     enrollments: buildCheckInEnrollmentMap(enrollmentsRes.data as CheckInEnrollmentRow[]),
     attendance: buildCheckInAttendanceMap(attendanceRes.data as CheckInAttendanceRow[]),
-    payments: buildCheckInPaymentMap(paymentsRes.data as CheckInPaymentRow[]),
+    payments: split.payments,
+    tickets: split.tickets,
     services,
   }
+
+  if (split.migrated) {
+    try {
+      await rewriteLegacyPaymentTicksAsTickets(snapshot)
+      markCheckInTicketMigrationDone()
+    } catch (error) {
+      console.warn('[supabase] could not rewrite legacy ticket ticks', error)
+    }
+  }
+
+  return snapshot
 }
 
 export async function upsertCheckInEnrollments(
@@ -1462,6 +1576,45 @@ export async function deleteCheckInPaymentRow(date: string, program: Program, se
   if (error) throw new Error(`delete check-in payment: ${error.message}`)
 }
 
+export async function upsertCheckInTicketRow(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  status: 'issued',
+) {
+  if (status !== 'issued') return
+  await upsertCheckInPaymentRow(date, program, checkInTicketSeatKey(bookingCode), 'paid')
+}
+
+export async function deleteCheckInTicketRow(date: string, program: Program, bookingCode: string) {
+  await deleteCheckInPaymentRow(date, program, checkInTicketSeatKey(bookingCode))
+}
+
+export async function rewriteLegacyPaymentTicksAsTickets(snapshot: CheckInMapsSnapshot) {
+  const supabase = getSupabaseBrowserClient()
+  const ticketRows = flattenCheckInTicketMap(snapshot.tickets)
+  if (ticketRows.length > 0) {
+    const { error } = await supabase.from('check_in_payments').upsert(ticketRows)
+    if (error) throw new Error(`rewrite check-in tickets: ${error.message}`)
+  }
+  for (const [dayKey, row] of Object.entries(snapshot.tickets)) {
+    const sep = dayKey.indexOf('|')
+    if (sep <= 0) continue
+    const date = dayKey.slice(0, sep)
+    const program = dayKey.slice(sep + 1)
+    if (!isProgram(program)) continue
+    for (const bookingCode of Object.keys(row)) {
+      const { error } = await supabase
+        .from('check_in_payments')
+        .delete()
+        .eq('date', date)
+        .eq('program', program)
+        .eq('seat_key', bookingCode)
+      if (error) throw new Error(`clear legacy check-in payment tick: ${error.message}`)
+    }
+  }
+}
+
 export async function replaceCheckInServicesForBooking(
   date: string,
   program: Program,
@@ -1489,6 +1642,7 @@ export async function pushCheckInMaps(snapshot: CheckInMapsSnapshot) {
   const enrollmentRows = flattenCheckInEnrollmentMap(snapshot.enrollments)
   const attendanceRows = flattenCheckInAttendanceMap(snapshot.attendance)
   const paymentRows = flattenCheckInPaymentMap(snapshot.payments)
+  const ticketRows = flattenCheckInTicketMap(snapshot.tickets)
   const serviceRows = flattenCheckInServiceMap(snapshot.services)
 
   if (enrollmentRows.length > 0) {
@@ -1502,6 +1656,10 @@ export async function pushCheckInMaps(snapshot: CheckInMapsSnapshot) {
   if (paymentRows.length > 0) {
     const { error } = await supabase.from('check_in_payments').upsert(paymentRows)
     if (error) throw new Error(`push check-in payments: ${error.message}`)
+  }
+  if (ticketRows.length > 0) {
+    const { error } = await supabase.from('check_in_payments').upsert(ticketRows)
+    if (error) throw new Error(`push check-in tickets: ${error.message}`)
   }
   if (serviceRows.length > 0) {
     const { error } = await supabase.from('check_in_services').upsert(serviceRows)

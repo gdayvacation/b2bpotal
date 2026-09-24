@@ -15,12 +15,20 @@ export function NationalityCombobox({
   id = 'nationality',
   required,
   showError,
+  label = 'Nationality',
+  placeholder = 'Type to search — e.g. Indian, Thai',
+  noMatchText = 'No match — keep typing, then pick from the list.',
+  errorText = 'Required — type and select a nationality from the list.',
 }: {
   value: string
   onChange: (value: string) => void
   id?: string
   required?: boolean
   showError?: boolean
+  label?: string
+  placeholder?: string
+  noMatchText?: string
+  errorText?: string
 }) {
   const [open, setOpen] = useState(false)
   const [highlight, setHighlight] = useState(0)
@@ -47,7 +55,7 @@ export function NationalityCombobox({
   return (
     <div className="relative">
       <Label className="mb-1.5" htmlFor={id}>
-        Nationality
+        {label}
         {required ? <span className="text-rose-600"> *</span> : null}
       </Label>
       <Input
@@ -58,8 +66,10 @@ export function NationalityCombobox({
         aria-autocomplete="list"
         aria-invalid={invalid || undefined}
         autoComplete="off"
+        spellCheck={false}
+        lang="en"
         value={value}
-        placeholder="Type to search — e.g. Indian, Thai"
+        placeholder={placeholder}
         className={cn('h-11', invalid && 'border-rose-400 focus-visible:border-rose-500')}
         onFocus={() => {
           clearBlurTimer()
@@ -133,12 +143,12 @@ export function NationalityCombobox({
       ) : null}
       {open && query.length > 0 && suggestions.length === 0 ? (
         <div className="absolute z-40 mt-1.5 w-full rounded-xl border border-teal-900/10 bg-white px-3 py-2.5 text-sm text-teal-900/50 shadow-lg shadow-teal-950/10">
-          No match — keep typing, then pick from the list.
+          {noMatchText}
         </div>
       ) : null}
       {invalid ? (
         <p className="mt-1.5 text-xs font-medium text-rose-700">
-          Required — type and select a nationality from the list.
+          {errorText}
         </p>
       ) : null}
     </div>

@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { startTransition, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   CalendarIcon,
+  Check,
   CheckCircle2,
   ChevronDown,
   ClipboardList,
@@ -46,6 +47,13 @@ import {
 } from '@/lib/check-in-enrollment'
 import { formatGuestPaxParts, hasPartialNoShow, originalBookedPax } from '@/lib/check-in-booked-pax'
 import {
+  HELPER_BOARD_CLOSE_HOUR,
+  helperBoardIssueDate,
+  helperBoardQrImageUrl,
+  helperBoardUrl,
+  isHelperBoardClosed,
+} from '@/lib/check-in-helper'
+import {
   guestCheckInQrImageUrl,
   guestCheckInUrl,
 } from '@/lib/check-in-qr'
@@ -63,6 +71,7 @@ import {
   formatLongDate,
   formatShortDate,
   parseCashOnTourAmount,
+  todayISO,
   toISODate,
 } from '@/lib/format'
 import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
@@ -72,17 +81,23 @@ import {
   saveInsurancePolicyNumber,
 } from '@/lib/insurance-policy'
 import {
+  allocatePaxBreakdown,
   listVanNumbers,
+  paxBreakdownTotal,
+  paxOnVan,
   primaryVan,
   sortOrderOnVan,
+  type PaxBreakdown,
 } from '@/lib/vehicle-assign'
 import { cn } from '@/lib/utils'
 import {
   isActiveBooking,
   isNoTransfer,
   totalPassengers,
+  vanOutsourceLabel,
   type Booking,
   type Program,
+  type VanSplit,
 } from '@/lib/types'
 
 type AdminTab = 'qr' | 'today' | 'insurance'
@@ -115,7 +130,12 @@ type CheckedGuest = {
 type BookingLine = {
   key: string
   booking: Booking
+  van: number | null
+  split: boolean
+  pax: PaxBreakdown
+  originalPax: PaxBreakdown
   seatsTotal: number
+  bookingSeats: number
   checkedInCount: number
   leaderName: string
   status: GuestLineStatus
@@ -130,6 +150,8 @@ type DriverGroup = {
   driver: string
   plate: string
   phone: string
+  outsourced: boolean
+  outsourceCompany: string
   lines: BookingLine[]
   checked: number
   waiting: number
@@ -141,14 +163,35 @@ function programLabel(program: Program) {
   return program === 'PP' ? 'Phi Phi' : 'James Bond'
 }
 
+function driverGroupTitle(group: DriverGroup, showProgram: boolean) {
+  const program = showProgram ? `${programLabel(group.program)} · ` : ''
+  if (group.van !== null) return `${program}Van ${group.van}`
+  if (group.id.includes('no-transfer')) return `${program}No Transfer`
+  return `${program}Unassigned / no van`
+}
+
 function buildBookingLine(
   booking: Booking,
   enrollments: CheckInEnrollment[],
   attendance: 'checked' | 'no-show' | null,
   boat: number | null,
+  today: string,
+  van: number | null,
+  legs?: VanSplit[],
 ): BookingLine {
-  const seats = Math.max(1, totalPassengers(booking))
-  const enrolled = Math.min(enrolledSeatCount(enrollments), seats)
+  const bookingSeats = Math.max(1, totalPassengers(booking))
+  const bookedFull = originalBookedPax(today, booking.program, booking)
+  const currentFull: PaxBreakdown = {
+    adults: booking.adults,
+    children: booking.children,
+    infants: booking.infants,
+    tourLeaders: booking.tourLeaders,
+  }
+  const pax = allocatePaxBreakdown(currentFull, legs, van)
+  const originalPax = allocatePaxBreakdown(bookedFull, legs, van)
+  const vanSeats = paxBreakdownTotal(pax)
+  const seats = van !== null && vanSeats > 0 ? vanSeats : bookingSeats
+  const enrolled = Math.min(enrolledSeatCount(enrollments), bookingSeats)
   const guests: CheckedGuest[] = enrollments.map((enrollment) => ({
     key: enrollment.id,
     guestName: guestDisplayName(enrollment) || booking.leadGuest,
@@ -161,12 +204,17 @@ function buildBookingLine(
 
   let status: GuestLineStatus = 'waiting'
   if (attendance === 'no-show') status = 'no-show'
-  else if (attendance === 'checked' || enrolled >= seats) status = 'checked'
+  else if (attendance === 'checked' || enrolled >= bookingSeats) status = 'checked'
 
   return {
-    key: booking.code,
+    key: van !== null ? `${booking.code}-van-${van}` : booking.code,
     booking,
+    van,
+    split: (legs?.length ?? 0) > 1,
+    pax,
+    originalPax,
     seatsTotal: seats,
+    bookingSeats,
     checkedInCount: enrolled,
     leaderName: booking.leadGuest,
     status,
@@ -243,7 +291,7 @@ export function AdminCheckIn() {
           Live board
         </TabButton>
         <TabButton active={tab === 'qr'} onClick={() => setTab('qr')} icon={<QrCode className="size-3.5" />}>
-          QR code
+          QR code for Helper
         </TabButton>
         <TabButton
           active={tab === 'insurance'}
@@ -255,7 +303,7 @@ export function AdminCheckIn() {
       </div>
 
       {tab === 'qr' ? (
-        <QrTab onGoLiveBoard={() => setTab('today')} />
+        <QrTab />
       ) : tab === 'insurance' ? (
         <InsuranceListTab
           boardDate={boardDate}
@@ -304,33 +352,88 @@ function TabButton({
   )
 }
 
-function QrTab({ onGoLiveBoard }: { onGoLiveBoard: () => void }) {
+function QrTab() {
+  const [origin, setOrigin] = useState('')
+  const [now, setNow] = useState(() => new Date())
+  const [copied, setCopied] = useState(false)
+  const issueDate = helperBoardIssueDate(now)
+  const todayClosed = isHelperBoardClosed(todayISO(now), now)
+  const helperUrl = origin ? helperBoardUrl(origin, issueDate) : ''
+  const qrSrc = origin ? helperBoardQrImageUrl(origin, issueDate, 512) : ''
+
+  useEffect(() => {
+    setOrigin(window.location.origin)
+    const id = window.setInterval(() => setNow(new Date()), 15_000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  async function copyLink() {
+    if (!helperUrl) return
+    try {
+      await navigator.clipboard.writeText(helperUrl)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // ignore
+    }
+  }
+
   return (
     <div className="mx-auto max-w-md">
       <div className="gday-sheet flex flex-col items-center rounded-[1.5rem] p-6 text-center">
         <div className="mb-4 flex size-11 items-center justify-center rounded-2xl bg-teal-950/[0.05] text-teal-800">
           <QrCode className="size-5" />
         </div>
-        <p className="text-sm font-semibold text-teal-950">Per-booking QR codes</p>
+        <p className="text-sm font-semibold text-teal-950">QR code for Helper</p>
         <p className="mt-1 max-w-sm text-xs leading-relaxed text-teal-900/50">
-          Each booking has its own check-in QR so guests cannot pick the wrong name and miss a park
-          fee or cash payment.
+          Staff scan this to open the van board for {formatLongDate(issueDate)}. They can make guest
+          QR codes and see hotel, boat, and pay. Service and ticket stay admin-only. The page closes
+          at {String(HELPER_BOARD_CLOSE_HOUR).padStart(2, '0')}:00 Thailand time and cannot be opened
+          again.
         </p>
-        <ol className="mt-5 w-full space-y-2 text-left text-sm text-teal-900/70">
-          <li className="rounded-xl bg-teal-950/[0.04] px-3.5 py-2.5">
-            1. Open <span className="font-semibold text-teal-950">Live board</span>
-          </li>
-          <li className="rounded-xl bg-teal-950/[0.04] px-3.5 py-2.5">
-            2. Tap the <span className="font-semibold text-teal-950">QR</span> button on that booking
-          </li>
-          <li className="rounded-xl bg-teal-950/[0.04] px-3.5 py-2.5">
-            3. Guest scans and enters passport details for that booking only
-          </li>
-        </ol>
-        <Button className="mt-5" onClick={onGoLiveBoard}>
-          <Users data-icon="inline-start" />
-          Go to Live board
-        </Button>
+        {todayClosed ? (
+          <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
+            Today’s helper board is already closed. This QR is for tomorrow.
+          </p>
+        ) : null}
+        <div className="mt-5 w-full overflow-hidden rounded-2xl bg-white p-3 ring-1 ring-teal-900/10">
+          {qrSrc ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={qrSrc}
+              alt={`Helper check-in QR for ${formatShortDate(issueDate)}`}
+              width={512}
+              height={512}
+              className="aspect-square h-auto w-full object-contain"
+            />
+          ) : (
+            <div className="flex aspect-square items-center justify-center text-sm text-teal-900/40">
+              Preparing QR…
+            </div>
+          )}
+        </div>
+        <div className="mt-4 flex flex-wrap justify-center gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={() => void copyLink()}>
+            {copied ? (
+              <CheckCircle2 data-icon="inline-start" />
+            ) : (
+              <Copy data-icon="inline-start" />
+            )}
+            {copied ? 'Copied' : 'Copy link'}
+          </Button>
+          {helperUrl ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => window.open(helperUrl, '_blank', 'noopener,noreferrer')}
+            >
+              <ExternalLink data-icon="inline-start" />
+              Open
+            </Button>
+          ) : null}
+        </div>
+        <p className="mt-3 break-all text-[11px] text-teal-900/40">{helperUrl}</p>
       </div>
     </div>
   )
@@ -817,6 +920,8 @@ function InsuranceListTab({
   )
 }
 
+export type CheckInBoardVariant = 'admin' | 'helper'
+
 function TodayBoardTab({
   boardDate,
   onBoardDateChange,
@@ -824,6 +929,7 @@ function TodayBoardTab({
   programFilter,
   onProgramFilter,
   origin,
+  variant = 'admin',
 }: {
   boardDate: string
   onBoardDateChange: (date: string) => void
@@ -831,7 +937,9 @@ function TodayBoardTab({
   programFilter: 'all' | Program
   onProgramFilter: (value: 'all' | Program) => void
   origin: string
+  variant?: CheckInBoardVariant
 }) {
+  const isHelper = variant === 'helper'
   const {
     bookings,
     getDayVehiclePlan,
@@ -844,6 +952,7 @@ function TodayBoardTab({
 
   const [selectedCode, setSelectedCode] = useState<string | null>(null)
   const [calendarOpen, setCalendarOpen] = useState(false)
+  const [helperGroupId, setHelperGroupId] = useState<string | null>(null)
   const boardDateObj = useMemo(() => new Date(`${boardDate}T12:00:00`), [boardDate])
   const portalTodayObj = useMemo(() => new Date(`${portalToday}T12:00:00`), [portalToday])
   const isToday = boardDate === portalToday
@@ -890,7 +999,7 @@ function TodayBoardTab({
 
       for (const van of vanNums) {
         const vanBookings = transfer
-          .filter((b) => primaryVan(plan.assignments[b.code]) === van)
+          .filter((b) => paxOnVan(plan.assignments[b.code], van) > 0)
           .sort(
             (a, b) =>
               sortOrderOnVan(plan.assignments[a.code], van) -
@@ -910,8 +1019,13 @@ function TodayBoardTab({
             vanBookings,
             boardDate,
             boatPlan.assignments,
+            plan.assignments,
             getCheckInEnrollments,
             getCheckInAttendance,
+            {
+              outsourced: meta.outsourced === true,
+              outsourceCompany: meta.outsourceCompany?.trim() || '',
+            },
           ),
         )
       }
@@ -929,6 +1043,7 @@ function TodayBoardTab({
             unassigned,
             boardDate,
             boatPlan.assignments,
+            plan.assignments,
             getCheckInEnrollments,
             getCheckInAttendance,
           ),
@@ -947,6 +1062,7 @@ function TodayBoardTab({
             noTransfer,
             boardDate,
             boatPlan.assignments,
+            plan.assignments,
             getCheckInEnrollments,
             getCheckInAttendance,
           ),
@@ -967,13 +1083,21 @@ function TodayBoardTab({
   ])
 
   const summary = useMemo(() => {
+    const seen = new Set<string>()
     let checked = 0
     let waiting = 0
     let noShow = 0
     for (const group of groups) {
-      checked += group.checked
-      waiting += group.waiting
-      noShow += group.noShow
+      for (const line of group.lines) {
+        if (seen.has(line.booking.code)) continue
+        seen.add(line.booking.code)
+        if (line.status === 'no-show') {
+          noShow += line.bookingSeats
+          continue
+        }
+        checked += line.checkedInCount
+        waiting += Math.max(0, line.bookingSeats - line.checkedInCount)
+      }
     }
     return { checked, waiting, noShow, total: checked + waiting + noShow }
   }, [groups])
@@ -984,6 +1108,15 @@ function TodayBoardTab({
     setSelectedCode(null)
     setCalendarOpen(false)
   }
+
+  const visibleGroups = useMemo(() => {
+    if (!isHelper) return groups
+    const selected =
+      groups.find((group) => group.id === helperGroupId) ?? groups[0]
+    return selected ? [selected] : []
+  }, [groups, helperGroupId, isHelper])
+
+  const activeHelperGroupId = visibleGroups[0]?.id ?? null
 
   if (!hydrated) {
     return (
@@ -997,30 +1130,36 @@ function TodayBoardTab({
     <div className="space-y-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap items-center gap-2">
-          <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
-            <PopoverTrigger
-              render={
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-10 min-w-[11rem] justify-start gap-2 font-normal"
-                />
-              }
-            >
-              <CalendarIcon className="size-4 text-teal-700/60" />
+          {isHelper ? (
+            <p className="rounded-xl bg-white px-3 py-2 text-sm font-semibold text-teal-950 ring-1 ring-teal-900/10">
               {formatShortDate(boardDate)}
-            </PopoverTrigger>
-            <PopoverContent align="start" className="w-auto p-0">
-              <Calendar
-                mode="single"
-                selected={boardDateObj}
-                onSelect={selectDate}
-                defaultMonth={boardDateObj}
-                disabled={{ after: portalTodayObj }}
-              />
-            </PopoverContent>
-          </Popover>
-          {!isToday ? (
+            </p>
+          ) : (
+            <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
+              <PopoverTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-10 min-w-[11rem] justify-start gap-2 font-normal"
+                  />
+                }
+              >
+                <CalendarIcon className="size-4 text-teal-700/60" />
+                {formatShortDate(boardDate)}
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-auto p-0">
+                <Calendar
+                  mode="single"
+                  selected={boardDateObj}
+                  onSelect={selectDate}
+                  defaultMonth={boardDateObj}
+                  disabled={{ after: portalTodayObj }}
+                />
+              </PopoverContent>
+            </Popover>
+          )}
+          {!isHelper && !isToday ? (
             <Button
               type="button"
               variant="ghost"
@@ -1065,6 +1204,32 @@ function TodayBoardTab({
         </div>
       </div>
 
+      {isHelper && groups.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5 rounded-2xl bg-teal-950/[0.04] p-1.5">
+          {groups.map((group) => {
+            const active = group.id === activeHelperGroupId
+            return (
+              <button
+                key={group.id}
+                type="button"
+                onClick={() => setHelperGroupId(group.id)}
+                className={cn(
+                  'rounded-xl px-3 py-2 text-sm font-semibold transition-all',
+                  active
+                    ? 'bg-white text-teal-950 shadow-sm'
+                    : 'text-teal-900/55 hover:text-teal-950',
+                )}
+              >
+                {driverGroupTitle(group, programFilter === 'all')}
+                <span className="ml-1.5 text-xs font-medium text-teal-900/45">
+                  {group.seatsTotal}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      ) : null}
+
       {groups.length === 0 ? (
         <div className="gday-sheet rounded-[1.5rem] p-8 text-center text-sm text-teal-900/55">
           No active bookings for {formatLongDate(boardDate)}
@@ -1072,29 +1237,55 @@ function TodayBoardTab({
         </div>
       ) : (
         <div className="space-y-4">
-          {groups.map((group) => (
+          {visibleGroups.map((group) => (
             <DriverGroupCard
               key={group.id}
               group={group}
               showProgram={programFilter === 'all'}
               today={boardDate}
               origin={origin}
-              onSelectBooking={(code) => setSelectedCode(code)}
+              variant={variant}
+              onSelectBooking={(code) => {
+                if (!isHelper) setSelectedCode(code)
+              }}
             />
           ))}
         </div>
       )}
 
-      <AdminCheckInBookingPanel
-        open={Boolean(selectedCode && selectedBooking)}
-        onOpenChange={(open) => {
-          if (!open) setSelectedCode(null)
-        }}
-        booking={selectedBooking}
-        boat={selectedBoat}
-        today={boardDate}
-      />
+      {isHelper ? null : (
+        <AdminCheckInBookingPanel
+          open={Boolean(selectedCode && selectedBooking)}
+          onOpenChange={(open) => {
+            if (!open) setSelectedCode(null)
+          }}
+          booking={selectedBooking}
+          boat={selectedBoat}
+          today={boardDate}
+        />
+      )}
     </div>
+  )
+}
+
+export function HelperCheckInBoard({
+  date,
+  origin,
+}: {
+  date: string
+  origin: string
+}) {
+  const [programFilter, setProgramFilter] = useState<'all' | Program>('all')
+  return (
+    <TodayBoardTab
+      boardDate={date}
+      onBoardDateChange={() => {}}
+      portalToday={date}
+      programFilter={programFilter}
+      onProgramFilter={setProgramFilter}
+      origin={origin}
+      variant="helper"
+    />
   )
 }
 
@@ -1108,8 +1299,10 @@ function makeDriverGroup(
   bookings: Booking[],
   today: string,
   boatAssignments: Record<string, number>,
+  vanAssignments: Record<string, VanSplit[]>,
   getEnrollments: ReturnType<typeof usePortal>['getCheckInEnrollments'],
   getAttendance: ReturnType<typeof usePortal>['getCheckInAttendance'],
+  outsource?: { outsourced?: boolean; outsourceCompany?: string },
 ): DriverGroup {
   const lines = bookings.map((booking) =>
     buildBookingLine(
@@ -1117,6 +1310,9 @@ function makeDriverGroup(
       getEnrollments(today, booking.program, booking.code),
       getAttendance(today, booking.program, booking.code),
       boatAssignments[booking.code] ?? null,
+      today,
+      van,
+      vanAssignments[booking.code],
     ),
   )
 
@@ -1141,6 +1337,8 @@ function makeDriverGroup(
     driver,
     plate,
     phone,
+    outsourced: outsource?.outsourced === true,
+    outsourceCompany: outsource?.outsourceCompany?.trim() || '',
     lines,
     checked,
     waiting,
@@ -1155,25 +1353,29 @@ function DriverGroupCard({
   today,
   origin,
   onSelectBooking,
+  variant = 'admin',
 }: {
   group: DriverGroup
   showProgram: boolean
   today: string
   origin: string
   onSelectBooking: (code: string) => void
+  variant?: CheckInBoardVariant
 }) {
-  const { getCheckInPayment, setCheckInPayment, getCheckInServices, setCheckInServices } =
-    usePortal()
+  const isHelper = variant === 'helper'
+  const {
+    getCheckInPayment,
+    setCheckInPayment,
+    getCheckInTicket,
+    setCheckInTicket,
+    getCheckInServices,
+    setCheckInServices,
+  } = usePortal()
   const [expandedCodes, setExpandedCodes] = useState<Record<string, boolean>>({})
   const [qrBooking, setQrBooking] = useState<Booking | null>(null)
   const [qrCopied, setQrCopied] = useState(false)
   const [serviceBooking, setServiceBooking] = useState<Booking | null>(null)
-  const title =
-    group.van === null
-      ? group.id.includes('no-transfer')
-        ? 'No Transfer'
-        : 'Unassigned / no van'
-      : group.plate.trim() || `Van ${group.van}`
+  const title = driverGroupTitle(group, showProgram)
 
   const qrUrl = qrBooking && origin ? guestCheckInUrl(origin, qrBooking.code) : ''
   const qrSrc = qrUrl ? guestCheckInQrImageUrl(qrUrl, 512) : ''
@@ -1197,15 +1399,31 @@ function DriverGroupCard({
     <div className="gday-sheet overflow-hidden rounded-[1.5rem]">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-900/8 bg-gradient-to-r from-teal-50 to-white px-4 py-3 sm:px-5">
         <div className="min-w-0">
-          <p className="text-sm font-semibold text-teal-950">
-            {showProgram ? `${programLabel(group.program)} · ` : ''}
+          <p
+            className={cn(
+              'font-semibold text-teal-950',
+              isHelper ? 'font-display text-xl' : 'text-sm',
+            )}
+          >
             {title}
+            {group.outsourced ? (
+              <span className="ml-2 inline-flex rounded-md bg-violet-100 px-1.5 py-0.5 align-middle text-[10px] font-semibold tracking-wide text-violet-900 uppercase">
+                {vanOutsourceLabel(group)}
+              </span>
+            ) : null}
           </p>
           {group.van !== null ? (
             <p className="mt-0.5 text-xs text-teal-900/60">
-              Driver: <span className="font-medium text-teal-950">{group.driver || '—'}</span>
+              Driver:{' '}
+              <span className="font-medium text-teal-950">{group.driver || '—'}</span>
+              {group.phone ? (
+                <>
+                  <span className="mx-1.5 text-teal-900/25">·</span>
+                  Tel: <span className="font-medium text-teal-950">{group.phone}</span>
+                </>
+              ) : null}
               <span className="mx-1.5 text-teal-900/25">·</span>
-              Tel: <span className="font-medium text-teal-950">{group.phone || '—'}</span>
+              Plate: <span className="font-medium text-teal-950">{group.plate || '—'}</span>
             </p>
           ) : (
             <p className="mt-0.5 text-xs text-teal-900/55">
@@ -1214,9 +1432,11 @@ function DriverGroupCard({
           )}
         </div>
         <p className="rounded-full border border-teal-900/10 bg-white/90 px-2.5 py-1 text-xs font-medium tabular-nums text-teal-800/70">
-          {group.checked}/{group.seatsTotal} checked in
-          {group.waiting > 0 ? ` · ${group.waiting} waiting` : ''}
-          <span className="text-teal-900/40"> · {group.lines.length} booking{group.lines.length === 1 ? '' : 's'}</span>
+          {group.lines.length} booking{group.lines.length === 1 ? '' : 's'} · {group.seatsTotal} pax
+          <span className="text-teal-900/40">
+            {' '}
+            · {group.lines.filter((line) => line.status === 'checked').length}/{group.lines.length} in
+          </span>
         </p>
       </div>
 
@@ -1259,15 +1479,25 @@ function DriverGroupCard({
             <TableHead className="w-[9%] px-1.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
               Status
             </TableHead>
-            <TableHead className="w-[11%] px-1.5 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
+            <TableHead
+              className="w-[11%] px-1.5 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase"
+              title={isHelper ? 'Payment due' : 'Click an amount to mark it paid'}
+            >
               Pay
             </TableHead>
-            <TableHead className="w-[14%] px-1.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
-              Service
-            </TableHead>
-            <TableHead className="w-12 px-1.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
-              Action
-            </TableHead>
+            {isHelper ? null : (
+              <>
+                <TableHead className="w-[14%] px-1.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  Service
+                </TableHead>
+                <TableHead
+                  className="w-12 px-1.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase"
+                  title="Tick when the guest received their boat ticket"
+                >
+                  Ticket
+                </TableHead>
+              </>
+            )}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -1275,17 +1505,19 @@ function DriverGroupCard({
             const payment = bookingPayment(line.booking)
             const paid =
               getCheckInPayment(today, line.booking.program, line.booking.code) === 'paid'
+            const ticketed =
+              getCheckInTicket(today, line.booking.program, line.booking.code) === 'issued'
             const hotel = line.booking.pickupHotel || line.booking.pickupZone || '—'
-            const expanded = Boolean(expandedCodes[line.booking.code])
-            const progressLabel = `${line.checkedInCount}/${line.seatsTotal}`
-            const booked = originalBookedPax(today, line.booking.program, line.booking)
+            const expanded = Boolean(expandedCodes[line.key])
+            const progressLabel = `${line.checkedInCount}/${line.bookingSeats}`
+            const booked = line.originalPax
             const wholeNoShow = line.status === 'no-show'
-            const partialNoShow = !wholeNoShow && hasPartialNoShow(booked, line.booking)
+            const partialNoShow = !wholeNoShow && hasPartialNoShow(booked, line.pax)
             const missingPax =
-              Math.max(0, booked.adults - line.booking.adults) +
-              Math.max(0, booked.children - line.booking.children) +
-              Math.max(0, booked.infants - line.booking.infants) +
-              Math.max(0, booked.tourLeaders - line.booking.tourLeaders)
+              Math.max(0, booked.adults - line.pax.adults) +
+              Math.max(0, booked.children - line.pax.children) +
+              Math.max(0, booked.infants - line.pax.infants) +
+              Math.max(0, booked.tourLeaders - line.pax.tourLeaders)
             const services = getCheckInServices(
               today,
               line.booking.program,
@@ -1298,11 +1530,11 @@ function DriverGroupCard({
                 role="button"
                 tabIndex={0}
                 aria-expanded={expanded}
-                onClick={() => toggleExpanded(line.booking.code)}
+                onClick={() => toggleExpanded(line.key)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault()
-                    toggleExpanded(line.booking.code)
+                    toggleExpanded(line.key)
                   }
                 }}
                 className={cn(
@@ -1310,7 +1542,7 @@ function DriverGroupCard({
                   line.status === 'checked' && 'bg-emerald-50/40',
                   line.status === 'waiting' && 'bg-amber-50/30',
                   line.status === 'no-show' && 'bg-rose-50/40',
-                  paid && 'bg-sky-50/40',
+                  !isHelper && ticketed && 'bg-sky-50/40',
                 )}
               >
                 <TableCell className="px-1.5 align-top tabular-nums text-teal-900/45">
@@ -1344,6 +1576,11 @@ function DriverGroupCard({
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-semibold text-teal-950">
                         {line.leaderName || line.booking.code}
+                        {line.split ? (
+                          <span className="ml-1.5 text-[10px] font-semibold text-teal-700/55">
+                            split
+                          </span>
+                        ) : null}
                       </p>
                       <p
                         className={cn(
@@ -1408,16 +1645,18 @@ function DriverGroupCard({
                               {line.seatsTotal - line.checkedInCount === 1 ? '' : 's'} still waiting
                             </p>
                           ) : null}
-                          <button
-                            type="button"
-                            className="text-[11px] font-semibold text-teal-800 underline-offset-2 hover:underline"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              onSelectBooking(line.booking.code)
-                            }}
-                          >
-                            Open booking
-                          </button>
+                          {isHelper ? null : (
+                            <button
+                              type="button"
+                              className="text-[11px] font-semibold text-teal-800 underline-offset-2 hover:underline"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                onSelectBooking(line.booking.code)
+                              }}
+                            >
+                              Open booking
+                            </button>
+                          )}
                         </div>
                       ) : null}
                     </div>
@@ -1426,28 +1665,28 @@ function DriverGroupCard({
                 <TableCell className="px-0.5 text-center align-top tabular-nums">
                   <PaxCount
                     original={booked.adults}
-                    current={line.booking.adults}
+                    current={line.pax.adults}
                     wholeNoShow={wholeNoShow}
                   />
                 </TableCell>
                 <TableCell className="px-0.5 text-center align-top tabular-nums">
                   <PaxCount
                     original={booked.children}
-                    current={line.booking.children}
+                    current={line.pax.children}
                     wholeNoShow={wholeNoShow}
                   />
                 </TableCell>
                 <TableCell className="px-0.5 text-center align-top tabular-nums">
                   <PaxCount
                     original={booked.infants}
-                    current={line.booking.infants}
+                    current={line.pax.infants}
                     wholeNoShow={wholeNoShow}
                   />
                 </TableCell>
                 <TableCell className="px-0.5 text-center align-top tabular-nums">
                   <PaxCount
                     original={booked.tourLeaders}
-                    current={line.booking.tourLeaders}
+                    current={line.pax.tourLeaders}
                     wholeNoShow={wholeNoShow}
                   />
                 </TableCell>
@@ -1465,30 +1704,45 @@ function DriverGroupCard({
                 <TableCell className="px-1.5 text-center align-top">
                   <StatusBadge status={line.status} />
                 </TableCell>
-                <TableCell className="max-w-0 whitespace-normal px-1.5 align-top">
-                  {payment.kind === 'due' ? (
+                <TableCell
+                  className="max-w-0 whitespace-normal px-1.5 align-top"
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
+                >
+                  {payment.kind === 'none' ? (
+                    <span className="text-teal-900/35">—</span>
+                  ) : isHelper ? (
                     <span
                       className={cn(
-                        'font-semibold',
-                        paid ? 'text-emerald-800' : 'text-orange-800',
-                      )}
-                    >
-                      {payment.label}
-                    </span>
-                  ) : payment.kind === 'note' ? (
-                    <span
-                      className={cn(
-                        'truncate text-[11px]',
-                        paid ? 'text-emerald-800/80' : 'text-orange-800/80',
+                        'font-semibold tabular-nums',
+                        payment.kind === 'note' && 'text-[11px]',
+                        paid
+                          ? 'text-teal-900/45 line-through decoration-2 decoration-teal-900/45'
+                          : 'text-orange-800',
                       )}
                       title={payment.label}
                     >
                       {payment.label}
                     </span>
                   ) : (
-                    <span className="text-teal-900/35">—</span>
+                    <PayableAmount
+                      label={payment.label}
+                      paid={paid}
+                      disabled={wholeNoShow}
+                      compact={payment.kind === 'note'}
+                      onToggle={() =>
+                        setCheckInPayment(
+                          today,
+                          line.booking.program,
+                          line.booking.code,
+                          paid ? null : 'paid',
+                        )
+                      }
+                    />
                   )}
                 </TableCell>
+                {isHelper ? null : (
+                <>
                 <TableCell
                   className="px-1.5 align-top"
                   onClick={(event) => event.stopPropagation()}
@@ -1517,7 +1771,7 @@ function DriverGroupCard({
                         services.length === 0
                           ? 'text-teal-900/30'
                           : services.every((item) => item.paid)
-                            ? 'text-emerald-800'
+                            ? 'text-teal-900/45 line-through decoration-teal-900/40'
                             : 'text-orange-800',
                       )}
                     >
@@ -1531,6 +1785,7 @@ function DriverGroupCard({
                 </TableCell>
                 <TableCell
                   className="px-1.5 text-center align-top"
+                  onPointerDown={(event) => event.stopPropagation()}
                   onClick={(event) => event.stopPropagation()}
                   onKeyDown={(event) => event.stopPropagation()}
                 >
@@ -1542,23 +1797,22 @@ function DriverGroupCard({
                       All NS
                     </span>
                   ) : (
-                    <input
-                      type="checkbox"
-                      aria-label={`Ticket given for ${line.leaderName || line.booking.code}`}
-                      title="Tick when the guest has checked in and received their ticket"
-                      className="size-4 rounded border-teal-900/25 text-teal-800 focus-visible:ring-teal-700/30"
-                      checked={paid}
-                      onChange={(event) =>
-                        setCheckInPayment(
+                    <TicketToggle
+                      issued={ticketed}
+                      guestName={line.leaderName || line.booking.code}
+                      onChange={(issued) =>
+                        setCheckInTicket(
                           today,
                           line.booking.program,
                           line.booking.code,
-                          event.target.checked ? 'paid' : null,
+                          issued ? 'issued' : null,
                         )
                       }
                     />
                   )}
                 </TableCell>
+                </>
+                )}
               </TableRow>
             )
           })}
@@ -1630,23 +1884,25 @@ function DriverGroupCard({
         </DialogContent>
       </Dialog>
 
-      <BookingServicesDialog
-        booking={serviceBooking}
-        today={today}
-        open={Boolean(serviceBooking)}
-        onOpenChange={(open) => {
-          if (!open) setServiceBooking(null)
-        }}
-        services={
-          serviceBooking
-            ? getCheckInServices(today, serviceBooking.program, serviceBooking.code)
-            : []
-        }
-        onSave={(next) => {
-          if (!serviceBooking) return
-          setCheckInServices(today, serviceBooking.program, serviceBooking.code, next)
-        }}
-      />
+      {isHelper ? null : (
+        <BookingServicesDialog
+          booking={serviceBooking}
+          today={today}
+          open={Boolean(serviceBooking)}
+          onOpenChange={(open) => {
+            if (!open) setServiceBooking(null)
+          }}
+          services={
+            serviceBooking
+              ? getCheckInServices(today, serviceBooking.program, serviceBooking.code)
+              : []
+          }
+          onSave={(next) => {
+            if (!serviceBooking) return
+            setCheckInServices(today, serviceBooking.program, serviceBooking.code, next)
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -1856,25 +2112,16 @@ function BookingServicesDialog({
                     </p>
                     <p className="mt-0.5 text-[11px] tabular-nums text-teal-900/55">
                       {line.people} pax · {line.pricePerPerson.toLocaleString('en-US')} THB each ·{' '}
-                      <span className="font-semibold text-teal-900/80">
-                        {serviceLineTotal(line).toLocaleString('en-US')} THB
-                      </span>
-                    </p>
-                    <label className="mt-2 inline-flex items-center gap-2 text-xs font-medium text-teal-900/70">
-                      <input
-                        type="checkbox"
-                        className="size-3.5 rounded border-teal-900/25 text-teal-800"
-                        checked={line.paid}
-                        onChange={(event) =>
-                          updateLine(line.id, { paid: event.target.checked })
-                        }
+                      <PayableAmount
+                        label={`${serviceLineTotal(line).toLocaleString('en-US')} THB`}
+                        paid={line.paid}
+                        className="inline text-[11px]"
+                        onToggle={() => updateLine(line.id, { paid: !line.paid })}
                       />
-                      {line.paid ? (
-                        <span className="text-emerald-800">Paid</span>
-                      ) : (
-                        <span className="text-amber-900">Unpaid</span>
-                      )}
-                    </label>
+                    </p>
+                    <p className="mt-1 text-[11px] font-medium text-teal-900/55">
+                      {line.paid ? 'Paid — click the amount to undo' : 'Click the amount to mark paid'}
+                    </p>
                   </div>
                   <button
                     type="button"
@@ -1928,6 +2175,109 @@ function BookingServicesDialog({
         </div>
       </DialogContent>
     </Dialog>
+  )
+}
+
+function TicketToggle({
+  issued,
+  guestName,
+  onChange,
+}: {
+  issued: boolean
+  guestName: string
+  onChange: (issued: boolean) => void
+}) {
+  const [on, setOn] = useState(issued)
+
+  useEffect(() => {
+    setOn(issued)
+  }, [issued])
+
+  function toggle() {
+    const next = !on
+    setOn(next)
+    startTransition(() => onChange(next))
+  }
+
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      aria-label={`Boat ticket given for ${guestName}`}
+      title={
+        on
+          ? 'Boat ticket given — click to undo'
+          : 'Click when the guest received their boat ticket'
+      }
+      className={cn(
+        'inline-flex h-11 w-full items-center justify-center rounded-lg border transition-colors',
+        on
+          ? 'border-sky-300 bg-sky-100 text-sky-800'
+          : 'border-teal-900/15 bg-white text-teal-900/30 hover:border-teal-700/30 hover:bg-teal-50',
+      )}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return
+        event.preventDefault()
+        event.stopPropagation()
+        toggle()
+      }}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        event.stopPropagation()
+        toggle()
+      }}
+    >
+      <Check className="size-4" strokeWidth={on ? 2.75 : 2} />
+    </button>
+  )
+}
+
+function PayableAmount({
+  label,
+  paid,
+  disabled,
+  compact,
+  onToggle,
+  className,
+}: {
+  label: string
+  paid: boolean
+  disabled?: boolean
+  compact?: boolean
+  onToggle: () => void
+  className?: string
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      aria-pressed={paid}
+      aria-label={paid ? `Mark ${label} as unpaid` : `Mark ${label} as paid`}
+      title={
+        disabled
+          ? label
+          : paid
+            ? 'Paid — click to undo'
+            : 'Click to mark paid'
+      }
+      className={cn(
+        'max-w-full truncate text-left font-semibold tabular-nums transition-colors disabled:cursor-not-allowed',
+        compact && 'text-[11px]',
+        paid
+          ? 'text-teal-900/45 line-through decoration-2 decoration-teal-900/45'
+          : 'text-orange-800 hover:text-orange-950',
+        disabled && 'text-teal-900/35 no-underline',
+        className,
+      )}
+      onClick={onToggle}
+    >
+      {label}
+    </button>
   )
 }
 

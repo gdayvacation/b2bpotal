@@ -664,6 +664,20 @@ function BoatBoard({
       .reduce((sum, booking) => sum + totalPassengers(booking), 0)
   }
 
+  function boatPaxBreakdown(boat: BoatNumber) {
+    return activeBookings
+      .filter((booking) => plan.assignments[booking.code] === boat)
+      .reduce(
+        (acc, booking) => ({
+          adults: acc.adults + booking.adults,
+          children: acc.children + booking.children,
+          infants: acc.infants + booking.infants,
+          tourLeaders: acc.tourLeaders + booking.tourLeaders,
+        }),
+        { adults: 0, children: 0, infants: 0, tourLeaders: 0 },
+      )
+  }
+
   return (
     <div>
       <div className="mb-4 hidden print:block">
@@ -1366,7 +1380,8 @@ function BoatBoard({
                         </div>
                       </div>
                       <p className="mt-0.5 text-xs text-teal-900/50">
-                        {loadPax} pax · {vansHere.length} van
+                        {loadPax} pax · {formatGuidePaxDetail(boatPaxBreakdown(boat))} ·{' '}
+                        {vansHere.length} van
                         {vansHere.length === 1 ? '' : 's'}
                         {freeGuests.length > 0 ? ` · ${freeGuests.length} no transfer` : ''}
                       </p>
@@ -1622,6 +1637,8 @@ function BoatBoard({
           const vansHere = assignedVansByBoat(boat)
           const freeGuests = noTransferOnBoat(boat)
           const pax = boatLoad(boat)
+          const paxTypes = boatPaxBreakdown(boat)
+          const paxDetail = formatGuidePaxDetail(paxTypes)
           const capacity = plan.capacities[boat - 1] ?? DEFAULT_BOAT_CAPACITY
 
           const vanSections = vansHere.map((group) => ({
@@ -1686,7 +1703,7 @@ function BoatBoard({
                     {program === 'PP' ? 'Phi Phi Islands' : 'Phang Nga Bay'}
                   </h1>
                   <p className="mt-1 text-[10px] leading-snug font-medium text-teal-900/75">
-                    {formatLongDate(date)} · {pax} / {capacity} pax
+                    {formatLongDate(date)} · {pax} / {capacity} pax : {paxDetail}
                   </p>
                 </div>
                 <div className="guide-jo-contact w-[13.5rem] shrink-0 rounded-md border border-teal-900/25 bg-teal-50/60 px-3 py-2.5">
@@ -1722,7 +1739,7 @@ function BoatBoard({
               )}
 
               <p className="guide-jo-footer mt-2 text-[9px] font-medium text-teal-900/60">
-                Total passengers on {boatDisplayName(plan, boat)}: {pax} / {capacity}
+                Total passengers on {boatDisplayName(plan, boat)}: {pax} / {capacity} : {paxDetail}
               </p>
             </div>
           )
@@ -2020,6 +2037,15 @@ function GuestBoatChip({
   )
 }
 
+
+function formatGuidePaxDetail(pax: {
+  adults: number
+  children: number
+  infants: number
+  tourLeaders: number
+}) {
+  return `${pax.adults} AD, ${pax.children} CH, ${pax.infants} INF, ${pax.tourLeaders} TL`
+}
 
 function DetailRow({
   label,

@@ -24,6 +24,12 @@ export function toISODate(date: Date) {
   return `${year}-${month}-${day}`
 }
 
+export function addDaysISO(isoDate: string, days: number) {
+  const date = dateFromISO(isoDate)
+  date.setDate(date.getDate() + days)
+  return toISODate(date)
+}
+
 /** Parse YYYY-MM-DD into a local Date at midnight (no UTC shift). */
 export function dateFromISO(isoDate: string): Date {
   const [y, m, d] = isoDate.split('-').map(Number)
@@ -153,6 +159,29 @@ export function formatParkFeeTotal(
 ) {
   const total = parkFeeTotal(parkFee, program, adults, children)
   return total > 0 ? total.toLocaleString('en-US') : ''
+}
+
+export function formatThb(amount: number) {
+  if (!Number.isFinite(amount) || amount <= 0) return ''
+  return `${Math.round(amount).toLocaleString('en-US')} THB`
+}
+
+export function daysInMonthISO(isoDate: string) {
+  const [year, month] = isoDate.split('-').map(Number)
+  const last = new Date(year!, month!, 0).getDate()
+  const yyyy = String(year)
+  const mm = String(month).padStart(2, '0')
+  return Array.from(
+    { length: last },
+    (_, index) => `${yyyy}-${mm}-${String(index + 1).padStart(2, '0')}`,
+  )
+}
+
+export function formatMonthLabel(isoDate: string) {
+  return new Date(`${isoDate.slice(0, 7)}-01T12:00:00`).toLocaleDateString('en-GB', {
+    month: 'long',
+    year: 'numeric',
+  })
 }
 
 /** Parse a cash-on-tour string like "1,800 THB" into a number. */

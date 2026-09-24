@@ -351,6 +351,8 @@ export type VanSplit = {
   sortOrder: number
 }
 
+export type SpecialTransferKind = 'private' | 'other'
+
 export type VanMeta = {
   /** Vehicle plate / fleet number for ops. */
   plate: string
@@ -360,6 +362,64 @@ export type VanMeta = {
   phone: string
   /** Seats for this van on this day. Omit to use the day default. */
   capacity?: number
+  /** Hired from an outside van company for this day. */
+  outsourced?: boolean
+  /** Outside company name when outsourced. */
+  outsourceCompany?: string
+  /** Extra van: Private Van or Other Service. */
+  specialKind?: SpecialTransferKind
+  transferIn?: boolean
+  transferOut?: boolean
+  /** Charge in THB for this special transfer. */
+  chargeAmount?: number
+}
+
+export function isSpecialTransferKind(value: unknown): value is SpecialTransferKind {
+  return value === 'private' || value === 'other'
+}
+
+export function isSpecialTransfer(meta?: Pick<VanMeta, 'specialKind'> | null) {
+  return isSpecialTransferKind(meta?.specialKind)
+}
+
+export function specialTransferKindLabel(kind?: SpecialTransferKind | null) {
+  if (kind === 'private') return 'Private Van'
+  if (kind === 'other') return 'Other Service'
+  return ''
+}
+
+export function specialTransferDirectionLabel(
+  meta?: Pick<VanMeta, 'transferIn' | 'transferOut'> | null,
+) {
+  if (!meta) return ''
+  const parts: string[] = []
+  if (meta.transferIn) parts.push('Transfer In')
+  if (meta.transferOut) parts.push('Transfer Out')
+  return parts.join(' · ')
+}
+
+export function normalizeChargeAmount(value: unknown) {
+  const amount = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(amount) || amount <= 0) return 0
+  return Math.round(amount)
+}
+
+export function vanHasSavedMeta(meta?: VanMeta | null) {
+  if (!meta) return false
+  return (
+    Boolean(meta.driver?.trim()) ||
+    Boolean(meta.plate?.trim()) ||
+    Boolean(meta.phone?.trim()) ||
+    meta.outsourced === true ||
+    isSpecialTransfer(meta) ||
+    normalizeChargeAmount(meta.chargeAmount) > 0
+  )
+}
+
+export function vanOutsourceLabel(meta: Pick<VanMeta, 'outsourced' | 'outsourceCompany'>) {
+  if (!meta.outsourced) return ''
+  const company = meta.outsourceCompany?.trim()
+  return company ? `Outsource · ${company}` : 'Outsource'
 }
 
 export const MIN_VAN_CAPACITY = 1

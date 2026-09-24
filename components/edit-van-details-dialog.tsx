@@ -13,13 +13,18 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Segment, SegmentedControl } from '@/components/ui-primitives'
 import {
   DEFAULT_VAN_CAPACITY,
   MAX_VAN_CAPACITY,
   MIN_VAN_CAPACITY,
   clampVanCapacity,
+  isSpecialTransfer,
+  isSpecialTransferKind,
+  normalizeChargeAmount,
   vanSeatCapacity,
   type Program,
+  type SpecialTransferKind,
   type VanMeta,
 } from '@/lib/types'
 
@@ -43,6 +48,13 @@ export function EditVanDetailsDialog({
   const [phone, setPhone] = useState('')
   const [plate, setPlate] = useState('')
   const [seats, setSeats] = useState(DEFAULT_VAN_CAPACITY)
+  const [outsourced, setOutsourced] = useState(false)
+  const [outsourceCompany, setOutsourceCompany] = useState('')
+  const [special, setSpecial] = useState(false)
+  const [specialKind, setSpecialKind] = useState<SpecialTransferKind>('private')
+  const [transferIn, setTransferIn] = useState(false)
+  const [transferOut, setTransferOut] = useState(false)
+  const [charge, setCharge] = useState('')
 
   useEffect(() => {
     if (!open || van === null) return
@@ -53,6 +65,15 @@ export function EditVanDetailsDialog({
     setPhone(initial?.phone ?? resolved.phone)
     setPlate(initial?.plate ?? resolved.plate)
     setSeats(vanSeatCapacity(plan, van))
+    setOutsourced(initial?.outsourced ?? resolved.outsourced === true)
+    setOutsourceCompany(initial?.outsourceCompany ?? resolved.outsourceCompany ?? '')
+    const kind = initial?.specialKind ?? resolved.specialKind
+    setSpecial(isSpecialTransfer({ specialKind: kind }) || isSpecialTransfer(resolved))
+    setSpecialKind(isSpecialTransferKind(kind) ? kind : 'private')
+    setTransferIn(initial?.transferIn ?? resolved.transferIn === true)
+    setTransferOut(initial?.transferOut ?? resolved.transferOut === true)
+    const amount = normalizeChargeAmount(initial?.chargeAmount ?? resolved.chargeAmount)
+    setCharge(amount > 0 ? String(amount) : '')
   }, [open, van, date, program, initial, getDayVehiclePlan, resolveVanMeta])
 
   function handleSave() {
@@ -62,6 +83,12 @@ export function EditVanDetailsDialog({
       phone: phone.trim(),
       plate: plate.trim(),
       capacity: clampVanCapacity(seats),
+      outsourced,
+      outsourceCompany: outsourced ? outsourceCompany.trim() : '',
+      specialKind: special ? specialKind : null,
+      transferIn: special ? transferIn : false,
+      transferOut: special ? transferOut : false,
+      chargeAmount: special ? normalizeChargeAmount(charge) : 0,
     })
     onOpenChange(false)
   }
@@ -72,8 +99,8 @@ export function EditVanDetailsDialog({
         <DialogHeader>
           <DialogTitle>{van !== null ? `Van ${van} details` : 'Van details'}</DialogTitle>
           <DialogDescription>
-            Driver, plate, and phone are remembered for the next day. Seat count is only for this
-            day.
+            Driver, plate, and phone apply to this day only. The next day starts blank. Seat count
+            is also only for this day.
           </DialogDescription>
         </DialogHeader>
 
@@ -120,6 +147,92 @@ export function EditVanDetailsDialog({
               className="h-10"
             />
           </div>
+          <label className="flex items-center gap-2 text-sm font-medium text-teal-950">
+            <input
+              type="checkbox"
+              className="size-3.5 rounded border-teal-900/25 text-violet-700"
+              checked={outsourced}
+              onChange={(event) => {
+                setOutsourced(event.target.checked)
+                if (!event.target.checked) setOutsourceCompany('')
+              }}
+            />
+            Outsource van company
+          </label>
+          {outsourced ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="van-outsource-company">Company name</Label>
+              <Input
+                id="van-outsource-company"
+                value={outsourceCompany}
+                onChange={(event) => setOutsourceCompany(event.target.value)}
+                placeholder="e.g. Phuket Transfer Co"
+                className="h-10"
+              />
+            </div>
+          ) : null}
+          <label className="flex items-center gap-2 text-sm font-medium text-teal-950">
+            <input
+              type="checkbox"
+              className="size-3.5 rounded border-teal-900/25 text-sky-700"
+              checked={special}
+              onChange={(event) => {
+                setSpecial(event.target.checked)
+                if (event.target.checked && !transferIn && !transferOut) setTransferIn(true)
+              }}
+            />
+            Special transfer
+          </label>
+          {special ? (
+            <div className="space-y-3 rounded-xl border border-sky-200 bg-sky-50/60 p-3">
+              <SegmentedControl>
+                <Segment active={specialKind === 'private'} onClick={() => setSpecialKind('private')}>
+                  Private Van
+                </Segment>
+                <Segment active={specialKind === 'other'} onClick={() => setSpecialKind('other')}>
+                  Other Service
+                </Segment>
+              </SegmentedControl>
+              <div className="flex flex-wrap gap-3">
+                <label className="flex items-center gap-2 text-sm font-medium text-teal-950">
+                  <input
+                    type="checkbox"
+                    className="size-3.5 rounded border-teal-900/25 text-teal-700"
+                    checked={transferIn}
+                    onChange={(event) => setTransferIn(event.target.checked)}
+                  />
+                  Transfer In
+                </label>
+                <label className="flex items-center gap-2 text-sm font-medium text-teal-950">
+                  <input
+                    type="checkbox"
+                    className="size-3.5 rounded border-teal-900/25 text-teal-700"
+                    checked={transferOut}
+                    onChange={(event) => setTransferOut(event.target.checked)}
+                  />
+                  Transfer Out
+                </label>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="van-special-charge">Charge amount</Label>
+                <div className="relative">
+                  <Input
+                    id="van-special-charge"
+                    type="number"
+                    min={0}
+                    step={100}
+                    value={charge}
+                    onChange={(event) => setCharge(event.target.value)}
+                    placeholder="e.g. 2500"
+                    className="h-10 pr-14"
+                  />
+                  <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-semibold text-teal-800/55">
+                    THB
+                  </span>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         <DialogFooter>

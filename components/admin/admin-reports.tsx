@@ -10,11 +10,13 @@ import {
   FileSpreadsheet,
   Handshake,
   Printer,
+  Receipt,
 } from 'lucide-react'
 import {
   AdminDailyJobOrder,
 } from '@/components/admin/admin-daily-job-order'
 import { AdminCheckInReport } from '@/components/admin/admin-check-in-report'
+import { AdminVanUsageReport } from '@/components/admin/admin-van-usage-report'
 import { usePortal } from '@/components/portal-provider'
 import {
   EmptyState,
@@ -51,11 +53,11 @@ import {
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
-type ReportMode = 'bookings' | 'job-order-ops' | 'job-order-agent' | 'check-in'
+type ReportMode = 'bookings' | 'job-order-ops' | 'job-order-agent' | 'check-in' | 'van-usage'
 type ProgramFilter = 'all' | Program
 type SortKey = 'pickup' | 'zone' | 'agent' | 'code' | 'guest'
 
-type ReportTone = 'teal' | 'amber' | 'sky' | 'slate'
+type ReportTone = 'teal' | 'amber' | 'sky' | 'slate' | 'violet'
 
 const REPORT_TONES: Record<
   ReportTone,
@@ -105,6 +107,15 @@ const REPORT_TONES: Record<
     cta: 'text-slate-800',
     wash: 'from-slate-500/10 via-transparent to-transparent',
   },
+  violet: {
+    card: 'border-violet-900/10 bg-gradient-to-br from-violet-50/90 via-white to-fuchsia-50/35 hover:border-violet-600/30 hover:shadow-lg hover:shadow-violet-900/8',
+    icon: 'bg-gradient-to-br from-violet-600 to-fuchsia-700 text-white shadow-md shadow-violet-700/25',
+    meta: 'bg-violet-950/6 text-violet-900',
+    title: 'text-violet-950',
+    body: 'text-violet-950/55',
+    cta: 'text-violet-800',
+    wash: 'from-violet-500/12 via-transparent to-transparent',
+  },
 }
 
 const SORT_OPTIONS: { value: SortKey; label: string }[] = [
@@ -123,7 +134,7 @@ export function AdminReports() {
       <div className="w-full">
         <PageHeader
           title="Report"
-          description="Pick a sheet — booking export, driver vans, marina check-in, or agent day order."
+          description="Pick a sheet — booking export, driver vans, marina check-in, agent day order, or van usage."
         />
 
         <div className="grid gap-4 sm:grid-cols-2 sm:gap-5">
@@ -159,6 +170,14 @@ export function AdminReports() {
             icon={<Handshake className="size-7" strokeWidth={1.75} />}
             onClick={() => setMode('job-order-agent')}
           />
+          <ReportModeCard
+            tone="violet"
+            title="VAN Monthly Report"
+            subtitle="Daily or monthly vans — including Private Van and Other Service special transfers with charge."
+            meta="Billing check"
+            icon={<Receipt className="size-7" strokeWidth={1.75} />}
+            onClick={() => setMode('van-usage')}
+          />
         </div>
       </div>
     )
@@ -174,6 +193,10 @@ export function AdminReports() {
 
   if (mode === 'job-order-agent') {
     return <AdminDailyJobOrder audience="agent" onBack={() => setMode(null)} />
+  }
+
+  if (mode === 'van-usage') {
+    return <AdminVanUsageReport onBack={() => setMode(null)} />
   }
 
   return <BookingReport onBack={() => setMode(null)} />

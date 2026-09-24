@@ -9,9 +9,9 @@ import {
   ChevronRight,
   Search,
   Ship,
-  UserRound,
-  Users,
   AlertTriangle,
+  Minus,
+  Plus,
 } from 'lucide-react'
 import { BoatFleetBadge } from '@/components/boat-badge'
 import { usePortal } from '@/components/portal-provider'
@@ -19,6 +19,7 @@ import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { CheckInI18nProvider, CheckInLanguageSwitch, useCheckInI18n } from '@/components/check-in/check-in-i18n'
 import { NationalityCombobox } from '@/components/check-in/nationality-combobox'
 import { enrolledSeatCount, guestDisplayName } from '@/lib/check-in-enrollment'
 import { boatTheme } from '@/lib/boat-theme'
@@ -31,6 +32,13 @@ import {
   parseCashOnTourAmount,
   parkFeeTotal,
 } from '@/lib/format'
+import {
+  englishPlural,
+  isEnglishName,
+  isEnglishPassport,
+  sanitizeEnglishName,
+  sanitizeEnglishPassport,
+} from '@/lib/check-in-i18n'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { listVanNumbers, primaryVan } from '@/lib/vehicle-assign'
 import { cn } from '@/lib/utils'
@@ -79,11 +87,11 @@ function emptyGuestDraft(): GuestDraft {
 
 function guestDraftReady(guest: GuestDraft) {
   return (
-    Boolean(guest.firstName.trim()) &&
-    Boolean(guest.lastName.trim()) &&
+    isEnglishName(guest.firstName) &&
+    isEnglishName(guest.lastName) &&
     Boolean(matchNationality(guest.nationality)) &&
     Boolean(buildBirthdayIso(guest.birthYear, guest.birthMonth, guest.birthDay)) &&
-    Boolean(guest.passportNumber.trim())
+    isEnglishPassport(guest.passportNumber)
   )
 }
 
@@ -123,6 +131,19 @@ export function GuestCheckIn({
 }: {
   lockedBookingCode?: string | null
 }) {
+  return (
+    <CheckInI18nProvider>
+      <GuestCheckInForm lockedBookingCode={lockedBookingCode} />
+    </CheckInI18nProvider>
+  )
+}
+
+function GuestCheckInForm({
+  lockedBookingCode = null,
+}: {
+  lockedBookingCode?: string | null
+}) {
+  const { t, lang } = useCheckInI18n()
   const {
     bookings,
     getDayVehiclePlan,
@@ -153,6 +174,7 @@ export function GuestCheckIn({
   const [selectedHotel, setSelectedHotel] = useState<string | null>(null)
   const [bookingCode, setBookingCode] = useState<string | null>(lockedCode)
   const [scope, setScope] = useState<Scope | null>(null)
+  const [partySize, setPartySize] = useState(1)
   const [guests, setGuests] = useState<GuestDraft[]>([emptyGuestDraft()])
   const [error, setError] = useState('')
   const [detailsAttempted, setDetailsAttempted] = useState(false)
@@ -264,20 +286,20 @@ export function GuestCheckIn({
 
     if (!booking) {
       setLockedReady(true)
-      setError('This check-in QR is not valid. Please ask marina staff for a new code.')
+      setError(t('invalidQr'))
       setStep('welcome')
       return
     }
 
     if (!isActiveBooking(booking)) {
       setLockedReady(true)
-      setError('This booking is cancelled. Please ask marina staff for help.')
+      setError(t('cancelledBooking'))
       setStep('welcome')
       return
     }
     if (getCheckInAttendance(booking.date, booking.program, booking.code) === 'no-show') {
       setLockedReady(true)
-      setError('This booking was marked no-show. Please ask marina staff for help.')
+      setError(t('noShowBooking'))
       setStep('welcome')
       return
     }
@@ -335,6 +357,7 @@ export function GuestCheckIn({
 
   function startOver() {
     setScope(null)
+    setPartySize(1)
     setGuests([emptyGuestDraft()])
     setDetailsAttempted(false)
     setError('')
@@ -371,10 +394,11 @@ export function GuestCheckIn({
     )
   }
 
-  function beginDetails(nextScope: Scope) {
-    const count = nextScope === 'group' ? Math.max(1, remainingSeats) : 1
-    setScope(nextScope)
-    setGuests(Array.from({ length: count }, () => emptyGuestDraft()))
+  function beginDetails(count = partySize) {
+    const size = Math.min(Math.max(1, Math.floor(count) || 1), Math.max(1, remainingSeats))
+    setPartySize(size)
+    setScope(size === 1 ? 'one' : 'group')
+    setGuests(Array.from({ length: size }, () => emptyGuestDraft()))
     setDetailsAttempted(false)
     setError('')
     setStep('details')
@@ -403,7 +427,7 @@ export function GuestCheckIn({
     setError('')
 
     if (program && selectedBooking.program !== program) {
-      setError('Program does not match this booking. Please start again.')
+      setError(t('programMismatch'))
       return
     }
 
@@ -434,7 +458,7 @@ export function GuestCheckIn({
   if (!hydrated || (isLocked && !lockedReady)) {
     return (
       <div className="gday-app flex min-h-dvh items-center justify-center px-4">
-        <p className="text-sm text-teal-900/55">Loading check-in…</p>
+        <p className="text-sm text-teal-900/55">{t('loading')}</p>
       </div>
     )
   }
@@ -445,11 +469,14 @@ export function GuestCheckIn({
     !(isLocked && step === 'scope')
 
   return (
-    <div className="gday-app relative min-h-dvh overflow-hidden">
+    <div className="gday-app relative min-h-dvh overflow-hidden" lang={lang}>
       <div className="gday-grid pointer-events-none absolute inset-0 opacity-40" />
-      <header className="relative mx-auto flex h-14 w-full max-w-lg items-center justify-between px-4">
+      <header className="relative mx-auto flex h-14 w-full max-w-lg items-center justify-between gap-3 px-4">
         <BrandMark />
-        <p className="text-xs font-medium text-teal-900/45">{formatLongDate(tourDate)}</p>
+        <div className="flex items-center gap-2">
+          <CheckInLanguageSwitch />
+          <p className="text-xs font-medium text-teal-900/45">{formatLongDate(tourDate)}</p>
+        </div>
       </header>
 
       <main className="relative mx-auto w-full max-w-lg px-4 pb-10 pt-2">
@@ -460,15 +487,15 @@ export function GuestCheckIn({
             className="mb-3 inline-flex items-center gap-1 text-sm font-medium text-teal-800/70 transition-colors hover:text-teal-950"
           >
             <ChevronLeft className="size-4" />
-            Back
+            {t('back')}
           </button>
         ) : null}
 
         {step === 'welcome' ? (
           <section className="gday-sheet space-y-5 rounded-[1.5rem] p-6">
-            <p className="gday-soft-label">Marina check-in</p>
+            <p className="gday-soft-label">{t('marinaCheckIn')}</p>
             <h1 className="font-display text-2xl font-semibold tracking-tight text-teal-950">
-              {error ? 'Check-in unavailable' : 'Scan your booking QR'}
+              {error ? t('checkInUnavailable') : t('scanQr')}
             </h1>
             {error ? (
               <p className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3.5 text-sm leading-relaxed text-rose-900">
@@ -476,13 +503,9 @@ export function GuestCheckIn({
               </p>
             ) : (
               <>
-                <p className="text-sm leading-relaxed text-teal-950/60">
-                  Check-in is linked to your booking so we can confirm any park fee or cash due
-                  before tickets are issued.
-                </p>
+                <p className="text-sm leading-relaxed text-teal-950/60">{t('welcomeBody')}</p>
                 <p className="rounded-2xl bg-teal-950/[0.04] px-4 py-3.5 text-sm leading-relaxed text-teal-900/70">
-                  Please ask marina staff to show the QR code for your booking, then scan it with
-                  your phone.
+                  {t('welcomeAskStaff')}
                 </p>
               </>
             )}
@@ -491,11 +514,11 @@ export function GuestCheckIn({
 
         {step === 'program' && !isLocked ? (
           <section className="space-y-4">
-            <StepHeading title="Which program today?" subtitle="Choose the tour you are joining." />
+            <StepHeading title={t('whichProgram')} subtitle={t('whichProgramSub')} />
             <div className="grid gap-3">
               <ChoiceCard
-                title="Phi Phi"
-                subtitle="Phi Phi Islands"
+                title={t('phiPhi')}
+                subtitle={t('phiPhiSub')}
                 icon={<Ship className="size-5" />}
                 selected={program === 'PP'}
                 onSelect={() => {
@@ -505,8 +528,8 @@ export function GuestCheckIn({
                 }}
               />
               <ChoiceCard
-                title="James Bond"
-                subtitle="Phang Nga Bay"
+                title={t('jamesBond')}
+                subtitle={t('jamesBondSub')}
                 icon={<Ship className="size-5" />}
                 selected={program === 'James Bond'}
                 onSelect={() => {
@@ -522,7 +545,7 @@ export function GuestCheckIn({
         {step === 'find' && program && !isLocked ? (
           <section className="space-y-4">
             <StepHeading
-              title="Find your booking"
+              title={t('findBooking')}
               subtitle={`${programLabel(program)} · ${formatLongDate(tourDate)}`}
             />
             <div className="relative">
@@ -535,7 +558,7 @@ export function GuestCheckIn({
                   setSelectedHotel(null)
                   setBookingCode(null)
                 }}
-                placeholder="Search name, hotel, or voucher…"
+                placeholder={t('searchPlaceholder')}
                 autoComplete="off"
                 className="h-11 pl-10"
               />
@@ -543,7 +566,7 @@ export function GuestCheckIn({
             <div className="grid grid-cols-2 gap-2 rounded-2xl bg-teal-950/[0.04] p-1">
               <ModeTab
                 active={findMode === 'van'}
-                label="Van plate"
+                label={t('vanPlate')}
                 icon={<Bus className="size-3.5" />}
                 onClick={() => {
                   setFindMode('van')
@@ -554,7 +577,7 @@ export function GuestCheckIn({
               />
               <ModeTab
                 active={findMode === 'hotel'}
-                label="Hotel"
+                label={t('hotel')}
                 icon={<Building2 className="size-3.5" />}
                 onClick={() => {
                   setFindMode('hotel')
@@ -568,10 +591,10 @@ export function GuestCheckIn({
             {isSearching ? (
               <div className="space-y-2">
                 <p className="text-xs font-semibold tracking-wide text-teal-800/55 uppercase">
-                  Search results
+                  {t('searchResults')}
                 </p>
                 {filteredBookings.length === 0 ? (
-                  <EmptyNote text="No bookings match that name, hotel, or voucher today." />
+                  <EmptyNote text={t('noSearchMatch')} />
                 ) : (
                   <BookingPickList
                     bookings={filteredBookings}
@@ -587,10 +610,10 @@ export function GuestCheckIn({
                 {findMode === 'van' ? (
                   <div className="space-y-2">
                     <p className="text-xs font-semibold tracking-wide text-teal-800/55 uppercase">
-                      Select van plate
+                      {t('selectVan')}
                     </p>
                     {vanOptions.length === 0 ? (
-                      <EmptyNote text="No vans assigned yet for this program. Try hotel search, or ask staff." />
+                      <EmptyNote text={t('noVans')} />
                     ) : (
                       <div className="grid grid-cols-2 gap-2">
                         {vanOptions.map(({ van, plate }) => (
@@ -617,10 +640,10 @@ export function GuestCheckIn({
                 ) : (
                   <div className="space-y-2">
                     <p className="text-xs font-semibold tracking-wide text-teal-800/55 uppercase">
-                      Select hotel
+                      {t('selectHotel')}
                     </p>
                     {hotels.length === 0 ? (
-                      <EmptyNote text="No bookings found for this program today." />
+                      <EmptyNote text={t('noBookingsToday')} />
                     ) : (
                       <div className="max-h-48 space-y-1.5 overflow-y-auto rounded-2xl ring-1 ring-teal-900/8">
                         {hotels.map((hotel) => (
@@ -650,10 +673,10 @@ export function GuestCheckIn({
                 (findMode === 'hotel' && selectedHotel) ? (
                   <div className="space-y-2">
                     <p className="text-xs font-semibold tracking-wide text-teal-800/55 uppercase">
-                      Guest / leader name
+                      {t('guestLeader')}
                     </p>
                     {filteredBookings.length === 0 ? (
-                      <EmptyNote text="No bookings on this van or hotel. Try the other filter." />
+                      <EmptyNote text={t('noVanHotel')} />
                     ) : (
                       <BookingPickList
                         bookings={filteredBookings}
@@ -673,9 +696,10 @@ export function GuestCheckIn({
         {step === 'scope' && selectedBooking ? (
           <section className="space-y-4">
             <StepHeading
-              title="Who is checking in?"
+              title={t('whoCheckingIn')}
               subtitle={`${programLabel(selectedBooking.program)} · ${formatLongDate(selectedBooking.date)}`}
             />
+            <p className="text-sm leading-relaxed text-teal-900/60">{t('howManySub')}</p>
             <div className="gday-sheet space-y-2 rounded-[1.5rem] p-4">
               <p className="text-sm font-semibold text-teal-950">{selectedBooking.leadGuest}</p>
               <p className="text-xs text-teal-900/55">
@@ -687,7 +711,11 @@ export function GuestCheckIn({
                     : ''}
               </p>
               <p className="text-xs font-medium tabular-nums text-teal-800/70">
-                {remainingSeats} of {seatsTotal} seat{seatsTotal === 1 ? '' : 's'} left to check in
+                {t('seatsLeft', {
+                  remaining: remainingSeats,
+                  total: seatsTotal,
+                  plural: englishPlural(seatsTotal),
+                })}
               </p>
             </div>
             {(() => {
@@ -700,19 +728,19 @@ export function GuestCheckIn({
                 >
                   <p className="flex items-center gap-2 font-semibold">
                     <AlertTriangle className="size-4 shrink-0" />
-                    Payment due before tickets
+                    {t('paymentDueTitle')}
                   </p>
                   <p className="mt-1 text-orange-900/85">
                     {due.amount > 0
-                      ? `Please pay ${due.amount.toLocaleString('en-US')} THB at the marina desk.`
-                      : 'Please see marina staff about cash on tour before boarding.'}
+                      ? t('payAmount', { amount: due.amount.toLocaleString('en-US') })
+                      : t('payCash')}
                   </p>
                 </div>
               )
             })()}
             {fullyCheckedIn ? (
               <div className="space-y-3">
-                <EmptyNote text="This booking is already fully checked in." />
+                <EmptyNote text={t('alreadyCheckedIn')} />
                 <Button
                   className="h-12 w-full text-base"
                   onClick={() => {
@@ -720,26 +748,114 @@ export function GuestCheckIn({
                     setStep('done')
                   }}
                 >
-                  View check-in status
+                  {t('viewStatus')}
                   <ChevronRight data-icon="inline-end" />
                 </Button>
               </div>
             ) : (
-              <div className="grid gap-3">
-                <ChoiceCard
-                  title="1 person"
-                  subtitle="Check in yourself only"
-                  icon={<UserRound className="size-5" />}
-                  selected={scope === 'one'}
-                  onSelect={() => beginDetails('one')}
-                />
-                <ChoiceCard
-                  title="Whole group"
-                  subtitle={`Enter details for all ${remainingSeats} remaining guest${remainingSeats === 1 ? '' : 's'}`}
-                  icon={<Users className="size-5" />}
-                  selected={scope === 'group'}
-                  onSelect={() => beginDetails('group')}
-                />
+              <div className="gday-sheet space-y-4 rounded-[1.5rem] p-5">
+                <div>
+                  <p className="text-sm font-semibold text-teal-950">{t('howManyTitle')}</p>
+                  <p className="mt-1 text-xs font-medium tracking-wide text-teal-800/55 uppercase">
+                    {t('guestCountLabel')}
+                  </p>
+                </div>
+                <div className="flex items-center justify-center gap-4">
+                  <button
+                    type="button"
+                    aria-label="Decrease"
+                    disabled={partySize <= 1}
+                    onClick={() => setPartySize((n) => Math.max(1, n - 1))}
+                    className="flex size-12 items-center justify-center rounded-2xl bg-teal-950/[0.06] text-teal-900 transition-colors hover:bg-teal-950/[0.1] disabled:opacity-35"
+                  >
+                    <Minus className="size-5" />
+                  </button>
+                  <input
+                    type="number"
+                    min={1}
+                    max={remainingSeats}
+                    inputMode="numeric"
+                    lang="en"
+                    value={partySize}
+                    onChange={(event) => {
+                      const next = Math.floor(Number(event.target.value) || 1)
+                      setPartySize(Math.min(remainingSeats, Math.max(1, next)))
+                    }}
+                    className="h-16 w-24 rounded-2xl border border-teal-900/12 bg-white text-center font-display text-3xl font-semibold tabular-nums text-teal-950 outline-none focus-visible:border-teal-700/40"
+                  />
+                  <button
+                    type="button"
+                    aria-label="Increase"
+                    disabled={partySize >= remainingSeats}
+                    onClick={() => setPartySize((n) => Math.min(remainingSeats, n + 1))}
+                    className="flex size-12 items-center justify-center rounded-2xl bg-teal-950/[0.06] text-teal-900 transition-colors hover:bg-teal-950/[0.1] disabled:opacity-35"
+                  >
+                    <Plus className="size-5" />
+                  </button>
+                </div>
+                {remainingSeats > 1 ? (
+                  <div className="flex flex-wrap justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPartySize(1)}
+                      className={cn(
+                        'rounded-full px-3 py-1.5 text-xs font-semibold',
+                        partySize === 1
+                          ? 'bg-teal-800 text-white'
+                          : 'bg-teal-950/[0.05] text-teal-900/70',
+                      )}
+                    >
+                      1
+                    </button>
+                    {remainingSeats > 3 ? (
+                      <button
+                        type="button"
+                        onClick={() => setPartySize(Math.min(3, remainingSeats))}
+                        className={cn(
+                          'rounded-full px-3 py-1.5 text-xs font-semibold',
+                          partySize === 3
+                            ? 'bg-teal-800 text-white'
+                            : 'bg-teal-950/[0.05] text-teal-900/70',
+                        )}
+                      >
+                        3
+                      </button>
+                    ) : null}
+                    {remainingSeats > 6 ? (
+                      <button
+                        type="button"
+                        onClick={() => setPartySize(Math.min(6, remainingSeats))}
+                        className={cn(
+                          'rounded-full px-3 py-1.5 text-xs font-semibold',
+                          partySize === 6
+                            ? 'bg-teal-800 text-white'
+                            : 'bg-teal-950/[0.05] text-teal-900/70',
+                        )}
+                      >
+                        6
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => setPartySize(remainingSeats)}
+                      className={cn(
+                        'rounded-full px-3 py-1.5 text-xs font-semibold',
+                        partySize === remainingSeats
+                          ? 'bg-teal-800 text-white'
+                          : 'bg-teal-950/[0.05] text-teal-900/70',
+                      )}
+                    >
+                      {t('allRemaining', { count: remainingSeats })}
+                    </button>
+                  </div>
+                ) : null}
+                <Button className="h-12 w-full text-base" onClick={() => beginDetails()}>
+                  {t('continueWith', {
+                    count: partySize,
+                    plural: englishPlural(partySize),
+                  })}
+                  <ChevronRight data-icon="inline-end" />
+                </Button>
               </div>
             )}
           </section>
@@ -748,22 +864,25 @@ export function GuestCheckIn({
         {step === 'details' && selectedBooking && scope ? (
           <section className="space-y-4">
             <StepHeading
-              title={scope === 'group' ? 'Group details' : 'Your details'}
+              title={scope === 'group' ? t('groupDetails') : t('yourDetails')}
               subtitle={
                 scope === 'group'
-                  ? `Enter information for each of the ${guests.length} guests checking in. All fields are required.`
-                  : 'Enter the guest checking in now. All fields are required.'
+                  ? t('groupDetailsSub', { count: guests.length })
+                  : t('yourDetailsSub')
               }
             />
             <div
               role="alert"
+              className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3.5 text-sm leading-relaxed text-amber-950"
+            >
+              <p className="font-semibold">{t('fillEnglishOnly')}</p>
+            </div>
+            <div
+              role="alert"
               className="rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3.5 text-sm leading-relaxed text-rose-900"
             >
-              <p className="font-semibold text-rose-950">Use passport details only</p>
-              <p className="mt-1 text-rose-900/85">
-                Name, birthday, nationality, and passport number must match your passport exactly.
-                Wrong information means travel insurance may not cover you.
-              </p>
+              <p className="font-semibold text-rose-950">{t('passportOnlyTitle')}</p>
+              <p className="mt-1 text-rose-900/85">{t('passportOnlyBody')}</p>
             </div>
             <div className="space-y-4">
               {guests.map((guest, index) => {
@@ -774,27 +893,39 @@ export function GuestCheckIn({
                   <div key={index} className="gday-sheet space-y-3.5 rounded-[1.5rem] p-5">
                     {scope === 'group' ? (
                       <p className="text-xs font-semibold tracking-wide text-teal-800/55 uppercase">
-                        Guest {index + 1} of {guests.length}
+                        {t('guestOf', { n: index + 1, total: guests.length })}
                       </p>
                     ) : null}
                     <div className="grid grid-cols-2 gap-3">
                       <Field
-                        label="First name"
+                        label={t('firstName')}
                         value={guest.firstName}
-                        onChange={(value) => updateGuest(index, { firstName: value })}
+                        onChange={(value) =>
+                          updateGuest(index, { firstName: sanitizeEnglishName(value) })
+                        }
                         autoComplete="given-name"
                         required
-                        showError={detailsAttempted && !guest.firstName.trim()}
-                        errorText="First name is required."
+                        showError={detailsAttempted && !isEnglishName(guest.firstName)}
+                        errorText={
+                          guest.firstName.trim()
+                            ? t('nameEnglishOnly')
+                            : t('firstNameRequired')
+                        }
+                        hint={t('nameEnglishOnly')}
                       />
                       <Field
-                        label="Last name"
+                        label={t('lastName')}
                         value={guest.lastName}
-                        onChange={(value) => updateGuest(index, { lastName: value })}
+                        onChange={(value) =>
+                          updateGuest(index, { lastName: sanitizeEnglishName(value) })
+                        }
                         autoComplete="family-name"
                         required
-                        showError={detailsAttempted && !guest.lastName.trim()}
-                        errorText="Last name is required."
+                        showError={detailsAttempted && !isEnglishName(guest.lastName)}
+                        errorText={
+                          guest.lastName.trim() ? t('nameEnglishOnly') : t('lastNameRequired')
+                        }
+                        hint={t('nameEnglishOnly')}
                       />
                     </div>
                     <NationalityCombobox
@@ -803,6 +934,10 @@ export function GuestCheckIn({
                       onChange={(value) => updateGuest(index, { nationality: value })}
                       required
                       showError={detailsAttempted}
+                      label={t('nationality')}
+                      placeholder={t('nationalityPlaceholder')}
+                      noMatchText={t('nationalityNoMatch')}
+                      errorText={t('nationalityRequired')}
                     />
                     <BirthdayPickers
                       year={guest.birthYear}
@@ -825,14 +960,23 @@ export function GuestCheckIn({
                       onDayChange={(value) => updateGuest(index, { birthDay: value })}
                     />
                     <Field
-                      label="Passport number"
+                      label={t('passportNumber')}
                       value={guest.passportNumber}
-                      onChange={(value) => updateGuest(index, { passportNumber: value })}
-                      placeholder="Exactly as on passport"
+                      onChange={(value) =>
+                        updateGuest(index, {
+                          passportNumber: sanitizeEnglishPassport(value),
+                        })
+                      }
+                      placeholder={t('passportPlaceholder')}
                       autoComplete="off"
                       required
-                      showError={detailsAttempted && !guest.passportNumber.trim()}
-                      errorText="Passport number is required."
+                      showError={detailsAttempted && !isEnglishPassport(guest.passportNumber)}
+                      errorText={
+                        guest.passportNumber.trim()
+                          ? t('passportEnglishOnly')
+                          : t('passportRequired')
+                      }
+                      hint={t('passportEnglishOnly')}
                     />
                   </div>
                 )
@@ -840,7 +984,7 @@ export function GuestCheckIn({
               {error ? <p className="text-sm text-rose-700">{error}</p> : null}
               {detailsAttempted && !detailsReady ? (
                 <p className="text-sm font-medium text-rose-700">
-                  Please complete every required field before continuing.
+                  {t('completeFields')}
                 </p>
               ) : null}
               <Button
@@ -848,14 +992,14 @@ export function GuestCheckIn({
                 onClick={() => {
                   setDetailsAttempted(true)
                   if (!detailsReady) {
-                    setError('All fields are required. Please fill in every guest completely.')
+                    setError(t('allFieldsRequired'))
                     return
                   }
                   setError('')
                   setStep('confirm')
                 }}
               >
-                Next
+                {t('next')}
                 <ChevronRight data-icon="inline-end" />
               </Button>
             </div>
@@ -920,6 +1064,7 @@ function ConfirmStep({
   error: string
   onConfirm: () => void
 }) {
+  const { t } = useCheckInI18n()
   const due = paymentDue(booking)
   const first = guests[0]
   const leadMatch = first
@@ -931,33 +1076,30 @@ function ConfirmStep({
 
   return (
     <section className="space-y-4">
-      <StepHeading
-        title="Confirm booking"
-        subtitle="Please check these details match your voucher."
-      />
+      <StepHeading title={t('confirmTitle')} subtitle={t('confirmSub')} />
       <div className="gday-sheet space-y-4 rounded-[1.5rem] p-5">
-        <DetailRow label="Program" value={programLabel(booking.program)} />
-        <DetailRow label="Date" value={formatLongDate(booking.date)} />
-        <DetailRow label="Leader / booking name" value={booking.leadGuest} />
-        <DetailRow label="Booking code" value={booking.code} />
-        <DetailRow label="Hotel" value={booking.pickupHotel || booking.pickupZone || '—'} />
+        <DetailRow label={t('program')} value={programLabel(booking.program)} />
+        <DetailRow label={t('dateLabel')} value={formatLongDate(booking.date)} />
+        <DetailRow label={t('leaderName')} value={booking.leadGuest} />
+        <DetailRow label={t('bookingCode')} value={booking.code} />
+        <DetailRow label={t('hotelName')} value={booking.pickupHotel || booking.pickupZone || '—'} />
         <DetailRow
-          label="Total Pax in Booking"
+          label={t('totalPax')}
           value={formatGuestPaxLabel(booking)}
         />
-        <DetailRow label="National park" value={formatIncludeLabel(booking.parkFee)} />
+        <DetailRow label={t('nationalPark')} value={formatIncludeLabel(booking.parkFee)} />
         {booking.program === 'James Bond' ? (
-          <DetailRow label="Canoe" value={formatIncludeLabel(booking.canoe)} />
+          <DetailRow label={t('canoe')} value={formatIncludeLabel(booking.canoe)} />
         ) : null}
         {due.parkFeeAmount > 0 ? (
           <DetailRow
-            label="Park fee to collect"
+            label={t('parkFeeCollect')}
             value={`${due.parkFeeAmount.toLocaleString('en-US')} THB`}
           />
         ) : null}
         {due.cashNote ? (
           <DetailRow
-            label="Cash on tour"
+            label={t('cashOnTour')}
             value={
               due.cashAmount > 0
                 ? `${due.cashAmount.toLocaleString('en-US')} THB`
@@ -965,11 +1107,11 @@ function ConfirmStep({
             }
           />
         ) : (
-          <DetailRow label="Cash on tour" value="None" />
+          <DetailRow label={t('cashOnTour')} value={t('none')} />
         )}
         {due.amount > 0 ? (
           <DetailRow
-            label="Total to collect"
+            label={t('totalCollect')}
             value={`${formatCollectTotal(
               booking.parkFee,
               booking.program,
@@ -983,8 +1125,11 @@ function ConfirmStep({
 
         <div className="space-y-2">
           <p className="text-xs font-semibold tracking-wide text-teal-800/50 uppercase">
-            Checking in {guests.length} guest{guests.length === 1 ? '' : 's'}
-            {scope === 'group' ? ' (whole group)' : ''}
+            {t('checkingInGuests', {
+              count: guests.length,
+              plural: englishPlural(guests.length),
+              group: scope === 'group' ? t('wholeGroupNote') : '',
+            })}
           </p>
           {guests.map((guest, index) => {
             const birthday =
@@ -1000,7 +1145,7 @@ function ConfirmStep({
                   <span className="font-normal text-teal-900/55"> · {guest.nationality}</span>
                 </p>
                 <p className="mt-0.5 text-xs text-teal-900/50">
-                  Birthday {birthday ? formatLongDate(birthday) : '—'} · Passport{' '}
+                  {t('birthdayShort')} {birthday ? formatLongDate(birthday) : '—'} · {t('passportShort')}{' '}
                   {guest.passportNumber.trim() || '—'}
                 </p>
               </div>
@@ -1008,7 +1153,7 @@ function ConfirmStep({
           })}
           {!leadMatch && first ? (
             <p className="text-xs text-amber-800/80">
-              First guest name differs from booking leader — that&apos;s OK for group members.
+              {t('nameDiffers')}
             </p>
           ) : null}
         </div>
@@ -1016,19 +1161,19 @@ function ConfirmStep({
         {due.needsStaff ? (
           <div className="flex gap-2 rounded-xl border border-orange-200 bg-orange-50 px-3.5 py-3 text-sm text-orange-950/85">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-orange-600" />
-            Payment is due on this booking. After check-in, please contact staff to pay.
+            {t('paymentAfter')}
           </div>
         ) : (
           <div className="flex gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-3 text-sm text-emerald-950/80">
             <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
-            No cash on tour to collect — you can finish check-in.
+            {t('noCash')}
           </div>
         )}
 
         {error ? <p className="text-sm text-rose-700">{error}</p> : null}
 
         <Button className="h-12 w-full text-base" onClick={onConfirm}>
-          Confirm &amp; finish check-in
+          {t('confirmFinish')}
         </Button>
       </div>
     </section>
@@ -1050,6 +1195,7 @@ function DoneStep({
   boatPlan: ReturnType<ReturnType<typeof usePortal>['getDayBoatPlan']> | null
   onAgain: () => void
 }) {
+  const { t } = useCheckInI18n()
   const due = booking ? paymentDue(booking) : null
   const parkExcluded = Boolean(due && due.parkFeeAmount > 0)
   const showParkNote = parkExcluded && booking?.program === 'PP'
@@ -1063,6 +1209,7 @@ function DoneStep({
   const boarding = (
     <BoardingSummary
       names={displayNames}
+      hotelName={booking?.pickupHotel.trim() || ''}
       boat={boat}
       boatLabel={
         boat && boatPlan ? boatDisplayName(boatPlan, boat) : boat ? `Boat ${boat}` : null
@@ -1079,42 +1226,28 @@ function DoneStep({
           </div>
           <div>
             <h1 className="font-display text-2xl font-semibold text-orange-950">
-              Checked in — payment needed
+              {t('paymentNeeded')}
             </h1>
             <p className="mt-2 text-sm leading-relaxed text-orange-950/70">
-              {parkExcluded
-                ? 'Your booking does not include the National Park fee. Please see marina staff to complete payment.'
-                : 'Please see marina staff to complete your payment.'}
+              {parkExcluded ? t('payPark') : t('payStaff')}
             </p>
           </div>
           {boarding}
           <Button variant="outline" className="h-11 w-full" onClick={onAgain}>
-            Check in another guest
+            {t('checkInAnother')}
           </Button>
         </section>
 
         {showParkNote ? (
           <section className="rounded-[1.5rem] border border-teal-900/10 bg-white/80 px-4 py-4 text-left text-sm leading-relaxed text-teal-950/75">
             <p className="font-semibold tracking-wide text-teal-950 uppercase">
-              National Park Fee Note
+              {t('parkNoteTitle')}
             </p>
-            <p className="mt-2">
-              Entry to Phi Phi Island, Maya Bay, and the other islands on this trip is not free for
-              foreigners. A mandatory fee of{' '}
-              <span className="font-semibold text-teal-950">400 THB per adult</span> and{' '}
-              <span className="font-semibold text-teal-950">200 THB per child</span> applies for
-              foreign visitors, paid in cash when visiting Maya Bay.
-            </p>
-            <p className="mt-2 font-medium text-teal-950">
-              This is not optional. Failure to pay this fee will result in forfeiture of your trip,
-              with no refunds.
-            </p>
-            <p className="mt-2">
-              Please confirm with your booking agent whether your package includes the National Park
-              fee. Thank you.
-            </p>
+            <p className="mt-2">{t('parkNote1')}</p>
+            <p className="mt-2 font-medium text-teal-950">{t('parkNote2')}</p>
+            <p className="mt-2">{t('parkNote3')}</p>
             <p className="mt-3 text-xs font-semibold tracking-wide text-teal-900/55 uppercase">
-              Management
+              {t('management')}
             </p>
           </section>
         ) : null}
@@ -1129,15 +1262,13 @@ function DoneStep({
       </div>
       <div>
         <h1 className="font-display text-2xl font-semibold text-emerald-950">
-          Check-in successful
+          {t('successTitle')}
         </h1>
-        <p className="mt-2 text-sm leading-relaxed text-emerald-950/70">
-          You&apos;re all set — no cash on tour to pay. Have a great day on the water!
-        </p>
+        <p className="mt-2 text-sm leading-relaxed text-emerald-950/70">{t('successBody')}</p>
       </div>
       {boarding}
       <Button variant="outline" className="h-11 w-full" onClick={onAgain}>
-        Check in another guest
+        {t('checkInAnother')}
       </Button>
     </section>
   )
@@ -1145,20 +1276,23 @@ function DoneStep({
 
 function BoardingSummary({
   names,
+  hotelName,
   boat,
   boatLabel,
 }: {
   names: string[]
+  hotelName: string
   boat: number | null
   boatLabel: string | null
 }) {
+  const { t } = useCheckInI18n()
   const theme = boat && boat > 0 ? boatTheme(boat) : null
 
   return (
     <div className="space-y-3 text-left">
       <div className="rounded-2xl bg-white/80 px-4 py-3.5 ring-1 ring-teal-900/8">
         <p className="text-[11px] font-semibold tracking-wide text-teal-800/50 uppercase">
-          Guest{names.length === 1 ? '' : 's'}
+          {names.length === 1 ? t('guest') : t('guests')}
         </p>
         {names.length === 0 ? (
           <p className="mt-1 text-sm font-semibold text-teal-950">—</p>
@@ -1173,6 +1307,15 @@ function BoardingSummary({
         )}
       </div>
 
+      <div className="rounded-2xl bg-white/80 px-4 py-3.5 ring-1 ring-teal-900/8">
+        <p className="text-[11px] font-semibold tracking-wide text-teal-800/50 uppercase">
+          {t('hotelName')}
+        </p>
+        <p className="mt-1 text-base font-semibold text-teal-950">
+          {hotelName || '—'}
+        </p>
+      </div>
+
       {theme && boatLabel ? (
         <div
           className={cn(
@@ -1181,7 +1324,7 @@ function BoardingSummary({
             theme.ring.replace('ring-', 'ring-'),
           )}
         >
-          <p className="text-[11px] font-semibold tracking-wide uppercase opacity-70">Your boat</p>
+          <p className="text-[11px] font-semibold tracking-wide uppercase opacity-70">{t('yourBoat')}</p>
           <div className="mt-2 flex items-center gap-3">
             <span className={cn('size-10 shrink-0 rounded-xl shadow-sm', theme.swatch)} />
             <div className="min-w-0">
@@ -1191,7 +1334,7 @@ function BoardingSummary({
               <p className={cn('mt-0.5 text-sm font-semibold', theme.title)}>
                 {theme.colorName}
                 <span className="mx-1.5 opacity-40">·</span>
-                Boat {theme.fleetNumber}
+                {t('boat')} {theme.fleetNumber}
               </p>
             </div>
             <BoatFleetBadge boat={boat} showColorName className="ml-auto text-sm" />
@@ -1200,10 +1343,10 @@ function BoardingSummary({
       ) : (
         <div className="rounded-2xl bg-white/80 px-4 py-3.5 ring-1 ring-teal-900/8">
           <p className="text-[11px] font-semibold tracking-wide text-teal-800/50 uppercase">
-            Your boat
+            {t('yourBoat')}
           </p>
           <p className="mt-1 text-sm font-medium text-teal-900/55">
-            Boat not assigned yet — please ask marina staff.
+            {t('boatUnassigned')}
           </p>
         </div>
       )}
@@ -1303,6 +1446,7 @@ function BookingPickList({
   getCheckInAttendance: ReturnType<typeof usePortal>['getCheckInAttendance']
   onPick: (code: string) => void
 }) {
+  const { t } = useCheckInI18n()
   return (
     <div className="space-y-2">
       {bookings.map((booking) => {
@@ -1326,12 +1470,12 @@ function BookingPickList({
             <div className="min-w-0">
               <p className="truncate font-semibold">{booking.leadGuest}</p>
               <p className="mt-0.5 truncate text-xs text-teal-900/50">
-                {total} guest{total === 1 ? '' : 's'} ·{' '}
+                {t('guestsCount', { count: total, plural: englishPlural(total) })} ·{' '}
                 {booking.pickupHotel || booking.pickupZone || '—'}
               </p>
             </div>
             {done ? (
-              <span className="shrink-0 text-[11px] font-semibold text-emerald-700">Checked in</span>
+              <span className="shrink-0 text-[11px] font-semibold text-emerald-700">{t('checkedIn')}</span>
             ) : (
               <ChevronRight className="size-4 shrink-0 text-teal-900/30" />
             )}
@@ -1364,6 +1508,7 @@ function Field({
   required,
   showError,
   errorText,
+  hint,
 }: {
   label: string
   value: string
@@ -1373,6 +1518,7 @@ function Field({
   required?: boolean
   showError?: boolean
   errorText?: string
+  hint?: string
 }) {
   return (
     <div>
@@ -1384,12 +1530,16 @@ function Field({
         value={value}
         placeholder={placeholder}
         autoComplete={autoComplete}
+        spellCheck={false}
+        lang="en"
         aria-invalid={showError || undefined}
         className={cn(showError && 'border-rose-400 focus-visible:border-rose-500')}
         onChange={(event) => onChange(event.target.value)}
       />
       {showError && errorText ? (
         <p className="mt-1.5 text-xs font-medium text-rose-700">{errorText}</p>
+      ) : hint ? (
+        <p className="mt-1.5 text-[11px] text-teal-900/45">{hint}</p>
       ) : null}
     </div>
   )
@@ -1466,6 +1616,7 @@ function BirthdayPickers({
   required?: boolean
   showError?: boolean
 }) {
+  const { t } = useCheckInI18n()
   const maxDay = daysInMonth(year, month)
   const selectClass = cn(
     'h-11 w-full rounded-xl border bg-white/80 px-2.5 text-sm text-teal-950 outline-none focus-visible:ring-3',
@@ -1477,17 +1628,17 @@ function BirthdayPickers({
   return (
     <div>
       <Label className="mb-1.5">
-        Birthday
+        {t('birthday')}
         {required ? <span className="text-rose-600"> *</span> : null}
       </Label>
       <div className="grid grid-cols-3 gap-2">
         <select
-          aria-label="Birth year"
+          aria-label={t('year')}
           className={selectClass}
           value={year}
           onChange={(event) => onYearChange(event.target.value)}
         >
-          <option value="">Year</option>
+          <option value="">{t('year')}</option>
           {birthYearOptions().map((y) => (
             <option key={y} value={String(y)}>
               {y}
@@ -1495,12 +1646,12 @@ function BirthdayPickers({
           ))}
         </select>
         <select
-          aria-label="Birth month"
+          aria-label={t('month')}
           className={selectClass}
           value={month}
           onChange={(event) => onMonthChange(event.target.value)}
         >
-          <option value="">Month</option>
+          <option value="">{t('month')}</option>
           {MONTH_OPTIONS.map((item) => (
             <option key={item.value} value={item.value}>
               {item.label}
@@ -1508,12 +1659,12 @@ function BirthdayPickers({
           ))}
         </select>
         <select
-          aria-label="Birth day"
+          aria-label={t('date')}
           className={selectClass}
           value={day}
           onChange={(event) => onDayChange(event.target.value)}
         >
-          <option value="">Date</option>
+          <option value="">{t('date')}</option>
           {Array.from({ length: maxDay }, (_, index) => {
             const value = String(index + 1).padStart(2, '0')
             return (
@@ -1526,7 +1677,7 @@ function BirthdayPickers({
       </div>
       {showError ? (
         <p className="mt-1.5 text-xs font-medium text-rose-700">
-          Birthday is required — pick Year, Month, and Date.
+          {t('birthdayRequired')}
         </p>
       ) : null}
     </div>

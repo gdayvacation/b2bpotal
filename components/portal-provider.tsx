@@ -20,6 +20,16 @@ import {
   type DayCheckInPaymentMap,
 } from '@/lib/check-in-payment'
 import {
+  CHECK_IN_TICKET_STORAGE_KEY,
+  adoptLegacyPaymentsAsTickets,
+  getCheckInTicket,
+  loadCheckInTicketMap,
+  saveCheckInTicketMap,
+  withCheckInTicket,
+  type CheckInTicketStatus,
+  type DayCheckInTicketMap,
+} from '@/lib/check-in-ticket'
+import {
   CHECK_IN_SERVICE_STORAGE_KEY,
   getCheckInServices,
   loadCheckInServiceMap,
@@ -66,6 +76,7 @@ import {
   deleteCheckInAttendanceRow,
   deleteCheckInEnrollment,
   deleteCheckInPaymentRow,
+  deleteCheckInTicketRow,
   deleteHotel,
   deleteZone,
   fetchBookingEvents,
@@ -97,9 +108,9 @@ import {
   upsertCheckInAttendanceRow,
   upsertCheckInEnrollments,
   upsertCheckInPaymentRow,
+  upsertCheckInTicketRow,
   upsertHotel,
   upsertZone,
-  upsertFleetVan,
 } from '@/lib/supabase/portal-db'
 import type {
   Agent,
@@ -151,9 +162,12 @@ import {
   isNoTransfer,
   isPrivateTransfer,
   isPrivateTransferZone,
+  isSpecialTransfer,
+  isSpecialTransferKind,
   normalizeBoatCapacities,
   normalizeBoatGuides,
   normalizeBoatNames,
+  normalizeChargeAmount,
   privateTransferPriceFor,
   totalPassengers,
 } from '@/lib/types'
@@ -299,6 +313,17 @@ type PortalContextValue = {
     program: Program,
     bookingCode: string,
     status: CheckInPaymentStatus | null,
+  ) => void
+  getCheckInTicket: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+  ) => CheckInTicketStatus | null
+  setCheckInTicket: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    status: CheckInTicketStatus | null,
   ) => void
   getCheckInServices: (
     date: string,
@@ -456,7 +481,7 @@ type PortalContextValue = {
     date: string,
     program: Program,
     van: number,
-    meta: Partial<VanMeta> & { capacity?: number | null },
+    meta: Partial<VanMeta> & { capacity?: number | null; specialKind?: VanMeta['specialKind'] | null },
   ) => void
   getFleetVan: (van: number) => FleetVan | null
   resolveVanMeta: (van: number, dayMeta?: VanMeta | null) => VanMeta & { fromFleet: boolean; incomplete: boolean }
@@ -471,6 +496,7 @@ function checkInMapsHaveData(maps: CheckInMapsSnapshot) {
     Object.keys(maps.enrollments).length > 0 ||
     Object.keys(maps.attendance).length > 0 ||
     Object.keys(maps.payments).length > 0 ||
+    Object.keys(maps.tickets).length > 0 ||
     Object.keys(maps.services).length > 0
   )
 }
@@ -479,6 +505,7 @@ function applyCheckInMapsToStorage(maps: CheckInMapsSnapshot) {
   saveCheckInEnrollmentMap(maps.enrollments)
   saveCheckInAttendanceMap(maps.attendance)
   saveCheckInPaymentMap(maps.payments)
+  saveCheckInTicketMap(maps.tickets)
   saveCheckInServiceMap(maps.services)
 }
 
@@ -497,6 +524,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [checkInEnrollment, setCheckInEnrollmentMap] =
     useState<DayCheckInEnrollmentMap>({})
   const [checkInPayment, setCheckInPaymentMap] = useState<DayCheckInPaymentMap>({})
+  const [checkInTicket, setCheckInTicketMap] = useState<DayCheckInTicketMap>({})
   const [checkInServices, setCheckInServiceMap] = useState<DayCheckInServiceMap>({})
   const [fleetVans, setFleetVans] = useState<FleetVan[]>([])
   const [bookingCutoffs, setBookingCutoffs] = useState<BookingCutoffSettings>(DEFAULT_BOOKING_CUTOFFS)
@@ -546,6 +574,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     setCheckInEnrollmentMap(maps.enrollments)
     setCheckInAttendanceMap(maps.attendance)
     setCheckInPaymentMap(maps.payments)
+    setCheckInTicketMap(maps.tickets)
     setCheckInServiceMap(maps.services)
     applyCheckInMapsToStorage(maps)
   }
@@ -564,7 +593,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setCheckInAttendanceMap(loadCheckInAttendanceMap())
     setCheckInEnrollmentMap(loadCheckInEnrollmentMap())
-    setCheckInPaymentMap(loadCheckInPaymentMap())
+    const split = adoptLegacyPaymentsAsTickets(
+      loadCheckInPaymentMap(),
+      loadCheckInTicketMap(),
+    )
+    if (split.migrated) {
+      saveCheckInPaymentMap(split.payments)
+      saveCheckInTicketMap(split.tickets)
+    }
+    setCheckInPaymentMap(split.payments)
+    setCheckInTicketMap(split.tickets)
     setCheckInServiceMap(loadCheckInServiceMap())
   }, [])
 
@@ -711,6 +749,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       setCheckInAttendanceMap(loadCheckInAttendanceMap())
       setCheckInEnrollmentMap(loadCheckInEnrollmentMap())
       setCheckInPaymentMap(loadCheckInPaymentMap())
+      setCheckInTicketMap(loadCheckInTicketMap())
       setCheckInServiceMap(loadCheckInServiceMap())
     }
 
@@ -732,6 +771,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             enrollments: loadCheckInEnrollmentMap(),
             attendance: loadCheckInAttendanceMap(),
             payments: loadCheckInPaymentMap(),
+            tickets: loadCheckInTicketMap(),
             services: loadCheckInServiceMap(),
           }
           // First cloud sync: upload this browser's local-only check-ins when remote is empty.
@@ -761,6 +801,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         event.key === CHECK_IN_ENROLLMENT_STORAGE_KEY ||
         event.key === CHECK_IN_ATTENDANCE_STORAGE_KEY ||
         event.key === CHECK_IN_PAYMENT_STORAGE_KEY ||
+        event.key === CHECK_IN_TICKET_STORAGE_KEY ||
         event.key === CHECK_IN_SERVICE_STORAGE_KEY
       ) {
         reloadCheckInMapsFromStorage()
@@ -950,36 +991,25 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     const getFleetVan = (van: number) =>
       fleetVans.find((item) => item.vanNumber === van) ?? null
 
-    const lastKnownVanCrew = (van: number): VanMeta | null => {
-      const fleet = getFleetVan(van)
-      if (fleet && (fleet.driver.trim() || fleet.plate.trim() || fleet.phone.trim())) {
-        return { plate: fleet.plate, driver: fleet.driver, phone: fleet.phone }
-      }
-      const previous = Object.values(dayVehiclePlans)
-        .filter((plan) => {
-          const meta = plan.vanMeta[String(van)]
-          return Boolean(
-            meta && (meta.driver.trim() || meta.plate.trim() || meta.phone.trim()),
-          )
-        })
-        .sort((a, b) => b.date.localeCompare(a.date))[0]
-      return previous?.vanMeta[String(van)] ?? null
-    }
-
-    const resolveVanMeta = (van: number, dayMeta?: VanMeta | null) => {
-      const remembered = lastKnownVanCrew(van)
-      const plate = dayMeta?.plate?.trim() || remembered?.plate?.trim() || ''
-      const driver = dayMeta?.driver?.trim() || remembered?.driver?.trim() || ''
-      const phone = dayMeta?.phone?.trim() || remembered?.phone?.trim() || ''
+    const resolveVanMeta = (_van: number, dayMeta?: VanMeta | null) => {
+      const plate = dayMeta?.plate?.trim() || ''
+      const driver = dayMeta?.driver?.trim() || ''
+      const phone = dayMeta?.phone?.trim() || ''
+      const specialKind = isSpecialTransferKind(dayMeta?.specialKind)
+        ? dayMeta.specialKind
+        : undefined
       return {
         plate,
         driver,
         phone,
         capacity: dayMeta?.capacity,
-        fromFleet:
-          !dayMeta?.driver?.trim() &&
-          !dayMeta?.plate?.trim() &&
-          Boolean(remembered?.driver?.trim() || remembered?.plate?.trim()),
+        outsourced: dayMeta?.outsourced === true,
+        outsourceCompany: dayMeta?.outsourceCompany?.trim() || '',
+        specialKind,
+        transferIn: dayMeta?.transferIn === true,
+        transferOut: dayMeta?.transferOut === true,
+        chargeAmount: normalizeChargeAmount(dayMeta?.chargeAmount),
+        fromFleet: false,
         incomplete: !driver.trim() || !plate.trim(),
       }
     }
@@ -1164,6 +1194,27 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           persistCheckInWrite(
             'upsertCheckInPayment',
             upsertCheckInPaymentRow(date, program, bookingCode, status),
+          )
+        }
+      },
+      getCheckInTicket: (date, program, bookingCode) =>
+        getCheckInTicket(checkInTicket, date, program, bookingCode),
+      setCheckInTicket: (date, program, bookingCode, status) => {
+        setCheckInTicketMap((current) => {
+          const next = withCheckInTicket(current, date, program, bookingCode, status)
+          if (typeof window === 'undefined') saveCheckInTicketMap(next)
+          else window.setTimeout(() => saveCheckInTicketMap(next), 0)
+          return next
+        })
+        if (status === null) {
+          persistCheckInWrite(
+            'deleteCheckInTicket',
+            deleteCheckInTicketRow(date, program, bookingCode),
+          )
+        } else {
+          persistCheckInWrite(
+            'upsertCheckInTicket',
+            upsertCheckInTicketRow(date, program, bookingCode, status),
           )
         }
       },
@@ -2490,35 +2541,42 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const planKey = dayVehiclePlanKey(date, program)
         const plan = dayVehiclePlans[planKey] ?? emptyDayVehiclePlan(date, program)
         const prev = plan.vanMeta[String(van)] ?? emptyVanMeta()
-        const fleet = fleetVans.find((item) => item.vanNumber === van)
-        const previousCrew = Object.values(dayVehiclePlans)
-          .filter((item) => {
-            const row = item.vanMeta[String(van)]
-            return Boolean(
-              row && (row.driver.trim() || row.plate.trim() || row.phone.trim()),
-            )
-          })
-          .sort((a, b) => b.date.localeCompare(a.date))[0]?.vanMeta[String(van)]
         const nextCapacity =
           meta.capacity === null
             ? undefined
             : meta.capacity !== undefined
               ? clampVanCapacity(meta.capacity)
               : prev.capacity
+        const outsourced =
+          meta.outsourced !== undefined ? meta.outsourced : prev.outsourced === true
+        const specialKind =
+          meta.specialKind !== undefined
+            ? isSpecialTransferKind(meta.specialKind)
+              ? meta.specialKind
+              : undefined
+            : isSpecialTransferKind(prev.specialKind)
+              ? prev.specialKind
+              : undefined
         const next: VanMeta = {
-          plate:
-            meta.plate !== undefined
-              ? meta.plate.trim()
-              : prev.plate.trim() || fleet?.plate?.trim() || previousCrew?.plate?.trim() || '',
-          driver:
-            meta.driver !== undefined
-              ? meta.driver.trim()
-              : prev.driver.trim() || fleet?.driver?.trim() || previousCrew?.driver?.trim() || '',
-          phone:
-            meta.phone !== undefined
-              ? meta.phone.trim()
-              : prev.phone.trim() || fleet?.phone?.trim() || previousCrew?.phone?.trim() || '',
+          plate: meta.plate !== undefined ? meta.plate.trim() : prev.plate.trim(),
+          driver: meta.driver !== undefined ? meta.driver.trim() : prev.driver.trim(),
+          phone: meta.phone !== undefined ? meta.phone.trim() : prev.phone.trim(),
+          outsourced,
+          outsourceCompany: outsourced
+            ? meta.outsourceCompany !== undefined
+              ? meta.outsourceCompany.trim()
+              : prev.outsourceCompany?.trim() || ''
+            : '',
           ...(nextCapacity !== undefined ? { capacity: nextCapacity } : {}),
+          ...(specialKind ? { specialKind } : {}),
+          transferIn:
+            meta.transferIn !== undefined ? meta.transferIn === true : prev.transferIn === true,
+          transferOut:
+            meta.transferOut !== undefined ? meta.transferOut === true : prev.transferOut === true,
+          chargeAmount:
+            meta.chargeAmount !== undefined
+              ? normalizeChargeAmount(meta.chargeAmount)
+              : normalizeChargeAmount(prev.chargeAmount),
         }
 
         upsertVehiclePlan(date, program, (current) => ({
@@ -2528,18 +2586,6 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             [String(van)]: next,
           },
         }))
-
-        const remembered: FleetVan = {
-          vanNumber: van,
-          plate: next.plate,
-          driver: next.driver,
-          phone: next.phone,
-        }
-        setFleetVans((current) => {
-          const without = current.filter((item) => item.vanNumber !== van)
-          return [...without, remembered].sort((a, b) => a.vanNumber - b.vanNumber)
-        })
-        persistQuietly('upsertFleetVan', upsertFleetVan(remembered))
       },
       autoAssignDayVans: (date, program) => {
         const dayBookings = activeDayBookings(date, program)
@@ -2552,11 +2598,13 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         upsertVehiclePlan(date, program, (plan) => ({
           ...plan,
           assignments: {},
-          vanMeta: {},
+          vanMeta: Object.fromEntries(
+            Object.entries(plan.vanMeta ?? {}).filter(([, meta]) => isSpecialTransfer(meta)),
+          ),
         }))
       },
     }
-  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInServices, fleetVans, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
+  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, fleetVans, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }
