@@ -30,6 +30,7 @@ import {
   type DayCheckInSequenceMap,
 } from '@/lib/check-in-sequence'
 import type { DayCheckInGuestEditMap } from '@/lib/check-in-guest-edit'
+import type { DayCheckInNoteMap } from '@/lib/check-in-notes'
 import {
   DEFAULT_DRIVERS,
   mergeDriverRoster,
@@ -1232,6 +1233,7 @@ export type CheckInMapsSnapshot = {
   services: DayCheckInServiceMap
   sequences: DayCheckInSequenceMap
   guestEdits: DayCheckInGuestEditMap
+  notes: DayCheckInNoteMap
 }
 
 function isProgram(value: unknown): value is Program {
@@ -1512,6 +1514,50 @@ function buildCheckInGuestEditMap(rows: CheckInGuestEditRow[]): DayCheckInGuestE
   return next
 }
 
+type CheckInNoteRow = {
+  date: string
+  program: Program
+  booking_code: string
+  note: string
+}
+
+function buildCheckInNoteMap(rows: CheckInNoteRow[]): DayCheckInNoteMap {
+  const next: DayCheckInNoteMap = {}
+  for (const row of rows) {
+    if (!isProgram(row.program)) continue
+    const bookingCode = String(row.booking_code ?? '').trim()
+    const note = String(row.note ?? '').trim()
+    if (!bookingCode || !note) continue
+    const key = dayBoatPlanKey(asDateString(row.date), row.program)
+    const day = next[key] ?? {}
+    day[bookingCode] = note
+    next[key] = day
+  }
+  return next
+}
+
+function flattenCheckInNoteMap(map: DayCheckInNoteMap): CheckInNoteRow[] {
+  const rows: CheckInNoteRow[] = []
+  for (const [dayKey, byCode] of Object.entries(map)) {
+    const sep = dayKey.indexOf('|')
+    if (sep <= 0) continue
+    const date = dayKey.slice(0, sep)
+    const program = dayKey.slice(sep + 1)
+    if (!isProgram(program)) continue
+    for (const [bookingCode, note] of Object.entries(byCode)) {
+      const text = note.trim()
+      if (!text) continue
+      rows.push({
+        date,
+        program,
+        booking_code: bookingCode,
+        note: text,
+      })
+    }
+  }
+  return rows
+}
+
 function flattenCheckInGuestEditMap(map: DayCheckInGuestEditMap): CheckInGuestEditRow[] {
   const rows: CheckInGuestEditRow[] = []
   for (const [dayKey, byCode] of Object.entries(map)) {
@@ -1584,7 +1630,7 @@ function flattenCheckInServiceMap(map: DayCheckInServiceMap): CheckInServiceRow[
 /** Returns null when core check-in tables are missing (migration not run yet). */
 export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
   const supabase = getSupabaseBrowserClient()
-  const [enrollmentsRes, attendanceRes, paymentsRes, servicesRes, sequencesRes, guestEditsRes] =
+  const [enrollmentsRes, attendanceRes, paymentsRes, servicesRes, sequencesRes, guestEditsRes, notesRes] =
     await Promise.all([
       supabase.from('check_in_enrollments').select('*'),
       supabase.from('check_in_attendance').select('*'),
@@ -1592,6 +1638,7 @@ export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
       supabase.from('check_in_services').select('*'),
       supabase.from('check_in_sequences').select('*'),
       supabase.from('check_in_guest_edits').select('*'),
+      supabase.from('check_in_notes').select('*'),
     ])
 
   if (enrollmentsRes.error || attendanceRes.error || paymentsRes.error) {
@@ -1637,6 +1684,16 @@ export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
     guestEdits = buildCheckInGuestEditMap(guestEditsRes.data as CheckInGuestEditRow[])
   }
 
+  let notes: DayCheckInNoteMap = {}
+  if (notesRes.error) {
+    console.warn(
+      '[supabase] check_in_notes unavailable — run supabase/add-check-in-notes.sql',
+      notesRes.error.message,
+    )
+  } else {
+    notes = buildCheckInNoteMap(notesRes.data as CheckInNoteRow[])
+  }
+
   const paymentRows = paymentsRes.data as CheckInPaymentRow[]
   const split = adoptLegacyPaymentsAsTickets(
     buildCheckInPaymentMap(paymentRows),
@@ -1651,6 +1708,7 @@ export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
     services,
     sequences,
     guestEdits,
+    notes,
   }
 
   if (split.migrated) {
@@ -1898,6 +1956,7 @@ export async function pushCheckInMaps(snapshot: CheckInMapsSnapshot) {
   const serviceRows = flattenCheckInServiceMap(snapshot.services)
   const sequenceRows = flattenCheckInSequenceMap(snapshot.sequences)
   const guestEditRows = flattenCheckInGuestEditMap(snapshot.guestEdits)
+  const noteRows = flattenCheckInNoteMap(snapshot.notes)
 
   if (enrollmentRows.length > 0) {
     const { error } = await supabase.from('check_in_enrollments').upsert(enrollmentRows)
@@ -1927,6 +1986,46 @@ export async function pushCheckInMaps(snapshot: CheckInMapsSnapshot) {
     const { error } = await supabase.from('check_in_guest_edits').upsert(guestEditRows)
     if (error) throw new Error(`push check-in guest edits: ${error.message}`)
   }
+  if (noteRows.length > 0) {
+    const { error } = await supabase.from('check_in_notes').upsert(noteRows)
+    if (error) throw new Error(`push check-in notes: ${error.message}`)
+  }
+}
+
+export async function upsertCheckInNoteRow(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  note: string,
+) {
+  const text = note.trim()
+  if (!text) {
+    await deleteCheckInNoteRow(date, program, bookingCode)
+    return
+  }
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase.from('check_in_notes').upsert({
+    date,
+    program,
+    booking_code: bookingCode,
+    note: text,
+  })
+  if (error) throw new Error(`upsert check-in note: ${error.message}`)
+}
+
+export async function deleteCheckInNoteRow(
+  date: string,
+  program: Program,
+  bookingCode: string,
+) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase
+    .from('check_in_notes')
+    .delete()
+    .eq('date', date)
+    .eq('program', program)
+    .eq('booking_code', bookingCode)
+  if (error) throw new Error(`delete check-in note: ${error.message}`)
 }
 
 export function persistQuietly(label: string, task: Promise<unknown>) {

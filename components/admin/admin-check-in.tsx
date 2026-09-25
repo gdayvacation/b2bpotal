@@ -1,6 +1,6 @@
 'use client'
 
-import { startTransition, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   CalendarIcon,
   Check,
@@ -157,6 +157,7 @@ type BookingLine = {
   booking: Booking
   van: number | null
   split: boolean
+  showBookingMoney: boolean
   pax: PaxBreakdown
   originalPax: PaxBreakdown
   seatsTotal: number
@@ -274,11 +275,13 @@ function buildBookingLine(
   if (attendance === 'no-show') status = 'no-show'
   else if (attendance === 'checked' || enrolled >= bookingSeats) status = 'checked'
 
+  const split = (legs?.length ?? 0) > 1
   return {
     key: van !== null ? `${booking.code}-van-${van}` : booking.code,
     booking,
     van,
-    split: (legs?.length ?? 0) > 1,
+    split,
+    showBookingMoney: !split || van === primaryVan(legs),
     pax,
     originalPax,
     seatsTotal: seats,
@@ -1238,6 +1241,7 @@ function TodayBoardTab({
             bookingCode: line.booking.code,
             bookingName: line.leaderName || line.booking.code,
             hotel: line.booking.pickupHotel || line.booking.pickupZone || '—',
+            boat: line.boat,
             kind: service.kind,
             people: service.people,
             total: serviceLineTotal(service),
@@ -1605,8 +1609,11 @@ function DriverGroupCard({
     setCheckInTicket,
     getCheckInServices,
     setCheckInServices,
+    getCheckInNote,
+    setCheckInNote,
   } = usePortal()
   const [expandedCodes, setExpandedCodes] = useState<Record<string, boolean>>({})
+  const [addingNote, setAddingNote] = useState<Record<string, boolean>>({})
   const [qrBooking, setQrBooking] = useState<Booking | null>(null)
   const [qrCopied, setQrCopied] = useState(false)
   const [editBooking, setEditBooking] = useState<Booking | null>(null)
@@ -1747,13 +1754,13 @@ function DriverGroupCard({
                   onClick={() => toggleExpanded(line.key)}
                 >
                   <div className="flex items-start gap-2">
-                    <span
-                      className={cn(
-                        'mt-0.5 min-w-9 shrink-0 text-[15px] font-bold tabular-nums',
-                        sequenceLabel ? 'text-teal-800' : 'text-teal-900/30',
-                      )}
-                    >
-                      {sequenceLabel || '—'}
+                    <span className="mt-0.5 flex min-w-10 shrink-0 flex-col items-start gap-0.5">
+                      {sequenceLabel && line.status === 'checked' ? (
+                        <span className="text-[15px] font-bold tabular-nums text-emerald-700">
+                          {sequenceLabel}
+                        </span>
+                      ) : null}
+                      <StatusBadge status={line.status} compact />
                     </span>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-[15px] font-semibold text-teal-950" title={hotel}>
@@ -1787,7 +1794,6 @@ function DriverGroupCard({
                         {statusNote}
                       </p>
                     </div>
-                    <StatusBadge status={line.status} compact />
                   </div>
                 </button>
                 <button
@@ -1802,7 +1808,7 @@ function DriverGroupCard({
                   <QrCode className="size-5" />
                 </button>
               </div>
-              {payment.kind !== 'none' ? (
+              {!isHelper && line.showBookingMoney && payment.kind !== 'none' ? (
                 <div className="mt-2">
                   <PayableAmount
                     label={payment.label}
@@ -1820,6 +1826,16 @@ function DriverGroupCard({
                     }
                   />
                 </div>
+              ) : null}
+              {line.showBookingMoney ? (
+              <div className="mt-2">
+                <BoardNoteField
+                  note={getCheckInNote(today, line.booking.program, line.booking.code)}
+                  onSave={(value) =>
+                    setCheckInNote(today, line.booking.program, line.booking.code, value)
+                  }
+                />
+              </div>
               ) : null}
 
               {expanded ? (
@@ -1890,6 +1906,7 @@ function DriverGroupCard({
                       >
                         Edit
                       </button>
+                      {line.showBookingMoney ? (
                       <button
                         type="button"
                         className="text-[12px] font-semibold text-teal-800 underline-offset-2 hover:underline"
@@ -1902,6 +1919,7 @@ function DriverGroupCard({
                               .toLocaleString('en-US')}`
                           : ''}
                       </button>
+                      ) : null}
                       <button
                         type="button"
                         className="text-[12px] font-semibold text-teal-800 underline-offset-2 hover:underline"
@@ -1925,49 +1943,42 @@ function DriverGroupCard({
         <TableHeader>
           <TableRow className="border-b border-teal-900/15 bg-teal-950/[0.03] hover:bg-teal-950/[0.03]">
             <TableHead
-              className="w-[4.5rem] px-1.5 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase"
-              title="Boat ticket sequence — reserved in advance, shown after check-in"
+              className="w-14 px-1 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase"
+              title="Ticket sequence after check-in. In is done. Wait has no number yet."
             >
               Seq
             </TableHead>
-            <TableHead className="w-11 px-1 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
+            <TableHead className="w-9 px-0.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
               QR
             </TableHead>
-            <TableHead className="w-[16%] px-1.5 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
-              Booking
-            </TableHead>
-            <TableHead className="w-7 px-0.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
-              AD
-            </TableHead>
-            <TableHead className="w-7 px-0.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
-              CH
-            </TableHead>
-            <TableHead className="w-7 px-0.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
-              INF
-            </TableHead>
-            <TableHead className="w-7 px-0.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
-              TL
-            </TableHead>
-            <TableHead className="w-[16%] px-1.5 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
+            <TableHead className="w-[16%] px-1 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
               Hotel
             </TableHead>
-            <TableHead className="w-14 px-1 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
+            <TableHead className="w-[20%] px-1 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
+              Booking
+            </TableHead>
+            <TableHead className="w-[5.5rem] px-0.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
+              <span className="grid grid-cols-4 gap-0.5">
+                <span>AD</span>
+                <span>CH</span>
+                <span>INF</span>
+                <span>TL</span>
+              </span>
+            </TableHead>
+            <TableHead className="w-8 px-0.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
               Boat
             </TableHead>
             <TableHead className="w-10 px-1 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
               Park
             </TableHead>
-            <TableHead className="w-[9%] px-1.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
-              Status
-            </TableHead>
-            <TableHead
-              className="w-[11%] px-1.5 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase"
-              title="Click an amount to mark it paid"
-            >
-              Pay
-            </TableHead>
             {isHelper ? null : (
               <>
+                <TableHead
+                  className="w-16 px-1 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase"
+                  title="Click an amount to mark it paid"
+                >
+                  Pay
+                </TableHead>
                 <TableHead className="w-[14%] px-1.5 text-center text-[10px] font-bold tracking-wide text-teal-900/80 uppercase">
                   Service
                 </TableHead>
@@ -2010,10 +2021,21 @@ function DriverGroupCard({
               line.booking.program,
               line.booking.code,
             )
+            const noteText = getCheckInNote(today, line.booking.program, line.booking.code)
+            const noteOpen =
+              line.showBookingMoney &&
+              (Boolean(noteText) || Boolean(addingNote[line.key]))
+
+            const rowTone = cn(
+              line.status === 'checked' && 'bg-emerald-50/40',
+              line.status === 'waiting' && 'bg-amber-50/30',
+              line.status === 'no-show' && 'bg-rose-50/40',
+              !isHelper && ticketed && 'bg-sky-50/40',
+            )
 
             return (
+              <Fragment key={line.key}>
               <TableRow
-                key={line.key}
                 role="button"
                 tabIndex={0}
                 aria-expanded={expanded}
@@ -2024,13 +2046,7 @@ function DriverGroupCard({
                     toggleExpanded(line.key)
                   }
                 }}
-                className={cn(
-                  'cursor-pointer',
-                  line.status === 'checked' && 'bg-emerald-50/40',
-                  line.status === 'waiting' && 'bg-amber-50/30',
-                  line.status === 'no-show' && 'bg-rose-50/40',
-                  !isHelper && ticketed && 'bg-sky-50/40',
-                )}
+                className={cn('cursor-pointer border-b-0', rowTone)}
               >
                 <TableCell
                   className="px-1 align-top tabular-nums"
@@ -2040,6 +2056,7 @@ function DriverGroupCard({
                   <SequenceCell
                     label={sequenceLabel}
                     block={sequence}
+                    status={line.status}
                     editable={Boolean(onSetBookingSequenceStart)}
                     onSetStart={(start) =>
                       onSetBookingSequenceStart?.(line.booking.code, start)
@@ -2047,7 +2064,7 @@ function DriverGroupCard({
                   />
                 </TableCell>
                 <TableCell
-                  className="px-1 text-center align-top"
+                  className="w-9 px-0.5 text-center align-top"
                   onClick={(event) => event.stopPropagation()}
                   onKeyDown={(event) => event.stopPropagation()}
                 >
@@ -2073,6 +2090,14 @@ function DriverGroupCard({
                       </button>
                     )}
                   </div>
+                </TableCell>
+                <TableCell className="max-w-0 whitespace-normal px-1.5 align-top">
+                  <p
+                    className="line-clamp-2 text-[13px] font-semibold leading-snug break-words text-teal-950 sm:text-sm"
+                    title={hotel}
+                  >
+                    {hotel}
+                  </p>
                 </TableCell>
                 <TableCell className="max-w-0 whitespace-normal px-1.5 align-top">
                   <div className="flex items-start gap-1.5">
@@ -2109,6 +2134,18 @@ function DriverGroupCard({
                               ? `Waiting · ${progressLabel} · pickup NS ${missingPax}`
                               : `Waiting · ${progressLabel}`}
                       </p>
+                      {line.showBookingMoney && !noteOpen ? (
+                        <button
+                          type="button"
+                          className="mt-1 text-[11px] font-medium text-orange-600 hover:text-orange-700 hover:underline"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setAddingNote((current) => ({ ...current, [line.key]: true }))
+                          }}
+                        >
+                          Add note
+                        </button>
+                      ) : null}
 
                       {expanded ? (
                         <div className="mt-2 space-y-1.5 border-t border-teal-900/8 pt-2">
@@ -2203,60 +2240,47 @@ function DriverGroupCard({
                     </div>
                   </div>
                 </TableCell>
-                <TableCell className="px-0.5 text-center align-top tabular-nums">
-                  <PaxCount
-                    original={booked.adults}
-                    current={line.pax.adults}
-                    wholeNoShow={wholeNoShow}
-                  />
+                <TableCell className="w-[5.5rem] px-0.5 text-center align-top tabular-nums">
+                  <span className="grid grid-cols-4 gap-0.5">
+                    <PaxCount
+                      original={booked.adults}
+                      current={line.pax.adults}
+                      wholeNoShow={wholeNoShow}
+                    />
+                    <PaxCount
+                      original={booked.children}
+                      current={line.pax.children}
+                      wholeNoShow={wholeNoShow}
+                    />
+                    <PaxCount
+                      original={booked.infants}
+                      current={line.pax.infants}
+                      wholeNoShow={wholeNoShow}
+                    />
+                    <PaxCount
+                      original={booked.tourLeaders}
+                      current={line.pax.tourLeaders}
+                      wholeNoShow={wholeNoShow}
+                    />
+                  </span>
                 </TableCell>
-                <TableCell className="px-0.5 text-center align-top tabular-nums">
-                  <PaxCount
-                    original={booked.children}
-                    current={line.pax.children}
-                    wholeNoShow={wholeNoShow}
-                  />
-                </TableCell>
-                <TableCell className="px-0.5 text-center align-top tabular-nums">
-                  <PaxCount
-                    original={booked.infants}
-                    current={line.pax.infants}
-                    wholeNoShow={wholeNoShow}
-                  />
-                </TableCell>
-                <TableCell className="px-0.5 text-center align-top tabular-nums">
-                  <PaxCount
-                    original={booked.tourLeaders}
-                    current={line.pax.tourLeaders}
-                    wholeNoShow={wholeNoShow}
-                  />
-                </TableCell>
-                <TableCell className="max-w-0 whitespace-normal px-1.5 align-top">
-                  <p
-                    className="line-clamp-2 text-[13px] font-semibold leading-snug break-words text-teal-950 sm:text-sm"
-                    title={hotel}
-                  >
-                    {hotel}
-                  </p>
-                </TableCell>
-                <TableCell className="px-1 text-center align-top">
+                <TableCell className="px-0.5 text-center align-top">
                   <BoatFleetBadge
                     boat={line.boat}
-                    className="px-2 py-1 text-base font-bold"
+                    className="min-w-6 px-1 py-0.5 text-[11px] font-bold"
                   />
                 </TableCell>
                 <TableCell className="px-1 text-center align-top text-teal-900/70">
                   {formatIncludeShort(line.booking.parkFee)}
                 </TableCell>
-                <TableCell className="px-1.5 text-center align-top">
-                  <StatusBadge status={line.status} />
-                </TableCell>
+                {isHelper ? null : (
+                <>
                 <TableCell
                   className="max-w-0 whitespace-normal px-1.5 align-top"
                   onClick={(event) => event.stopPropagation()}
                   onKeyDown={(event) => event.stopPropagation()}
                 >
-                  {payment.kind === 'none' ? (
+                  {!line.showBookingMoney || payment.kind === 'none' ? (
                     <span className="text-teal-900/35">—</span>
                   ) : (
                     <PayableAmount
@@ -2275,13 +2299,14 @@ function DriverGroupCard({
                     />
                   )}
                 </TableCell>
-                {isHelper ? null : (
-                <>
                 <TableCell
                   className="px-1.5 align-top"
                   onClick={(event) => event.stopPropagation()}
                   onKeyDown={(event) => event.stopPropagation()}
                 >
+                  {!line.showBookingMoney ? (
+                    <span className="text-teal-900/35">—</span>
+                  ) : (
                   <button
                     type="button"
                     aria-label={`Services for ${line.leaderName || line.booking.code}`}
@@ -2316,6 +2341,7 @@ function DriverGroupCard({
                             .toLocaleString('en-US')}`}
                     </span>
                   </button>
+                  )}
                 </TableCell>
                 <TableCell
                   className="px-1.5 text-center align-top"
@@ -2348,6 +2374,33 @@ function DriverGroupCard({
                 </>
                 )}
               </TableRow>
+              {noteOpen ? (
+              <TableRow className={cn('hover:bg-transparent', rowTone)}>
+                <TableCell
+                  colSpan={isHelper ? 7 : 10}
+                  className="px-3 pt-0 pb-2.5"
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
+                >
+                  <BoardNoteField
+                    autoFocus={!noteText}
+                    note={noteText}
+                    onSave={(value) => {
+                      setCheckInNote(today, line.booking.program, line.booking.code, value)
+                      if (!value.trim()) {
+                        setAddingNote((current) => {
+                          if (!current[line.key]) return current
+                          const next = { ...current }
+                          delete next[line.key]
+                          return next
+                        })
+                      }
+                    }}
+                  />
+                </TableCell>
+              </TableRow>
+              ) : null}
+              </Fragment>
             )
           })}
         </TableBody>
@@ -3087,6 +3140,69 @@ function GuestEditDialog({
   )
 }
 
+function BoardNoteField({
+  note,
+  onSave,
+  autoFocus = false,
+}: {
+  note: string
+  onSave: (value: string) => void
+  autoFocus?: boolean
+}) {
+  const [draft, setDraft] = useState(note)
+  const [open, setOpen] = useState(Boolean(note.trim()) || autoFocus)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    setDraft(note)
+    if (note.trim()) setOpen(true)
+  }, [note])
+
+  useEffect(() => {
+    if (open && (autoFocus || !note.trim())) textareaRef.current?.focus()
+  }, [open, autoFocus, note])
+
+  const rows = Math.min(8, Math.max(2, draft.split('\n').length + (draft.length > 90 ? 1 : 0)))
+
+  function commit() {
+    if (draft.trim() !== note.trim()) onSave(draft)
+    if (!draft.trim()) {
+      setOpen(false)
+      if (!note.trim()) onSave('')
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className="text-[11px] font-medium text-orange-600 hover:text-orange-700 hover:underline"
+        onClick={() => setOpen(true)}
+      >
+        Add note
+      </button>
+    )
+  }
+
+  return (
+    <label className="flex items-start gap-2">
+      <span className="mt-1.5 w-10 shrink-0 text-[10px] font-bold tracking-wide text-teal-900/55 uppercase">
+        Note
+      </span>
+      <textarea
+        ref={textareaRef}
+        value={draft}
+        rows={rows}
+        placeholder="Late pickup, VIP, extra bags…"
+        aria-label="Marina note for this booking"
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        className="min-h-[2.25rem] w-full resize-y rounded-lg border border-teal-900/12 bg-white/90 px-2.5 py-1.5 text-[12px] leading-snug text-teal-950 outline-none placeholder:text-teal-900/30 focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
+      />
+    </label>
+  )
+}
+
 function PayableAmount({
   label,
   paid,
@@ -3157,14 +3273,36 @@ function PayableAmount({
   )
 }
 
+function SequenceStatusStack({
+  label,
+  status,
+}: {
+  label: string | null
+  status: GuestLineStatus
+}) {
+  const showNumber = status === 'checked' && Boolean(label)
+  return (
+    <span className="flex flex-col items-start gap-0.5">
+      {showNumber ? (
+        <span className="text-lg font-bold leading-tight tabular-nums text-emerald-700">
+          {label}
+        </span>
+      ) : null}
+      <StatusBadge status={status} compact />
+    </span>
+  )
+}
+
 function SequenceCell({
   label,
   block,
+  status,
   editable,
   onSetStart,
 }: {
   label: string | null
   block: GuestSequenceBlock | null
+  status: GuestLineStatus
   editable: boolean
   onSetStart: (start: number | null) => void
 }) {
@@ -3180,14 +3318,8 @@ function SequenceCell({
 
   if (!editable) {
     return (
-      <span
-        className={cn(
-          'block min-h-8 pt-1 text-lg font-bold leading-tight tabular-nums',
-          label ? 'text-teal-950' : 'text-teal-900/30',
-        )}
-        title={block ? `Reserved ${planned}` : undefined}
-      >
-        {label || '—'}
+      <span title={block && status === 'checked' ? `Reserved ${planned}` : undefined}>
+        <SequenceStatusStack label={label} status={status} />
       </span>
     )
   }
@@ -3204,10 +3336,7 @@ function SequenceCell({
         render={
           <button
             type="button"
-            className={cn(
-              'flex min-h-8 min-w-[2.75rem] items-start rounded-lg px-1 py-1 text-left text-lg font-bold leading-tight tabular-nums transition-colors hover:bg-teal-50',
-              label ? 'text-teal-950' : 'text-teal-900/30',
-            )}
+            className="rounded-lg px-0.5 py-0.5 text-left transition-colors hover:bg-teal-50"
             title={
               block
                 ? `Ticket sequence ${planned}. Click to set 1–${block.seats} or 100–${99 + block.seats}.`
@@ -3216,7 +3345,7 @@ function SequenceCell({
           />
         }
       >
-        {label || '—'}
+        <SequenceStatusStack label={label} status={status} />
       </PopoverTrigger>
       <PopoverContent align="start" className="w-56 space-y-3 p-3">
         <div>
@@ -3317,7 +3446,11 @@ function PaxCount({
     )
   }
   const missing = original - current
-  if (missing <= 0) return <>{current || ''}</>
+  if (missing <= 0) {
+    return (
+      <span className={current ? undefined : 'text-teal-900/25'}>{current || 0}</span>
+    )
+  }
   return (
     <span className="inline-flex flex-col items-center leading-none">
       <span>{original}</span>
@@ -3381,6 +3514,7 @@ type DayServiceDetail = {
   bookingCode: string
   bookingName: string
   hotel: string
+  boat: number | null
   kind: CheckInServiceKind
   people: number
   total: number
@@ -3468,6 +3602,7 @@ function DayServicesDialog({
               <TableHeader>
                 <TableRow>
                   <TableHead>Booking</TableHead>
+                  <TableHead>Boat name</TableHead>
                   <TableHead>Service</TableHead>
                   <TableHead className="text-right">Total</TableHead>
                 </TableRow>
@@ -3480,6 +3615,13 @@ function DayServicesDialog({
                       <p className="text-[11px] text-teal-900/50">
                         {row.hotel} · {row.bookingCode}
                       </p>
+                    </TableCell>
+                    <TableCell className="py-1.5">
+                      <BoatFleetBadge
+                        boat={row.boat}
+                        showColorName
+                        className="px-1.5 py-0.5 text-[11px] font-bold"
+                      />
                     </TableCell>
                     <TableCell className="py-1.5">
                       <span className="inline-flex items-center gap-1.5">

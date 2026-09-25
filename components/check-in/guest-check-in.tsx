@@ -12,6 +12,8 @@ import {
   AlertTriangle,
   Minus,
   Plus,
+  Users,
+  Waves,
 } from 'lucide-react'
 import { BoatFleetBadge } from '@/components/boat-badge'
 import { usePortal } from '@/components/portal-provider'
@@ -22,6 +24,13 @@ import { Label } from '@/components/ui/label'
 import { CheckInI18nProvider, CheckInLanguageSwitch, useCheckInI18n } from '@/components/check-in/check-in-i18n'
 import { NationalityCombobox } from '@/components/check-in/nationality-combobox'
 import { enrolledSeatCount, guestDisplayName } from '@/lib/check-in-enrollment'
+import { DEFAULT_INVOICE_SETTINGS } from '@/lib/invoice'
+import {
+  CHECK_IN_SERVICE_KINDS,
+  checkInServiceLabel,
+  type CheckInServiceKind,
+  type CheckInServiceLine,
+} from '@/lib/check-in-services'
 import { sequenceJustCheckedInLabel } from '@/lib/check-in-sequence'
 import { boatTheme } from '@/lib/boat-theme'
 import { matchNationality } from '@/lib/nationalities'
@@ -178,6 +187,8 @@ function GuestCheckInForm({
     updateCheckInEnrollment,
     getCheckInGuestEditIds,
     setCheckInGuestEditOpen,
+    getCheckInPayment,
+    getCheckInServices,
     hydrated,
   } = usePortal()
 
@@ -303,6 +314,14 @@ function GuestCheckInForm({
     ? remainingSeats === 0 ||
       getCheckInAttendance(tourDate, selectedBooking.program, selectedBooking.code) === 'checked'
     : false
+  const marinaPaid = Boolean(
+    selectedBooking &&
+      getCheckInPayment(selectedBooking.date, selectedBooking.program, selectedBooking.code) ===
+        'paid',
+  )
+  const marinaServices = selectedBooking
+    ? getCheckInServices(selectedBooking.date, selectedBooking.program, selectedBooking.code)
+    : []
 
   // Resolve locked QR booking once portal data is ready.
   useEffect(() => {
@@ -1250,7 +1269,9 @@ function GuestCheckInForm({
 
         {step === 'done' ? (
           <DoneStep
-            needsPayment={doneNeedsPayment}
+            needsPayment={doneNeedsPayment && !marinaPaid}
+            paid={marinaPaid}
+            services={marinaServices}
             booking={selectedBooking}
             guestNames={
               guests.some((guest) => guest.firstName.trim() || guest.lastName.trim())
@@ -1322,6 +1343,80 @@ function GuestCheckInForm({
           />
         ) : null}
       </main>
+    </div>
+  )
+}
+
+function GuestMarinaReceipt({ booking }: { booking: Booking }) {
+  const { t } = useCheckInI18n()
+  const [open, setOpen] = useState(false)
+  const due = paymentDue(booking)
+  const cotAmount = due.cashAmount > 0 ? due.cashAmount : due.amount
+
+  return (
+    <div className="text-left">
+      <Button
+        type="button"
+        variant="outline"
+        className="h-10 w-full"
+        onClick={() => setOpen((current) => !current)}
+      >
+        {open ? t('hideReceipt') : t('seeReceipt')}
+      </Button>
+      {open ? (
+        <div className="mt-2 rounded-2xl border border-teal-900/10 bg-white px-4 py-4 text-teal-950">
+          <p className="text-center text-[10px] font-bold tracking-[0.16em] text-teal-800/50 uppercase">
+            Payment receipt
+          </p>
+          <p className="mt-1 text-center font-display text-base font-semibold">
+            {DEFAULT_INVOICE_SETTINGS.companyName}
+          </p>
+          <p className="mt-0.5 text-center text-[10px] leading-snug text-teal-900/50">
+            {DEFAULT_INVOICE_SETTINGS.addressEn}
+          </p>
+
+          <div className="mt-3 space-y-1 border-t border-dashed border-teal-900/15 pt-3 text-[12px]">
+            <div className="flex justify-between gap-3">
+              <span className="text-teal-900/55">Date</span>
+              <span className="font-medium">{formatLongDate(booking.date)}</span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-teal-900/55">Guest</span>
+              <span className="text-right font-medium">{booking.leadGuest}</span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-teal-900/55">Booking</span>
+              <span className="font-medium tabular-nums">{booking.code}</span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-teal-900/55">Tour</span>
+              <span className="font-medium">
+                {booking.program === 'PP' ? 'Phi Phi Islands' : 'Phang Nga Bay'}
+              </span>
+            </div>
+          </div>
+
+          {cotAmount > 0 ? (
+            <div className="mt-3 space-y-1 border-t border-dashed border-teal-900/15 pt-3 text-[12px]">
+              <div className="flex justify-between gap-3">
+                <span>Cash on tour</span>
+                <span className="font-medium tabular-nums">
+                  {cotAmount.toLocaleString('en-US')} THB
+                </span>
+              </div>
+              <div className="flex justify-between gap-3 pt-1 font-semibold">
+                <span>Total</span>
+                <span className="tabular-nums">{cotAmount.toLocaleString('en-US')} THB</span>
+              </div>
+            </div>
+          ) : null}
+
+          <p className="mt-3 text-center text-lg font-bold tracking-wide text-emerald-800">PAID</p>
+          <p className="mt-1 text-center text-[11px] leading-snug text-teal-900/55">
+            Thank you. Please keep this receipt.
+          </p>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -1476,6 +1571,8 @@ function ConfirmStep({
 
 function DoneStep({
   needsPayment,
+  paid,
+  services,
   booking,
   guestNames,
   sequenceLabel,
@@ -1485,6 +1582,8 @@ function DoneStep({
   onEdit,
 }: {
   needsPayment: boolean
+  paid: boolean
+  services: CheckInServiceLine[]
   booking: Booking | null
   guestNames: string[]
   sequenceLabel: string | null
@@ -1496,7 +1595,7 @@ function DoneStep({
   const { t } = useCheckInI18n()
   const due = booking ? paymentDue(booking) : null
   const parkExcluded = Boolean(due && due.parkFeeAmount > 0)
-  const showParkNote = parkExcluded && booking?.program === 'PP'
+  const showParkNote = parkExcluded && booking?.program === 'PP' && !paid
   const displayNames =
     guestNames.length > 0
       ? guestNames
@@ -1513,6 +1612,7 @@ function DoneStep({
       boatLabel={
         boat && boatPlan ? boatDisplayName(boatPlan, boat) : boat ? `Boat ${boat}` : null
       }
+      services={services}
     />
   )
 
@@ -1567,10 +1667,18 @@ function DoneStep({
       </div>
       <div>
         <h1 className="font-display text-2xl font-semibold text-emerald-950">
-          {t('successTitle')}
+          {paid ? t('successPaidTitle') : t('successTitle')}
         </h1>
-        <p className="mt-2 text-sm leading-relaxed text-emerald-950/70">{t('successBody')}</p>
+        <p className="mt-2 text-sm leading-relaxed text-emerald-950/70">
+          {paid ? t('successPaidBody') : t('successBody')}
+        </p>
+        {paid ? (
+          <p className="mt-3 inline-flex rounded-full bg-emerald-100 px-3 py-1 text-sm font-bold tracking-wide text-emerald-800">
+            {t('paidBadge')}
+          </p>
+        ) : null}
       </div>
+      {paid && booking ? <GuestMarinaReceipt booking={booking} /> : null}
       {boarding}
       {onEdit ? (
         <Button variant="outline" className="h-11 w-full" onClick={onEdit}>
@@ -1590,12 +1698,14 @@ function BoardingSummary({
   sequenceLabel,
   boat,
   boatLabel,
+  services,
 }: {
   names: string[]
   hotelName: string
   sequenceLabel: string | null
   boat: number | null
   boatLabel: string | null
+  services: CheckInServiceLine[]
 }) {
   const { t } = useCheckInI18n()
   const theme = boat && boat > 0 ? boatTheme(boat) : null
@@ -1675,7 +1785,59 @@ function BoardingSummary({
           </p>
         </div>
       )}
+
+      <div className="rounded-2xl bg-white/80 px-4 py-3.5 ring-1 ring-teal-900/8">
+        <p className="text-[11px] font-semibold tracking-wide text-teal-800/50 uppercase">
+          {t('addOnServiceToday')}
+        </p>
+        {services.length === 0 ? (
+          <p className="mt-1 text-sm font-medium text-teal-900/45">{t('noAddOnService')}</p>
+        ) : (
+          <ul className="mt-2 space-y-2">
+            {CHECK_IN_SERVICE_KINDS.filter((kind) =>
+              services.some((item) => item.kind === kind),
+            ).map((kind) => {
+              const people = services
+                .filter((item) => item.kind === kind)
+                .reduce((sum, item) => sum + item.people, 0)
+              return (
+                <li key={kind} className="flex items-center gap-2.5">
+                  <GuestServiceIcon kind={kind} />
+                  <span className="text-sm font-semibold text-teal-950">
+                    {checkInServiceLabel(kind)}
+                    {people > 1 ? (
+                      <span className="ml-1.5 font-medium text-teal-900/50">×{people}</span>
+                    ) : null}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
     </div>
+  )
+}
+
+function GuestServiceIcon({ kind }: { kind: CheckInServiceKind }) {
+  if (kind === 'share-longtail') {
+    return (
+      <span className="inline-flex size-8 items-center justify-center rounded-full bg-sky-100 text-sky-800 ring-1 ring-sky-200/80">
+        <Users className="size-4" />
+      </span>
+    )
+  }
+  if (kind === 'private-longtail') {
+    return (
+      <span className="inline-flex size-8 items-center justify-center rounded-full bg-amber-100 text-amber-900 ring-1 ring-amber-200/80">
+        <Ship className="size-4" />
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex size-8 items-center justify-center rounded-full bg-cyan-100 text-cyan-900 ring-1 ring-cyan-200/80">
+      <Waves className="size-4" />
+    </span>
   )
 }
 

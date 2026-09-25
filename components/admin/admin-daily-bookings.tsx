@@ -148,6 +148,7 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
     getCheckInAttendance,
     getCheckInEnrollments,
     getCheckInServices,
+    getCheckInNote,
     setBoatName,
     setBoatGuide,
   } = usePortal()
@@ -393,6 +394,7 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
           isNoShow={(code) => getCheckInAttendance(selectedDate, program, code) === 'no-show'}
           getEnrollments={(code) => getCheckInEnrollments(selectedDate, program, code)}
           getServices={(code) => getCheckInServices(selectedDate, program, code)}
+          getNote={(code) => getCheckInNote(selectedDate, program, code)}
           onAssignBooking={(code, boat) => {
             assignBookingToBoat(selectedDate, program, code, boat, draft)
             markDraft()
@@ -503,6 +505,7 @@ function BoatBoard({
   isNoShow,
   getEnrollments,
   getServices,
+  getNote,
   onAssignBooking,
   onAssignVan,
   onCapacity,
@@ -531,6 +534,7 @@ function BoatBoard({
   isNoShow: (bookingCode: string) => boolean
   getEnrollments: (bookingCode: string) => ReturnType<ReturnType<typeof usePortal>['getCheckInEnrollments']>
   getServices: (bookingCode: string) => CheckInServiceLine[]
+  getNote: (bookingCode: string) => string
   onAssignBooking: (code: string, boat: BoatNumber | null) => void
   onAssignVan: (van: number, boat: BoatNumber | null) => void
   onCapacity: (boat: BoatNumber, capacity: number) => void
@@ -1645,13 +1649,17 @@ function BoatBoard({
             key: `print-van-${boat}-${group.van}`,
             title: `Van ${group.van} · ${group.pax} pax${group.meta.driver ? ` · Driver ${group.meta.driver}` : ''}`,
             vanLabel: `Van ${group.van}`,
-            rows: group.items.map((booking) =>
-              guideLeaderPrintRow(
+            rows: group.items.map((booking) => {
+              const legs = vanAssignments[booking.code]
+              const split = (legs?.length ?? 0) > 1
+              const showExtras = !split || primaryVan(legs) === group.van
+              return guideLeaderPrintRow(
                 booking,
-                paxOnVan(vanAssignments[booking.code], group.van) || totalPassengers(booking),
-                getServices(booking.code),
-              ),
-            ),
+                paxOnVan(legs, group.van) || totalPassengers(booking),
+                showExtras ? getServices(booking.code) : [],
+                showExtras ? getNote(booking.code) : '',
+              )
+            }),
           }))
           const noTransferSection =
             freeGuests.length > 0
@@ -1660,7 +1668,12 @@ function BoatBoard({
                   title: `No transfer · ${freeGuests.reduce((sum, b) => sum + totalPassengers(b), 0)} pax`,
                   vanLabel: 'No transfer',
                   rows: freeGuests.map((booking) =>
-                    guideLeaderPrintRow(booking, totalPassengers(booking), getServices(booking.code)),
+                    guideLeaderPrintRow(
+                      booking,
+                      totalPassengers(booking),
+                      getServices(booking.code),
+                      getNote(booking.code),
+                    ),
                   ),
                 }
               : null
@@ -1875,6 +1888,8 @@ type GuidePassengerRow = {
   hotel: string
   /** Extra paid marina services — one line each for print. */
   optionLines: string[]
+  /** Same marina note as the check-in board. */
+  note: string
 }
 
 /** Compact booking mix for lead guest — e.g. (2AD+1CHD+2IF). */
@@ -1909,6 +1924,7 @@ function guideLeaderPrintRow(
   booking: Booking,
   seatsOnThisVan?: number,
   services: CheckInServiceLine[] = [],
+  note = '',
 ): GuidePassengerRow {
   return {
     bookingCode: booking.code,
@@ -1916,6 +1932,7 @@ function guideLeaderPrintRow(
     leadPaxTag: formatGuideLeadPaxTag(booking, seatsOnThisVan),
     hotel: booking.pickupHotel?.trim() || '—',
     optionLines: formatGuideOptionLines(services),
+    note: note.trim(),
   }
 }
 
@@ -1933,16 +1950,18 @@ function GuideBoatPassengerTable({
     <table className="guide-jo-table w-full table-fixed border-collapse text-[11px] leading-snug">
       <colgroup>
         <col style={{ width: '5%' }} />
-        <col style={{ width: '34%' }} />
-        <col style={{ width: '33%' }} />
-        <col style={{ width: '28%' }} />
+        <col style={{ width: '26%' }} />
+        <col style={{ width: '24%' }} />
+        <col style={{ width: '20%' }} />
+        <col style={{ width: '25%' }} />
       </colgroup>
       <thead>
         <tr className="border-b border-teal-900/30 text-left text-[9px] tracking-wide text-teal-900/70 uppercase">
           <th className="py-1.5 pr-2 font-bold">No.</th>
           <th className="py-1.5 pr-2 font-bold">Guest name</th>
           <th className="py-1.5 pr-2 font-bold">Hotel</th>
-          <th className="py-1.5 font-bold">Option</th>
+          <th className="py-1.5 pr-2 font-bold">Option</th>
+          <th className="py-1.5 font-bold">Note</th>
         </tr>
       </thead>
       <tbody>
@@ -1950,7 +1969,7 @@ function GuideBoatPassengerTable({
           <Fragment key={section.key}>
             <tr className="guide-jo-van-title">
               <td
-                colSpan={4}
+                colSpan={5}
                 className="bg-teal-50/80 px-1.5 pt-2.5 pb-1.5 text-[11px] leading-snug font-bold text-teal-950"
               >
                 {section.title}
@@ -1972,7 +1991,7 @@ function GuideBoatPassengerTable({
                 <td className="py-1.5 pr-2 align-top text-[11px] break-words text-teal-900/85">
                   {row.hotel}
                 </td>
-                <td className="py-1.5 align-top">
+                <td className="py-1.5 pr-2 align-top">
                   {row.optionLines.length === 0 ? (
                     <span className="text-[10px] text-teal-900/30">—</span>
                   ) : (
@@ -1987,6 +2006,9 @@ function GuideBoatPassengerTable({
                       ))}
                     </div>
                   )}
+                </td>
+                <td className="py-1.5 align-top text-[10px] leading-snug break-words text-teal-900/80">
+                  {row.note || <span className="text-teal-900/30">—</span>}
                 </td>
               </tr>
             ))}

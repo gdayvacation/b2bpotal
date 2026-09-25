@@ -1534,16 +1534,19 @@ function AgentGroupSection({
                   Canoe
                 </TableHead>
               ) : null}
-              <TableHead className="w-[6.5rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+              <TableHead className="w-[3.5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 COT
               </TableHead>
-              <TableHead className="w-[7rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+              <TableHead className="w-[4rem] px-1 text-[11px] font-bold tracking-wide whitespace-normal text-teal-900/80 uppercase">
                 Extra Charge
               </TableHead>
-              <TableHead className="w-[5.5rem] px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+              <TableHead className="w-[3.5rem] px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 Total
               </TableHead>
-              <TableHead className="w-[11rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+              <TableHead className="w-[12rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                Note
+              </TableHead>
+              <TableHead className="w-[10rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 Detail
               </TableHead>
             </TableRow>
@@ -1603,7 +1606,7 @@ function AgentGroupSection({
                   ) : null}
                   <TableCell className="px-1 text-center">
                     <div
-                      className="truncate text-xs font-medium text-teal-950"
+                      className="truncate text-[11px] font-medium text-teal-950"
                       title={cashOnTour}
                     >
                       {cashOnTour || ''}
@@ -1611,13 +1614,13 @@ function AgentGroupSection({
                   </TableCell>
                   <TableCell className="px-1 text-center">
                     <div
-                      className="truncate text-xs font-medium text-teal-950"
+                      className="truncate text-[11px] font-medium text-teal-950"
                       title={booking.transferExtraCharge}
                     >
                       {booking.transferExtraCharge.trim() || ''}
                     </div>
                   </TableCell>
-                  <TableCell className="px-1 text-center tabular-nums text-xs font-medium text-teal-950">
+                  <TableCell className="px-1 text-center tabular-nums text-[11px] font-medium text-teal-950">
                     {formatCollectTotal(
                       booking.parkFee,
                       program,
@@ -1625,6 +1628,14 @@ function AgentGroupSection({
                       booking.children,
                       cashOnTour,
                     )}
+                  </TableCell>
+                  <TableCell className="max-w-0 px-1.5">
+                    <div
+                      className="text-[11px] leading-snug break-words whitespace-normal text-teal-900/80"
+                      title={booking.note.trim() || undefined}
+                    >
+                      {booking.note.trim() || ''}
+                    </div>
                   </TableCell>
                   {span > 0 ? (
                     <TableCell
@@ -1679,6 +1690,7 @@ function AgentGroupSection({
                   ? group.totals.collect.toLocaleString('en-US')
                   : ''}
               </TableCell>
+              <TableCell />
               <TableCell />
             </TableRow>
           </TableBody>
@@ -1780,9 +1792,10 @@ function AgentJobOrderPrintSheet({
                       {showCanoe ? (
                         <th className={cn(th, 'w-14 text-center')}>Canoe</th>
                       ) : null}
-                      <th className={cn(th, 'w-14')}>COT</th>
-                      <th className={cn(th, 'w-16')}>Extra Charge</th>
-                      <th className={cn(th, 'w-14 text-center')}>Total</th>
+                      <th className={cn(th, 'w-10')}>COT</th>
+                      <th className={cn(th, 'w-12')}>Extra Charge</th>
+                      <th className={cn(th, 'w-10 text-center')}>Total</th>
+                      <th className={cn(th, 'w-[18%]')}>Note</th>
                       <th className={th}>Detail</th>
                     </tr>
                   </thead>
@@ -1847,6 +1860,9 @@ function AgentJobOrderPrintSheet({
                                 cashOnTour,
                               )}
                             </td>
+                            <td className={cn(td, 'leading-snug break-words whitespace-normal')}>
+                              {booking.note.trim() || ''}
+                            </td>
                             {span > 0 ? (
                               <td
                                 rowSpan={span}
@@ -1887,6 +1903,7 @@ function AgentJobOrderPrintSheet({
                           ? group.totals.collect.toLocaleString('en-US')
                           : ''}
                       </td>
+                      <td className={td} />
                       <td className={td} />
                     </tr>
                   </tbody>

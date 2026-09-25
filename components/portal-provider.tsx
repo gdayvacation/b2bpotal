@@ -60,6 +60,14 @@ import {
   type DayCheckInGuestEditMap,
 } from '@/lib/check-in-guest-edit'
 import {
+  CHECK_IN_NOTE_STORAGE_KEY,
+  getCheckInNote,
+  loadCheckInNoteMap,
+  saveCheckInNoteMap,
+  withCheckInNote,
+  type DayCheckInNoteMap,
+} from '@/lib/check-in-notes'
+import {
   CHECK_IN_ENROLLMENT_STORAGE_KEY,
   enrolledSeatCount,
   getCheckInEnrollments,
@@ -106,6 +114,7 @@ import {
   deleteBookingClosures,
   deleteCheckInAttendanceRow,
   deleteCheckInEnrollment,
+  deleteCheckInNoteRow,
   deleteCheckInPaymentRow,
   deleteCheckInTicketRow,
   deleteHotel,
@@ -138,6 +147,7 @@ import {
   upsertBookingCutoffs,
   upsertCheckInAttendanceRow,
   upsertCheckInEnrollments,
+  upsertCheckInNoteRow,
   upsertCheckInPaymentRow,
   upsertCheckInSequenceStart,
   upsertCheckInTicketRow,
@@ -418,6 +428,8 @@ type PortalContextValue = {
     enrollmentId: string,
     open: boolean,
   ) => void
+  getCheckInNote: (date: string, program: Program, bookingCode: string) => string
+  setCheckInNote: (date: string, program: Program, bookingCode: string, note: string) => void
   removeCheckInEnrollment: (
     date: string,
     program: Program,
@@ -576,7 +588,8 @@ function checkInMapsHaveData(maps: CheckInMapsSnapshot) {
     Object.keys(maps.tickets).length > 0 ||
     Object.keys(maps.services).length > 0 ||
     Object.keys(maps.sequences).length > 0 ||
-    Object.keys(maps.guestEdits).length > 0
+    Object.keys(maps.guestEdits).length > 0 ||
+    Object.keys(maps.notes).length > 0
   )
 }
 
@@ -588,6 +601,7 @@ function applyCheckInMapsToStorage(maps: CheckInMapsSnapshot) {
   saveCheckInServiceMap(maps.services)
   saveCheckInSequenceMap(maps.sequences)
   saveCheckInGuestEditMap(maps.guestEdits)
+  saveCheckInNoteMap(maps.notes)
 }
 
 export function PortalProvider({ children }: { children: ReactNode }) {
@@ -609,6 +623,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [checkInServices, setCheckInServiceMap] = useState<DayCheckInServiceMap>({})
   const [checkInSequence, setCheckInSequenceMap] = useState<DayCheckInSequenceMap>({})
   const [checkInGuestEdit, setCheckInGuestEditMap] = useState<DayCheckInGuestEditMap>({})
+  const [checkInNotes, setCheckInNoteMap] = useState<DayCheckInNoteMap>({})
   const [fleetVans, setFleetVans] = useState<FleetVan[]>([])
   const [drivers, setDrivers] = useState<DriverRosterEntry[]>(() => mergeDriverRoster(loadLocalDrivers()))
   const [bookingCutoffs, setBookingCutoffs] = useState<BookingCutoffSettings>(DEFAULT_BOOKING_CUTOFFS)
@@ -662,7 +677,13 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     setCheckInServiceMap(maps.services)
     setCheckInSequenceMap(maps.sequences)
     setCheckInGuestEditMap(maps.guestEdits)
-    applyCheckInMapsToStorage(maps)
+    setCheckInNoteMap(
+      Object.keys(maps.notes).length > 0 ? maps.notes : loadCheckInNoteMap(),
+    )
+    applyCheckInMapsToStorage({
+      ...maps,
+      notes: Object.keys(maps.notes).length > 0 ? maps.notes : loadCheckInNoteMap(),
+    })
   }
 
   function persistCheckInWrite(label: string, task: Promise<unknown>) {
@@ -692,6 +713,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     setCheckInServiceMap(loadCheckInServiceMap())
     setCheckInSequenceMap(loadCheckInSequenceMap())
     setCheckInGuestEditMap(loadCheckInGuestEditMap())
+    setCheckInNoteMap(loadCheckInNoteMap())
   }, [])
 
   useEffect(() => {
@@ -842,6 +864,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       setCheckInServiceMap(loadCheckInServiceMap())
       setCheckInSequenceMap(loadCheckInSequenceMap())
       setCheckInGuestEditMap(loadCheckInGuestEditMap())
+      setCheckInNoteMap(loadCheckInNoteMap())
     }
 
     async function syncCheckInFromCloud(allowMigrate: boolean) {
@@ -866,6 +889,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             services: loadCheckInServiceMap(),
             sequences: loadCheckInSequenceMap(),
             guestEdits: loadCheckInGuestEditMap(),
+            notes: loadCheckInNoteMap(),
           }
           // First cloud sync: upload this browser's local-only check-ins when remote is empty.
           if (!checkInMapsHaveData(remote) && checkInMapsHaveData(local)) {
@@ -916,6 +940,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         event.key === CHECK_IN_SERVICE_STORAGE_KEY ||
         event.key === CHECK_IN_SEQUENCE_STORAGE_KEY ||
         event.key === CHECK_IN_GUEST_EDIT_STORAGE_KEY ||
+        event.key === CHECK_IN_NOTE_STORAGE_KEY ||
         event.key === CHECK_IN_BOOKED_PAX_STORAGE_KEY
       ) {
         reloadCheckInMapsFromStorage()
@@ -1471,6 +1496,22 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           open
             ? upsertCheckInGuestEdit(date, program, bookingCode, enrollmentId)
             : deleteCheckInGuestEdit(date, program, bookingCode, enrollmentId),
+        )
+      },
+      getCheckInNote: (date, program, bookingCode) =>
+        getCheckInNote(checkInNotes, date, program, bookingCode),
+      setCheckInNote: (date, program, bookingCode, note) => {
+        setCheckInNoteMap((current) => {
+          const next = withCheckInNote(current, date, program, bookingCode, note)
+          saveCheckInNoteMap(next)
+          return next
+        })
+        const text = note.trim()
+        persistCheckInWrite(
+          text ? 'upsertCheckInNote' : 'deleteCheckInNote',
+          text
+            ? upsertCheckInNoteRow(date, program, bookingCode, text)
+            : deleteCheckInNoteRow(date, program, bookingCode),
         )
       },
       removeCheckInEnrollment: (date, program, bookingCode, enrollmentId) => {
@@ -2858,7 +2899,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }))
       },
     }
-  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
+  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }

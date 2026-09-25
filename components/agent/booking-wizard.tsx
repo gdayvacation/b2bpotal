@@ -201,9 +201,11 @@ export function BookingWizard({
   }, [program, isoDate, getCapacity, bookedPaxFor])
   const seatsLeft = capacityInfo?.seatsLeft ?? null
   const overCapacity = seatsLeft !== null ? total > seatsLeft : false
+  const hasSeats = seatsLeft === null || seatsLeft > 0
+  // Admin (selectAgent) ignores cutoff / program-closed — only seats matter.
   const dateSelectable = selectAgent
-    ? Boolean(date) && (seatsLeft === null || seatsLeft > 0)
-    : bookingOpen && !programClosed && (seatsLeft === null || seatsLeft > 0)
+    ? Boolean(date) && hasSeats
+    : Boolean(date) && bookingOpen && !programClosed && hasSeats
   const pickupTime = pickupZone && !isNoTransfer(pickupZone) ? getZoneTime(pickupZone) : ''
   const selectedZone = zones.find((zone) => zone.name === pickupZone)
   const pendingPickup = !isNoTransfer(pickupZone) && (selectedZone?.pending ?? false)
@@ -279,14 +281,16 @@ export function BookingWizard({
           : step === programStep
             ? 'Please select a program.'
             : step === dateStep
-              ? !bookingOpen
-                ? 'Booking is closed for this travel date.'
-                : programClosed
-                  ? closureNote
-                    ? `Booking closed for this program — ${closureNote}`
-                    : 'Booking is closed for this program on this date.'
-                  : seatsLeft === 0
-                    ? 'This date is sold out for the selected program.'
+              ? seatsLeft === 0
+                ? selectAgent
+                  ? 'This date is sold out for the selected program. Admin cannot exceed the boat seat limit.'
+                  : 'This date is sold out for the selected program.'
+                : !selectAgent && !bookingOpen
+                  ? 'Booking is closed for this travel date.'
+                  : !selectAgent && programClosed
+                    ? closureNote
+                      ? `Booking closed for this program — ${closureNote}`
+                      : 'Booking is closed for this program on this date.'
                     : 'Please choose a tour date.'
               : step === guestsStep
                 ? adults + children + infants + tourLeaders <= 0
@@ -571,7 +575,10 @@ export function BookingWizard({
                 <Calendar
                   mode="single"
                   selected={date}
-                  onSelect={setDate}
+                  onSelect={(nextDate) => {
+                    setDate(nextDate)
+                    setError('')
+                  }}
                   disabled={(day) => {
                     // Admin can book any date, including the same travel day.
                     if (selectAgent) return false
@@ -595,47 +602,51 @@ export function BookingWizard({
               <AmendmentPolicyNotice settings={bookingCutoffs} variant="compact" />
             )}
             {program && capacityInfo ? (
-              !bookingOpen && !selectAgent ? (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-                  Booking closed for this travel date — choose another day.
-                </div>
-              ) : !bookingOpen && selectAgent ? (
-                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-                  This date is closed for agents. Admin can still book today or any other day.
-                </div>
-              ) : programClosed ? (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-                  {closureNote
-                    ? `Booking closed for ${program} — ${closureNote}`
-                    : `Booking closed for ${program} on this date — choose another day.`}
-                </div>
-              ) : selectAgent && programClosedOnDate ? (
-                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-                  {closureNote
-                    ? `This date is closed for agents (${closureNote}). Admin can still book.`
-                    : 'This date is closed for agents. Admin can still book.'}
-                </div>
-              ) : seatsLeft === 0 ? (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-                  Sold out — {program} is at the boat limit ({capacityInfo.capacity} seats,{' '}
-                  {capacityInfo.booked} booked). Choose another date.
-                </div>
-              ) : (
-                <div className="rounded-xl border border-teal-200 bg-teal-50/80 px-4 py-3 text-sm text-teal-900/75">
-                  {selectAgent ? (
-                    <>
-                      <span className="font-semibold text-teal-950">{seatsLeft}</span> of{' '}
-                      {capacityInfo.capacity} seats left for {program}
-                      <span className="text-teal-900/40"> · {capacityInfo.booked} booked</span>
-                    </>
-                  ) : (
-                    <>
-                      <span className="font-semibold text-teal-950">{seatsLeft}</span> seat
-                      {seatsLeft === 1 ? '' : 's'} left for {program}
-                    </>
-                  )}
-                </div>
-              )
+              <div className="space-y-3">
+                {!bookingOpen && !selectAgent ? (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                    Booking closed for this travel date — choose another day.
+                  </div>
+                ) : null}
+                {programClosed ? (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                    {closureNote
+                      ? `Booking closed for ${program} — ${closureNote}`
+                      : `Booking closed for ${program} on this date — choose another day.`}
+                  </div>
+                ) : null}
+                {selectAgent && (!bookingOpen || programClosedOnDate) ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                    {programClosedOnDate && closureNote
+                      ? `This date is closed for agents (${closureNote}). Admin can still book if seats remain.`
+                      : 'This date is closed for agents. Admin can still book today or any other day if seats remain.'}
+                  </div>
+                ) : null}
+                {seatsLeft === 0 ? (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                    Sold out — {program} is at the boat limit ({capacityInfo.capacity} seats,{' '}
+                    {capacityInfo.booked} booked).
+                    {selectAgent
+                      ? ' Admin cannot exceed the seat limit.'
+                      : ' Choose another date.'}
+                  </div>
+                ) : !bookingOpen && !selectAgent ? null : programClosed ? null : (
+                  <div className="rounded-xl border border-teal-200 bg-teal-50/80 px-4 py-3 text-sm text-teal-900/75">
+                    {selectAgent ? (
+                      <>
+                        <span className="font-semibold text-teal-950">{seatsLeft}</span> of{' '}
+                        {capacityInfo.capacity} seats left for {program}
+                        <span className="text-teal-900/40"> · {capacityInfo.booked} booked</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="font-semibold text-teal-950">{seatsLeft}</span> seat
+                        {seatsLeft === 1 ? '' : 's'} left for {program}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
             ) : null}
           </div>
         )}
