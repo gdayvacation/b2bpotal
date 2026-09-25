@@ -92,7 +92,11 @@ import {
   pushCheckInBookedPax,
 } from '@/lib/supabase/booked-pax-db'
 import { matchNationality } from '@/lib/nationalities'
-import { canFitBookingOnBoat } from '@/lib/boat-load'
+import {
+  adoptAllVansOntoSharedBoats,
+  adoptVanBookingsOntoSharedBoat,
+  canFitBookingOnBoat,
+} from '@/lib/boat-load'
 import { autoAssignVans, bookingPaxOnVan, nextSortOrderForVan, normalizeAssignments, reorderVanAssignments } from '@/lib/vehicle-assign'
 import {
   bookingClosedMessage,
@@ -730,20 +734,42 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         setHotels(snapshot.hotels)
         setAvailability(snapshot.availability)
         const fromDate = todayISO()
-        const migratedPlans = { ...snapshot.dayBoatPlans }
-        const persistMigrated: DayBoatPlan[] = []
-        for (const [key, plan] of Object.entries(migratedPlans)) {
+        const nextBoatPlans = { ...snapshot.dayBoatPlans }
+        const persistTouched: DayBoatPlan[] = []
+        const writeBoatPlan = (plan: DayBoatPlan) => {
+          nextBoatPlans[dayBoatPlanKey(plan.date, plan.program)] = plan
+          const index = persistTouched.findIndex(
+            (item) => item.date === plan.date && item.program === plan.program,
+          )
+          if (index >= 0) persistTouched[index] = plan
+          else persistTouched.push(plan)
+        }
+        for (const plan of Object.values(nextBoatPlans)) {
           if (plan.date < fromDate) continue
           const capacities = replaceLegacyBoatCapacity(plan.capacities)
           const current = normalizeBoatCapacities(plan.capacities)
           if (capacities.some((cap, index) => cap !== current[index])) {
-            const nextPlan = { ...plan, capacities }
-            migratedPlans[key] = nextPlan
-            persistMigrated.push(nextPlan)
+            writeBoatPlan({ ...plan, capacities })
           }
         }
-        setDayBoatPlans(migratedPlans)
-        for (const plan of persistMigrated) persistBoatPlanWrite(plan)
+        for (const vehiclePlan of Object.values(snapshot.dayVehiclePlans)) {
+          const key = dayBoatPlanKey(vehiclePlan.date, vehiclePlan.program)
+          const boatPlan = nextBoatPlans[key] ?? emptyDayBoatPlan(vehiclePlan.date, vehiclePlan.program)
+          const dayBookings = snapshot.bookings.filter(
+            (booking) =>
+              isActiveBooking(booking) &&
+              booking.date === vehiclePlan.date &&
+              booking.program === vehiclePlan.program,
+          )
+          const assignments = adoptAllVansOntoSharedBoats(
+            dayBookings,
+            vehiclePlan.assignments,
+            boatPlan.assignments,
+          )
+          if (assignments) writeBoatPlan({ ...boatPlan, assignments })
+        }
+        setDayBoatPlans(nextBoatPlans)
+        for (const plan of persistTouched) persistBoatPlanWrite(plan)
         setDayVehiclePlans(snapshot.dayVehiclePlans)
         setFleetVans(snapshot.fleetVans)
         setDrivers(mergeDriverRoster([...snapshot.drivers, ...loadLocalDrivers()]))
@@ -1150,6 +1176,26 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         persistQuietly('saveDayVehiclePlan', saveDayVehiclePlan(next))
         return { ...current, [key]: next }
       })
+    }
+
+    const followVanOntoBoat = (
+      date: string,
+      program: Program,
+      van: number,
+      vehicleAssignments: DayVehiclePlan['assignments'],
+    ) => {
+      const countable = activeDayBookings(date, program).filter(
+        (booking) =>
+          getCheckInAttendance(checkInAttendance, date, program, booking.code) !== 'no-show',
+      )
+      const nextAssignments = adoptVanBookingsOntoSharedBoat(
+        countable,
+        vehicleAssignments,
+        getDayBoatPlan(date, program).assignments,
+        van,
+      )
+      if (!nextAssignments) return
+      upsertPlan(date, program, (plan) => ({ ...plan, assignments: nextAssignments }))
     }
 
     const getFleetVan = (van: number) =>
@@ -2822,57 +2868,60 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       assignBookingToVan: (date, program, bookingCode, van) => {
         const booking = bookings.find((item) => item.code === bookingCode && isActiveBooking(item))
         const pax = booking ? totalPassengers(booking) : 0
-        upsertVehiclePlan(date, program, (plan) => {
-          const assignments = { ...plan.assignments }
-          if (van === null) delete assignments[bookingCode]
-          else {
-            assignments[bookingCode] = [
-              { van, pax, sortOrder: nextSortOrderForVan(assignments, van) },
-            ]
-          }
-          return { ...plan, assignments }
-        })
+        const current = getDayVehiclePlan(date, program)
+        const assignments = { ...current.assignments }
+        if (van === null) delete assignments[bookingCode]
+        else {
+          assignments[bookingCode] = [
+            { van, pax, sortOrder: nextSortOrderForVan(assignments, van) },
+          ]
+        }
+        upsertVehiclePlan(date, program, (plan) => ({ ...plan, assignments }))
+        if (van !== null) followVanOntoBoat(date, program, van, assignments)
       },
       assignBookingsToVan: (date, program, bookingCodes, van) => {
         if (bookingCodes.length === 0) return
         const paxByCode = new Map<string, number>()
         for (const code of bookingCodes) {
-          const booking = bookings.find((item) => item.code === code && isActiveBooking(item))
-          if (booking) paxByCode.set(code, totalPassengers(booking))
+          const item = bookings.find((row) => row.code === code && isActiveBooking(row))
+          if (item) paxByCode.set(code, totalPassengers(item))
         }
-        upsertVehiclePlan(date, program, (plan) => {
-          const assignments = { ...plan.assignments }
-          for (const code of bookingCodes) {
-            if (van === null) {
-              delete assignments[code]
-              continue
-            }
-            const pax = paxByCode.get(code)
-            if (pax === undefined) continue
-            assignments[code] = [
-              { van, pax, sortOrder: nextSortOrderForVan(assignments, van) },
-            ]
+        const current = getDayVehiclePlan(date, program)
+        const assignments = { ...current.assignments }
+        for (const code of bookingCodes) {
+          if (van === null) {
+            delete assignments[code]
+            continue
           }
-          return { ...plan, assignments }
-        })
+          const pax = paxByCode.get(code)
+          if (pax === undefined) continue
+          assignments[code] = [{ van, pax, sortOrder: nextSortOrderForVan(assignments, van) }]
+        }
+        upsertVehiclePlan(date, program, (plan) => ({ ...plan, assignments }))
+        if (van !== null) followVanOntoBoat(date, program, van, assignments)
       },
       setBookingVanSplits: (date, program, bookingCode, legs) => {
-        upsertVehiclePlan(date, program, (plan) => {
-          const cleaned = legs
-            .map((leg) => ({
-              van: Math.max(1, Math.floor(Number(leg.van) || 0)),
-              pax: Math.max(0, Math.floor(Number(leg.pax) || 0)),
-              sortOrder:
-                typeof leg.sortOrder === 'number' && Number.isFinite(leg.sortOrder)
-                  ? leg.sortOrder
-                  : nextSortOrderForVan(plan.assignments, Math.max(1, Math.floor(Number(leg.van) || 0))),
-            }))
-            .filter((leg) => leg.van > 0 && leg.pax > 0)
-          const assignments = { ...plan.assignments }
-          if (cleaned.length === 0) delete assignments[bookingCode]
-          else assignments[bookingCode] = cleaned
-          return { ...plan, assignments }
-        })
+        const current = getDayVehiclePlan(date, program)
+        const cleaned = legs
+          .map((leg) => ({
+            van: Math.max(1, Math.floor(Number(leg.van) || 0)),
+            pax: Math.max(0, Math.floor(Number(leg.pax) || 0)),
+            sortOrder:
+              typeof leg.sortOrder === 'number' && Number.isFinite(leg.sortOrder)
+                ? leg.sortOrder
+                : nextSortOrderForVan(
+                    current.assignments,
+                    Math.max(1, Math.floor(Number(leg.van) || 0)),
+                  ),
+          }))
+          .filter((leg) => leg.van > 0 && leg.pax > 0)
+        const assignments = { ...current.assignments }
+        if (cleaned.length === 0) delete assignments[bookingCode]
+        else assignments[bookingCode] = cleaned
+        upsertVehiclePlan(date, program, (plan) => ({ ...plan, assignments }))
+        for (const van of [...new Set(cleaned.map((leg) => leg.van))]) {
+          followVanOntoBoat(date, program, van, assignments)
+        }
       },
       reorderVanBookings: (date, program, van, orderedCodes) => {
         if (orderedCodes.length === 0) return

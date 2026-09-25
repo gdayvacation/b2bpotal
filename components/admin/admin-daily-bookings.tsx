@@ -720,27 +720,39 @@ function BoatBoard({
   const canAddBoat = boatNumbers.length < MAX_DAY_BOATS
   const canRemoveBoat = boatNumbers.length > 1
 
-  /** Same guests as the boat card: vans on this boat + no-transfer placed here. */
+  /** Same guests as the boat card: vans on this boat + no-transfer + any other assigned booking. */
   function boatArrangement(boat: BoatNumber) {
     const vansHere = assignedVansByBoat(boat)
     const freeGuests = noTransferOnBoat(boat)
+    const covered = new Set([
+      ...vansHere.flatMap((group) => group.items.map((booking) => booking.code)),
+      ...freeGuests.map((booking) => booking.code),
+    ])
+    const looseGuests = activeBookings.filter(
+      (booking) => plan.assignments[booking.code] === boat && !covered.has(booking.code),
+    )
     const vanPax = vansHere.reduce((sum, group) => sum + group.pax, 0)
     const freePax = freeGuests.reduce((sum, booking) => sum + totalPassengers(booking), 0)
+    const loosePax = looseGuests.reduce((sum, booking) => sum + totalPassengers(booking), 0)
     const types = {
       adults:
         vansHere.reduce((sum, group) => sum + group.adults, 0) +
-        freeGuests.reduce((sum, booking) => sum + booking.adults, 0),
+        freeGuests.reduce((sum, booking) => sum + booking.adults, 0) +
+        looseGuests.reduce((sum, booking) => sum + booking.adults, 0),
       children:
         vansHere.reduce((sum, group) => sum + group.children, 0) +
-        freeGuests.reduce((sum, booking) => sum + booking.children, 0),
+        freeGuests.reduce((sum, booking) => sum + booking.children, 0) +
+        looseGuests.reduce((sum, booking) => sum + booking.children, 0),
       infants:
         vansHere.reduce((sum, group) => sum + group.infants, 0) +
-        freeGuests.reduce((sum, booking) => sum + booking.infants, 0),
+        freeGuests.reduce((sum, booking) => sum + booking.infants, 0) +
+        looseGuests.reduce((sum, booking) => sum + booking.infants, 0),
       tourLeaders:
         vansHere.reduce((sum, group) => sum + group.tourLeaders, 0) +
-        freeGuests.reduce((sum, booking) => sum + booking.tourLeaders, 0),
+        freeGuests.reduce((sum, booking) => sum + booking.tourLeaders, 0) +
+        looseGuests.reduce((sum, booking) => sum + booking.tourLeaders, 0),
     }
-    return { vansHere, freeGuests, pax: vanPax + freePax, types }
+    return { vansHere, freeGuests, looseGuests, pax: vanPax + freePax + loosePax, types }
   }
 
   function boatLoad(boat: BoatNumber) {
@@ -752,6 +764,7 @@ function BoatBoard({
   }
 
   const assignedBoatPax = boatNumbers.reduce((sum, boat) => sum + boatLoad(boat), 0)
+  const waitingPax = Math.max(0, totalPax - assignedBoatPax)
 
   return (
     <div>
@@ -777,8 +790,9 @@ function BoatBoard({
               <p className="mt-1.5 text-base text-teal-900/55">
                 {vanGroups.length} van{vanGroups.length === 1 ? '' : 's'} ·{' '}
                 {noTransferBookings.length} no transfer · {totalPax} pax · {assignedBoatPax} on
-                boats · {boatNumbers.length} boat{boatNumbers.length === 1 ? '' : 's'} ({totalSeats}{' '}
-                seats)
+                boats
+                {waitingPax > 0 ? ` · ${waitingPax} waiting` : ''} · {boatNumbers.length} boat
+                {boatNumbers.length === 1 ? '' : 's'} ({totalSeats} seats)
                 {noShowBookings.length > 0
                   ? ` · ${noShowBookings.length} no-show (${noShowPax} pax)`
                   : ''}
@@ -1136,7 +1150,7 @@ function BoatBoard({
             >
               {boatNumbers.map((boat) => {
                 const capacity = plan.capacities[boat - 1] ?? DEFAULT_BOAT_CAPACITY
-                const { vansHere, freeGuests, pax: loadPax } = boatArrangement(boat)
+                const { vansHere, freeGuests, looseGuests, pax: loadPax } = boatArrangement(boat)
                 const over = loadPax > capacity
                 const bookingCount =
                   vansHere.reduce((sum, group) => sum + group.items.length, 0) + freeGuests.length
@@ -1222,6 +1236,9 @@ function BoatBoard({
                                 ...vansHere.map((group) => `Van ${group.van} ${group.pax}`),
                                 freeGuests.length > 0
                                   ? `No transfer ${freeGuests.reduce((sum, booking) => sum + totalPassengers(booking), 0)}`
+                                  : null,
+                                looseGuests.length > 0
+                                  ? `Other ${looseGuests.reduce((sum, booking) => sum + totalPassengers(booking), 0)}`
                                   : null,
                               ]
                                 .filter(Boolean)
@@ -1316,7 +1333,7 @@ function BoatBoard({
                       </div>
                     </div>
 
-                    {vansHere.length === 0 && freeGuests.length === 0 ? (
+                    {vansHere.length === 0 && freeGuests.length === 0 && looseGuests.length === 0 ? (
                       <div className="px-4 py-10 text-center text-sm text-teal-900/40">Empty</div>
                     ) : (
                       <div className="max-h-[min(40rem,70vh)] space-y-3 overflow-y-auto p-3">
@@ -1363,6 +1380,44 @@ function BoatBoard({
                             </div>
                           </div>
                         ))}
+
+                        {looseGuests.length > 0 ? (
+                          <div className="rounded-xl border border-amber-200/80 bg-amber-50/50 p-3">
+                            <p className="text-xs font-semibold tracking-wide text-amber-900/70 uppercase">
+                              Other guests
+                            </p>
+                            <ul className="mt-2 space-y-2">
+                              {looseGuests.map((booking) => (
+                                <li
+                                  key={booking.code}
+                                  className="flex items-start justify-between gap-2"
+                                >
+                                  <button
+                                    type="button"
+                                    className="min-w-0 text-left"
+                                    onClick={() => setSelectedGuest(booking)}
+                                  >
+                                    <p className="truncate text-sm font-medium text-teal-950">
+                                      {booking.leadGuest}
+                                    </p>
+                                    <p className="text-xs text-teal-900/45">
+                                      {totalPassengers(booking)} pax
+                                    </p>
+                                  </button>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 shrink-0 px-2 text-xs print:hidden"
+                                    onClick={() => onAssignBooking(booking.code, null)}
+                                  >
+                                    Unassign
+                                  </Button>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
 
                         {freeGuests.length > 0 ? (
                           <div className="rounded-xl border border-sky-200/80 bg-sky-50/50 p-3">
@@ -1444,7 +1499,7 @@ function BoatBoard({
           >
             {boatNumbers.map((boat) => {
               const guide = plan.guides?.[boat - 1] ?? emptyBoatGuide()
-              const { vansHere, freeGuests, pax: loadPax } = boatArrangement(boat)
+              const { vansHere, freeGuests, looseGuests, pax: loadPax } = boatArrangement(boat)
               const theme = boatTheme(boat)
               const hasAssistant =
                 Boolean(guide.assistantName.trim() || guide.assistantPhone.trim()) ||
