@@ -198,7 +198,7 @@ export function VehicleDailyBoard({ onBack }: { onBack: () => void }) {
         </div>
         <PageHeader
           title="Arrange vehicles"
-          description="Drag guests into vans. Same-van groups stay together on boats (default 44 pax)."
+          description="Drag guests into vans. Same-van groups stay together on boats (default 50 pax)."
           actions={
             program ? (
               <div className="flex flex-wrap gap-2">

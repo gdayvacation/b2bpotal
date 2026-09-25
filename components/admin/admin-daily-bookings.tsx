@@ -430,8 +430,14 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
             markDraft()
           }}
           onResetCapacities={() => {
-            resetDayBoatCapacities(selectedDate, program, draft)
-            markDraft()
+            if (
+              !window.confirm(
+                `Reset every ${program} boat to ${DEFAULT_BOAT_CAPACITY} pax from today onward? Extra rental boats stay; only the capacity numbers change.`,
+              )
+            ) {
+              return
+            }
+            resetDayBoatCapacities(selectedDate, program)
           }}
           onResetFleet={() => {
             resetDayBoatFleet(selectedDate, program, draft)
@@ -671,7 +677,38 @@ function BoatBoard({
   const unassignedVans = vanGroups.filter((group) => group.assignedBoat === null && !group.boatMixed)
   const mixedVans = vanGroups.filter((group) => group.boatMixed)
   const assignedVansByBoat = (boat: BoatNumber) =>
-    vanGroups.filter((group) => group.assignedBoat === boat)
+    vanGroups
+      .map((group) => {
+        const items = group.items.filter((booking) => plan.assignments[booking.code] === boat)
+        if (items.length === 0) return null
+        const pax = items.reduce(
+          (sum, booking) => sum + bookingPaxOnVan(booking, vanAssignments[booking.code], group.van),
+          0,
+        )
+        const breakdowns = items.map((booking) =>
+          allocatePaxBreakdown(
+            {
+              adults: booking.adults,
+              children: booking.children,
+              infants: booking.infants,
+              tourLeaders: booking.tourLeaders,
+            },
+            vanAssignments[booking.code],
+            group.van,
+          ),
+        )
+        return {
+          ...group,
+          items,
+          pax,
+          adults: breakdowns.reduce((sum, row) => sum + row.adults, 0),
+          children: breakdowns.reduce((sum, row) => sum + row.children, 0),
+          infants: breakdowns.reduce((sum, row) => sum + row.infants, 0),
+          tourLeaders: breakdowns.reduce((sum, row) => sum + row.tourLeaders, 0),
+          assignedBoat: boat,
+        }
+      })
+      .filter((group): group is (typeof vanGroups)[number] => group !== null)
 
   const noTransferUnassigned = noTransferBookings.filter((b) => !plan.assignments[b.code])
   const noTransferOnBoat = (boat: BoatNumber) =>
@@ -771,8 +808,8 @@ function BoatBoard({
               <div>
                 <p className="text-sm font-semibold text-teal-950">Day boat fleet</p>
                 <p className="mt-0.5 text-xs text-teal-900/50">
-                  Default 3 × {DEFAULT_BOAT_CAPACITY}. Add a rental boat with larger capacity when
-                  needed.
+                  Default 3 × {DEFAULT_BOAT_CAPACITY}. Reset capacities applies {DEFAULT_BOAT_CAPACITY}{' '}
+                  pax per boat from today onward.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -808,7 +845,13 @@ function BoatBoard({
                     Add rental
                   </Button>
                 </div>
-                <Button type="button" variant="outline" size="sm" onClick={onResetCapacities}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  title={`Set each boat to ${DEFAULT_BOAT_CAPACITY} pax from today onward`}
+                  onClick={onResetCapacities}
+                >
                   Reset capacities
                 </Button>
                 <Button type="button" variant="outline" size="sm" onClick={onResetFleet}>
@@ -978,7 +1021,8 @@ function BoatBoard({
                   <div className="border-b border-amber-200/80 bg-amber-50/60 px-4 py-3 sm:px-5">
                     <h3 className="text-sm font-semibold text-amber-950">Mixed boat vans</h3>
                     <p className="mt-0.5 text-xs text-amber-900/65">
-                      Guests on these vans are split across boats — reassign the whole van.
+                      Same van, different boats — each booking stays on its own boat for Guide JO.
+                      Tap a boat only if you want the whole van together again.
                     </p>
                   </div>
                   <ul className="divide-y divide-amber-100">
@@ -1291,6 +1335,11 @@ function BoatBoard({
                               <div>
                                 <p className="text-sm font-semibold text-teal-950">
                                   VAN {group.van}
+                                  {group.boatMixed ? (
+                                    <span className="ml-1.5 text-[10px] font-semibold tracking-wide text-amber-800 uppercase">
+                                      split boats
+                                    </span>
+                                  ) : null}
                                 </p>
                                 <p className="mt-1 text-sm tabular-nums text-teal-900/70">
                                   AD {group.adults}

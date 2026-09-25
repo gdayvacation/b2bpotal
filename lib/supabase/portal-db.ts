@@ -57,6 +57,7 @@ import type {
   VanSplit,
 } from '@/lib/types'
 import {
+  DEFAULT_BOAT_CAPACITY,
   dayBoatPlanKey,
   dayVehiclePlanKey,
   emptyDayBoatPlan,
@@ -956,9 +957,9 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
   const legacyCaps = {
     date: plan.date,
     program: plan.program,
-    capacity_1: capacities[0] ?? 44,
-    capacity_2: capacities[1] ?? capacities[0] ?? 44,
-    capacity_3: capacities[2] ?? capacities[0] ?? 44,
+    capacity_1: capacities[0] ?? DEFAULT_BOAT_CAPACITY,
+    capacity_2: capacities[1] ?? capacities[0] ?? DEFAULT_BOAT_CAPACITY,
+    capacity_3: capacities[2] ?? capacities[0] ?? DEFAULT_BOAT_CAPACITY,
   }
 
   const warnings: string[] = []

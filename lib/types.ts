@@ -232,7 +232,9 @@ export type BoatGuide = {
   assistantPhone: string
 }
 
-export const DEFAULT_BOAT_CAPACITY = 44
+export const DEFAULT_BOAT_CAPACITY = 50
+/** Previous default still stored on older day boat plans. */
+export const LEGACY_BOAT_CAPACITY = 44
 export const DEFAULT_BOAT_COUNT = 3
 export const MAX_DAY_BOATS = 8
 /** Display labels start at Boat 7 (fleet slot 1 → "Boat 7", 2 → "Boat 8", …). */
@@ -292,6 +294,13 @@ export function normalizeBoatCapacities(capacities: number[] | null | undefined)
     .filter((value) => Number.isFinite(value) && value >= 1)
   if (cleaned.length === 0) return defaultBoatCapacities()
   return cleaned.slice(0, MAX_DAY_BOATS)
+}
+
+/** Lift leftover 44-pax defaults to the current 50-pax default. */
+export function replaceLegacyBoatCapacity(capacities: number[] | null | undefined): number[] {
+  return normalizeBoatCapacities(capacities).map((cap) =>
+    cap === LEGACY_BOAT_CAPACITY ? DEFAULT_BOAT_CAPACITY : cap,
+  )
 }
 
 export function normalizeBoatNames(

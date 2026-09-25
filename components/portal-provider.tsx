@@ -1,7 +1,7 @@
 'use client'
 
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { nextBookingCode, uniqueAgentSlug } from '@/lib/format'
+import { nextBookingCode, todayISO, uniqueAgentSlug } from '@/lib/format'
 import { autoAssignBoats } from '@/lib/boat-assign'
 import {
   CHECK_IN_ATTENDANCE_STORAGE_KEY,
@@ -92,6 +92,7 @@ import {
   pushCheckInBookedPax,
 } from '@/lib/supabase/booked-pax-db'
 import { matchNationality } from '@/lib/nationalities'
+import { canFitBookingOnBoat } from '@/lib/boat-load'
 import { autoAssignVans, bookingPaxOnVan, nextSortOrderForVan, normalizeAssignments, reorderVanAssignments } from '@/lib/vehicle-assign'
 import {
   bookingClosedMessage,
@@ -191,6 +192,7 @@ import type {
 import { HOTEL_CATALOG } from '@/lib/hotel-catalog'
 import {
   DEFAULT_BOAT_CAPACITY,
+  replaceLegacyBoatCapacity,
   DEFAULT_JB_CAPACITY,
   DEFAULT_PP_CAPACITY,
   MAX_DAY_BOATS,
@@ -497,7 +499,7 @@ type PortalContextValue = {
     guide: Partial<BoatGuide>,
     options?: { persist?: boolean },
   ) => void
-  /** Append a boat for this day (default capacity 44, or a custom rental size). */
+  /** Append a boat for this day (default capacity 50, or a custom rental size). */
   addDayBoat: (
     date: string,
     program: Program,
@@ -511,13 +513,13 @@ type PortalContextValue = {
     boat: BoatNumber,
     options?: { persist?: boolean },
   ) => void
-  /** Set every boat on this day back to the default capacity (keeps boat count). */
+  /** Set every boat from today onward to the default capacity (keeps boat count). */
   resetDayBoatCapacities: (
     date: string,
     program: Program,
     options?: { persist?: boolean },
   ) => void
-  /** Restore the default fleet: 3 boats × 44 pax (clears assignments beyond boat 3). */
+  /** Restore the default fleet: 3 boats × 50 pax (clears assignments beyond boat 3). */
   resetDayBoatFleet: (date: string, program: Program, options?: { persist?: boolean }) => void
   autoAssignDayBoats: (date: string, program: Program, options?: { persist?: boolean }) => void
   clearDayBoatAssignments: (
@@ -727,7 +729,21 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         setZones(snapshot.zones)
         setHotels(snapshot.hotels)
         setAvailability(snapshot.availability)
-        setDayBoatPlans(snapshot.dayBoatPlans)
+        const fromDate = todayISO()
+        const migratedPlans = { ...snapshot.dayBoatPlans }
+        const persistMigrated: DayBoatPlan[] = []
+        for (const [key, plan] of Object.entries(migratedPlans)) {
+          if (plan.date < fromDate) continue
+          const capacities = replaceLegacyBoatCapacity(plan.capacities)
+          const current = normalizeBoatCapacities(plan.capacities)
+          if (capacities.some((cap, index) => cap !== current[index])) {
+            const nextPlan = { ...plan, capacities }
+            migratedPlans[key] = nextPlan
+            persistMigrated.push(nextPlan)
+          }
+        }
+        setDayBoatPlans(migratedPlans)
+        for (const plan of persistMigrated) persistBoatPlanWrite(plan)
         setDayVehiclePlans(snapshot.dayVehiclePlans)
         setFleetVans(snapshot.fleetVans)
         setDrivers(mergeDriverRoster([...snapshot.drivers, ...loadLocalDrivers()]))
@@ -815,8 +831,14 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const next = await fetchDayBoatPlans()
         if (cancelled || boatPlanWritePendingRef.current > 0) return
         setDayBoatPlans((current) => {
-          if (boatPlanDirtyKeysRef.current.size === 0) return next
-          const merged = { ...next }
+          const fromDate = todayISO()
+          const incoming = { ...next }
+          for (const [key, plan] of Object.entries(incoming)) {
+            if (plan.date < fromDate) continue
+            incoming[key] = { ...plan, capacities: replaceLegacyBoatCapacity(plan.capacities) }
+          }
+          if (boatPlanDirtyKeysRef.current.size === 0) return incoming
+          const merged = { ...incoming }
           for (const key of boatPlanDirtyKeysRef.current) {
             if (current[key]) merged[key] = current[key]!
           }
@@ -1054,7 +1076,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       const key = dayBoatPlanKey(date, program)
       const stored = dayBoatPlans[key]
       if (!stored) return emptyDayBoatPlan(date, program)
-      const capacities = normalizeBoatCapacities(stored.capacities)
+      const capacities =
+        date >= todayISO()
+          ? replaceLegacyBoatCapacity(stored.capacities)
+          : normalizeBoatCapacities(stored.capacities)
       return {
         ...stored,
         capacities,
@@ -2521,6 +2546,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         ) {
           return
         }
+        if (boat !== null) {
+          const booking = bookings.find((item) => item.code === bookingCode)
+          if (!booking) return
+          const plan = getDayBoatPlan(date, program)
+          const countable = activeDayBookings(date, program).filter(
+            (item) =>
+              getCheckInAttendance(checkInAttendance, date, program, item.code) !== 'no-show',
+          )
+          if (!canFitBookingOnBoat(plan, countable, boat, booking).ok) return
+        }
         upsertPlan(
           date,
           program,
@@ -2653,23 +2688,37 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           options,
         )
       },
-      resetDayBoatCapacities: (date, program, options) => {
-        upsertPlan(
-          date,
-          program,
-          (plan) => {
-            const capacities = normalizeBoatCapacities(plan.capacities).map(
+      resetDayBoatCapacities: (date, program) => {
+        const fromDate = todayISO()
+        setDayBoatPlans((current) => {
+          const dates = new Set<string>()
+          for (const plan of Object.values(current)) {
+            if (plan.program === program && plan.date >= fromDate) dates.add(plan.date)
+          }
+          dates.add(fromDate)
+          if (date >= fromDate) dates.add(date)
+
+          const next = { ...current }
+          for (const planDate of dates) {
+            const key = dayBoatPlanKey(planDate, program)
+            const existing = next[key] ?? emptyDayBoatPlan(planDate, program)
+            const capacities = normalizeBoatCapacities(existing.capacities).map(
               () => DEFAULT_BOAT_CAPACITY,
             )
-            return {
-              ...plan,
+            const updated: DayBoatPlan = {
+              ...existing,
+              date: planDate,
+              program,
               capacities,
-              names: normalizeBoatNames(plan.names, capacities.length),
-              guides: normalizeBoatGuides(plan.guides, capacities.length),
+              names: normalizeBoatNames(existing.names, capacities.length),
+              guides: normalizeBoatGuides(existing.guides, capacities.length),
             }
-          },
-          options,
-        )
+            next[key] = updated
+            boatPlanDirtyKeysRef.current.delete(key)
+            persistBoatPlanWrite(updated)
+          }
+          return next
+        })
       },
       resetDayBoatFleet: (date, program, options) => {
         upsertPlan(

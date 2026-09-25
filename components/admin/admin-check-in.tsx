@@ -114,8 +114,12 @@ import {
   sortOrderOnVan,
   type PaxBreakdown,
 } from '@/lib/vehicle-assign'
+import { canFitBookingOnBoat } from '@/lib/boat-load'
+import { boatTheme } from '@/lib/boat-theme'
 import { cn } from '@/lib/utils'
 import {
+  boatDisplayName,
+  boatNumbersForPlan,
   isActiveBooking,
   isNoTransfer,
   totalPassengers,
@@ -1501,6 +1505,151 @@ export function HelperCheckInBoard({
   )
 }
 
+function CheckInBoatPicker({
+  booking,
+  date,
+  boat,
+  disabled,
+  compact,
+}: {
+  booking: Booking
+  date: string
+  boat: number | null
+  disabled?: boolean
+  compact?: boolean
+}) {
+  const { getDayBoatPlan, assignBookingToBoat, bookings, getCheckInAttendance } = usePortal()
+  const [open, setOpen] = useState(false)
+  const holdTimer = useRef<number | null>(null)
+  const openedByHold = useRef(false)
+  const plan = getDayBoatPlan(date, booking.program)
+  const boats = boatNumbersForPlan(plan)
+  const dayBookings = useMemo(
+    () =>
+      bookings.filter(
+        (item) =>
+          isActiveBooking(item) &&
+          item.date === date &&
+          item.program === booking.program &&
+          getCheckInAttendance(date, item.program, item.code) !== 'no-show',
+      ),
+    [bookings, date, booking.program, getCheckInAttendance],
+  )
+  const need = totalPassengers(booking)
+  const badge = (
+    <BoatFleetBadge
+      boat={boat}
+      className={
+        compact ? 'min-w-6 px-1 py-0.5 text-[11px] font-bold' : 'px-1.5 py-0.5 text-sm font-bold'
+      }
+    />
+  )
+
+  function clearHold() {
+    if (holdTimer.current !== null) {
+      window.clearTimeout(holdTimer.current)
+      holdTimer.current = null
+    }
+  }
+
+  if (disabled) return badge
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) openedByHold.current = false
+        setOpen(next)
+      }}
+    >
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            className="inline-flex rounded-md outline-none hover:ring-1 hover:ring-teal-700/20 focus-visible:ring-2 focus-visible:ring-teal-600/40"
+            title="Click or hold to change boat for this booking only"
+            aria-label={`Change boat for ${booking.code}`}
+            onPointerDown={(event) => {
+              event.stopPropagation()
+              openedByHold.current = false
+              clearHold()
+              holdTimer.current = window.setTimeout(() => {
+                openedByHold.current = true
+                setOpen(true)
+              }, 400)
+            }}
+            onPointerUp={clearHold}
+            onPointerLeave={clearHold}
+            onPointerCancel={clearHold}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation()
+              if (openedByHold.current) {
+                event.preventDefault()
+                openedByHold.current = false
+              }
+            }}
+            onKeyDown={(event) => event.stopPropagation()}
+          />
+        }
+      >
+        {badge}
+      </PopoverTrigger>
+      <PopoverContent
+        align="center"
+        className="w-56 p-2"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <p className="text-[11px] font-semibold text-teal-950">Move {booking.code}</p>
+        <p className="mt-0.5 text-[10px] leading-snug text-teal-900/50">
+          {need} pax · this booking only, not the whole van
+        </p>
+        <div className="mt-2 space-y-1">
+          {boats.map((target) => {
+            const fit = canFitBookingOnBoat(plan, dayBookings, target, booking)
+            const selected = boat === target
+            const fits = selected || fit.ok
+            return (
+              <button
+                key={target}
+                type="button"
+                disabled={!fits}
+                onClick={() => {
+                  if (!selected) {
+                    assignBookingToBoat(date, booking.program, booking.code, target)
+                  }
+                  setOpen(false)
+                }}
+                className={cn(
+                  'flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold',
+                  selected
+                    ? boatTheme(target).softBadge
+                    : fits
+                      ? 'bg-teal-50 text-teal-950 hover:bg-teal-100'
+                      : 'cursor-not-allowed bg-neutral-50 text-neutral-400',
+                )}
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <BoatFleetBadge boat={target} className="px-1 py-0 text-[11px]" />
+                  {boatDisplayName(plan, target)}
+                </span>
+                <span className="tabular-nums font-medium">
+                  {selected
+                    ? 'Current'
+                    : fits
+                      ? `${fit.remaining} left`
+                      : `Need ${fit.need} · ${Math.max(0, fit.remaining)} left`}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function makeDriverGroup(
   id: string,
   program: Program,
@@ -1747,55 +1896,62 @@ function DriverGroupCard({
               )}
             >
               <div className="flex items-start gap-2.5">
-                <button
-                  type="button"
-                  aria-expanded={expanded}
-                  className="min-w-0 flex-1 text-left"
-                  onClick={() => toggleExpanded(line.key)}
-                >
-                  <div className="flex items-start gap-2">
-                    <span className="mt-0.5 flex min-w-10 shrink-0 flex-col items-start gap-0.5">
-                      {sequenceLabel && line.status === 'checked' ? (
-                        <span className="text-[15px] font-bold tabular-nums text-emerald-700">
-                          {sequenceLabel}
-                        </span>
-                      ) : null}
-                      <StatusBadge status={line.status} compact />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-[15px] font-semibold text-teal-950" title={hotel}>
-                        {hotel}
-                      </p>
-                      <p className="mt-0.5 truncate text-[13px] font-normal text-teal-900/70">
-                        {line.leaderName || line.booking.code}
-                        {line.split ? (
-                          <span className="ml-1.5 text-[10px] font-semibold text-teal-700/55">
-                            split
+                <div className="min-w-0 flex-1">
+                  <button
+                    type="button"
+                    aria-expanded={expanded}
+                    className="w-full min-w-0 text-left"
+                    onClick={() => toggleExpanded(line.key)}
+                  >
+                    <div className="flex items-start gap-2">
+                      <span className="mt-0.5 flex min-w-10 shrink-0 flex-col items-start gap-0.5">
+                        {sequenceLabel && line.status === 'checked' ? (
+                          <span className="text-[15px] font-bold tabular-nums text-emerald-700">
+                            {sequenceLabel}
                           </span>
                         ) : null}
-                      </p>
-                      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-teal-900/65">
-                        <span className="tabular-nums font-medium text-teal-950">
-                          {compactPaxLine(booked, line.pax, wholeNoShow)}
-                        </span>
-                        <BoatFleetBadge boat={line.boat} className="px-1.5 py-0.5 text-sm font-bold" />
-                        <span>Park {formatIncludeShort(line.booking.parkFee)}</span>
-                      </p>
-                      <p
-                        className={cn(
-                          'mt-1 text-[12px] font-medium tabular-nums',
-                          line.status === 'checked'
-                            ? 'text-emerald-800/80'
-                            : line.status === 'no-show'
-                              ? 'text-rose-800/80'
-                              : 'text-amber-900/80',
-                        )}
-                      >
-                        {statusNote}
-                      </p>
+                        <StatusBadge status={line.status} compact />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[15px] font-semibold text-teal-950" title={hotel}>
+                          {hotel}
+                        </p>
+                        <p className="mt-0.5 truncate text-[13px] font-normal text-teal-900/70">
+                          {line.leaderName || line.booking.code}
+                          {line.split ? (
+                            <span className="ml-1.5 text-[10px] font-semibold text-teal-700/55">
+                              split
+                            </span>
+                          ) : null}
+                        </p>
+                      </div>
                     </div>
+                  </button>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 pl-12 text-[12px] text-teal-900/65">
+                    <span className="tabular-nums font-medium text-teal-950">
+                      {compactPaxLine(booked, line.pax, wholeNoShow)}
+                    </span>
+                    <CheckInBoatPicker
+                      booking={line.booking}
+                      date={today}
+                      boat={line.boat}
+                      disabled={isHelper || wholeNoShow}
+                    />
+                    <span>Park {formatIncludeShort(line.booking.parkFee)}</span>
                   </div>
-                </button>
+                  <p
+                    className={cn(
+                      'mt-1 pl-12 text-[12px] font-medium tabular-nums',
+                      line.status === 'checked'
+                        ? 'text-emerald-800/80'
+                        : line.status === 'no-show'
+                          ? 'text-rose-800/80'
+                          : 'text-amber-900/80',
+                    )}
+                  >
+                    {statusNote}
+                  </p>
+                </div>
                 <button
                   type="button"
                   aria-label={`Show check-in QR for ${line.leaderName || line.booking.code}`}
@@ -2264,10 +2420,18 @@ function DriverGroupCard({
                     />
                   </span>
                 </TableCell>
-                <TableCell className="px-0.5 text-center align-top">
-                  <BoatFleetBadge
+                <TableCell
+                  className="px-0.5 text-center align-top"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
+                >
+                  <CheckInBoatPicker
+                    booking={line.booking}
+                    date={today}
                     boat={line.boat}
-                    className="min-w-6 px-1 py-0.5 text-[11px] font-bold"
+                    disabled={isHelper || wholeNoShow}
+                    compact
                   />
                 </TableCell>
                 <TableCell className="px-1 text-center align-top text-teal-900/70">

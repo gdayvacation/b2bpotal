@@ -218,9 +218,9 @@ export function AdminDailyJobOrder({
   const sheetVariant: 'driver' | 'check-in' = isCheckInView ? 'check-in' : 'driver'
 
   const boatAssignments = useMemo(() => {
-    if (!program || !isCheckInView) return {} as Record<string, number>
+    if (!program) return {} as Record<string, number>
     return getDayBoatPlan(selectedDate, program).assignments
-  }, [getDayBoatPlan, isCheckInView, program, selectedDate])
+  }, [getDayBoatPlan, program, selectedDate])
 
   const dayBookings = useMemo(
     () =>

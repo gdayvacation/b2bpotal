@@ -154,16 +154,16 @@ before update on public.availability
 for each row execute function public.set_updated_at();
 
 -- -----------------------------------------------------------------------------
--- Boat plans (flexible boat count per date + program; default 3 × 44)
+-- Boat plans (flexible boat count per date + program; default 3 × 50)
 -- -----------------------------------------------------------------------------
 create table if not exists public.day_boat_plans (
   date date not null,
   program text not null check (program in ('PP', 'James Bond')),
-  capacity_1 int not null default 44 check (capacity_1 >= 1),
-  capacity_2 int not null default 44 check (capacity_2 >= 1),
-  capacity_3 int not null default 44 check (capacity_3 >= 1),
-  /** Source of truth for boat count + per-boat seats (e.g. [44,44,60]). */
-  capacities jsonb not null default '[44, 44, 44]'::jsonb,
+  capacity_1 int not null default 50 check (capacity_1 >= 1),
+  capacity_2 int not null default 50 check (capacity_2 >= 1),
+  capacity_3 int not null default 50 check (capacity_3 >= 1),
+  /** Source of truth for boat count + per-boat seats (e.g. [50,50,60]). */
+  capacities jsonb not null default '[50, 50, 50]'::jsonb,
   boat_names jsonb not null default '["","",""]'::jsonb,
   boat_guides jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default timezone('utc', now()),
