@@ -117,6 +117,35 @@ export function serviceLineTotal(line: CheckInServiceLine) {
   return line.people * line.pricePerPerson
 }
 
+export type CheckInServiceKindSummary = {
+  kind: CheckInServiceKind
+  people: number
+  total: number
+  lines: number
+}
+
+export function summarizeCheckInServices(services: CheckInServiceLine[]): CheckInServiceKindSummary[] {
+  const byKind = new Map<CheckInServiceKind, CheckInServiceKindSummary>()
+  for (const kind of CHECK_IN_SERVICE_KINDS) {
+    byKind.set(kind, { kind, people: 0, total: 0, lines: 0 })
+  }
+  for (const line of services) {
+    const row = byKind.get(line.kind)
+    if (!row) continue
+    row.people += line.people
+    row.total += serviceLineTotal(line)
+    row.lines += 1
+  }
+  return CHECK_IN_SERVICE_KINDS.map((kind) => byKind.get(kind)!).filter(
+    (row) => row.people > 0 || row.total > 0,
+  )
+}
+
+export function formatServiceSummaryLine(row: CheckInServiceKindSummary) {
+  const money = row.total > 0 ? ` · ${row.total.toLocaleString('en-US')}` : ''
+  return `${checkInServiceLabel(row.kind)} ${row.people}${money}`
+}
+
 /** Compact line for Guide Job Order “Option” column (e.g. Private Longtail · 2,000). */
 export function formatCheckInServicesOption(services: CheckInServiceLine[]): string {
   if (services.length === 0) return ''

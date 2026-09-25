@@ -9,6 +9,24 @@ import {
 
 export type InvoiceKind = 'invoice' | 'billing_note'
 export type InvoiceStatus = 'unpaid' | 'paid'
+export type PaymentChannel = 'bank_transfer' | 'deduct_deposit' | 'payment_link'
+
+export const PAYMENT_CHANNELS: { value: PaymentChannel; label: string }[] = [
+  { value: 'deduct_deposit', label: 'Deduct Deposit' },
+  { value: 'bank_transfer', label: 'Bank Transfer' },
+  { value: 'payment_link', label: 'Payment Link' },
+]
+
+export function formatPaymentChannel(channel: PaymentChannel | null | undefined) {
+  return PAYMENT_CHANNELS.find((row) => row.value === channel)?.label ?? ''
+}
+
+export function parsePaymentChannel(value: unknown): PaymentChannel | null {
+  if (value === 'bank_transfer' || value === 'deduct_deposit' || value === 'payment_link') {
+    return value
+  }
+  return null
+}
 export type InvoiceLineKind =
   | 'tour'
   | 'change_date'
@@ -28,6 +46,7 @@ export type InvoiceSettings = {
   bankAccountNo: string
   issuerName: string
   issuerTitle: string
+  signatureImage: string
 }
 
 export type AgencyInvoiceRates = {
@@ -76,6 +95,7 @@ export type InvoiceDocument = {
   notes: string
   grandTotal: number
   paidAt: string | null
+  paymentChannel: PaymentChannel | null
   receiptNo: string | null
   linkedInvoiceIds: string[]
   items: InvoiceItem[]
@@ -83,7 +103,7 @@ export type InvoiceDocument = {
 }
 
 export const DEFAULT_INVOICE_SETTINGS: InvoiceSettings = {
-  companyName: 'Good Day Vacation Speedboat',
+  companyName: 'Good Day Vacation Co., Ltd',
   companyLegal: 'Good Day Vacation Co., Ltd.',
   addressTh: 'สำนักงานใหญ่ : 35/84 หมู่ที่ 3 ตำบลรัษฎา อำเภอเมือง จังหวัดภูเก็ต',
   addressEn: 'Head Office : 35/84 Moo 3, Ratsada, Mueang, Phuket',
@@ -92,7 +112,22 @@ export const DEFAULT_INVOICE_SETTINGS: InvoiceSettings = {
   bankAccountName: 'Nusara Darayang',
   bankAccountNo: '822-215284-9',
   issuerName: 'Jererawan',
-  issuerTitle: 'ผู้อำนวยการ',
+  issuerTitle: 'Director',
+  signatureImage: '',
+}
+
+export function normalizeInvoiceSettings(
+  settings: Partial<InvoiceSettings> | null | undefined,
+): InvoiceSettings {
+  const next = { ...DEFAULT_INVOICE_SETTINGS, ...settings }
+  if (next.companyName === 'Good Day Vacation Speedboat') {
+    next.companyName = DEFAULT_INVOICE_SETTINGS.companyName
+  }
+  if (next.issuerTitle === 'ผู้อำนวยการ') {
+    next.issuerTitle = DEFAULT_INVOICE_SETTINGS.issuerTitle
+  }
+  next.signatureImage = next.signatureImage ?? ''
+  return next
 }
 
 export const COMPANY_LOGO_SRC = '/goodday-logo.png'
@@ -158,29 +193,84 @@ export function parseMoneyInput(value: string) {
   return Number.isFinite(amount) && amount >= 0 ? amount : 0
 }
 
+function documentKindPrefix(kind: InvoiceKind | 'receipt') {
+  if (kind === 'receipt') return 'RC'
+  if (kind === 'billing_note') return 'BN'
+  return 'INV'
+}
+
+function sequenceFromDocumentNumber(
+  source: string,
+  kind: InvoiceKind | 'receipt',
+  yy: string,
+  mm: string,
+) {
+  const prefix = documentKindPrefix(kind)
+  const next = source.match(new RegExp(`^${prefix}${yy}-${mm}(\\d{3,})$`))
+  if (next) return Number(next[1])
+  const oldStem =
+    kind === 'receipt' ? 'RC-GDV' : kind === 'billing_note' ? 'BN-GDV' : '(?:PP|JB)-GDV'
+  const previous = source.match(new RegExp(`^${oldStem}-${yy}${mm}-(\\d+)$`))
+  if (previous) return Number(previous[1])
+  return null
+}
+
 export function nextDocumentNumber(
   existing: InvoiceDocument[],
   kind: InvoiceKind | 'receipt',
   issueDate: string,
-  program?: Program,
+  _program?: Program,
 ) {
   const [year, month] = issueDate.split('-')
   const yy = (year ?? '').slice(2)
   const mm = (month ?? '01').padStart(2, '0')
-  const stem =
-    kind === 'receipt'
-      ? `RC-GDV-${yy}${mm}-`
-      : kind === 'billing_note'
-        ? `BN-GDV-${yy}${mm}-`
-        : `${invoicePrefix(program ?? 'PP')}-GDV-${yy}${mm}-`
   const seq = existing.reduce((max, doc) => {
     const source =
       kind === 'receipt' ? (doc.receiptNo ?? '') : doc.kind === kind ? doc.number : ''
-    if (!source.startsWith(stem)) return max
-    const n = Number(source.slice(stem.length))
-    return Number.isFinite(n) ? Math.max(max, n) : max
+    const n = sequenceFromDocumentNumber(source, kind, yy, mm)
+    return n != null && Number.isFinite(n) ? Math.max(max, n) : max
   }, 0)
-  return `${stem}${String(seq + 1).padStart(4, '0')}`
+  return `${documentKindPrefix(kind)}${yy}-${mm}${String(seq + 1).padStart(3, '0')}`
+}
+
+export function toNewDocumentNumber(source: string, kind: InvoiceKind | 'receipt') {
+  const trimmed = source.trim()
+  if (!trimmed) return trimmed
+  const prefix = documentKindPrefix(kind)
+  if (trimmed.match(new RegExp(`^${prefix}\\d{2}-\\d{5,}$`))) return trimmed
+  const oldStem =
+    kind === 'receipt' ? 'RC-GDV' : kind === 'billing_note' ? 'BN-GDV' : '(?:PP|JB)-GDV'
+  const previous = trimmed.match(new RegExp(`^${oldStem}-(\\d{2})(\\d{2})-(\\d+)$`))
+  if (!previous) return trimmed
+  return `${prefix}${previous[1]}-${previous[2]}${String(Number(previous[3])).padStart(3, '0')}`
+}
+
+export function migrateInvoiceDocumentNumbers(docs: InvoiceDocument[]) {
+  const used = new Set<string>()
+  const numberMap = new Map<string, string>()
+  const byCreated = [...docs].sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+  )
+  const assigned = new Map<string, InvoiceDocument>()
+
+  for (const doc of byCreated) {
+    let number = toNewDocumentNumber(doc.number, doc.kind)
+    if (used.has(`${doc.kind}:${number}`)) {
+      number = nextDocumentNumber([...assigned.values()], doc.kind, doc.issueDate)
+    }
+    used.add(`${doc.kind}:${number}`)
+    if (number !== doc.number) numberMap.set(doc.number, number)
+    const receiptNo = doc.receiptNo ? toNewDocumentNumber(doc.receiptNo, 'receipt') : doc.receiptNo
+    assigned.set(doc.id, { ...doc, number, receiptNo })
+  }
+
+  return docs.map((doc) => {
+    const next = assigned.get(doc.id) ?? doc
+    if (next.kind !== 'billing_note' || !next.notes) return next
+    let notes = next.notes
+    for (const [from, to] of numberMap) notes = notes.split(from).join(to)
+    return notes === next.notes ? next : { ...next, notes }
+  })
 }
 
 export function bookingVoucherNo(booking: Booking) {
@@ -426,6 +516,7 @@ export function newInvoiceDocument(input: {
     notes: input.notes ?? '',
     grandTotal: itemsGrandTotal(items),
     paidAt: null,
+    paymentChannel: null,
     receiptNo: null,
     linkedInvoiceIds: input.linkedInvoiceIds ?? [],
     items,

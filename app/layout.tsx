@@ -43,7 +43,11 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" className={`light ${jakarta.variable} ${sora.variable}`}>
+    <html
+      lang="en"
+      data-scroll-behavior="smooth"
+      className={`light ${jakarta.variable} ${sora.variable}`}
+    >
       <body className={`${jakarta.className} min-h-dvh text-teal-950 antialiased`}>
         <Providers>{children}</Providers>
         {process.env.NODE_ENV === 'production' && <Analytics />}

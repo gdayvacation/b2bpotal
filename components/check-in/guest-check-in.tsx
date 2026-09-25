@@ -836,26 +836,6 @@ function GuestCheckInForm({
                 })}
               </p>
             </div>
-            {(() => {
-              const due = paymentDue(selectedBooking)
-              if (!due.needsStaff) return null
-              return (
-                <div
-                  role="alert"
-                  className="rounded-2xl border border-orange-300 bg-orange-50 px-4 py-3.5 text-sm leading-relaxed text-orange-950"
-                >
-                  <p className="flex items-center gap-2 font-semibold">
-                    <AlertTriangle className="size-4 shrink-0" />
-                    {t('paymentDueTitle')}
-                  </p>
-                  <p className="mt-1 text-orange-900/85">
-                    {due.amount > 0
-                      ? t('payAmount', { amount: due.amount.toLocaleString('en-US') })
-                      : t('payCash')}
-                  </p>
-                </div>
-              )
-            })()}
             {fullyCheckedIn ? (
               <div className="space-y-3">
                 <EmptyNote text={t('alreadyCheckedIn')} />
@@ -1346,6 +1326,28 @@ function GuestCheckInForm({
   )
 }
 
+function PaymentDueAlert({ booking }: { booking: Booking }) {
+  const { t } = useCheckInI18n()
+  const due = paymentDue(booking)
+  if (!due.needsStaff) return null
+  return (
+    <div
+      role="alert"
+      className="rounded-2xl border border-orange-300 bg-orange-50 px-4 py-3.5 text-left text-sm leading-relaxed text-orange-950"
+    >
+      <p className="flex items-center gap-2 font-semibold">
+        <AlertTriangle className="size-4 shrink-0" />
+        {t('paymentDueTitle')}
+      </p>
+      <p className="mt-1 text-orange-900/85">
+        {due.amount > 0
+          ? t('payAmount', { amount: due.amount.toLocaleString('en-US') })
+          : t('payCash')}
+      </p>
+    </div>
+  )
+}
+
 function ConfirmStep({
   booking,
   guests,
@@ -1454,10 +1456,7 @@ function ConfirmStep({
         </div>
 
         {due.needsStaff ? (
-          <div className="flex gap-2 rounded-xl border border-orange-200 bg-orange-50 px-3.5 py-3 text-sm text-orange-950/85">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-orange-600" />
-            {t('paymentAfter')}
-          </div>
+          <PaymentDueAlert booking={booking} />
         ) : (
           <div className="flex gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-3 text-sm text-emerald-950/80">
             <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
@@ -1532,6 +1531,7 @@ function DoneStep({
               {parkExcluded ? t('payPark') : t('payStaff')}
             </p>
           </div>
+          {booking ? <PaymentDueAlert booking={booking} /> : null}
           {boarding}
           {onEdit ? (
             <Button variant="outline" className="h-11 w-full" onClick={onEdit}>

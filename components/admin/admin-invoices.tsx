@@ -1,10 +1,12 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { CalendarIcon, FileText, Printer, Settings2 } from 'lucide-react'
-import { InvoicePrintBundle, InvoicePrintSheet } from '@/components/admin/admin-invoice-print'
+import { cn } from 'cn'
+import { ArrowDown, ArrowUp, ArrowUpDown, CalendarIcon, ChevronDown, FileText, Printer, Settings2, Share2, Trash2, Undo2 } from 'lucide-react'
+import { InvoiceEditDialog } from '@/components/admin/admin-invoice-edit-dialog'
+import { InvoicePrintSheet } from '@/components/admin/admin-invoice-print'
 import { useInvoiceStore } from '@/components/admin/use-invoice-store'
 import { usePortal } from '@/components/portal-provider'
 import {
@@ -16,6 +18,15 @@ import {
   Surface,
 } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Calendar } from '@/components/ui/calendar'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
@@ -34,12 +45,13 @@ import {
   formatInvoiceDate,
   formatInvoiceMoney,
   invoicedBookingCodes,
-  invoicesForBookings,
+  PAYMENT_CHANNELS,
+  itemsGrandTotal,
   majorityProgram,
   newInvoiceDocument,
   ratesForAgent,
   type InvoiceDocument,
-  type InvoiceKind,
+  type PaymentChannel,
 } from '@/lib/invoice'
 import {
   formatPaxBreakdown,
@@ -47,31 +59,186 @@ import {
   type Booking,
   type CheckInAttendance,
 } from '@/lib/types'
-import { dateFromISO, formatShortDate, todayISO, toISODate } from '@/lib/format'
+import { addDaysISO, dateFromISO, formatShortDate, todayISO, toISODate } from '@/lib/format'
+import { usePortalTodayISO } from '@/lib/use-portal-today'
 
-type Tab = 'bills' | 'documents' | 'receipts'
+type Tab = 'bills' | 'documents' | 'notes' | 'receipts'
 type GroupBy = 'date' | 'agent'
+type PrintMode = 'invoice' | 'billing_note' | 'receipt'
+type BillSortKey = 'agent' | 'program' | 'status'
+type SortDir = 'asc' | 'desc'
 
 function isTab(value: string | null): value is Tab {
-  return value === 'bills' || value === 'documents' || value === 'receipts'
+  return value === 'bills' || value === 'documents' || value === 'notes' || value === 'receipts'
+}
+
+function sheetMode(doc: InvoiceDocument, tab: Tab): PrintMode {
+  if (tab === 'receipts') return 'receipt'
+  if (doc.kind === 'billing_note') return 'billing_note'
+  return 'invoice'
+}
+
+function formatDayMonth(iso: string) {
+  return new Date(`${iso}T12:00:00`).toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+  })
 }
 
 type BillRow = {
   booking: Booking
   attendance: CheckInAttendance | null
-  guestTotal: number
+  billTotal: number
+  hasRates: boolean
   invoice?: InvoiceDocument
 }
 
-function guestRateTotal(
-  booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>,
-  rates: ReturnType<typeof ratesForAgent>,
-) {
+function billStatusLabel(row: BillRow) {
+  if (!row.invoice) return 'Open'
+  if (row.invoice.status === 'paid') return 'Paid'
+  return row.invoice.number
+}
+
+function billStatusRank(row: BillRow) {
+  if (!row.invoice) return 0
+  if (row.invoice.status === 'paid') return 2
+  return 1
+}
+
+function BillSortHead({
+  column,
+  active,
+  dir,
+  onSort,
+  children,
+  className,
+}: {
+  column: BillSortKey
+  active: boolean
+  dir: SortDir
+  onSort: (key: BillSortKey) => void
+  children: ReactNode
+  className?: string
+}) {
+  const Icon = !active ? ArrowUpDown : dir === 'asc' ? ArrowUp : ArrowDown
   return (
-    booking.adults * rates.adultPrice +
-    booking.children * rates.childPrice +
-    booking.infants * rates.infantPrice +
-    booking.tourLeaders * rates.tourLeaderPrice
+    <TableHead className={className}>
+      <button
+        type="button"
+        className={cn(
+          'inline-flex items-center gap-1 rounded-md transition-colors hover:text-teal-900',
+          active && 'font-semibold text-teal-900',
+        )}
+        onClick={() => onSort(column)}
+        aria-label={`Sort by ${column}${active ? `, currently ${dir === 'asc' ? 'ascending' : 'descending'}` : ''}`}
+      >
+        {children}
+        <Icon className={cn('size-3.5 shrink-0', active ? 'opacity-80' : 'opacity-40')} />
+      </button>
+    </TableHead>
+  )
+}
+
+function InvoicePayStatus({
+  doc,
+  today,
+  onConfirm,
+  onUndoPaid,
+}: {
+  doc: InvoiceDocument
+  today: string
+  onConfirm: (doc: InvoiceDocument, details: { paidDate: string; channel: PaymentChannel }) => void
+  onUndoPaid: (doc: InvoiceDocument) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [paidDate, setPaidDate] = useState(today)
+  const [channel, setChannel] = useState<PaymentChannel>('deduct_deposit')
+  const paid = doc.status === 'paid'
+
+  useEffect(() => {
+    if (!open) return
+    setPaidDate(doc.paidAt ? doc.paidAt.slice(0, 10) : today)
+    setChannel(doc.paymentChannel ?? 'deduct_deposit')
+  }, [doc, open, today])
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            className={cn(
+              'inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-left text-sm font-medium outline-none transition-colors hover:bg-teal-950/[0.04] focus-visible:ring-2 focus-visible:ring-teal-700/25',
+              paid ? 'text-emerald-700' : 'text-amber-800',
+            )}
+            aria-label={`${paid ? 'PAID' : 'Unpaid'}. Review payment for ${doc.number}`}
+          />
+        }
+      >
+        {paid ? 'PAID' : 'Unpaid'}
+        <ChevronDown className="size-3.5 opacity-50" />
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-72 gap-3 p-3">
+        <div>
+          <p className="text-sm font-medium text-teal-950">{doc.number}</p>
+          <p className="text-xs text-teal-900/55">
+            {paid ? 'Review or change payment details.' : 'Confirm payment to issue the receipt.'}
+          </p>
+        </div>
+        <div className="space-y-1.5">
+          <label className="gday-soft-label" htmlFor={`paid-date-${doc.id}`}>
+            Date
+          </label>
+          <Input
+            id={`paid-date-${doc.id}`}
+            type="date"
+            value={paidDate}
+            onChange={(event) => setPaidDate(event.target.value)}
+            className="h-9"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <label className="gday-soft-label" htmlFor={`paid-channel-${doc.id}`}>
+            Channel
+          </label>
+          <select
+            id={`paid-channel-${doc.id}`}
+            value={channel}
+            onChange={(event) => setChannel(event.target.value as PaymentChannel)}
+            className="h-9 w-full rounded-xl border border-teal-900/12 bg-white/80 px-3 text-sm text-teal-950 outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
+          >
+            {PAYMENT_CHANNELS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <Button
+          type="button"
+          className="h-9 w-full rounded-xl"
+          onClick={() => {
+            setOpen(false)
+            onConfirm(doc, { paidDate, channel })
+          }}
+        >
+          Confirm
+        </Button>
+        {paid ? (
+          <Button
+            type="button"
+            variant="outline"
+            className="h-9 w-full rounded-xl text-amber-800"
+            onClick={() => {
+              setOpen(false)
+              onUndoPaid(doc)
+            }}
+          >
+            Undo PAID
+          </Button>
+        ) : null}
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -86,6 +253,8 @@ export function AdminInvoices() {
     return isTab(raw) ? raw : 'bills'
   })
   const [groupBy, setGroupBy] = useState<GroupBy>('date')
+  const [billSort, setBillSort] = useState<{ key: BillSortKey; dir: SortDir } | null>(null)
+  const portalToday = usePortalTodayISO()
   const [fromDate, setFromDate] = useState(todayISO())
   const [toDate, setToDate] = useState(todayISO())
   const [calendarOpen, setCalendarOpen] = useState(false)
@@ -95,9 +264,21 @@ export function AdminInvoices() {
   const [selectedCodes, setSelectedCodes] = useState<string[]>([])
   const [selectedDocs, setSelectedDocs] = useState<string[]>([])
   const [preview, setPreview] = useState<InvoiceDocument | null>(null)
+  const [previewMode, setPreviewMode] = useState<PrintMode | null>(null)
+  const [editInvoice, setEditInvoice] = useState<InvoiceDocument | null>(null)
+  const [editInvoiceIsNew, setEditInvoiceIsNew] = useState(false)
+  const [shareNote, setShareNote] = useState('')
   const [message, setMessage] = useState('')
 
   const invoiced = useMemo(() => invoicedBookingCodes(store.invoices), [store.invoices])
+  const yesterday = addDaysISO(portalToday, -1)
+  const tomorrow = addDaysISO(portalToday, 1)
+  const billDays = [
+    { iso: yesterday, label: 'Yesterday' },
+    { iso: portalToday, label: 'Today' },
+    { iso: tomorrow, label: 'Tomorrow' },
+  ] as const
+  const selectedBillDay = fromDate === toDate ? fromDate : null
 
   useEffect(() => {
     const raw = searchParams.get('tab')
@@ -119,10 +300,21 @@ export function AdminInvoices() {
     const to = range.to ? toISODate(range.to) : from
     setFromDate(from <= to ? from : to)
     setToDate(from <= to ? to : from)
+    setSelectedCodes([])
+    setSelectedDocs([])
+  }
+
+  function selectBillDay(iso: string) {
+    setFromDate(iso)
+    setToDate(iso)
+    setSelectedCodes([])
+    setSelectedDocs([])
+    setCalendarOpen(false)
   }
 
   function goTab(next: Tab) {
     setTab(next)
+    setSelectedDocs([])
     const params = new URLSearchParams(searchParams.toString())
     if (next === 'bills') params.delete('tab')
     else params.set('tab', next)
@@ -130,8 +322,16 @@ export function AdminInvoices() {
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false })
   }
 
+  function toggleBillSort(key: BillSortKey) {
+    setBillSort((current) => {
+      if (current?.key !== key) return { key, dir: 'asc' }
+      if (current.dir === 'asc') return { key, dir: 'desc' }
+      return null
+    })
+  }
+
   const rows = useMemo<BillRow[]>(() => {
-    return bookings
+    const list = bookings
       .filter((booking) => booking.date >= fromDate && booking.date <= toDate)
       .filter((booking) => (agentSlug === 'all' ? true : booking.agentSlug === agentSlug))
       .filter((booking) => {
@@ -140,17 +340,14 @@ export function AdminInvoices() {
         if (attendance === 'checked' || attendance === 'no-show') return true
         return includePending
       })
-      .sort((a, b) =>
-        groupBy === 'agent'
-          ? a.agentName.localeCompare(b.agentName) || a.date.localeCompare(b.date) || a.code.localeCompare(b.code)
-          : a.date.localeCompare(b.date) || a.agentName.localeCompare(b.agentName) || a.code.localeCompare(b.code),
-      )
       .map((booking) => {
         const rates = ratesForAgent(store.rates, booking.agentSlug)
+        const items = buildInvoiceItemsForBooking(booking, rates, { includeOtherService })
         return {
           booking,
           attendance: getCheckInAttendance(booking.date, booking.program, booking.code),
-          guestTotal: guestRateTotal(booking, rates),
+          billTotal: itemsGrandTotal(items),
+          hasRates: agencyRatesReady(rates),
           invoice: store.invoices.find(
             (doc) =>
               doc.kind === 'invoice' &&
@@ -158,12 +355,40 @@ export function AdminInvoices() {
           ),
         }
       })
+
+    return list.sort((a, b) => {
+      if (billSort) {
+        const dir = billSort.dir === 'asc' ? 1 : -1
+        let cmp = 0
+        if (billSort.key === 'agent') {
+          cmp = a.booking.agentName.localeCompare(b.booking.agentName)
+        } else if (billSort.key === 'program') {
+          const left = a.booking.program === 'PP' ? 'PP' : 'JB'
+          const right = b.booking.program === 'PP' ? 'PP' : 'JB'
+          cmp = left.localeCompare(right)
+        } else {
+          cmp =
+            billStatusRank(a) - billStatusRank(b) ||
+            billStatusLabel(a).localeCompare(billStatusLabel(b))
+        }
+        return cmp * dir || a.booking.code.localeCompare(b.booking.code)
+      }
+      return groupBy === 'agent'
+        ? a.booking.agentName.localeCompare(b.booking.agentName) ||
+            a.booking.date.localeCompare(b.booking.date) ||
+            a.booking.code.localeCompare(b.booking.code)
+        : a.booking.date.localeCompare(b.booking.date) ||
+            a.booking.agentName.localeCompare(b.booking.agentName) ||
+            a.booking.code.localeCompare(b.booking.code)
+    })
   }, [
     agentSlug,
+    billSort,
     bookings,
     fromDate,
     getCheckInAttendance,
     groupBy,
+    includeOtherService,
     includePending,
     store.invoices,
     store.rates,
@@ -180,26 +405,48 @@ export function AdminInvoices() {
       })
   }, [agentSlug, fromDate, store.invoices, toDate])
 
-  const receipts = useMemo(
-    () => documents.filter((doc) => doc.status === 'paid'),
+  const invoices = useMemo(
+    () => documents.filter((doc) => doc.kind === 'invoice'),
     [documents],
   )
+  const billingNotes = useMemo(
+    () => documents.filter((doc) => doc.kind === 'billing_note'),
+    [documents],
+  )
+  const receipts = useMemo(
+    () => invoices.filter((doc) => doc.status === 'paid'),
+    [invoices],
+  )
+  const listedDocs = tab === 'notes' ? billingNotes : invoices
+
+  const openRows = useMemo(() => rows.filter((row) => !row.invoice), [rows])
+  const allOpenSelected =
+    openRows.length > 0 && openRows.every((row) => selectedCodes.includes(row.booking.code))
 
   const selectedBookings = rows
-    .filter((row) => selectedCodes.includes(row.booking.code))
+    .filter((row) => selectedCodes.includes(row.booking.code) && !row.invoice)
     .map((row) => row.booking)
+
+  useEffect(() => {
+    setSelectedCodes((current) => {
+      const next = current.filter((code) => !invoiced.has(code))
+      return next.length === current.length ? current : next
+    })
+  }, [invoiced])
 
   const selectedDocuments = store.invoices.filter((doc) => selectedDocs.includes(doc.id))
 
   const selectedGuestTotal = rows
     .filter((row) => selectedCodes.includes(row.booking.code))
-    .reduce((sum, row) => sum + row.guestTotal, 0)
-  const pageGuestTotal = rows.reduce((sum, row) => sum + row.guestTotal, 0)
+    .reduce((sum, row) => sum + row.billTotal, 0)
+  const pageGuestTotal = rows.reduce((sum, row) => sum + row.billTotal, 0)
 
-  function toggleCode(code: string) {
-    setSelectedCodes((current) =>
-      current.includes(code) ? current.filter((item) => item !== code) : [...current, code],
-    )
+  function toggleCode(code: string, locked = false) {
+    setSelectedCodes((current) => {
+      if (current.includes(code)) return current.filter((item) => item !== code)
+      if (locked || invoiced.has(code)) return current
+      return [...current, code]
+    })
   }
 
   function toggleDoc(id: string) {
@@ -209,13 +456,13 @@ export function AdminInvoices() {
   }
 
   function toggleAllBills() {
-    if (selectedCodes.length === rows.length) setSelectedCodes([])
-    else setSelectedCodes(rows.map((row) => row.booking.code))
+    if (allOpenSelected) setSelectedCodes([])
+    else setSelectedCodes(openRows.map((row) => row.booking.code))
   }
 
   function toggleAllDocs() {
-    if (selectedDocs.length === documents.length) setSelectedDocs([])
-    else setSelectedDocs(documents.map((doc) => doc.id))
+    if (listedDocs.length > 0 && selectedDocs.length === listedDocs.length) setSelectedDocs([])
+    else setSelectedDocs(listedDocs.map((doc) => doc.id))
   }
 
   function groupedByAgent(list: Booking[]) {
@@ -228,7 +475,7 @@ export function AdminInvoices() {
     return map
   }
 
-  async function createFromBookings(kind: InvoiceKind, markPaidAfter = false) {
+  async function createFromBookings(markPaidAfter = false) {
     if (selectedBookings.length === 0) {
       setMessage('Select one or more check-in bookings first.')
       return
@@ -247,13 +494,6 @@ export function AdminInvoices() {
     const created: InvoiceDocument[] = []
     let existing = store.invoices
     for (const [slug, agentBookings] of groupedByAgent(selectedBookings)) {
-      const already = agentBookings.filter((booking) => invoiced.has(booking.code))
-      if (already.length > 0 && kind === 'invoice') {
-        const ok = window.confirm(
-          `${already.length} selected booking(s) already have an invoice. Create another one anyway?`,
-        )
-        if (!ok) continue
-      }
       const rates = ratesForAgent(store.rates, slug)
       const items = agentBookings.flatMap((booking) =>
         buildInvoiceItemsForBooking(booking, rates, { includeOtherService }),
@@ -261,7 +501,7 @@ export function AdminInvoices() {
       if (items.length === 0) continue
       const doc = newInvoiceDocument({
         existing,
-        kind,
+        kind: 'invoice',
         agentSlug: slug,
         agentName: agentBookings[0]!.agentName,
         issueDate: todayISO(),
@@ -288,17 +528,15 @@ export function AdminInvoices() {
     setMessage(
       markPaidAfter
         ? `Created invoice(s) and issued ${created.length} receipt(s).`
-        : kind === 'billing_note'
-          ? `Created ${created.length} billing note(s). First page is the summary.`
-          : `Created ${created.length} invoice(s). Print includes a billing-note summary page.`,
+        : `Created ${created.length} invoice(s).`,
     )
     return created
   }
 
   async function createBillingNoteFromInvoices() {
     const source = selectedDocuments.filter((doc) => doc.kind === 'invoice')
-    if (source.length === 0) {
-      setMessage('Select one or more invoices to wrap in a billing note.')
+    if (source.length < 2) {
+      setMessage('Select at least two invoices to create a billing note.')
       return
     }
     const byAgent = new Map<string, InvoiceDocument[]>()
@@ -310,6 +548,7 @@ export function AdminInvoices() {
     const created: InvoiceDocument[] = []
     let existing = store.invoices
     for (const [slug, docs] of byAgent) {
+      if (docs.length < 2) continue
       const items = docs.flatMap((doc) => doc.items)
       const note = newInvoiceDocument({
         existing,
@@ -324,38 +563,195 @@ export function AdminInvoices() {
       created.push(note)
       existing = [note, ...existing]
     }
+    if (created.length === 0) {
+      setMessage('Select at least two invoices from the same agent.')
+      return
+    }
     await store.addDocuments(created)
     setSelectedDocs([])
     setPreview(created[0] ?? null)
+    goTab('notes')
     setMessage(`Created ${created.length} billing note(s).`)
   }
 
-  async function markSelectedPaid() {
-    const fromDocs = selectedDocuments
-    const fromBookings = invoicesForBookings(store.invoices, selectedCodes)
-    const unpaid = [...fromDocs, ...fromBookings].filter((doc) => doc.status !== 'paid')
-    const unique = unpaid.filter((doc, index) => unpaid.findIndex((row) => row.id === doc.id) === index)
-    if (unique.length === 0) {
-      if (selectedCodes.length > 0 && fromBookings.length === 0) {
-        const ok = window.confirm('These bookings are not invoiced yet. Create invoices and mark them paid?')
-        if (!ok) return
-        await createFromBookings('invoice', true)
-        return
+  async function confirmPayment(
+    doc: InvoiceDocument,
+    details: { paidDate: string; channel: PaymentChannel },
+  ) {
+    if (doc.kind !== 'invoice') return
+    const paidDate = details.paidDate || todayISO()
+    if (doc.status === 'paid') {
+      const next = {
+        ...doc,
+        paidAt: `${paidDate}T12:00:00.000Z`,
+        paymentChannel: details.channel,
       }
-      setMessage('Select unpaid invoices or invoiced bookings to mark paid.')
+      await store.replaceDocument(next)
+      if (preview?.id === doc.id) setPreview(next)
+      setMessage(`Updated payment details on ${doc.number}.`)
       return
     }
-    const updated = await store.markPaid(unique.map((doc) => doc.id))
-    setSelectedCodes([])
+    const updated = await store.markPaid([doc.id], [], details)
+    const receipt = updated[0]
     setSelectedDocs([])
-    setPreview(updated[0] ?? null)
-    goTab('receipts')
-    setMessage(`Issued ${updated.length} receipt(s) from the paid invoice(s).`)
+    if (receipt) openPreview(receipt, 'receipt')
+    setMessage(`Issued ${receipt?.receiptNo ?? 'a receipt'} from ${doc.number}.`)
   }
 
-  function printDoc(doc: InvoiceDocument) {
+  async function undoDocPaid(doc: InvoiceDocument) {
+    if (doc.status !== 'paid') return
+    const next = {
+      ...doc,
+      status: 'unpaid' as const,
+      paidAt: null,
+      paymentChannel: null,
+      receiptNo: null,
+    }
+    await store.replaceDocument(next)
+    if (preview?.id === doc.id) setPreview(next)
+    setMessage(`${doc.number} is unpaid again.`)
+  }
+
+  function currentPreviewMode(doc: InvoiceDocument) {
+    return previewMode ?? sheetMode(doc, tab)
+  }
+
+  function openPreview(doc: InvoiceDocument, mode?: PrintMode) {
+    setPreviewMode(mode ?? sheetMode(doc, tab))
     setPreview(doc)
-    window.setTimeout(() => window.print(), 200)
+  }
+
+  function closePreview() {
+    setPreview(null)
+    setPreviewMode(null)
+  }
+
+  function printDoc(doc: InvoiceDocument, mode?: PrintMode) {
+    openPreview(doc, mode)
+    window.setTimeout(() => window.print(), 250)
+  }
+
+  function previewTitle(doc: InvoiceDocument) {
+    const mode = currentPreviewMode(doc)
+    if (mode === 'receipt') return `Receipt · ${doc.receiptNo ?? doc.number}`
+    if (mode === 'billing_note') return `Billing note · ${doc.number}`
+    return `Invoice · ${doc.number}`
+  }
+
+  async function shareDoc(doc: InvoiceDocument) {
+    const title = previewTitle(doc)
+    const text = [
+      title,
+      doc.agentName,
+      `Date ${formatInvoiceDate(doc.issueDate)}`,
+      `Total ${formatInvoiceMoney(doc.grandTotal)} THB`,
+      doc.status === 'paid' ? 'PAID' : 'Unpaid',
+    ].join('\n')
+    try {
+      if (navigator.share) {
+        await navigator.share({ title, text })
+        return
+      }
+      await navigator.clipboard.writeText(text)
+      setShareNote('Copied bill details')
+      window.setTimeout(() => setShareNote(''), 1800)
+    } catch {
+      window.prompt('Copy this bill', text)
+    }
+  }
+
+  function openBill(row: BillRow) {
+    if (row.invoice) {
+      setEditInvoiceIsNew(false)
+      setEditInvoice(row.invoice)
+      return
+    }
+    if (!row.hasRates) {
+      setMessage(`Set agency prices first for ${row.booking.agentName}.`)
+      return
+    }
+    const rates = ratesForAgent(store.rates, row.booking.agentSlug)
+    const items = buildInvoiceItemsForBooking(row.booking, rates, { includeOtherService })
+    if (items.length === 0) {
+      setMessage('No billable lines for this booking.')
+      return
+    }
+    setEditInvoiceIsNew(true)
+    setEditInvoice(
+      newInvoiceDocument({
+        existing: store.invoices,
+        kind: 'invoice',
+        agentSlug: row.booking.agentSlug,
+        agentName: row.booking.agentName,
+        issueDate: todayISO(),
+        items,
+        program: row.booking.program,
+      }),
+    )
+  }
+
+  async function saveEditedInvoice(doc: InvoiceDocument) {
+    if (editInvoiceIsNew) {
+      await store.addDocuments([doc])
+      setMessage(`Created invoice ${doc.number}.`)
+    } else {
+      await store.replaceDocument(doc)
+      setMessage(`Updated ${doc.number}.`)
+    }
+    setEditInvoice(null)
+    setEditInvoiceIsNew(false)
+    if (preview?.id === doc.id) setPreview(doc)
+  }
+
+  async function deleteSelectedDocs() {
+    if (selectedDocs.length === 0) {
+      setMessage('Select invoices to delete.')
+      return
+    }
+    const docs = store.invoices.filter((doc) => selectedDocs.includes(doc.id))
+    const paidCount = docs.filter((doc) => doc.status === 'paid').length
+    if (paidCount > 0) {
+      setMessage(`${paidCount} paid invoice(s) cannot be deleted. Undo PAID first.`)
+      return
+    }
+    const label = tab === 'notes' ? 'billing note' : 'invoice'
+    const ok = window.confirm(`Delete ${docs.length} ${label}(s)? This cannot be undone.`)
+    if (!ok) return
+    for (const doc of docs) {
+      await store.removeDocument(doc.id)
+    }
+    setSelectedDocs([])
+    setPreview(null)
+    setMessage(`Deleted ${docs.length} ${label}(s).`)
+  }
+
+  async function undoPaidSelected() {
+    if (selectedDocs.length === 0) {
+      setMessage('Select paid invoices to undo.')
+      return
+    }
+    const docs = store.invoices.filter(
+      (doc) => selectedDocs.includes(doc.id) && doc.status === 'paid',
+    )
+    if (docs.length === 0) {
+      setMessage('No paid invoices selected.')
+      return
+    }
+    const ok = window.confirm(
+      `Undo PAID on ${docs.length} invoice(s)? Receipt numbers will be removed.`,
+    )
+    if (!ok) return
+    for (const doc of docs) {
+      await store.replaceDocument({
+        ...doc,
+        status: 'unpaid',
+        paidAt: null,
+        paymentChannel: null,
+        receiptNo: null,
+      })
+    }
+    setSelectedDocs([])
+    setMessage(`Reversed ${docs.length} payment(s). Invoices are unpaid again.`)
   }
 
   const agentOptions = useMemo(() => {
@@ -372,7 +768,7 @@ export function AdminInvoices() {
       <div className="print:hidden">
       <PageHeader
         title="Invoice / Receipt"
-        description="Check-in bookings become invoices. After an invoice is marked paid, a receipt is issued from that same bill."
+        description="Pick a date first. Then open Bills, Invoices, Billing notes, or Receipts for that date."
         actions={
           <Link href="/admin/invoices/setup">
             <Button type="button" variant="outline" className="h-10 rounded-xl">
@@ -383,6 +779,69 @@ export function AdminInvoices() {
         }
       />
 
+      <Surface className="mb-3 px-3 py-2.5 sm:px-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <SoftLabel className="mr-0.5">Date</SoftLabel>
+          <SegmentedControl className="rounded-xl p-0.5">
+            {billDays.map((day) => (
+              <Segment
+                key={day.iso}
+                active={selectedBillDay === day.iso}
+                onClick={() => selectBillDay(day.iso)}
+                className="rounded-lg px-2.5 py-1 text-xs"
+              >
+                {day.label}
+                <span className="ml-1 font-normal opacity-75">{formatDayMonth(day.iso)}</span>
+              </Segment>
+            ))}
+          </SegmentedControl>
+          <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
+            <PopoverTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-8 min-w-[11rem] justify-start gap-1.5 rounded-lg px-2.5 text-xs font-normal"
+                />
+              }
+            >
+              <CalendarIcon className="size-3.5 text-teal-700/60" />
+              {dateLabel}
+            </PopoverTrigger>
+            <PopoverContent
+              align="start"
+              className="!w-fit max-w-none overflow-visible p-3"
+            >
+              <Calendar
+                mode="range"
+                selected={{ from: dateFromISO(fromDate), to: dateFromISO(toDate) }}
+                onSelect={selectDateRange}
+                defaultMonth={dateFromISO(fromDate)}
+                numberOfMonths={1}
+                className="w-full [--cell-size:2.35rem]"
+              />
+              <p className="px-2 pb-1 text-xs text-teal-900/45">
+                Click one day, or click a second day for a range.
+              </p>
+            </PopoverContent>
+          </Popover>
+          <select
+            id="invoice-agent"
+            aria-label="Agent"
+            value={agentSlug}
+            onChange={(event) => setAgentSlug(event.target.value)}
+            className="h-8 min-w-[10rem] rounded-lg border border-teal-900/12 bg-white/80 px-2 text-xs text-teal-950 outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
+          >
+            <option value="all">All agents</option>
+            {agentOptions.map(([slug, name]) => (
+              <option key={slug} value={slug}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </Surface>
+
       <div className="mb-4">
         <SegmentedControl>
           <Segment active={tab === 'bills'} onClick={() => goTab('bills')}>
@@ -391,110 +850,27 @@ export function AdminInvoices() {
           <Segment active={tab === 'documents'} onClick={() => goTab('documents')}>
             Invoices
           </Segment>
+          <Segment active={tab === 'notes'} onClick={() => goTab('notes')}>
+            Billing notes
+          </Segment>
           <Segment active={tab === 'receipts'} onClick={() => goTab('receipts')}>
             Receipts
           </Segment>
         </SegmentedControl>
       </div>
 
-      <Surface className="mb-4 p-4 sm:p-5">
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <div className="space-y-2">
-            <SoftLabel>View</SoftLabel>
-            <SegmentedControl>
-              <Segment active={groupBy === 'date'} onClick={() => setGroupBy('date')}>
-                By date
-              </Segment>
-              <Segment active={groupBy === 'agent'} onClick={() => setGroupBy('agent')}>
-                By agent
-              </Segment>
-            </SegmentedControl>
-          </div>
-          <div className="space-y-2">
-            <SoftLabel>Dates</SoftLabel>
-            <div className="flex flex-wrap items-center gap-2">
-              <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
-                <PopoverTrigger
-                  render={
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="h-10 min-w-[14rem] justify-start gap-2 font-normal"
-                    />
-                  }
-                >
-                  <CalendarIcon className="size-4 text-teal-700/60" />
-                  {dateLabel}
-                </PopoverTrigger>
-                <PopoverContent
-                  align="start"
-                  className="!w-fit max-w-none overflow-visible p-3"
-                >
-                  <Calendar
-                    mode="range"
-                    selected={{ from: dateFromISO(fromDate), to: dateFromISO(toDate) }}
-                    onSelect={selectDateRange}
-                    defaultMonth={dateFromISO(fromDate)}
-                    numberOfMonths={1}
-                    className="w-full [--cell-size:2.35rem]"
-                  />
-                  <p className="px-2 pb-1 text-xs text-teal-900/45">
-                    Click one day, or click a second day for a range.
-                  </p>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="w-full"
-                    onClick={() => {
-                      const today = todayISO()
-                      setFromDate(today)
-                      setToDate(today)
-                      setCalendarOpen(false)
-                    }}
-                  >
-                    Today
-                  </Button>
-                </PopoverContent>
-              </Popover>
-            </div>
-          </div>
-          <div className="space-y-2">
-            <SoftLabel htmlFor="invoice-agent">Agent</SoftLabel>
-            <select
-              id="invoice-agent"
-              value={agentSlug}
-              onChange={(event) => setAgentSlug(event.target.value)}
-              className="h-10 w-full rounded-xl border border-teal-900/12 bg-white/80 px-3 text-sm text-teal-950 outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
-            >
-              <option value="all">All agents</option>
-              {agentOptions.map(([slug, name]) => (
-                <option key={slug} value={slug}>
-                  {name}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-        <label className="mt-4 flex items-center gap-2 text-sm text-teal-900/70">
-          <input
-            type="checkbox"
-            checked={includePending}
-            onChange={(event) => setIncludePending(event.target.checked)}
-            className="size-4 rounded border-teal-900/20"
-          />
-          Include bookings not yet checked in
-        </label>
-        <label className="mt-2 flex items-center gap-2 text-sm text-teal-900/70">
-          <input
-            type="checkbox"
-            checked={includeOtherService}
-            onChange={(event) => setIncludeOtherService(event.target.checked)}
-            className="size-4 rounded border-teal-900/20"
-          />
-          Add other service charge from agency setup
-        </label>
-      </Surface>
+      {store.error ? (
+        <p className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+          ⚠ {store.error}
+          <button
+            type="button"
+            className="ml-2 font-medium underline"
+            onClick={store.clearError}
+          >
+            Dismiss
+          </button>
+        </p>
+      ) : null}
 
       {message ? (
         <p className="mb-4 rounded-2xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-950">
@@ -505,42 +881,68 @@ export function AdminInvoices() {
       {tab === 'bills' ? (
         <>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm text-teal-900/55">
-              {rows.length} check-in booking{rows.length === 1 ? '' : 's'}
-              {selectedCodes.length > 0
-                ? ` · ${selectedCodes.length} selected · ${formatInvoiceMoney(selectedGuestTotal)} THB`
-                : ''}
-            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <SegmentedControl className="rounded-xl p-0.5">
+                <Segment
+                  active={groupBy === 'date'}
+                  onClick={() => setGroupBy('date')}
+                  className="rounded-lg px-2.5 py-1 text-xs"
+                >
+                  By date
+                </Segment>
+                <Segment
+                  active={groupBy === 'agent'}
+                  onClick={() => setGroupBy('agent')}
+                  className="rounded-lg px-2.5 py-1 text-xs"
+                >
+                  By agent
+                </Segment>
+              </SegmentedControl>
+              <label className="flex items-center gap-1.5 text-xs text-teal-900/65">
+                <input
+                  type="checkbox"
+                  checked={includePending}
+                  onChange={(event) => setIncludePending(event.target.checked)}
+                  className="size-3.5 rounded border-teal-900/20"
+                />
+                Include pending
+              </label>
+              <label className="flex items-center gap-1.5 text-xs text-teal-900/65">
+                <input
+                  type="checkbox"
+                  checked={includeOtherService}
+                  onChange={(event) => setIncludeOtherService(event.target.checked)}
+                  className="size-3.5 rounded border-teal-900/20"
+                />
+                Other service
+              </label>
+              <p className="text-sm text-teal-900/55">
+                {rows.length} check-in booking{rows.length === 1 ? '' : 's'}
+                {selectedCodes.length > 0
+                  ? ` · ${selectedCodes.length} selected · ${formatInvoiceMoney(selectedGuestTotal)} THB`
+                  : ''}
+              </p>
+            </div>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
                 className="h-10 rounded-xl"
-                onClick={() => createFromBookings('invoice')}
+                onClick={() => createFromBookings()}
               >
                 <FileText className="size-3.5" />
                 Make invoice
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                className="h-10 rounded-xl"
-                onClick={() => createFromBookings('billing_note')}
-              >
-                Billing note
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                className="h-10 rounded-xl"
-                onClick={markSelectedPaid}
-              >
-                Mark as PAID
               </Button>
             </div>
           </div>
           <Surface className="overflow-hidden">
             {rows.length === 0 ? (
-              <EmptyState>No check-in bookings in this date range.</EmptyState>
+              <EmptyState>
+                No check-in bookings for{' '}
+                {fromDate === toDate
+                  ? formatShortDate(fromDate)
+                  : `${formatShortDate(fromDate)} – ${formatShortDate(toDate)}`}
+                .
+              </EmptyState>
             ) : (
               <div className="overflow-x-auto">
                 <Table>
@@ -549,43 +951,75 @@ export function AdminInvoices() {
                       <TableHead className="w-10">
                         <input
                           type="checkbox"
-                          checked={selectedCodes.length === rows.length}
+                          checked={allOpenSelected}
+                          disabled={openRows.length === 0}
                           onChange={toggleAllBills}
-                          className="size-4 rounded border-teal-900/20"
+                          className="size-4 rounded border-teal-900/20 disabled:cursor-not-allowed disabled:opacity-40"
+                          title={openRows.length === 0 ? 'All bookings on this day already have an invoice' : undefined}
                         />
                       </TableHead>
-                      <TableHead>Date</TableHead>
-                      <TableHead>Voucher</TableHead>
-                      <TableHead>Agent</TableHead>
-                      <TableHead className="w-28 max-w-28">Guest</TableHead>
-                      <TableHead>Program</TableHead>
+                      <TableHead className="w-24">Voucher</TableHead>
+                      <TableHead>Booking code</TableHead>
+                      <BillSortHead
+                        column="agent"
+                        active={billSort?.key === 'agent'}
+                        dir={billSort?.dir ?? 'asc'}
+                        onSort={toggleBillSort}
+                      >
+                        Agent
+                      </BillSortHead>
+                      <TableHead className="min-w-[14rem]">Guest</TableHead>
+                      <BillSortHead
+                        column="program"
+                        active={billSort?.key === 'program'}
+                        dir={billSort?.dir ?? 'asc'}
+                        onSort={toggleBillSort}
+                      >
+                        Program
+                      </BillSortHead>
                       <TableHead>Pax</TableHead>
                       <TableHead className="w-20">Check-in</TableHead>
-                      <TableHead>Bill</TableHead>
+                      <BillSortHead
+                        column="status"
+                        active={billSort?.key === 'status'}
+                        dir={billSort?.dir ?? 'asc'}
+                        onSort={toggleBillSort}
+                      >
+                        Status
+                      </BillSortHead>
                       <TableHead className="text-right">Total</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {rows.map((row) => {
                       const { booking } = row
+                      const issued = Boolean(row.invoice)
                       return (
-                        <TableRow key={booking.code}>
-                          <TableCell>
+                        <TableRow
+                          key={booking.code}
+                          className="cursor-pointer"
+                          onClick={() => openBill(row)}
+                        >
+                          <TableCell
+                            onClick={(event) => event.stopPropagation()}
+                          >
                             <input
                               type="checkbox"
                               checked={selectedCodes.includes(booking.code)}
-                              onChange={() => toggleCode(booking.code)}
-                              className="size-4 rounded border-teal-900/20"
+                              disabled={issued}
+                              onChange={() => toggleCode(booking.code, issued)}
+                              className="size-4 rounded border-teal-900/20 disabled:cursor-not-allowed disabled:opacity-40"
+                              title={issued ? `Already invoiced as ${row.invoice?.number}` : undefined}
                             />
                           </TableCell>
-                          <TableCell className="whitespace-nowrap">
-                            {formatInvoiceDate(booking.date)}
+                          <TableCell className="w-24 max-w-24 truncate font-medium text-teal-950" title={booking.agentRef?.trim() || undefined}>
+                            {booking.agentRef?.trim() || '—'}
                           </TableCell>
-                          <TableCell className="font-medium text-teal-950">
-                            {booking.agentRef || booking.code}
+                          <TableCell className="whitespace-nowrap text-teal-950">
+                            {booking.code}
                           </TableCell>
                           <TableCell>{booking.agentName}</TableCell>
-                          <TableCell className="max-w-28 truncate" title={booking.leadGuest}>
+                          <TableCell className="min-w-[14rem]" title={booking.leadGuest}>
                             {booking.leadGuest}
                           </TableCell>
                           <TableCell>{booking.program === 'PP' ? 'PP' : 'JB'}</TableCell>
@@ -595,19 +1029,17 @@ export function AdminInvoices() {
                           </TableCell>
                           <TableCell>
                             {row.invoice ? (
-                              <button
-                                type="button"
-                                className="text-sm font-medium text-teal-700 hover:text-teal-950"
-                                onClick={() => setPreview(row.invoice ?? null)}
-                              >
-                                {row.invoice.status === 'paid' ? 'Paid' : row.invoice.number}
-                              </button>
+                              billStatusLabel(row)
                             ) : (
                               <span className="text-teal-900/40">Open</span>
                             )}
                           </TableCell>
                           <TableCell className="text-right font-medium text-teal-950">
-                            {formatInvoiceMoney(row.guestTotal)}
+                            {row.hasRates ? (
+                              formatInvoiceMoney(row.billTotal)
+                            ) : (
+                              <span className="text-xs text-rose-500" title="Set rates in Setup first">No rate</span>
+                            )}
                           </TableCell>
                         </TableRow>
                       )
@@ -633,7 +1065,8 @@ export function AdminInvoices() {
         <>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm text-teal-900/55">
-              {documents.length} invoice{documents.length === 1 ? '' : 's'}
+              {invoices.length} invoice{invoices.length === 1 ? '' : 's'}
+              {selectedDocs.length > 0 ? ` · ${selectedDocs.length} selected` : ''}
             </p>
             <div className="flex flex-wrap gap-2">
               <Button
@@ -642,16 +1075,31 @@ export function AdminInvoices() {
                 className="h-10 rounded-xl"
                 onClick={createBillingNoteFromInvoices}
               >
-                Billing note from selected
+                Create billing note
               </Button>
-              <Button type="button" className="h-10 rounded-xl" onClick={markSelectedPaid}>
-                Mark as PAID
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl text-amber-700 hover:text-amber-900"
+                onClick={undoPaidSelected}
+              >
+                <Undo2 className="size-3.5" />
+                Undo PAID
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl text-rose-600 hover:text-rose-800"
+                onClick={deleteSelectedDocs}
+              >
+                <Trash2 className="size-3.5" />
+                Delete
               </Button>
             </div>
           </div>
           <Surface className="overflow-hidden">
-            {documents.length === 0 ? (
-              <EmptyState>No invoices or billing notes in this range yet.</EmptyState>
+            {invoices.length === 0 ? (
+              <EmptyState>No invoices in this range yet.</EmptyState>
             ) : (
               <div className="overflow-x-auto">
                 <Table>
@@ -660,22 +1108,22 @@ export function AdminInvoices() {
                       <TableHead className="w-10">
                         <input
                           type="checkbox"
-                          checked={documents.length > 0 && selectedDocs.length === documents.length}
+                          checked={invoices.length > 0 && selectedDocs.length === invoices.length}
                           onChange={toggleAllDocs}
                           className="size-4 rounded border-teal-900/20"
                         />
                       </TableHead>
                       <TableHead>Number</TableHead>
-                      <TableHead>Kind</TableHead>
                       <TableHead>Agent</TableHead>
                       <TableHead>Date</TableHead>
                       <TableHead className="text-right">Total</TableHead>
                       <TableHead>Status</TableHead>
+                      <TableHead>Receipt</TableHead>
                       <TableHead />
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {documents.map((doc) => (
+                    {invoices.map((doc) => (
                       <TableRow key={doc.id}>
                         <TableCell>
                           <input
@@ -686,15 +1134,141 @@ export function AdminInvoices() {
                           />
                         </TableCell>
                         <TableCell className="font-medium text-teal-950">{doc.number}</TableCell>
-                        <TableCell>
-                          {doc.kind === 'billing_note' ? 'Billing note' : 'Invoice'}
-                        </TableCell>
                         <TableCell>{doc.agentName}</TableCell>
                         <TableCell>{formatInvoiceDate(doc.issueDate)}</TableCell>
                         <TableCell className="text-right">
                           {formatInvoiceMoney(doc.grandTotal)}
                         </TableCell>
-                        <TableCell>{doc.status === 'paid' ? 'PAID' : 'Unpaid'}</TableCell>
+                        <TableCell>
+                          <InvoicePayStatus
+                            doc={doc}
+                            today={portalToday}
+                            onConfirm={(invoice, details) => void confirmPayment(invoice, details)}
+                            onUndoPaid={(invoice) => void undoDocPaid(invoice)}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          {doc.status === 'paid' ? (
+                            <button
+                              type="button"
+                              className="text-sm font-medium text-teal-700 hover:text-teal-950"
+                              onClick={() => openPreview(doc, 'receipt')}
+                            >
+                              {doc.receiptNo ?? 'Receipt'}
+                            </button>
+                          ) : (
+                            <span className="text-teal-900/35">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-8 rounded-lg"
+                              onClick={() => {
+                                setEditInvoiceIsNew(false)
+                                setEditInvoice(doc)
+                              }}
+                            >
+                              Edit
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-8 rounded-lg"
+                              onClick={() => openPreview(doc)}
+                            >
+                              View
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-8 rounded-lg"
+                              onClick={() => printDoc(doc)}
+                            >
+                              <Printer className="size-3.5" />
+                              Print
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </Surface>
+        </>
+      ) : tab === 'notes' ? (
+        <>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-teal-900/55">
+              {billingNotes.length} billing note{billingNotes.length === 1 ? '' : 's'}
+              {selectedDocs.length > 0 ? ` · ${selectedDocs.length} selected` : ''}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl text-rose-600 hover:text-rose-800"
+                onClick={deleteSelectedDocs}
+              >
+                <Trash2 className="size-3.5" />
+                Delete
+              </Button>
+            </div>
+          </div>
+          <Surface className="overflow-hidden">
+            {billingNotes.length === 0 ? (
+              <EmptyState>
+                No billing notes yet. On the Invoices tab, select two or more invoices from the same
+                agent, then create a billing note.
+              </EmptyState>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-10">
+                        <input
+                          type="checkbox"
+                          checked={
+                            billingNotes.length > 0 && selectedDocs.length === billingNotes.length
+                          }
+                          onChange={toggleAllDocs}
+                          className="size-4 rounded border-teal-900/20"
+                        />
+                      </TableHead>
+                      <TableHead>Number</TableHead>
+                      <TableHead>Agent</TableHead>
+                      <TableHead>Date</TableHead>
+                      <TableHead>Invoices</TableHead>
+                      <TableHead className="text-right">Total</TableHead>
+                      <TableHead />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {billingNotes.map((doc) => (
+                      <TableRow key={doc.id}>
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            checked={selectedDocs.includes(doc.id)}
+                            onChange={() => toggleDoc(doc.id)}
+                            className="size-4 rounded border-teal-900/20"
+                          />
+                        </TableCell>
+                        <TableCell className="font-medium text-teal-950">{doc.number}</TableCell>
+                        <TableCell>{doc.agentName}</TableCell>
+                        <TableCell>{formatInvoiceDate(doc.issueDate)}</TableCell>
+                        <TableCell>{doc.notes || `${doc.linkedInvoiceIds.length} invoice(s)`}</TableCell>
+                        <TableCell className="text-right">
+                          {formatInvoiceMoney(doc.grandTotal)}
+                        </TableCell>
                         <TableCell>
                           <div className="flex justify-end gap-2">
                             <Button
@@ -811,36 +1385,94 @@ export function AdminInvoices() {
       )}
       </div>
 
+      <InvoiceEditDialog
+        doc={editInvoice}
+        isNew={editInvoiceIsNew}
+        open={editInvoice !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditInvoice(null)
+            setEditInvoiceIsNew(false)
+          }
+        }}
+        onSave={saveEditedInvoice}
+      />
+
+      <Dialog open={preview !== null} onOpenChange={(open) => { if (!open) closePreview() }}>
+        <DialogContent
+          showCloseButton
+          className="flex max-h-[92vh] w-full max-w-[calc(100%-1.5rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl print:hidden"
+        >
+          {preview ? (
+            <>
+              <DialogHeader className="border-b border-teal-900/8 px-5 py-4 pr-12">
+                <DialogTitle>{previewTitle(preview)}</DialogTitle>
+                <DialogDescription>
+                  {preview.agentName} · {formatInvoiceDate(preview.issueDate)} ·{' '}
+                  {formatInvoiceMoney(preview.grandTotal)} THB
+                </DialogDescription>
+              </DialogHeader>
+              <div className="min-h-0 flex-1 overflow-y-auto bg-neutral-50 px-4 py-4">
+                <div className="rounded-xl border border-neutral-200 bg-white p-5 shadow-sm">
+                  <InvoicePrintSheet
+                    doc={preview}
+                    settings={store.settings}
+                    linked={store.invoices}
+                    mode={currentPreviewMode(preview)}
+                  />
+                </div>
+              </div>
+              <DialogFooter className="sm:justify-between">
+                <p className="self-center text-xs text-teal-900/50">
+                  {shareNote || 'Print or share this bill from the popup.'}
+                </p>
+                <div className="flex flex-wrap justify-end gap-2">
+                  {currentPreviewMode(preview) === 'invoice' ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-10 rounded-xl"
+                      onClick={() => {
+                        setEditInvoiceIsNew(false)
+                        setEditInvoice(preview)
+                        closePreview()
+                      }}
+                    >
+                      Edit
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-10 rounded-xl"
+                    onClick={() => void shareDoc(preview)}
+                  >
+                    <Share2 className="size-3.5" />
+                    Share
+                  </Button>
+                  <Button
+                    type="button"
+                    className="h-10 rounded-xl"
+                    onClick={() => printDoc(preview)}
+                  >
+                    <Printer className="size-3.5" />
+                    Print
+                  </Button>
+                </div>
+              </DialogFooter>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
       {preview ? (
-        <div className="invoice-preview-host mt-6">
-          <div className="mb-3 flex items-center justify-between print:hidden">
-            <p className="text-sm font-medium text-teal-950">
-              {tab === 'receipts'
-                ? `Receipt · ${preview.receiptNo ?? preview.number} · from ${preview.number}`
-                : `Preview · ${preview.number}${preview.kind === 'invoice' ? ' · first page is the billing-note summary' : ''}`}
-            </p>
-            <div className="flex gap-2">
-              <Button type="button" className="h-10 rounded-xl" onClick={() => printDoc(preview)}>
-                <Printer className="size-3.5" />
-                Print
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-10 rounded-xl"
-                onClick={() => setPreview(null)}
-              >
-                Close
-              </Button>
-            </div>
-          </div>
-          <div className="invoice-print-root rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm print:border-0 print:p-0 print:shadow-none">
-            {tab === 'receipts' ? (
-              <InvoicePrintSheet doc={preview} settings={store.settings} mode="receipt" />
-            ) : (
-              <InvoicePrintBundle doc={preview} settings={store.settings} linked={store.invoices} />
-            )}
-          </div>
+        <div className="invoice-print-root hidden print:block">
+          <InvoicePrintSheet
+            doc={preview}
+            settings={store.settings}
+            linked={store.invoices}
+            mode={currentPreviewMode(preview)}
+          />
         </div>
       ) : null}
     </div>

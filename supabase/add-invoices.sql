@@ -3,7 +3,7 @@
 
 create table if not exists public.invoice_settings (
   id text primary key default 'default',
-  company_name text not null default 'Good Day Vacation Speedboat',
+  company_name text not null default 'Good Day Vacation Co., Ltd',
   company_legal text not null default 'Good Day Vacation Co., Ltd.',
   address_th text not null default 'สำนักงานใหญ่ : 35/84 หมู่ที่ 3 ตำบลรัษฎา อำเภอเมือง จังหวัดภูเก็ต',
   address_en text not null default 'Head Office : 35/84 Moo 3, Ratsada, Mueang, Phuket',
@@ -12,7 +12,8 @@ create table if not exists public.invoice_settings (
   bank_account_name text not null default 'Nusara Darayang',
   bank_account_no text not null default '822-215284-9',
   issuer_name text not null default 'Jererawan',
-  issuer_title text not null default 'ผู้อำนวยการ',
+  issuer_title text not null default 'Director',
+  signature_image text not null default '',
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );
@@ -58,6 +59,7 @@ create table if not exists public.invoices (
   notes text not null default '',
   grand_total numeric not null default 0,
   paid_at timestamptz,
+  payment_channel text,
   receipt_no text,
   linked_invoice_ids jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default timezone('utc', now()),

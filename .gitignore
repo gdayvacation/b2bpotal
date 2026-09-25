@@ -9,6 +9,9 @@ __v0_jsx-dev-runtime.ts
 # Environment variables
 .env*.local
 
+# Created Google Sheet id (written by the Sheets API)
+.data/
+
 # Common ignores
 node_modules
 .next/

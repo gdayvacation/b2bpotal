@@ -2,6 +2,8 @@ import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/clie
 import {
   DEFAULT_INVOICE_SETTINGS,
   emptyAgencyRates,
+  migrateInvoiceDocumentNumbers,
+  normalizeInvoiceSettings,
   type AgencyInvoiceRates,
   type InvoiceDocument,
   type InvoiceItem,
@@ -9,6 +11,7 @@ import {
   type InvoiceLineKind,
   type InvoiceSettings,
   type InvoiceStatus,
+  parsePaymentChannel,
 } from '@/lib/invoice'
 
 const SETTINGS_KEY = 'gday-invoice-settings'
@@ -27,6 +30,7 @@ type SettingsRow = {
   bank_account_no: string
   issuer_name: string
   issuer_title: string
+  signature_image?: string | null
 }
 
 type RatesRow = {
@@ -54,6 +58,7 @@ type InvoiceRow = {
   notes: string | null
   grand_total: number | string
   paid_at: string | null
+  payment_channel?: string | null
   receipt_no: string | null
   linked_invoice_ids: unknown
   created_at: string
@@ -97,7 +102,7 @@ function isLineKind(value: unknown): value is InvoiceLineKind {
 }
 
 function mapSettings(row: SettingsRow): InvoiceSettings {
-  return {
+  return normalizeInvoiceSettings({
     companyName: row.company_name,
     companyLegal: row.company_legal,
     addressTh: row.address_th,
@@ -108,10 +113,11 @@ function mapSettings(row: SettingsRow): InvoiceSettings {
     bankAccountNo: row.bank_account_no,
     issuerName: row.issuer_name,
     issuerTitle: row.issuer_title,
-  }
+    signatureImage: row.signature_image ?? '',
+  })
 }
 
-function settingsToRow(settings: InvoiceSettings): SettingsRow {
+function settingsToRow(settings: InvoiceSettings, includeSignature = true): SettingsRow {
   return {
     id: 'default',
     company_name: settings.companyName,
@@ -124,6 +130,7 @@ function settingsToRow(settings: InvoiceSettings): SettingsRow {
     bank_account_no: settings.bankAccountNo,
     issuer_name: settings.issuerName,
     issuer_title: settings.issuerTitle,
+    ...(includeSignature ? { signature_image: settings.signatureImage || '' } : {}),
   }
 }
 
@@ -230,6 +237,7 @@ function mapInvoice(row: InvoiceRow, items: InvoiceItem[]): InvoiceDocument {
     notes: row.notes ?? '',
     grandTotal: num(row.grand_total),
     paidAt: row.paid_at,
+    paymentChannel: parsePaymentChannel(row.payment_channel),
     receiptNo: row.receipt_no,
     linkedInvoiceIds: parseLinkedIds(row.linked_invoice_ids),
     items: items.slice().sort((a, b) => a.sortOrder - b.sortOrder),
@@ -237,7 +245,7 @@ function mapInvoice(row: InvoiceRow, items: InvoiceItem[]): InvoiceDocument {
   }
 }
 
-function invoiceToRow(doc: InvoiceDocument): InvoiceRow {
+function invoiceToRow(doc: InvoiceDocument, includeChannel = true): InvoiceRow {
   return {
     id: doc.id,
     invoice_no: doc.number,
@@ -249,6 +257,7 @@ function invoiceToRow(doc: InvoiceDocument): InvoiceRow {
     notes: doc.notes,
     grand_total: doc.grandTotal,
     paid_at: doc.paidAt,
+    ...(includeChannel ? { payment_channel: doc.paymentChannel } : {}),
     receipt_no: doc.receiptNo,
     linked_invoice_ids: doc.linkedInvoiceIds,
     created_at: doc.createdAt,
@@ -286,11 +295,28 @@ export type InvoiceStoreSnapshot = {
   cloud: boolean
 }
 
+function withMigratedNumbers(docs: InvoiceDocument[]) {
+  const invoices = migrateInvoiceDocumentNumbers(docs)
+  const changed = invoices.filter((doc) => {
+    const prev = docs.find((row) => row.id === doc.id)
+    return Boolean(
+      prev &&
+        (prev.number !== doc.number ||
+          prev.receiptNo !== doc.receiptNo ||
+          prev.notes !== doc.notes),
+    )
+  })
+  return { invoices, changed }
+}
+
 export async function loadInvoiceStore(): Promise<InvoiceStoreSnapshot> {
+  const localDocs = withMigratedNumbers(readLocal<InvoiceDocument[]>(DOCS_KEY, []))
+  if (localDocs.changed.length > 0) writeLocal(DOCS_KEY, localDocs.invoices)
+
   const local: InvoiceStoreSnapshot = {
-    settings: { ...DEFAULT_INVOICE_SETTINGS, ...readLocal<InvoiceSettings>(SETTINGS_KEY, DEFAULT_INVOICE_SETTINGS) },
+    settings: normalizeInvoiceSettings(readLocal<InvoiceSettings>(SETTINGS_KEY, DEFAULT_INVOICE_SETTINGS)),
     rates: readLocal<AgencyInvoiceRates[]>(RATES_KEY, []),
-    invoices: readLocal<InvoiceDocument[]>(DOCS_KEY, []),
+    invoices: localDocs.invoices,
     cloud: false,
   }
 
@@ -328,14 +354,21 @@ export async function loadInvoiceStore(): Promise<InvoiceStoreSnapshot> {
       itemsByInvoice.set(item.invoiceId, list)
     }
 
+    const mapped = ((invoicesRes.data ?? []) as InvoiceRow[]).map((row) =>
+      mapInvoice(row, itemsByInvoice.get(row.id) ?? []),
+    )
+    const cloudDocs = withMigratedNumbers(mapped)
+    if (cloudDocs.changed.length > 0) {
+      writeLocal(DOCS_KEY, cloudDocs.invoices)
+      await saveInvoiceDocuments(cloudDocs.changed)
+    }
+
     return {
       settings: settingsRes.data
         ? mapSettings(settingsRes.data as SettingsRow)
         : local.settings,
       rates: ((ratesRes.data ?? []) as RatesRow[]).map(mapRates),
-      invoices: ((invoicesRes.data ?? []) as InvoiceRow[]).map((row) =>
-        mapInvoice(row, itemsByInvoice.get(row.id) ?? []),
-      ),
+      invoices: cloudDocs.invoices,
       cloud: true,
     }
   } catch (error) {
@@ -350,72 +383,112 @@ function persistLocal(snapshot: Omit<InvoiceStoreSnapshot, 'cloud'>) {
   writeLocal(DOCS_KEY, snapshot.invoices)
 }
 
-export async function saveInvoiceSettings(settings: InvoiceSettings) {
+export async function saveInvoiceSettings(settings: InvoiceSettings): Promise<{ error?: string }> {
   writeLocal(SETTINGS_KEY, settings)
-  if (!hasSupabaseConfig()) return
+  if (!hasSupabaseConfig()) return {}
   try {
     const supabase = getSupabaseBrowserClient()
     const { error } = await supabase.from('invoice_settings').upsert(settingsToRow(settings))
-    if (error) console.warn('[supabase] invoice settings save failed', error.message)
+    if (error) {
+      const missingSignature = /signature_image|schema cache|column/i.test(error.message)
+      if (missingSignature) {
+        const retry = await supabase.from('invoice_settings').upsert(settingsToRow(settings, false))
+        if (!retry.error) return {}
+      }
+      console.warn('[supabase] invoice settings save failed', error.message)
+      return { error: error.message }
+    }
+    return {}
   } catch (error) {
-    console.warn('[supabase] invoice settings save failed', error)
+    const msg = String(error)
+    console.warn('[supabase] invoice settings save failed', msg)
+    return { error: msg }
   }
 }
 
-export async function saveAgencyRates(rates: AgencyInvoiceRates) {
+export async function saveAgencyRates(rates: AgencyInvoiceRates): Promise<{ error?: string }> {
   const current = readLocal<AgencyInvoiceRates[]>(RATES_KEY, [])
   const next = [...current.filter((row) => row.agentSlug !== rates.agentSlug), rates]
   writeLocal(RATES_KEY, next)
-  if (!hasSupabaseConfig()) return
+  if (!hasSupabaseConfig()) return {}
   try {
     const supabase = getSupabaseBrowserClient()
     const { error } = await supabase.from('agency_invoice_rates').upsert(ratesToRow(rates))
-    if (error) console.warn('[supabase] agency invoice rates save failed', error.message)
+    if (error) {
+      console.warn('[supabase] agency invoice rates save failed', error.message)
+      return { error: error.message }
+    }
+    return {}
   } catch (error) {
-    console.warn('[supabase] agency invoice rates save failed', error)
+    const msg = String(error)
+    console.warn('[supabase] agency invoice rates save failed', msg)
+    return { error: msg }
   }
 }
 
-export async function saveInvoiceDocument(doc: InvoiceDocument) {
+export async function saveInvoiceDocument(doc: InvoiceDocument): Promise<{ error?: string }> {
   const current = readLocal<InvoiceDocument[]>(DOCS_KEY, [])
   writeLocal(DOCS_KEY, [doc, ...current.filter((row) => row.id !== doc.id)])
-  if (!hasSupabaseConfig()) return
+  if (!hasSupabaseConfig()) return {}
   try {
     const supabase = getSupabaseBrowserClient()
     const { error: invoiceError } = await supabase.from('invoices').upsert(invoiceToRow(doc))
     if (invoiceError) {
-      console.warn('[supabase] invoice save failed', invoiceError.message)
-      return
+      const missingChannel = /payment_channel|schema cache|column/i.test(invoiceError.message)
+      if (missingChannel) {
+        const retry = await supabase.from('invoices').upsert(invoiceToRow(doc, false))
+        if (retry.error) {
+          console.warn('[supabase] invoice save failed', retry.error.message)
+          return { error: retry.error.message }
+        }
+      } else {
+        console.warn('[supabase] invoice save failed', invoiceError.message)
+        return { error: invoiceError.message }
+      }
     }
     await supabase.from('invoice_items').delete().eq('invoice_id', doc.id)
     if (doc.items.length > 0) {
       const { error: itemError } = await supabase.from('invoice_items').insert(doc.items.map(itemToRow))
-      if (itemError) console.warn('[supabase] invoice items save failed', itemError.message)
+      if (itemError) {
+        console.warn('[supabase] invoice items save failed', itemError.message)
+        return { error: itemError.message }
+      }
     }
+    return {}
   } catch (error) {
-    console.warn('[supabase] invoice save failed', error)
+    const msg = String(error)
+    console.warn('[supabase] invoice save failed', msg)
+    return { error: msg }
   }
 }
 
-export async function saveInvoiceDocuments(docs: InvoiceDocument[]) {
+export async function saveInvoiceDocuments(docs: InvoiceDocument[]): Promise<{ error?: string }> {
   for (const doc of docs) {
-    await saveInvoiceDocument(doc)
+    const result = await saveInvoiceDocument(doc)
+    if (result.error) return result
   }
+  return {}
 }
 
-export async function deleteInvoiceDocument(id: string) {
+export async function deleteInvoiceDocument(id: string): Promise<{ error?: string }> {
   const current = readLocal<InvoiceDocument[]>(DOCS_KEY, [])
   writeLocal(
     DOCS_KEY,
     current.filter((row) => row.id !== id),
   )
-  if (!hasSupabaseConfig()) return
+  if (!hasSupabaseConfig()) return {}
   try {
     const supabase = getSupabaseBrowserClient()
     const { error } = await supabase.from('invoices').delete().eq('id', id)
-    if (error) console.warn('[supabase] invoice delete failed', error.message)
+    if (error) {
+      console.warn('[supabase] invoice delete failed', error.message)
+      return { error: error.message }
+    }
+    return {}
   } catch (error) {
-    console.warn('[supabase] invoice delete failed', error)
+    const msg = String(error)
+    console.warn('[supabase] invoice delete failed', msg)
+    return { error: msg }
   }
 }
 

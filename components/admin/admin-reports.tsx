@@ -6,6 +6,7 @@ import {
   Bus,
   CalendarIcon,
   ClipboardCheck,
+  CloudUpload,
   Download,
   FileSpreadsheet,
   Handshake,
@@ -17,6 +18,7 @@ import {
 } from '@/components/admin/admin-daily-job-order'
 import { AdminCheckInReport } from '@/components/admin/admin-check-in-report'
 import { AdminVanUsageReport } from '@/components/admin/admin-van-usage-report'
+import { AdminSheetsBackup } from '@/components/admin/admin-sheets-backup'
 import { usePortal } from '@/components/portal-provider'
 import {
   EmptyState,
@@ -53,11 +55,17 @@ import {
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
-type ReportMode = 'bookings' | 'job-order-ops' | 'job-order-agent' | 'check-in' | 'van-usage'
+type ReportMode =
+  | 'bookings'
+  | 'job-order-ops'
+  | 'job-order-agent'
+  | 'check-in'
+  | 'van-usage'
+  | 'sheets-backup'
 type ProgramFilter = 'all' | Program
 type SortKey = 'pickup' | 'zone' | 'agent' | 'code' | 'guest'
 
-type ReportTone = 'teal' | 'amber' | 'sky' | 'slate' | 'violet'
+type ReportTone = 'teal' | 'amber' | 'sky' | 'slate' | 'violet' | 'emerald'
 
 const REPORT_TONES: Record<
   ReportTone,
@@ -116,6 +124,15 @@ const REPORT_TONES: Record<
     cta: 'text-violet-800',
     wash: 'from-violet-500/12 via-transparent to-transparent',
   },
+  emerald: {
+    card: 'border-emerald-900/10 bg-gradient-to-br from-emerald-50/90 via-white to-teal-50/35 hover:border-emerald-600/30 hover:shadow-lg hover:shadow-emerald-900/8',
+    icon: 'bg-gradient-to-br from-emerald-600 to-teal-800 text-white shadow-md shadow-emerald-700/25',
+    meta: 'bg-emerald-950/6 text-emerald-900',
+    title: 'text-emerald-950',
+    body: 'text-emerald-950/55',
+    cta: 'text-emerald-800',
+    wash: 'from-emerald-500/12 via-transparent to-transparent',
+  },
 }
 
 const SORT_OPTIONS: { value: SortKey; label: string }[] = [
@@ -134,7 +151,7 @@ export function AdminReports() {
       <div className="w-full">
         <PageHeader
           title="Report"
-          description="Pick a sheet — booking export, driver vans, marina check-in, agent day order, or van usage."
+          description="Pick a sheet — booking export, driver vans, marina check-in, agent day order, van usage, or nightly Google Sheets backup."
         />
 
         <div className="grid gap-4 sm:grid-cols-2 sm:gap-5">
@@ -178,6 +195,14 @@ export function AdminReports() {
             icon={<Receipt className="size-7" strokeWidth={1.75} />}
             onClick={() => setMode('van-usage')}
           />
+          <ReportModeCard
+            tone="emerald"
+            title="Google Sheets backup"
+            subtitle="Nightly 4:00 AM Thai time — all bookings, check-in guests, booked vs real merge, and a monthly filter."
+            meta="Auto backup"
+            icon={<CloudUpload className="size-7" strokeWidth={1.75} />}
+            onClick={() => setMode('sheets-backup')}
+          />
         </div>
       </div>
     )
@@ -197,6 +222,10 @@ export function AdminReports() {
 
   if (mode === 'van-usage') {
     return <AdminVanUsageReport onBack={() => setMode(null)} />
+  }
+
+  if (mode === 'sheets-backup') {
+    return <AdminSheetsBackup onBack={() => setMode(null)} />
   }
 
   return <BookingReport onBack={() => setMode(null)} />

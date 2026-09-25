@@ -1,3 +1,5 @@
+import { upsertCheckInBookedPax } from '@/lib/supabase/booked-pax-db'
+import { persistQuietly } from '@/lib/supabase/portal-db'
 import { dayBoatPlanKey, type Program } from '@/lib/types'
 
 export type BookedPaxSnapshot = {
@@ -8,12 +10,18 @@ export type BookedPaxSnapshot = {
 }
 
 /** date|program|code → original booked pax (captured on first marina open). */
-type BookedPaxMap = Record<string, BookedPaxSnapshot>
+export type BookedPaxMap = Record<string, BookedPaxSnapshot>
 
-const STORAGE_KEY = 'gday-check-in-booked-pax'
+export const CHECK_IN_BOOKED_PAX_STORAGE_KEY = 'gday-check-in-booked-pax'
+
+const STORAGE_KEY = CHECK_IN_BOOKED_PAX_STORAGE_KEY
+
+export function bookedPaxKey(date: string, program: Program, bookingCode: string) {
+  return `${dayBoatPlanKey(date, program)}|${bookingCode}`
+}
 
 function bookingKey(date: string, program: Program, bookingCode: string) {
-  return `${dayBoatPlanKey(date, program)}|${bookingCode}`
+  return bookedPaxKey(date, program, bookingCode)
 }
 
 function loadMap(): BookedPaxMap {
@@ -38,8 +46,37 @@ function saveMap(map: BookedPaxMap) {
   }
 }
 
-function snapshotTotal(row: BookedPaxSnapshot) {
+export function snapshotPaxTotal(row: BookedPaxSnapshot) {
   return row.adults + row.children + row.infants + row.tourLeaders
+}
+
+function persistSnapshot(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  snapshot: BookedPaxSnapshot,
+) {
+  persistQuietly(
+    'upsert check-in booked pax',
+    upsertCheckInBookedPax(date, program, bookingCode, snapshot),
+  )
+}
+
+export function loadBookedPaxMap(): BookedPaxMap {
+  return loadMap()
+}
+
+/** Merge remote snapshots into localStorage. Larger totals win so added guests are kept. */
+export function hydrateBookedPaxMap(remote: BookedPaxMap) {
+  const next = { ...loadMap() }
+  for (const [key, row] of Object.entries(remote)) {
+    const existing = next[key]
+    if (!existing || snapshotPaxTotal(row) > snapshotPaxTotal(existing)) {
+      next[key] = { ...row }
+    }
+  }
+  saveMap(next)
+  return next
 }
 
 export function getBookedPaxSnapshot(
@@ -85,9 +122,11 @@ export function replaceBookedPaxSnapshot(
   current: BookedPaxSnapshot,
 ) {
   const map = loadMap()
-  map[bookingKey(date, program, bookingCode)] = { ...current }
+  const next = { ...current }
+  map[bookingKey(date, program, bookingCode)] = next
   saveMap(map)
-  return map[bookingKey(date, program, bookingCode)]!
+  persistSnapshot(date, program, bookingCode, next)
+  return next
 }
 
 /** Capture first-seen booked pax; grow snapshot if agent later adds guests. */
@@ -103,11 +142,13 @@ export function getOrCaptureBookedPaxSnapshot(
   if (!existing) {
     map[key] = { ...current }
     saveMap(map)
+    persistSnapshot(date, program, bookingCode, map[key]!)
     return map[key]!
   }
-  if (snapshotTotal(current) > snapshotTotal(existing)) {
+  if (snapshotPaxTotal(current) > snapshotPaxTotal(existing)) {
     map[key] = { ...current }
     saveMap(map)
+    persistSnapshot(date, program, bookingCode, map[key]!)
     return map[key]!
   }
   return existing

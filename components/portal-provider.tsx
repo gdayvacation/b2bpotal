@@ -74,6 +74,15 @@ import {
   type CheckInScope,
   type DayCheckInEnrollmentMap,
 } from '@/lib/check-in-enrollment'
+import {
+  CHECK_IN_BOOKED_PAX_STORAGE_KEY,
+  hydrateBookedPaxMap,
+  loadBookedPaxMap,
+} from '@/lib/check-in-booked-pax'
+import {
+  fetchCheckInBookedPax,
+  pushCheckInBookedPax,
+} from '@/lib/supabase/booked-pax-db'
 import { matchNationality } from '@/lib/nationalities'
 import { autoAssignVans, nextSortOrderForVan, normalizeAssignments, paxOnVan, reorderVanAssignments } from '@/lib/vehicle-assign'
 import {
@@ -875,6 +884,24 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
         if (cancelled || checkInWritePendingRef.current > 0) return
         applyCheckInMaps(next)
+
+        const remotePax = await fetchCheckInBookedPax()
+        if (cancelled || checkInWritePendingRef.current > 0) return
+        if (remotePax) {
+          const localPax = loadBookedPaxMap()
+          if (allowMigrate && Object.keys(remotePax).length === 0 && Object.keys(localPax).length > 0) {
+            checkInWritePendingRef.current += 1
+            try {
+              await pushCheckInBookedPax(localPax)
+            } catch (error) {
+              console.error('[supabase] migrate check-in booked pax', error)
+            } finally {
+              checkInWritePendingRef.current = Math.max(0, checkInWritePendingRef.current - 1)
+            }
+          } else {
+            hydrateBookedPaxMap(remotePax)
+          }
+        }
       } catch (error) {
         console.error('[portal] check-in sync failed', error)
       }
@@ -888,7 +915,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         event.key === CHECK_IN_TICKET_STORAGE_KEY ||
         event.key === CHECK_IN_SERVICE_STORAGE_KEY ||
         event.key === CHECK_IN_SEQUENCE_STORAGE_KEY ||
-        event.key === CHECK_IN_GUEST_EDIT_STORAGE_KEY
+        event.key === CHECK_IN_GUEST_EDIT_STORAGE_KEY ||
+        event.key === CHECK_IN_BOOKED_PAX_STORAGE_KEY
       ) {
         reloadCheckInMapsFromStorage()
       }

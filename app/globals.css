@@ -292,5 +292,12 @@
 
   .invoice-print-page {
     box-shadow: none !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  [data-slot='dialog-overlay'],
+  [data-slot='dialog-content'] {
+    display: none !important;
   }
 }

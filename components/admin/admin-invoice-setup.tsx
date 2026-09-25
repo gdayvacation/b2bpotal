@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
-import { ArrowLeft, Check, Save } from 'lucide-react'
+import { ArrowLeft, Check, Save, Trash2, Upload } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
 import { useInvoiceStore } from '@/components/admin/use-invoice-store'
 import { PageHeader, Surface } from '@/components/ui-primitives'
@@ -20,10 +20,39 @@ import {
 import {
   DEFAULT_INVOICE_SETTINGS,
   emptyAgencyRates,
+  agencyRatesReady,
   parseMoneyInput,
   type AgencyInvoiceRates,
   type InvoiceSettings,
 } from '@/lib/invoice'
+
+function readSignatureFile(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const image = new Image()
+    const url = URL.createObjectURL(file)
+    image.onload = () => {
+      const maxWidth = 420
+      const scale = Math.min(1, maxWidth / image.width)
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.round(image.width * scale))
+      canvas.height = Math.max(1, Math.round(image.height * scale))
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        URL.revokeObjectURL(url)
+        reject(new Error('Could not read image'))
+        return
+      }
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+      URL.revokeObjectURL(url)
+      resolve(canvas.toDataURL('image/png'))
+    }
+    image.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('Could not read image'))
+    }
+    image.src = url
+  })
+}
 
 function MoneyField({
   value,
@@ -49,7 +78,7 @@ function MoneyField({
 
 export function AdminInvoiceSetup() {
   const { agents } = usePortal()
-  const { settings, rates, loading, cloud, updateSettings, updateRates } = useInvoiceStore()
+  const { settings, rates, loading, cloud, error: storeError, updateSettings, updateRates } = useInvoiceStore()
   const [draftSettings, setDraftSettings] = useState<InvoiceSettings | null>(null)
   const [saved, setSaved] = useState<'company' | string | null>(null)
   const [rateDrafts, setRateDrafts] = useState<Record<string, AgencyInvoiceRates>>({})
@@ -61,7 +90,11 @@ export function AdminInvoiceSetup() {
   )
 
   function ratesFor(slug: string) {
-    return rateDrafts[slug] ?? rates.find((row) => row.agentSlug === slug) ?? emptyAgencyRates(slug)
+    return (
+      rateDrafts[slug] ??
+      rates.find((row) => row.agentSlug === slug) ??
+      emptyAgencyRates(slug)
+    )
   }
 
   function patchRates(slug: string, patch: Partial<AgencyInvoiceRates>) {
@@ -93,7 +126,7 @@ export function AdminInvoiceSetup() {
     <div className="w-full">
       <PageHeader
         title="Invoice setup"
-        description="Set agency tour prices and company bank details used on invoices, billing notes, and receipts."
+        description="Set agency tour prices, bank details, and the signature printed on invoices, billing notes, and receipts."
         actions={
           <Link href="/admin/invoices">
             <Button type="button" variant="outline" className="h-10 rounded-xl">
@@ -112,12 +145,18 @@ export function AdminInvoiceSetup() {
         </p>
       ) : null}
 
+      {storeError ? (
+        <p className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+          ⚠ {storeError}
+        </p>
+      ) : null}
+
       <Surface className="mb-5 p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="font-medium text-teal-950">Company and bank</h2>
+            <h2 className="font-medium text-teal-950">Company, bank, and signature</h2>
             <p className="mt-1 text-sm text-teal-900/55">
-              Printed on every invoice and receipt. Defaults match the Good Day Vacation paper.
+              Printed on every invoice, billing note, and receipt. Change these anytime.
             </p>
           </div>
           <Button type="button" className="h-10 rounded-xl" onClick={saveCompany}>
@@ -125,17 +164,65 @@ export function AdminInvoiceSetup() {
             {saved === 'company' ? 'Saved' : 'Save company'}
           </Button>
         </div>
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
+
+        <h3 className="mt-5 text-sm font-medium text-teal-900">Company</h3>
+        <div className="mt-2 grid gap-3 md:grid-cols-2">
           {(
             [
               ['companyName', 'Company name', company.companyName],
               ['companyLegal', 'Legal name', company.companyLegal],
               ['addressTh', 'Address (Thai)', company.addressTh],
               ['addressEn', 'Address (English)', company.addressEn],
+            ] as const
+          ).map(([key, label, value]) => (
+            <div key={key} className="space-y-1.5">
+              <Label htmlFor={key} className="text-xs text-neutral-400">
+                {label}
+              </Label>
+              <Input
+                id={key}
+                value={value}
+                onChange={(event) =>
+                  setDraftSettings({ ...company, [key]: event.target.value })
+                }
+              />
+            </div>
+          ))}
+        </div>
+
+        <h3 className="mt-6 text-sm font-medium text-teal-900">Bank details</h3>
+        <p className="mt-1 text-xs text-teal-900/50">Shown under “Bank Details” on the printed paper.</p>
+        <div className="mt-2 grid gap-3 md:grid-cols-2">
+          {(
+            [
               ['bankName', 'Bank name', company.bankName],
               ['bankAccountType', 'Account type', company.bankAccountType],
               ['bankAccountName', 'Account name', company.bankAccountName],
               ['bankAccountNo', 'Account number', company.bankAccountNo],
+            ] as const
+          ).map(([key, label, value]) => (
+            <div key={key} className="space-y-1.5">
+              <Label htmlFor={key} className="text-xs text-neutral-400">
+                {label}
+              </Label>
+              <Input
+                id={key}
+                value={value}
+                onChange={(event) =>
+                  setDraftSettings({ ...company, [key]: event.target.value })
+                }
+              />
+            </div>
+          ))}
+        </div>
+
+        <h3 className="mt-6 text-sm font-medium text-teal-900">Signature</h3>
+        <p className="mt-1 text-xs text-teal-900/50">
+          Printed on the company sign-off. Upload a PNG or JPG of the handwritten signature.
+        </p>
+        <div className="mt-2 grid gap-3 md:grid-cols-2">
+          {(
+            [
               ['issuerName', 'Issuer name', company.issuerName],
               ['issuerTitle', 'Issuer title', company.issuerTitle],
             ] as const
@@ -154,9 +241,57 @@ export function AdminInvoiceSetup() {
             </div>
           ))}
         </div>
+        <div className="mt-3 flex flex-wrap items-center gap-4">
+          {company.signatureImage ? (
+            <img
+              src={company.signatureImage}
+              alt="Signature preview"
+              className="h-16 w-auto rounded-lg border border-teal-900/10 bg-white object-contain px-3 py-1"
+            />
+          ) : (
+            <div className="flex h-16 items-center rounded-lg border border-dashed border-teal-900/15 px-4 text-xs text-teal-900/45">
+              No signature uploaded
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <label className="inline-flex h-10 cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-teal-900/12 bg-white/80 px-3.5 text-sm font-medium hover:bg-teal-950/[0.04]">
+              <Upload className="size-3.5" />
+              {company.signatureImage ? 'Replace signature' : 'Upload signature'}
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                className="sr-only"
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  event.target.value = ''
+                  if (!file) return
+                  void readSignatureFile(file)
+                    .then((signatureImage) =>
+                      setDraftSettings({ ...company, signatureImage }),
+                    )
+                    .catch(() => {
+                      window.alert('Could not read that image. Try a PNG or JPG.')
+                    })
+                }}
+              />
+            </label>
+            {company.signatureImage ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl text-rose-600 hover:text-rose-800"
+                onClick={() => setDraftSettings({ ...company, signatureImage: '' })}
+              >
+                <Trash2 className="size-3.5" />
+                Remove
+              </Button>
+            ) : null}
+          </div>
+        </div>
+
         <button
           type="button"
-          className="mt-3 text-xs font-medium text-teal-700 hover:text-teal-950"
+          className="mt-4 text-xs font-medium text-teal-700 hover:text-teal-950"
           onClick={() => setDraftSettings(DEFAULT_INVOICE_SETTINGS)}
         >
           Reset to Good Day Vacation defaults
@@ -167,8 +302,9 @@ export function AdminInvoiceSetup() {
         <div className="border-b border-teal-900/8 px-5 py-4">
           <h2 className="font-medium text-teal-950">Agency prices (THB)</h2>
           <p className="mt-1 text-sm text-teal-900/55">
-            AD / CH / IN / TL are per person. Change date and cancel are per adult + child.
-            Private transfer and extra zone apply when the check-in booking has those charges.
+            AD / CH / IN / TL per person. Agencies with no prices show 0 and cannot be invoiced
+            until you enter rates. Private transfer and extra zone apply when the booking has
+            those charges.
           </p>
         </div>
         <div className="overflow-x-auto">
@@ -191,9 +327,19 @@ export function AdminInvoiceSetup() {
             <TableBody>
               {activeAgents.map((agent) => {
                 const row = ratesFor(agent.slug)
+                const noRates = !agencyRatesReady(row)
                 return (
                   <TableRow key={agent.slug}>
-                    <TableCell className="font-medium text-teal-950">{agent.name}</TableCell>
+                    <TableCell className="font-medium text-teal-950">
+                      <div className="flex flex-col">
+                        <span>{agent.name}</span>
+                        {noRates ? (
+                          <span className="text-[11px] font-normal text-rose-500">
+                            No rates set — cannot invoice
+                          </span>
+                        ) : null}
+                      </div>
+                    </TableCell>
                     <TableCell>
                       <MoneyField
                         value={row.adultPrice}

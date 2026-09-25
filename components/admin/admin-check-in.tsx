@@ -85,7 +85,9 @@ import {
   checkInServiceLabel,
   newCheckInServiceId,
   serviceLineTotal,
+  summarizeCheckInServices,
   type CheckInServiceKind,
+  type CheckInServiceKindSummary,
   type CheckInServiceLine,
 } from '@/lib/check-in-services'
 import {
@@ -226,6 +228,14 @@ function driverGroupTitle(group: DriverGroup, showProgram: boolean) {
   if (group.van !== null) return `${program}Van ${group.van}`
   if (group.id.includes('no-transfer')) return `${program}No Transfer`
   return `${program}Unassigned / no van`
+}
+
+function vanGroupPlate(group: DriverGroup) {
+  const plate = group.plate?.trim()
+  if (plate) return plate
+  if (group.van !== null) return `Van ${group.van}`
+  if (group.id.includes('no-transfer')) return 'No Transfer'
+  return 'Unassigned / no van'
 }
 
 function buildBookingLine(
@@ -1054,6 +1064,7 @@ function TodayBoardTab({
     getCheckInEnrollments,
     getCheckInAttendance,
     getGuestSequences,
+    getCheckInServices,
     setCheckInSequenceBookingStart,
     hydrated,
   } = usePortal()
@@ -1211,6 +1222,52 @@ function TodayBoardTab({
     return { checked, waiting, noShow, total: checked + waiting + noShow }
   }, [groups])
 
+  const [dayServicesOpen, setDayServicesOpen] = useState(false)
+
+  const dayServiceDetails = useMemo(() => {
+    const rows: DayServiceDetail[] = []
+    const seen = new Set<string>()
+    for (const group of groups) {
+      for (const line of group.lines) {
+        if (seen.has(line.booking.code)) continue
+        seen.add(line.booking.code)
+        const services = getCheckInServices(boardDate, line.booking.program, line.booking.code)
+        for (const service of services) {
+          rows.push({
+            id: service.id,
+            bookingCode: line.booking.code,
+            bookingName: line.leaderName || line.booking.code,
+            hotel: line.booking.pickupHotel || line.booking.pickupZone || '—',
+            kind: service.kind,
+            people: service.people,
+            total: serviceLineTotal(service),
+            paid: service.paid,
+          })
+        }
+      }
+    }
+    return rows.sort(
+      (a, b) =>
+        Number(a.paid) - Number(b.paid) ||
+        a.hotel.localeCompare(b.hotel) ||
+        a.bookingName.localeCompare(b.bookingName),
+    )
+  }, [boardDate, getCheckInServices, groups])
+
+  const dayServiceSummary = useMemo(
+    () =>
+      summarizeCheckInServices(
+        dayServiceDetails.map((row) => ({
+          id: row.id,
+          kind: row.kind,
+          people: row.people,
+          pricePerPerson: row.people > 0 ? Math.round(row.total / row.people) : 0,
+          paid: row.paid,
+        })),
+      ),
+    [dayServiceDetails],
+  )
+
   function selectDate(date: Date | undefined) {
     if (!date) return
     onBoardDateChange(toISODate(date))
@@ -1328,6 +1385,10 @@ function TodayBoardTab({
         </div>
       </div>
 
+      {!isHelper ? (
+        <DayServiceSummary rows={dayServiceSummary} onOpen={() => setDayServicesOpen(true)} />
+      ) : null}
+
       {isHelper && groups.length > 0 ? (
         <div className="-mx-3 overflow-x-auto px-3 [scrollbar-width:thin] sm:mx-0 sm:overflow-visible sm:px-0">
           <div className="flex w-max min-w-full gap-1.5 rounded-2xl bg-teal-950/[0.04] p-1 sm:w-auto sm:flex-wrap">
@@ -1345,7 +1406,7 @@ function TodayBoardTab({
                       : 'text-teal-900/55 hover:text-teal-950',
                   )}
                 >
-                  {driverGroupTitle(group, programFilter === 'all')}
+                  {vanGroupPlate(group)}
                   <span className="ml-1.5 text-[11px] font-medium text-teal-900/45 sm:text-xs">
                     {group.seatsTotal}
                   </span>
@@ -1404,6 +1465,13 @@ function TodayBoardTab({
           today={boardDate}
         />
       )}
+
+      <DayServicesDialog
+        open={dayServicesOpen}
+        onOpenChange={setDayServicesOpen}
+        dateLabel={formatShortDate(boardDate)}
+        rows={dayServiceDetails}
+      />
     </div>
   )
 }
@@ -1576,10 +1644,21 @@ function DriverGroupCard({
           <p
             className={cn(
               'font-semibold text-teal-950',
-              isHelper ? 'font-display text-[17px] sm:text-xl' : 'text-sm',
+              isHelper ? 'font-display text-[17px] sm:text-xl' : 'font-display text-base sm:text-lg',
             )}
           >
-            {title}
+            {group.van !== null ? (
+              <>
+                <span className="tracking-wide">{group.plate?.trim() || 'No plate'}</span>
+                {group.driver.trim() ? (
+                  <span className="ml-2 font-medium text-teal-900/80">
+                    {group.driver}
+                  </span>
+                ) : null}
+              </>
+            ) : (
+              title
+            )}
             {group.outsourced ? (
               <span className="ml-2 inline-flex rounded-md bg-violet-100 px-1.5 py-0.5 align-middle text-[10px] font-semibold tracking-wide text-violet-900 uppercase">
                 {vanOutsourceLabel(group)}
@@ -1588,7 +1667,7 @@ function DriverGroupCard({
           </p>
           {group.van !== null ? (
             <p className="mt-0.5 text-[12px] leading-snug text-teal-900/60 sm:text-xs">
-              <span className="font-medium text-teal-950">{group.driver || '—'}</span>
+              <span className="font-medium text-teal-950">Van {group.van}</span>
               {group.phone ? (
                 <>
                   <span className="mx-1.5 text-teal-900/25">·</span>
@@ -1600,8 +1679,6 @@ function DriverGroupCard({
                   </a>
                 </>
               ) : null}
-              <span className="mx-1.5 text-teal-900/25">·</span>
-              <span className="font-medium text-teal-950">{group.plate || '—'}</span>
             </p>
           ) : (
             <p className="mt-0.5 text-[12px] text-teal-900/55 sm:text-xs">
@@ -1679,16 +1756,16 @@ function DriverGroupCard({
                       {sequenceLabel || '—'}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-[15px] font-semibold text-teal-950">
+                      <p className="truncate text-[15px] font-semibold text-teal-950" title={hotel}>
+                        {hotel}
+                      </p>
+                      <p className="mt-0.5 truncate text-[13px] font-normal text-teal-900/70">
                         {line.leaderName || line.booking.code}
                         {line.split ? (
                           <span className="ml-1.5 text-[10px] font-semibold text-teal-700/55">
                             split
                           </span>
                         ) : null}
-                      </p>
-                      <p className="mt-0.5 truncate text-[13px] text-teal-900/70" title={hotel}>
-                        {hotel}
                       </p>
                       <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-teal-900/65">
                         <span className="tabular-nums font-medium text-teal-950">
@@ -1708,18 +1785,6 @@ function DriverGroupCard({
                         )}
                       >
                         {statusNote}
-                        {payment.kind !== 'none' ? (
-                          <span
-                            className={cn(
-                              'ml-2 font-semibold',
-                              paid
-                                ? 'text-teal-900/45 line-through decoration-2'
-                                : 'text-orange-800',
-                            )}
-                          >
-                            {payment.label}
-                          </span>
-                        ) : null}
                       </p>
                     </div>
                     <StatusBadge status={line.status} compact />
@@ -1737,6 +1802,25 @@ function DriverGroupCard({
                   <QrCode className="size-5" />
                 </button>
               </div>
+              {payment.kind !== 'none' ? (
+                <div className="mt-2">
+                  <PayableAmount
+                    label={payment.label}
+                    paid={paid}
+                    disabled={wholeNoShow}
+                    compact={payment.kind === 'note'}
+                    withTick
+                    onToggle={() =>
+                      setCheckInPayment(
+                        today,
+                        line.booking.program,
+                        line.booking.code,
+                        paid ? null : 'paid',
+                      )
+                    }
+                  />
+                </div>
+              ) : null}
 
               {expanded ? (
                 <div className="mt-2 space-y-1.5 border-t border-teal-900/8 pt-2">
@@ -1878,7 +1962,7 @@ function DriverGroupCard({
             </TableHead>
             <TableHead
               className="w-[11%] px-1.5 text-[10px] font-bold tracking-wide text-teal-900/80 uppercase"
-              title={isHelper ? 'Payment due' : 'Click an amount to mark it paid'}
+              title="Click an amount to mark it paid"
             >
               Pay
             </TableHead>
@@ -1999,7 +2083,7 @@ function DriverGroupCard({
                       )}
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-teal-950">
+                      <p className="truncate text-sm font-normal text-teal-900/80">
                         {line.leaderName || line.booking.code}
                         {line.split ? (
                           <span className="ml-1.5 text-[10px] font-semibold text-teal-700/55">
@@ -2148,7 +2232,10 @@ function DriverGroupCard({
                   />
                 </TableCell>
                 <TableCell className="max-w-0 whitespace-normal px-1.5 align-top">
-                  <p className="truncate text-teal-900/80" title={hotel}>
+                  <p
+                    className="line-clamp-2 text-[13px] font-semibold leading-snug break-words text-teal-950 sm:text-sm"
+                    title={hotel}
+                  >
                     {hotel}
                   </p>
                 </TableCell>
@@ -2171,19 +2258,6 @@ function DriverGroupCard({
                 >
                   {payment.kind === 'none' ? (
                     <span className="text-teal-900/35">—</span>
-                  ) : isHelper ? (
-                    <span
-                      className={cn(
-                        'font-semibold tabular-nums',
-                        payment.kind === 'note' && 'text-[11px]',
-                        paid
-                          ? 'text-teal-900/45 line-through decoration-2 decoration-teal-900/45'
-                          : 'text-orange-800',
-                      )}
-                      title={payment.label}
-                    >
-                      {payment.label}
-                    </span>
                   ) : (
                     <PayableAmount
                       label={payment.label}
@@ -3018,6 +3092,7 @@ function PayableAmount({
   paid,
   disabled,
   compact,
+  withTick,
   onToggle,
   className,
 }: {
@@ -3025,6 +3100,7 @@ function PayableAmount({
   paid: boolean
   disabled?: boolean
   compact?: boolean
+  withTick?: boolean
   onToggle: () => void
   className?: string
 }) {
@@ -3038,21 +3114,45 @@ function PayableAmount({
         disabled
           ? label
           : paid
-            ? 'Paid — click to undo'
-            : 'Click to mark paid'
+            ? 'Paid — tap to undo'
+            : 'Tap to mark paid'
       }
       className={cn(
-        'max-w-full truncate text-left font-semibold tabular-nums transition-colors disabled:cursor-not-allowed',
-        compact && 'text-[11px]',
+        'max-w-full text-left font-semibold tabular-nums transition-colors disabled:cursor-not-allowed',
+        compact && !withTick && 'text-[11px]',
         paid
           ? 'text-teal-900/45 line-through decoration-2 decoration-teal-900/45'
           : 'text-orange-800 hover:text-orange-950',
         disabled && 'text-teal-900/35 no-underline',
+        withTick &&
+          'flex w-full items-center gap-2.5 rounded-xl border border-orange-200 bg-orange-50 px-3 py-2.5 no-underline text-[14px] text-orange-950 hover:bg-orange-100/80',
+        withTick && paid && 'border-emerald-200 bg-emerald-50 text-emerald-900 hover:bg-emerald-100/70',
+        withTick && disabled && 'border-teal-900/10 bg-teal-950/[0.03]',
         className,
       )}
       onClick={onToggle}
     >
-      {label}
+      {withTick ? (
+        <span
+          className={cn(
+            'flex size-6 shrink-0 items-center justify-center rounded-md border-2',
+            paid
+              ? 'border-emerald-600 bg-emerald-600 text-white'
+              : 'border-orange-400 bg-white text-transparent',
+            disabled && 'border-teal-900/20 bg-white',
+          )}
+        >
+          <Check className="size-3.5" strokeWidth={3} />
+        </span>
+      ) : null}
+      <span className={cn(withTick && 'min-w-0 flex-1 truncate', !withTick && 'truncate')}>
+        {label}
+      </span>
+      {withTick ? (
+        <span className="shrink-0 text-[12px] font-semibold">
+          {disabled ? '—' : paid ? 'Paid' : 'Mark paid'}
+        </span>
+      ) : null}
     </button>
   )
 }
@@ -3273,6 +3373,153 @@ function StatusBadge({ status, compact = false }: { status: GuestLineStatus; com
     <span className={cn('inline-flex rounded-full bg-amber-100 text-amber-900', size)}>
       Wait
     </span>
+  )
+}
+
+type DayServiceDetail = {
+  id: string
+  bookingCode: string
+  bookingName: string
+  hotel: string
+  kind: CheckInServiceKind
+  people: number
+  total: number
+  paid: boolean
+}
+
+function DayServiceSummary({
+  rows,
+  onOpen,
+}: {
+  rows: CheckInServiceKindSummary[]
+  onOpen: () => void
+}) {
+  const grand = rows.reduce((sum, row) => sum + row.total, 0)
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="flex w-full flex-wrap items-center gap-1.5 rounded-2xl border border-teal-900/8 bg-white/80 px-3 py-2 text-left hover:bg-teal-50/70"
+    >
+      <p className="text-[11px] font-bold tracking-wide text-teal-900/45 uppercase">
+        Adding service today
+      </p>
+      {rows.length === 0 ? (
+        <p className="text-xs text-teal-900/40">No scuba or longtail yet</p>
+      ) : (
+        <>
+          {rows.map((row) => (
+            <span
+              key={row.kind}
+              className="inline-flex items-center gap-1 rounded-full bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-900 ring-1 ring-teal-200/70"
+              title={`${row.lines} booking${row.lines === 1 ? '' : 's'}`}
+            >
+              <ServiceKindIcon kind={row.kind} size="sm" />
+              {checkInServiceLabel(row.kind)}{' '}
+              <span className="tabular-nums">{row.people}</span>
+              {row.total > 0 ? (
+                <span className="font-medium text-teal-900/55 tabular-nums">
+                  · {row.total.toLocaleString('en-US')}
+                </span>
+              ) : null}
+            </span>
+          ))}
+          {grand > 0 ? (
+            <span className="ml-auto text-[11px] font-semibold text-teal-900/70 tabular-nums">
+              Total {grand.toLocaleString('en-US')}
+            </span>
+          ) : null}
+        </>
+      )}
+    </button>
+  )
+}
+
+function DayServicesDialog({
+  open,
+  onOpenChange,
+  dateLabel,
+  rows,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  dateLabel: string
+  rows: DayServiceDetail[]
+}) {
+  const unpaid = rows.filter((row) => !row.paid)
+  const unpaidTotal = unpaid.reduce((sum, row) => sum + row.total, 0)
+  const paidTotal = rows.filter((row) => row.paid).reduce((sum, row) => sum + row.total, 0)
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex w-full max-w-[calc(100%-1.5rem)] flex-col gap-0 overflow-visible p-0 sm:max-w-3xl">
+        <DialogHeader className="border-b border-teal-900/8 px-5 py-4">
+          <DialogTitle>Service today · {dateLabel}</DialogTitle>
+          <DialogDescription>
+            Daily list across all vans. PAID is done. Not paid still needs follow-up.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="px-5 py-3">
+          {rows.length === 0 ? (
+            <p className="py-6 text-center text-sm text-teal-900/50">
+              No scuba or longtail added today.
+            </p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Booking</TableHead>
+                  <TableHead>Service</TableHead>
+                  <TableHead className="text-right">Total</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell className="py-1.5">
+                      <p className="font-semibold text-teal-950">{row.bookingName}</p>
+                      <p className="text-[11px] text-teal-900/50">
+                        {row.hotel} · {row.bookingCode}
+                      </p>
+                    </TableCell>
+                    <TableCell className="py-1.5">
+                      <span className="inline-flex items-center gap-1.5">
+                        <ServiceKindIcon kind={row.kind} size="sm" />
+                        {checkInServiceLabel(row.kind)}
+                        {row.people > 1 ? (
+                          <span className="text-teal-900/45">×{row.people}</span>
+                        ) : null}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {row.paid ? (
+                        <span className="inline-flex items-center justify-end gap-1 font-semibold text-emerald-800">
+                          <Check className="size-3.5" />
+                          PAID
+                        </span>
+                      ) : (
+                        <span className="font-semibold text-orange-800">
+                          {row.total.toLocaleString('en-US')}
+                        </span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </div>
+        {rows.length > 0 ? (
+          <div className="flex flex-wrap items-center justify-end gap-4 border-t border-teal-900/8 px-5 py-3 text-sm">
+            <p className="text-emerald-800/80">
+              PAID ({paidTotal.toLocaleString('en-US')})
+            </p>
+            <p className="font-semibold text-orange-800">
+              Not paid ({unpaidTotal.toLocaleString('en-US')})
+            </p>
+          </div>
+        ) : null}
+      </DialogContent>
+    </Dialog>
   )
 }
 
