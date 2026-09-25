@@ -107,9 +107,9 @@ import {
 } from '@/lib/insurance-policy'
 import {
   allocatePaxBreakdown,
+  bookingPaxOnVan,
   listVanNumbers,
   paxBreakdownTotal,
-  paxOnVan,
   primaryVan,
   sortOrderOnVan,
   type PaxBreakdown,
@@ -1122,7 +1122,7 @@ function TodayBoardTab({
 
       for (const van of vanNums) {
         const vanBookings = transfer
-          .filter((b) => paxOnVan(plan.assignments[b.code], van) > 0)
+          .filter((b) => bookingPaxOnVan(b, plan.assignments[b.code], van) > 0)
           .sort(
             (a, b) =>
               sortOrderOnVan(plan.assignments[a.code], van) -

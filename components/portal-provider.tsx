@@ -92,7 +92,7 @@ import {
   pushCheckInBookedPax,
 } from '@/lib/supabase/booked-pax-db'
 import { matchNationality } from '@/lib/nationalities'
-import { autoAssignVans, nextSortOrderForVan, normalizeAssignments, paxOnVan, reorderVanAssignments } from '@/lib/vehicle-assign'
+import { autoAssignVans, bookingPaxOnVan, nextSortOrderForVan, normalizeAssignments, reorderVanAssignments } from '@/lib/vehicle-assign'
 import {
   bookingClosedMessage,
   cancelClosedMessage,
@@ -2749,7 +2749,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       assignVanToBoat: (date, program, van, boat, options) => {
         const vehiclePlan = getDayVehiclePlan(date, program)
         const codes = activeDayBookings(date, program)
-          .filter((booking) => paxOnVan(vehiclePlan.assignments[booking.code], van) > 0)
+          .filter((booking) => bookingPaxOnVan(booking, vehiclePlan.assignments[booking.code], van) > 0)
           .filter(
             (booking) =>
               getCheckInAttendance(checkInAttendance, date, program, booking.code) !== 'no-show',

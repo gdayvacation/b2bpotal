@@ -37,7 +37,7 @@ import {
   type SpecialTransferKind,
   type VanMeta,
 } from '@/lib/types'
-import { listVanNumbers, paxOnVan } from '@/lib/vehicle-assign'
+import { bookingPaxOnVan, listVanNumbers } from '@/lib/vehicle-assign'
 import { cn } from '@/lib/utils'
 
 type ProgramFilter = 'all' | Program
@@ -796,7 +796,10 @@ function buildUsageRows(
 ): UsageRow[] {
   return usedVanNumbers(plan).map((van) => {
     const meta = resolveMeta(van, plan.vanMeta[String(van)] ?? null)
-    const pax = bookings.reduce((sum, booking) => sum + paxOnVan(plan.assignments[booking.code], van), 0)
+    const pax = bookings.reduce(
+      (sum, booking) => sum + bookingPaxOnVan(booking, plan.assignments[booking.code], van),
+      0,
+    )
     const company = meta.outsourced === true ? meta.outsourceCompany?.trim() || '' : ''
     return {
       id: `${date}|${program}|${van}`,

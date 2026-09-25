@@ -69,8 +69,10 @@ import {
   type VanSplit,
 } from '@/lib/types'
 import {
+  allocatePaxBreakdown,
+  bookingPaxOnVan,
+  currentPaxOnVan,
   listVanNumbers,
-  paxOnVan,
   sortOrderOnVan,
   suggestVanSplit,
 } from '@/lib/vehicle-assign'
@@ -930,7 +932,7 @@ function VehicleBoard({
   const byVan = boardVans.map((van) => {
     const items = bookings
       .map((booking) => {
-        const onThis = paxOnVan(plan.assignments[booking.code], van)
+        const onThis = bookingPaxOnVan(booking, plan.assignments[booking.code], van)
         if (onThis <= 0) return null
         return { booking, paxOnVan: onThis, legs: plan.assignments[booking.code] }
       })
@@ -2053,7 +2055,18 @@ function VehicleBoard({
                               </span>
                             ) : null}
                             <p className="font-mono text-[11px] text-teal-900/40">
-                              {formatPaxBreakdown(booking)}
+                              {formatPaxBreakdown(
+                                allocatePaxBreakdown(
+                                  {
+                                    adults: booking.adults,
+                                    children: booking.children,
+                                    infants: booking.infants,
+                                    tourLeaders: booking.tourLeaders,
+                                  },
+                                  legs,
+                                  openVan,
+                                ),
+                              )}
                             </p>
                           </td>
                           <td className="px-3 py-2 text-teal-900/80">
@@ -2158,7 +2171,10 @@ function SeparateVanDialog({
     const start = Math.max(1, nextVanHint)
     const seed =
       existingLegs && existingLegs.length > 1
-        ? existingLegs.map((leg) => ({ ...leg }))
+        ? existingLegs.map((leg) => ({
+            ...leg,
+            pax: currentPaxOnVan(existingLegs, leg.van, totalPassengers(booking)),
+          }))
         : suggestVanSplit(totalPassengers(booking), capacity, start)
     setLegs(seed)
     setError('')

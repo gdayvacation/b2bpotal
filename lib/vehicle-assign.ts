@@ -92,6 +92,44 @@ export function paxOnVan(legs: VanSplit[] | undefined, van: number): number {
   return legs.filter((leg) => leg.van === van).reduce((sum, leg) => sum + leg.pax, 0)
 }
 
+/**
+ * Seats on this van from the live booking size, not a stale stored split.
+ * Single-van bookings always use current pax. Splits keep managed leg sizes
+ * and the last van absorbs guests added or removed later.
+ */
+export function currentPaxOnVan(
+  legs: VanSplit[] | undefined,
+  van: number,
+  currentPax: number,
+): number {
+  const live = Math.max(0, Math.floor(currentPax))
+  if (!legs?.length || live <= 0) return 0
+  const vanNums = [...new Set(legs.map((leg) => leg.van).filter((n) => n > 0))].sort(
+    (a, b) => a - b,
+  )
+  if (!vanNums.includes(van)) return 0
+  if (vanNums.length === 1) return live
+
+  let remaining = live
+  let result = 0
+  for (let i = 0; i < vanNums.length; i += 1) {
+    const currentVan = vanNums[i]
+    const stored = paxOnVan(legs, currentVan)
+    const take = i === vanNums.length - 1 ? remaining : Math.min(remaining, Math.max(0, stored))
+    if (currentVan === van) result = take
+    remaining -= take
+  }
+  return result
+}
+
+export function bookingPaxOnVan(
+  booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>,
+  legs: VanSplit[] | undefined,
+  van: number,
+): number {
+  return currentPaxOnVan(legs, van, totalPassengers(booking))
+}
+
 export type PaxBreakdown = {
   adults: number
   children: number
@@ -146,7 +184,9 @@ export function allocatePaxBreakdown(
   for (let i = 0; i < vanNums.length; i += 1) {
     const currentVan = vanNums[i]
     const isLast = i === vanNums.length - 1
-    const slice = isLast ? remaining : takePaxTypes(remaining, paxOnVan(legs, currentVan))
+    const slice = isLast
+      ? remaining
+      : takePaxTypes(remaining, currentPaxOnVan(legs, currentVan, paxBreakdownTotal(breakdown)))
     byVan.set(currentVan, slice)
     remaining = subtractPax(remaining, slice)
   }
@@ -188,10 +228,24 @@ export function reorderVanAssignments(
   return next
 }
 
-export function formatVanLegs(legs: VanSplit[] | undefined): string {
+export function formatVanLegs(legs: VanSplit[] | undefined, currentPax?: number): string {
   if (!legs || legs.length === 0) return '—'
   if (legs.length === 1) return `Van ${legs[0].van}`
-  return legs.map((leg) => `Van ${leg.van} · ${leg.pax}pax`).join(' + ')
+  const seen = new Set<number>()
+  return legs
+    .filter((leg) => {
+      if (seen.has(leg.van)) return false
+      seen.add(leg.van)
+      return true
+    })
+    .map((leg) => {
+      const n =
+        currentPax === undefined
+          ? paxOnVan(legs, leg.van)
+          : currentPaxOnVan(legs, leg.van, currentPax)
+      return `Van ${leg.van} · ${n}pax`
+    })
+    .join(' + ')
 }
 
 /** Suggest a starting split for the admin dialog (editable). */

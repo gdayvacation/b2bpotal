@@ -51,10 +51,10 @@ import {
 import {
   allocatePaxBreakdown,
   autoAssignVans,
+  bookingPaxOnVan,
   formatVanLegs,
   listVanNumbers,
   paxBreakdownTotal,
-  paxOnVan,
   primaryVan,
   sortOrderOnVan,
   type PaxBreakdown,
@@ -2493,7 +2493,7 @@ function buildAgentGroups(vanGroups: VanGroup[]): AgentGroup[] {
     for (const row of group.rows) {
       if (vanInfoByCode.has(row.booking.code)) continue
       vanInfoByCode.set(row.booking.code, {
-        label: row.split ? formatVanLegs(row.legs) : label,
+        label: row.split ? formatVanLegs(row.legs, totalPassengers(row.booking)) : label,
         driver: crew.driver,
         plate: crew.plate,
         phone: crew.phone,
@@ -2582,7 +2582,7 @@ function buildVanGroups(
 
   for (const van of vanNumbers) {
     const vanBookings = transferBookings
-      .filter((booking) => paxOnVan(assignments[booking.code], van) > 0)
+      .filter((booking) => bookingPaxOnVan(booking, assignments[booking.code], van) > 0)
       .sort((a, b) => {
         const orderA = sortOrderOnVan(assignments[a.code], van)
         const orderB = sortOrderOnVan(assignments[b.code], van)

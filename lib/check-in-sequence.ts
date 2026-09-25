@@ -1,7 +1,7 @@
 import { dayBoatPlanKey, isNoTransfer, totalPassengers, type Booking, type DayBoatPlan, type DayVehiclePlan, type Program } from '@/lib/types'
 import {
+  bookingPaxOnVan,
   listVanNumbers,
-  paxOnVan,
   primaryVan,
   sortOrderOnVan,
 } from '@/lib/vehicle-assign'
@@ -158,7 +158,7 @@ export function orderedBookingsForSequence(
 
   for (const van of vanNums) {
     const vanBookings = transfer
-      .filter((booking) => paxOnVan(vehiclePlan.assignments[booking.code], van) > 0)
+      .filter((booking) => bookingPaxOnVan(booking, vehiclePlan.assignments[booking.code], van) > 0)
       .sort(
         (a, b) =>
           sortOrderOnVan(vehiclePlan.assignments[a.code], van) -
