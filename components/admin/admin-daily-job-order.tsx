@@ -44,7 +44,6 @@ import {
   type Booking,
   type DayVehiclePlan,
   type Program,
-  vanOutsourceLabel,
   type VanMeta,
   type VanSplit,
 } from '@/lib/types'
@@ -1042,11 +1041,6 @@ function VanGroupSection({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <p className="text-sm font-semibold text-teal-950">{title}</p>
-            {group.outsourced ? (
-              <span className="rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-violet-900 uppercase">
-                {vanOutsourceLabel(group)}
-              </span>
-            ) : null}
             {group.mockMeta ? (
               <span className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
                 Needs details
@@ -1075,14 +1069,6 @@ function VanGroupSection({
               ) : null}
               <span className="mx-1.5 text-teal-900/25">·</span>
               Plate: <span className="font-medium text-teal-950">{group.plate || '—'}</span>
-              {group.outsourced ? (
-                <>
-                  <span className="mx-1.5 text-teal-900/25">·</span>
-                  <span className="font-semibold text-violet-800">
-                    {vanOutsourceLabel(group)}
-                  </span>
-                </>
-              ) : null}
             </p>
           ) : (
             <p className="mt-0.5 text-xs text-teal-900/55">No hotel transfer for these bookings.</p>
@@ -1349,12 +1335,12 @@ function VanGroupSection({
                 ) : (
                   <>
                     <TableCell className="pr-1">
-                      <div className="truncate" title={booking.pickupHotel}>
+                      <div className="truncate font-bold text-teal-950" title={booking.pickupHotel}>
                         {booking.pickupHotel || '—'}
                       </div>
                     </TableCell>
                     <TableCell>
-                      <div className="truncate font-medium" title={booking.leadGuest}>
+                      <div className="truncate font-normal" title={booking.leadGuest}>
                         {booking.leadGuest}
                         {split ? (
                           <span className="ml-1 text-[10px] font-semibold text-teal-700/55">
@@ -2186,10 +2172,10 @@ function JobOrderPrintSheet({
                           </>
                         ) : (
                           <>
-                            <td className="border border-teal-900/20 px-1 py-0.5">
+                            <td className="border border-teal-900/20 px-1 py-0.5 font-bold">
                               {booking.pickupHotel}
                             </td>
-                            <td className="border border-teal-900/20 px-1 py-0.5 font-medium">
+                            <td className="border border-teal-900/20 px-1 py-0.5 font-normal">
                               {booking.leadGuest}
                               {split ? ' · split' : ''}
                             </td>
@@ -2462,7 +2448,7 @@ function buildAgentGroups(vanGroups: VanGroup[]): AgentGroup[] {
   for (const group of vanGroups) {
     const label =
       group.van !== null
-        ? `Van ${group.van}${group.outsourced ? ` · ${vanOutsourceLabel(group)}` : ''}`
+        ? `Van ${group.van}`
         : group.id === 'no-transfer'
           ? 'No transfer'
           : '—'
