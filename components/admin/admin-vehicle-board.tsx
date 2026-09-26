@@ -1643,7 +1643,16 @@ function VehicleBoard({
                     variant="outline"
                     size="sm"
                     className="h-7 px-2 text-[11px]"
-                    onClick={onClear}
+                    onClick={() => {
+                      if (
+                        !window.confirm(
+                          'Clear all vans? Guests go back to the waiting list, including partner, private, and outsource vans.',
+                        )
+                      ) {
+                        return
+                      }
+                      onClear()
+                    }}
                   >
                     Clear vans
                   </Button>

@@ -3482,31 +3482,51 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }))
       },
       clearDayVanAssignments: (date, program) => {
-        upsertVehiclePlan(date, program, (plan) => {
-          const assignments: Record<string, VanSplit[]> = {}
-          for (const [code, legs] of Object.entries(plan.assignments)) {
-            const keptLegs = legs.filter((leg) => {
-              if (isVirtualVan(leg.van)) return true
-              return vanTransferKind(leg.van, plan.vanMeta[String(leg.van)]) !== 'company'
-            })
-            if (keptLegs.length > 0) assignments[code] = keptLegs
+        const current = getDayVehiclePlan(date, program)
+        const boatPlan = getDayBoatPlan(date, program)
+        const returning = Object.keys(current.assignments)
+        const leavingPrivate = returning.filter((code) => {
+          const booking = bookings.find((row) => row.code === code && isActiveBooking(row))
+          return Boolean(booking && bookingTransferKind(booking, current, boatPlan) === 'private')
+        })
+        upsertVehiclePlan(date, program, (plan) => ({
+          ...plan,
+          assignments: {},
+          vanMeta: {},
+        }))
+        upsertPlan(date, program, (plan) => {
+          const next = hydrateDayBoatPlan(plan)
+          const keepIdx = next.capacities
+            .map((_, index) => index)
+            .filter((index) => next.kinds[index] !== 'partner')
+          const assignments: Record<string, BoatNumber> = {}
+          if (keepIdx.length === 0 || keepIdx.length === next.capacities.length) {
+            for (const [code, boat] of Object.entries(next.assignments)) {
+              if (returning.includes(code)) continue
+              assignments[code] = boat
+            }
+            return { ...next, assignments }
+          }
+          const oldToNew = new Map<number, number>()
+          keepIdx.forEach((oldIndex, newIndex) => oldToNew.set(oldIndex + 1, newIndex + 1))
+          for (const [code, boat] of Object.entries(next.assignments)) {
+            if (returning.includes(code)) continue
+            const mapped = oldToNew.get(boat)
+            if (mapped) assignments[code] = mapped
           }
           return {
-            ...plan,
+            ...next,
+            capacities: keepIdx.map((index) => next.capacities[index]),
+            names: keepIdx.map((index) => next.names[index]),
+            labels: keepIdx.map((index) => next.labels[index]),
+            kinds: keepIdx.map((index) => next.kinds[index]),
+            guides: keepIdx.map((index) => next.guides[index]),
             assignments,
-            vanMeta: Object.fromEntries(
-              Object.entries(plan.vanMeta ?? {}).filter(([key, meta]) => {
-                const van = Number(key)
-                return (
-                  isSpecialTransfer(meta) ||
-                  meta.specialKind === 'partner' ||
-                  isVirtualVan(van) ||
-                  meta.outsourced === true
-                )
-              }),
-            ),
           }
         })
+        if (leavingPrivate.length > 0) {
+          persistPrivateTransferInvoice(leavingPrivate, 0, 'clear-ops')
+        }
       },
       removeDayVan: (date, program, van) => {
         if (!Number.isFinite(van) || van < 1 || isDummyVan(van)) return

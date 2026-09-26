@@ -37,10 +37,14 @@ import {
 } from '@/lib/job-order-action'
 import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
 import {
-  DEFAULT_VAN_CAPACITY,
   isActiveBooking,
+  isDummyVan,
   isNoTransfer,
+  isNoTransferVan,
+  isSpecialTransfer,
+  specialTransferKindLabel,
   totalPassengers,
+  vanHasSavedMeta,
   type Booking,
   type DayVehiclePlan,
   type Program,
@@ -49,10 +53,9 @@ import {
 } from '@/lib/types'
 import {
   allocatePaxBreakdown,
-  autoAssignVans,
   bookingPaxOnVan,
   formatVanLegs,
-  listFleetVanNumbers,
+  listVanNumbers,
   paxBreakdownTotal,
   primaryVan,
   sortOrderOnVan,
@@ -73,12 +76,14 @@ type JobOrderRow = {
 type VanGroup = {
   id: string
   van: number | null
+  title: string
   driver: string
   plate: string
   phone: string
   outsourced: boolean
   outsourceCompany: string
   mockMeta: boolean
+  waiting: boolean
   rows: JobOrderRow[]
   totals: {
     adults: number
@@ -119,30 +124,11 @@ type AgentGroup = {
   }
 }
 
-const MOCK_VAN_CREW = [
-  { driver: 'Somchai Jaidee', plate: 'กข 1234 Phuket', phone: '081-234-5678' },
-  { driver: 'Nattapong Srisuk', plate: 'ขค 5678 Phuket', phone: '089-111-2233' },
-  { driver: 'Wichai Thongdi', plate: 'งจ 9012 Phuket', phone: '086-555-7788' },
-  { driver: 'Anan Chaiyaphum', plate: 'ฉช 3456 Phuket', phone: '082-999-0011' },
-  { driver: 'Preecha Boonmee', plate: 'ฐฑ 7890 Phuket', phone: '088-444-5566' },
-] as const
-
-function mockCrewForVan(van: number | null) {
-  if (van === null || van < 1) {
-    return { driver: '—', plate: '—', phone: '—' }
-  }
-  return MOCK_VAN_CREW[(van - 1) % MOCK_VAN_CREW.length]
-}
-
 function displayVanCrew(group: VanGroup) {
-  const mock = mockCrewForVan(group.van)
-  if (group.van === null) {
-    return { driver: '—', plate: '—', phone: '—' }
-  }
   return {
-    driver: group.driver.trim() || mock.driver,
-    plate: group.plate.trim() || mock.plate,
-    phone: group.phone.trim() || mock.phone,
+    driver: group.driver.trim() || '—',
+    plate: group.plate.trim() || '—',
+    phone: group.phone.trim() || '—',
   }
 }
 
@@ -177,6 +163,7 @@ export function AdminDailyJobOrder({
     bookings,
     getDayVehiclePlan,
     getDayBoatPlan,
+    dayVehiclePlans,
     resolveVanMeta,
     getCheckInAttendance,
     setCheckInAttendance,
@@ -277,7 +264,15 @@ export function AdminDailyJobOrder({
         { adults: 0, children: 0, infants: 0, tourLeaders: 0 },
       ),
     }
-  }, [dayBookings, getDayVehiclePlan, program, selectedDate, pickupSortDir, resolveVanMeta])
+  }, [
+    dayBookings,
+    dayVehiclePlans,
+    getDayVehiclePlan,
+    program,
+    selectedDate,
+    pickupSortDir,
+    resolveVanMeta,
+  ])
 
   const visibleAgentGroups = useMemo(() => {
     if (agentFilter === 'all') return agentGroups
@@ -462,11 +457,9 @@ export function AdminDailyJobOrder({
                   </p>
                 </div>
                 <p className="text-xs text-teal-800/55 sm:max-w-[18rem] sm:text-right">
-                  {usingMockAssignments
-                    ? 'No van plan yet — showing mock van groups from Arrange vehicles for preview.'
-                    : isCheckInView
-                      ? 'Van groups from Arrange vehicles. Boat column from Arrange boats. For marina check-in staff.'
-                      : 'Grouped from Arrange vehicles. Missing driver/plate uses mock details.'}
+                  {isCheckInView
+                    ? 'Live vans and boats from จัดการรถ / เรือ / ไกด์.'
+                    : 'Live vans from จัดการรถ / เรือ / ไกด์ — same drivers, companies, and guests.'}
                 </p>
               </div>
             </Surface>
@@ -1000,7 +993,7 @@ function VanGroupSection({
   onEditVan?: (van: number) => void
 }) {
   void paxRevision
-  const title = group.van === null ? 'No Transfer / Unassigned' : `Van ${group.van}`
+  const title = group.title
   const SortIcon = pickupSortDir === 'asc' ? ArrowUp : ArrowDown
   const isCheckIn = variant === 'check-in'
   const showCanoe = isCheckIn && program === 'James Bond'
@@ -1071,7 +1064,11 @@ function VanGroupSection({
               Plate: <span className="font-medium text-teal-950">{group.plate || '—'}</span>
             </p>
           ) : (
-            <p className="mt-0.5 text-xs text-teal-900/55">No hotel transfer for these bookings.</p>
+            <p className="mt-0.5 text-xs text-teal-900/55">
+              {group.waiting
+                ? 'These guests are still on the waiting list on จัดการรถ / เรือ / ไกด์.'
+                : 'No hotel transfer for these bookings.'}
+            </p>
           )}
         </div>
         <p className="text-xs font-medium tabular-nums text-teal-800/60">
@@ -2034,7 +2031,7 @@ function JobOrderPrintSheet({
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-900/10 bg-gradient-to-r from-teal-50 to-white px-3 py-2">
                   <div>
                     <p className="text-sm font-semibold text-teal-950">
-                      {group.van === null ? 'No Transfer / Unassigned' : `Van ${group.van}`}
+                      {group.title}
                     </p>
                     {group.van !== null ? (
                       <p className="mt-0.5 text-[10px] text-teal-900/60">
@@ -2448,10 +2445,12 @@ function buildAgentGroups(vanGroups: VanGroup[]): AgentGroup[] {
   for (const group of vanGroups) {
     const label =
       group.van !== null
-        ? `Van ${group.van}`
+        ? group.title
         : group.id === 'no-transfer'
           ? 'No transfer'
-          : '—'
+          : group.waiting
+            ? 'Waiting'
+            : '—'
     const crew = displayVanCrew(group)
     for (const row of group.rows) {
       if (vanInfoByCode.has(row.booking.code)) continue
@@ -2515,6 +2514,21 @@ function buildAgentGroups(vanGroups: VanGroup[]): AgentGroup[] {
     })
 }
 
+function jobOrderVanTitle(van: number, meta: VanMeta) {
+  if (isNoTransferVan(van)) return 'No Transfers'
+  if (isDummyVan(van)) return meta.outsourceCompany || meta.label || 'Tour partner'
+  if (meta.specialKind === 'partner') {
+    return meta.outsourceCompany || meta.label || 'Tour partner'
+  }
+  if (isSpecialTransfer(meta)) {
+    return meta.label || specialTransferKindLabel(meta.specialKind) || `Van ${van}`
+  }
+  if (meta.outsourced && meta.outsourceCompany?.trim()) {
+    return `Van ${van} · ${meta.outsourceCompany.trim()}`
+  }
+  return `Van ${van}`
+}
+
 function buildVanGroups(
   bookings: Booking[],
   plan: DayVehiclePlan,
@@ -2527,24 +2541,23 @@ function buildVanGroups(
   const transferBookings = bookings.filter((booking) => !isNoTransfer(booking.pickupZone))
   const noTransferBookings = bookings.filter((booking) => isNoTransfer(booking.pickupZone))
   const byPickup = (a: Booking, b: Booking) => compareJobOrder(a, b, pickupSortDir)
+  const assignments = plan.assignments
 
-  const assignedCount = transferBookings.filter(
-    (booking) => (plan.assignments[booking.code]?.length ?? 0) > 0,
-  ).length
+  const assignedVans = listVanNumbers(assignments)
+  const savedVans = Object.keys(plan.vanMeta ?? {})
+    .map(Number)
+    .filter((van) => Number.isFinite(van) && van >= 1 && vanHasSavedMeta(plan.vanMeta[String(van)]))
+  const vanNumbers = [...new Set([...assignedVans, ...savedVans])].sort((a, b) => {
+    if (isDummyVan(a) !== isDummyVan(b)) return isDummyVan(a) ? 1 : -1
+    if (isNoTransferVan(a) !== isNoTransferVan(b)) return isNoTransferVan(a) ? 1 : -1
+    return a - b
+  })
 
-  let assignments = plan.assignments
-  let usingMockAssignments = false
-
-  if (transferBookings.length > 0 && assignedCount === 0) {
-    assignments = autoAssignVans(transferBookings, plan.vanCapacity || DEFAULT_VAN_CAPACITY)
-    usingMockAssignments = true
-  }
-
-  const vanNumbers = listFleetVanNumbers(assignments)
   const groups: VanGroup[] = []
+  const placed = new Set<string>()
 
   for (const van of vanNumbers) {
-    const vanBookings = transferBookings
+    const vanBookings = bookings
       .filter((booking) => bookingPaxOnVan(booking, assignments[booking.code], van) > 0)
       .sort((a, b) => {
         const orderA = sortOrderOnVan(assignments[a.code], van)
@@ -2552,13 +2565,15 @@ function buildVanGroups(
         if (orderA !== orderB) return orderA - orderB
         return byPickup(a, b)
       })
-    if (vanBookings.length === 0) continue
-
-    const meta = resolveMeta(van, plan.vanMeta[String(van)])
+    const dayMeta = plan.vanMeta[String(van)]
+    if (vanBookings.length === 0 && !vanHasSavedMeta(dayMeta)) continue
+    for (const booking of vanBookings) placed.add(booking.code)
+    const meta = resolveMeta(van, dayMeta)
     groups.push(
       makeGroup(
         `van-${van}`,
         van,
+        jobOrderVanTitle(van, meta),
         meta.driver,
         meta.plate,
         meta.phone,
@@ -2573,76 +2588,48 @@ function buildVanGroups(
     )
   }
 
-  const leftover = transferBookings.filter((booking) => !primaryVan(assignments[booking.code]))
-  if (leftover.length > 0) {
-    const mockVanStart = (vanNumbers[vanNumbers.length - 1] ?? 0) + 1
-    const mockAssign = autoAssignVans(leftover, plan.vanCapacity || DEFAULT_VAN_CAPACITY)
-    const mockVans = listFleetVanNumbers(mockAssign)
-    if (mockVans.length === 0) {
-      groups.push(makeGroup('unassigned', null, '', '', '', false, leftover.slice().sort(byPickup)))
-    } else {
-      usingMockAssignments = true
-      for (const van of mockVans) {
-        const displayVan = mockVanStart + van - 1
-        const vanBookings = leftover
-          .filter((booking) => primaryVan(mockAssign[booking.code]) === van)
-          .sort((a, b) => {
-            const orderA = sortOrderOnVan(mockAssign[a.code], van)
-            const orderB = sortOrderOnVan(mockAssign[b.code], van)
-            if (orderA !== orderB) return orderA - orderB
-            return byPickup(a, b)
-          })
-        if (vanBookings.length === 0) continue
-        const meta = resolveMeta(displayVan, undefined)
-        groups.push(
-          makeGroup(
-            `mock-van-${displayVan}`,
-            displayVan,
-            meta.driver,
-            meta.plate,
-            meta.phone,
-            meta.incomplete,
-            vanBookings,
-          ),
-        )
-      }
-      const stillLeft = leftover.filter((booking) => !primaryVan(mockAssign[booking.code]))
-      if (stillLeft.length > 0) {
-        groups.push(
-          makeGroup(
-            'unassigned-oversize',
-            null,
-            '',
-            '',
-            '',
-            false,
-            stillLeft.slice().sort(byPickup),
-          ),
-        )
-      }
-    }
-  }
-
-  if (noTransferBookings.length > 0) {
+  const leftoverTransfer = transferBookings.filter((booking) => !placed.has(booking.code))
+  if (leftoverTransfer.length > 0) {
     groups.push(
       makeGroup(
-        'no-transfer',
+        'unassigned',
         null,
+        'Waiting — not on a van yet',
         '',
         '',
         '',
         false,
-        noTransferBookings.slice().sort(byPickup),
+        leftoverTransfer.slice().sort(byPickup),
+        undefined,
+        undefined,
+        true,
       ),
     )
   }
 
-  return { groups, usingMockAssignments }
+  const leftoverNoTransfer = noTransferBookings.filter((booking) => !placed.has(booking.code))
+  if (leftoverNoTransfer.length > 0) {
+    groups.push(
+      makeGroup(
+        'no-transfer',
+        null,
+        'No Transfers',
+        '',
+        '',
+        '',
+        false,
+        leftoverNoTransfer.slice().sort(byPickup),
+      ),
+    )
+  }
+
+  return { groups, usingMockAssignments: false }
 }
 
 function makeGroup(
   id: string,
   van: number | null,
+  title: string,
   driver: string,
   plate: string,
   phone: string,
@@ -2650,6 +2637,7 @@ function makeGroup(
   bookings: Booking[],
   assignments?: Record<string, VanSplit[]>,
   outsource?: { outsourced?: boolean; outsourceCompany?: string },
+  waiting = false,
 ): VanGroup {
   const rows = bookings.map((booking, index) => {
     const legs = assignments?.[booking.code] ?? []
@@ -2665,12 +2653,14 @@ function makeGroup(
   return {
     id,
     van,
+    title,
     driver,
     plate,
     phone,
     outsourced: outsource?.outsourced === true,
     outsourceCompany: outsource?.outsourceCompany?.trim() || '',
     mockMeta,
+    waiting,
     rows,
     totals: {
       adults: rows.reduce((sum, row) => sum + row.pax.adults, 0),
