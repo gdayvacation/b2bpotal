@@ -218,6 +218,7 @@ import {
   hydrateDayBoatPlan,
   emptyPrivateTransferFields,
   emptyVanMeta,
+  hiddenVanMeta,
   dummyVanMeta,
   DUMMY_VAN_LABEL,
   DUMMY_VAN_NUMBER,
@@ -3552,6 +3553,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
         const vanMeta = { ...current.vanMeta }
         delete vanMeta[String(van)]
+        if (!isVirtualVan(van) && van >= 1 && van <= 3) {
+          vanMeta[String(van)] = hiddenVanMeta()
+        }
         const linkedBoat = dropPartnerBoat
           ? findLinkedPartnerBoat(boatPlan, partnerCompany, partnerCompany, returning)
           : null

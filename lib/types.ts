@@ -575,8 +575,19 @@ export function normalizeChargeAmount(value: unknown) {
   return Math.round(amount)
 }
 
+const HIDDEN_VAN_MARK = '\u2062hidden'
+
+export function isHiddenVan(meta?: VanMeta | null) {
+  const label = meta?.label?.trim() || unpackVanPlate(meta?.plate).label
+  return label === HIDDEN_VAN_MARK
+}
+
+export function hiddenVanMeta(): VanMeta {
+  return { plate: packVanPlate(HIDDEN_VAN_MARK, ''), label: HIDDEN_VAN_MARK, driver: '', phone: '' }
+}
+
 export function vanHasSavedMeta(meta?: VanMeta | null) {
-  if (!meta) return false
+  if (!meta || isHiddenVan(meta)) return false
   return (
     Boolean(meta.driver?.trim()) ||
     Boolean(meta.plate?.trim()) ||

@@ -60,6 +60,7 @@ import {
   isActiveBooking,
   isNoTransfer,
   isNoTransferVan,
+  isHiddenVan,
   isSpecialTransfer,
   NO_TRANSFER_VAN_LABEL,
   NO_TRANSFER_VAN_NUMBER,
@@ -95,13 +96,36 @@ import { cn } from '@/lib/utils'
 const DRAG_MIME = 'application/x-gday-van-codes'
 /** Always show this many van cards ready to receive guests. */
 const DEFAULT_DAY_VAN_COUNT = 3
+const SEAT_PRESETS = [12, 20, 24, 30, 40] as const
+
+function bookingNeedsPlacement(
+  booking: Booking,
+  plan: DayVehiclePlan,
+  boatPlan: DayBoatPlan,
+  dayCapacity: number,
+) {
+  const kind = bookingTransferKind(booking, plan, boatPlan)
+  if (kind === 'no_transfer' || kind === 'partner') return false
+  const pax = totalPassengers(booking)
+  if (pax <= dayCapacity) return false
+  const legs = plan.assignments[booking.code]
+  if (!legs?.length) return true
+  if (legs.length > 1) return false
+  return vanSeatCapacity(plan, legs[0].van) < pax
+}
 
 function listedDayVans(plan: DayVehiclePlan | null) {
   if (!plan) return [] as number[]
   const assigned = listFleetVanNumbers(plan.assignments)
   const saved = Object.keys(plan.vanMeta ?? {})
     .map(Number)
-    .filter((van) => Number.isFinite(van) && van >= 1 && !isVirtualVan(van))
+    .filter(
+      (van) =>
+        Number.isFinite(van) &&
+        van >= 1 &&
+        !isVirtualVan(van) &&
+        !isHiddenVan(plan.vanMeta[String(van)]),
+    )
   return [...new Set([...assigned, ...saved])]
 }
 
@@ -132,9 +156,12 @@ function partnerBoatLinkedToVan(plan: DayVehiclePlan, boatPlan: DayBoatPlan, boa
 }
 
 function nextAvailableVan(plan: DayVehiclePlan | null) {
-  const listed = listedDayVans(plan)
-  const maxVan = listed.length > 0 ? Math.max(...listed) : 0
-  return Math.max(maxVan, DEFAULT_DAY_VAN_COUNT) + 1
+  const used = new Set(listedDayVans(plan))
+  for (let van = 1; van < DEFAULT_DAY_VAN_COUNT + 40; van += 1) {
+    if (isVirtualVan(van)) continue
+    if (!used.has(van)) return van
+  }
+  return Math.max(0, ...used) + 1
 }
 
 function readDragCodes(event: React.DragEvent, fallback: string[] | null): string[] {
@@ -402,15 +429,24 @@ function ProgramPickCard({
   )
 }
 
-function vanCardTitle(van: number, crew: VanMeta, flags?: { empty?: boolean; noTransfer?: boolean }) {
-  if (flags?.empty) return `New van ${van}`
-  if (flags?.noTransfer) return NO_TRANSFER_VAN_LABEL
-  if (crew.specialKind === 'partner') return crew.outsourceCompany || crew.label || 'Tour partner'
-  if (crew.specialKind === 'private' || crew.specialKind === 'outsource') {
-    return crew.label || `${specialTransferKindLabel(crew.specialKind)} ${van}`
+function vanDisplayName(crew: VanMeta) {
+  if (crew.specialKind === 'partner') {
+    return (crew.outsourceCompany || crew.label || '').trim()
   }
   const custom = crew.label?.trim() ?? ''
   if (custom && custom !== 'Company van') return custom
+  return ''
+}
+
+function vanCardTitle(van: number, crew: VanMeta, flags?: { empty?: boolean; noTransfer?: boolean }) {
+  if (flags?.noTransfer) return NO_TRANSFER_VAN_LABEL
+  const named = vanDisplayName(crew)
+  if (named) return named
+  if (flags?.empty) return `New van ${van}`
+  if (crew.specialKind === 'private' || crew.specialKind === 'outsource') {
+    return `${specialTransferKindLabel(crew.specialKind)} ${van}`
+  }
+  if (crew.specialKind === 'partner') return 'Tour partner'
   return `Van ${van}`
 }
 
@@ -441,12 +477,21 @@ function VanNameField({
   const title = vanCardTitle(van, meta, { empty, noTransfer })
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(title)
-  const locked = empty || noTransfer
+  const locked = noTransfer
+
+  function startEditing() {
+    setDraft(vanDisplayName(meta))
+    setEditing(true)
+  }
 
   function commit() {
     const next = draft.trim()
     setEditing(false)
-    if (!next || next === title) {
+    if (!next) {
+      setDraft(title)
+      return
+    }
+    if (next === title || next === vanDisplayName(meta)) {
       setDraft(title)
       return
     }
@@ -472,6 +517,7 @@ function VanNameField({
             setEditing(false)
           }
         }}
+        placeholder={`Van ${van}`}
         className="h-7 max-w-[11rem] px-2 text-sm font-semibold"
       />
     )
@@ -484,8 +530,7 @@ function VanNameField({
       className="flex min-w-0 items-center gap-1 text-left"
       onClick={(event) => {
         event.stopPropagation()
-        setDraft(title)
-        setEditing(true)
+        startEditing()
       }}
     >
       <p className="truncate text-sm font-semibold text-teal-950">{title}</p>
@@ -735,6 +780,23 @@ function VanCapacityButton({
             +
           </Button>
         </div>
+        <div className="flex flex-wrap gap-1">
+          {SEAT_PRESETS.map((preset) => (
+            <button
+              key={preset}
+              type="button"
+              className={cn(
+                'rounded-md px-1.5 py-1 text-[10px] font-semibold',
+                seats === preset
+                  ? 'bg-teal-800 text-white'
+                  : 'bg-teal-950/[0.05] text-teal-900 hover:bg-teal-100',
+              )}
+              onClick={() => onChange(preset)}
+            >
+              {preset <= DEFAULT_VAN_CAPACITY ? `Van ${preset}` : `Bus ${preset}`}
+            </button>
+          ))}
+        </div>
         <Button
           type="button"
           variant="ghost"
@@ -746,7 +808,7 @@ function VanCapacityButton({
           Reset to {defaultSeats}
         </Button>
         <p className="text-[11px] leading-relaxed text-teal-800/55">
-          Only for this day. Other vans keep their own seat count.
+          Raise seats if this card is a bus. Only for this day.
         </p>
       </PopoverContent>
     </Popover>
@@ -880,17 +942,26 @@ function VehicleBoard({
 
   const capacity = plan.vanCapacity || DEFAULT_VAN_CAPACITY
   const listedVans = listedDayVans(plan)
-  const maxVan = listedVans.length > 0 ? Math.max(...listedVans) : 0
-  const nextEmptyVan = Math.max(maxVan, DEFAULT_DAY_VAN_COUNT) + 1
+  const nextEmptyVan = nextAvailableVan(plan)
+  const hiddenDefaults = new Set(
+    Object.entries(plan.vanMeta ?? {})
+      .filter(([, meta]) => isHiddenVan(meta))
+      .map(([key]) => Number(key))
+      .filter((van) => Number.isFinite(van) && van >= 1 && van <= DEFAULT_DAY_VAN_COUNT),
+  )
   const showNoTransferCard =
-    Boolean(plan.vanMeta[String(NO_TRANSFER_VAN_NUMBER)]) ||
+    Boolean(plan.vanMeta[String(NO_TRANSFER_VAN_NUMBER)]) &&
+    !isHiddenVan(plan.vanMeta[String(NO_TRANSFER_VAN_NUMBER)]) ||
     Object.values(plan.assignments).some((legs) =>
       legs.some((leg) => isNoTransferVan(leg.van)),
     )
-  const boardVans = Array.from(
-    { length: Math.max(DEFAULT_DAY_VAN_COUNT, maxVan) },
-    (_, i) => i + 1,
-  ).concat(showNoTransferCard ? [NO_TRANSFER_VAN_NUMBER] : [])
+  const defaultVans = Array.from({ length: DEFAULT_DAY_VAN_COUNT }, (_, i) => i + 1).filter(
+    (van) => !hiddenDefaults.has(van),
+  )
+  const extraVans = listedVans.filter((van) => van > DEFAULT_DAY_VAN_COUNT)
+  const boardVans = [...new Set([...defaultVans, ...extraVans])].sort((a, b) => a - b).concat(
+    showNoTransferCard ? [NO_TRANSFER_VAN_NUMBER] : [],
+  )
 
   useEffect(() => {
     setSheetQuery('')
@@ -987,21 +1058,35 @@ function VehicleBoard({
     }
     for (const booking of listBookings) {
       const kind = bookingTransferKind(booking, plan, boatPlan)
-      counts[kind] += 1
-      if (kind === 'unassigned') counts.all += 1
+      const waiting =
+        (plan.assignments[booking.code]?.length ?? 0) === 0 && !boatPlan.assignments[booking.code]
+      if (kind === 'unassigned' || kind === 'no_transfer') {
+        if (waiting) {
+          counts[kind] += 1
+          counts.all += 1
+        }
+      } else {
+        counts[kind] += 1
+      }
     }
     return counts
   }, [listBookings, plan, boatPlan])
 
   const sheetRows = useMemo(() => {
     let rows = listBookings
+    const waiting = (booking: Booking) =>
+      (plan.assignments[booking.code]?.length ?? 0) === 0 && !boatPlan.assignments[booking.code]
     if (kindFilter === 'no_transfer') {
       rows = rows.filter(
-        (booking) => bookingTransferKind(booking, plan, boatPlan) === 'no_transfer',
+        (booking) =>
+          waiting(booking) && bookingTransferKind(booking, plan, boatPlan) === 'no_transfer',
       )
     } else {
       rows = rows.filter(
-        (booking) => bookingTransferKind(booking, plan, boatPlan) === 'unassigned',
+        (booking) =>
+          waiting(booking) &&
+          (bookingTransferKind(booking, plan, boatPlan) === 'unassigned' ||
+            bookingTransferKind(booking, plan, boatPlan) === 'no_transfer'),
       )
     }
     const q = sheetQuery.trim().toLowerCase()
@@ -1022,10 +1107,7 @@ function VehicleBoard({
     })
   }, [listBookings, sheetQuery, kindFilter, plan, boatPlan])
 
-  const selectableSheetRows = useMemo(
-    () => sheetRows.filter((booking) => totalPassengers(booking) <= capacity),
-    [sheetRows, capacity],
-  )
+  const selectableSheetRows = sheetRows
 
   const selectedList = useMemo(
     () => [...selectedCodes].filter((code) => selectableSheetRows.some((b) => b.code === code)),
@@ -1078,15 +1160,7 @@ function VehicleBoard({
   }
 
   function assignDropped(codes: string[], van: number | null) {
-    const unique = [...new Set(codes)].filter((code) => {
-      const booking = bookings.find((b) => b.code === code)
-      if (!booking) return false
-      if (van === null || isVirtualVan(van)) return true
-      const legs = plan.assignments[code]
-      const vanCap = vanSeatCapacity(plan, van)
-      const needsSplit = totalPassengers(booking) > vanCap && (legs?.length ?? 0) <= 1
-      return !needsSplit
-    })
+    const unique = [...new Set(codes)].filter((code) => bookings.some((b) => b.code === code))
     if (unique.length === 0) return
     onAssignMany(unique, van)
     setSelectedCodes(new Set())
@@ -1168,14 +1242,9 @@ function VehicleBoard({
   const assignedCount = bookings.filter((b) => (plan.assignments[b.code]?.length ?? 0) > 0).length
   const noTransferPax = noTransferBookings.reduce((sum, b) => sum + totalPassengers(b), 0)
 
-  const needsSeparate = bookings.filter((booking) => {
-    const kind = bookingTransferKind(booking, plan, boatPlan)
-    if (kind === 'no_transfer' || kind === 'partner') return false
-    const pax = totalPassengers(booking)
-    const legs = plan.assignments[booking.code]
-    if (pax <= capacity) return false
-    return !legs?.length || legs.length === 1
-  })
+  const needsSeparate = bookings.filter((booking) =>
+    bookingNeedsPlacement(booking, plan, boatPlan, capacity),
+  )
 
   const byVan = boardVans.map((van) => {
     const isNoTransferCard = isNoTransferVan(van)
@@ -1329,11 +1398,11 @@ function VehicleBoard({
       {needsSeparate.length > 0 ? (
         <div className="mb-5 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 print:hidden sm:px-5">
           <p className="text-sm font-semibold text-amber-950">
-            Needs Separate Van · {needsSeparate.length} booking
+            Large group · {needsSeparate.length} booking
             {needsSeparate.length === 1 ? '' : 's'} over {capacity} pax
           </p>
           <p className="mt-1 text-sm text-amber-900/70">
-            Open Separate Van and choose how many guests go on each van before dragging.
+            Keep everyone on the same van or bus (raise seats), or split across vans.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             {needsSeparate.map((booking) => (
@@ -1494,7 +1563,7 @@ function VehicleBoard({
                   <div className="space-y-1">
                     {sheetRows.map((booking) => {
                       const pax = totalPassengers(booking)
-                      const needsSplit = pax > capacity
+                      const largeGroup = pax > capacity
                       const checked = selectedCodes.has(booking.code)
                       const isDragging = dragCodes?.includes(booking.code)
                       const transferKind = bookingTransferKind(booking, plan, boatPlan)
@@ -1502,12 +1571,8 @@ function VehicleBoard({
                       return (
                         <div
                           key={booking.code}
-                          draggable={!needsSplit}
+                          draggable
                           onDragStart={(event) => {
-                            if (needsSplit) {
-                              event.preventDefault()
-                              return
-                            }
                             beginDrag(event, codesForDrag(booking.code))
                           }}
                           onDragEnd={() => {
@@ -1515,35 +1580,30 @@ function VehicleBoard({
                             setDropTarget(null)
                           }}
                           onClick={() => {
-                            if (!needsSplit) toggleCode(booking.code)
+                            toggleCode(booking.code)
                           }}
                           className={cn(
-                            'rounded-lg border px-2 py-1.5 transition-all select-none',
-                            needsSplit
-                              ? 'cursor-default border-amber-300 bg-amber-50'
-                              : 'cursor-grab border-teal-900/8 bg-white active:cursor-grabbing',
-                            checked &&
-                              !needsSplit &&
-                              'border-teal-600/40 bg-teal-50 shadow-sm',
+                            'cursor-grab rounded-lg border px-2 py-1.5 transition-all select-none active:cursor-grabbing',
+                            largeGroup
+                              ? 'border-amber-300 bg-amber-50'
+                              : 'border-teal-900/8 bg-white',
+                            checked && 'border-teal-600/40 bg-teal-50 shadow-sm',
                             isDragging && 'opacity-40',
-                            !needsSplit &&
-                              !checked &&
-                              'hover:border-teal-700/25 hover:bg-teal-50/40',
+                            !checked &&
+                              (largeGroup
+                                ? 'hover:border-amber-400 hover:bg-amber-50/80'
+                                : 'hover:border-teal-700/25 hover:bg-teal-50/40'),
                           )}
                         >
                           <div className="flex items-center gap-1.5">
-                            {!needsSplit ? (
-                              <input
-                                type="checkbox"
-                                className="size-3.5 shrink-0 rounded border-teal-900/25 accent-teal-700"
-                                checked={checked}
-                                onClick={(event) => event.stopPropagation()}
-                                onChange={() => toggleCode(booking.code)}
-                                aria-label={`Select ${booking.leadGuest}`}
-                              />
-                            ) : (
-                              <span className="size-3.5 shrink-0" />
-                            )}
+                            <input
+                              type="checkbox"
+                              className="size-3.5 shrink-0 rounded border-teal-900/25 accent-teal-700"
+                              checked={checked}
+                              onClick={(event) => event.stopPropagation()}
+                              onChange={() => toggleCode(booking.code)}
+                              aria-label={`Select ${booking.leadGuest}`}
+                            />
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center justify-between gap-2">
                                 <p className="truncate text-[13px] leading-tight font-semibold text-teal-950">
@@ -1558,7 +1618,7 @@ function VehicleBoard({
                                 <span
                                   className={cn(
                                     'shrink-0 rounded px-1 py-px text-[10px] font-semibold tabular-nums',
-                                    needsSplit
+                                    largeGroup
                                       ? 'bg-amber-200/80 text-amber-950'
                                       : 'bg-teal-950/[0.06] text-teal-900',
                                   )}
@@ -1588,7 +1648,7 @@ function VehicleBoard({
                                   </span>
                                 ) : null}
                               </div>
-                              {needsSplit ? (
+                              {largeGroup ? (
                                 <Button
                                   type="button"
                                   size="sm"
@@ -1600,13 +1660,11 @@ function VehicleBoard({
                                   }}
                                 >
                                   <SplitSquareVertical className="size-3" />
-                                  Separate Van
+                                  Same or split
                                 </Button>
                               ) : null}
                             </div>
-                            {!needsSplit ? (
-                              <GripVertical className="size-3.5 shrink-0 text-teal-800/30" />
-                            ) : null}
+                            <GripVertical className="size-3.5 shrink-0 text-teal-800/30" />
                           </div>
                         </div>
                       )
@@ -1992,22 +2050,20 @@ function VehicleBoard({
                                 </Button>
                               ) : null}
                             </div>
-                            {!isEmptySlot ? (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="ml-auto h-7 shrink-0 px-2 text-[11px] text-rose-800 hover:bg-rose-50 hover:text-rose-900"
-                                onClick={(event) => {
-                                  event.stopPropagation()
-                                  onRemoveVan(van)
-                                  if (openVan === van) setOpenVan(null)
-                                }}
-                              >
-                                <Trash2 className="size-3" />
-                                Delete
-                              </Button>
-                            ) : null}
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="ml-auto h-7 shrink-0 px-2 text-[11px] text-rose-800 hover:bg-rose-50 hover:text-rose-900"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                onRemoveVan(van)
+                                if (openVan === van) setOpenVan(null)
+                              }}
+                            >
+                              <Trash2 className="size-3" />
+                              Delete
+                            </Button>
                           </div>
                         </div>
 
@@ -2800,14 +2856,22 @@ function VehicleBoard({
       <SeparateVanDialog
         booking={splitBooking}
         capacity={capacity}
+        vehiclePlan={plan}
+        boardVans={boardVans.filter((van) => !isNoTransferVan(van))}
         existingLegs={splitBooking ? plan.assignments[splitBooking.code] : undefined}
-        nextVanHint={maxVan + 1}
+        nextVanHint={nextEmptyVan}
         open={splitCode !== null}
         onOpenChange={(open) => {
           if (!open) setSplitCode(null)
         }}
-        onSave={(legs) => {
+        onSave={(legs, vehicle) => {
           if (!splitBooking) return
+          if (vehicle) {
+            onVanMeta(vehicle.van, {
+              capacity: vehicle.seats,
+              ...(vehicle.label ? { label: vehicle.label } : {}),
+            })
+          }
           onSaveSplits(splitBooking.code, legs)
           setSplitCode(null)
         }}
@@ -3142,6 +3206,8 @@ function VehicleBoard({
 function SeparateVanDialog({
   booking,
   capacity,
+  vehiclePlan,
+  boardVans,
   existingLegs,
   nextVanHint,
   open,
@@ -3150,30 +3216,58 @@ function SeparateVanDialog({
 }: {
   booking: Booking | null
   capacity: number
+  vehiclePlan: DayVehiclePlan
+  boardVans: number[]
   existingLegs?: VanSplit[]
   nextVanHint: number
   open: boolean
   onOpenChange: (open: boolean) => void
-  onSave: (legs: VanSplit[]) => void
+  onSave: (
+    legs: VanSplit[],
+    vehicle?: { van: number; seats: number; label?: string },
+  ) => void
 }) {
   const total = booking ? totalPassengers(booking) : 0
   const bookingCode = booking?.code ?? null
+  const [mode, setMode] = useState<'same' | 'split'>('same')
+  const [sameVan, setSameVan] = useState(1)
+  const [sameSeats, setSameSeats] = useState(capacity)
   const [legs, setLegs] = useState<VanSplit[]>([])
   const [error, setError] = useState('')
 
   useEffect(() => {
     if (!open || !booking) return
     const start = Math.max(1, nextVanHint)
-    const seed =
-      existingLegs && existingLegs.length > 1
-        ? existingLegs.map((leg) => ({
-            ...leg,
-            pax: currentPaxOnVan(existingLegs, leg.van, totalPassengers(booking)),
-          }))
-        : suggestVanSplit(totalPassengers(booking), capacity, start)
-    setLegs(seed)
+    const existing = existingLegs?.filter((leg) => leg.van > 0) ?? []
+    const firstVan = existing[0]?.van || boardVans[0] || 1
+    const seats = clampVanCapacity(
+      Math.max(totalPassengers(booking), vanSeatCapacity(vehiclePlan, firstVan), capacity),
+    )
+    setSameVan(firstVan)
+    setSameSeats(seats)
+    if (existing.length > 1) {
+      setMode('split')
+      setLegs(
+        existing.map((leg) => ({
+          ...leg,
+          pax: currentPaxOnVan(existing, leg.van, totalPassengers(booking)),
+        })),
+      )
+    } else {
+      setMode('same')
+      setLegs(suggestVanSplit(totalPassengers(booking), capacity, start))
+    }
     setError('')
-  }, [open, booking, bookingCode, capacity, existingLegs, nextVanHint])
+  }, [open, bookingCode])
+
+  function pickSameVan(van: number) {
+    const next = Math.max(1, Math.floor(van) || 1)
+    setSameVan(next)
+    setSameSeats(
+      clampVanCapacity(Math.max(total, vanSeatCapacity(vehiclePlan, next), capacity)),
+    )
+    setError('')
+  }
 
   const assigned = legs.reduce((sum, leg) => sum + (Number(leg.pax) || 0), 0)
   const remaining = total - assigned
@@ -3187,6 +3281,22 @@ function SeparateVanDialog({
 
   function handleSave() {
     if (!booking) return
+    if (mode === 'same') {
+      const van = Math.max(1, Math.floor(Number(sameVan) || 0))
+      if (van < 1) {
+        setError('Choose a van number.')
+        return
+      }
+      const seats = clampVanCapacity(Math.max(total, Number(sameSeats) || total))
+      const named = vanDisplayName(vehiclePlan.vanMeta[String(van)] ?? emptyVanMeta())
+      onSave([{ van, pax: total, sortOrder: 0 }], {
+        van,
+        seats,
+        label: seats > DEFAULT_VAN_CAPACITY && !named ? 'Bus' : undefined,
+      })
+      return
+    }
+
     const cleaned = legs
       .map((leg, index) => ({
         van: Math.max(1, Math.floor(Number(leg.van) || 0)),
@@ -3214,101 +3324,203 @@ function SeparateVanDialog({
           <>
             <DialogHeader>
               <DialogTitle className="pr-8 font-display text-lg font-semibold text-teal-950">
-                Separate Van
+                Same van or split
               </DialogTitle>
               <DialogDescription className="text-sm text-teal-900/55">
-                {booking.leadGuest} · {total} pax (over {capacity}). Choose how many guests go on
-                each van.
+                {booking.leadGuest} · {total} pax. Keep the group together (van or bus) or split
+                across vans.
               </DialogDescription>
             </DialogHeader>
 
-            <div className="mt-2 space-y-3">
-              {legs.map((leg, index) => (
-                <div
-                  key={`leg-${index}`}
-                  className="grid grid-cols-[1fr_1fr_auto] items-end gap-2"
-                >
-                  <div className="space-y-1">
-                    <Label htmlFor={`split-van-${index}`}>Van #</Label>
-                    <Input
-                      id={`split-van-${index}`}
-                      type="number"
-                      min={1}
-                      value={leg.van}
-                      onChange={(event) =>
-                        updateLeg(index, { van: Number(event.target.value) || 1 })
-                      }
-                      className="h-10"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor={`split-pax-${index}`}>Pax</Label>
-                    <Input
-                      id={`split-pax-${index}`}
-                      type="number"
-                      min={1}
-                      value={leg.pax}
-                      onChange={(event) =>
-                        updateLeg(index, { pax: Number(event.target.value) || 0 })
-                      }
-                      className="h-10"
-                    />
-                  </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon"
-                    className="h-10 w-10"
-                    disabled={legs.length <= 2}
-                    onClick={() => setLegs((current) => current.filter((_, i) => i !== index))}
-                    aria-label="Remove van leg"
-                  >
-                    <Trash2 className="size-4" />
-                  </Button>
-                </div>
-              ))}
-
-              <Button
+            <div className="mt-1 grid grid-cols-2 gap-1 rounded-xl bg-teal-950/[0.05] p-1">
+              <button
                 type="button"
-                variant="outline"
-                className="w-full"
+                className={cn(
+                  'rounded-lg px-2 py-1.5 text-xs font-semibold',
+                  mode === 'same' ? 'bg-white text-teal-950 shadow-sm' : 'text-teal-900/60',
+                )}
                 onClick={() => {
-                  const used = new Set(legs.map((leg) => leg.van))
-                  let van = Math.max(1, nextVanHint)
-                  while (used.has(van)) van += 1
-                  setLegs((current) => [
-                    ...current,
-                    { van, pax: Math.max(0, remaining) || 1, sortOrder: current.length },
-                  ])
+                  setMode('same')
                   setError('')
                 }}
               >
-                <Plus data-icon="inline-start" />
-                Add van
-              </Button>
-
-              <div
+                Same van / bus
+              </button>
+              <button
+                type="button"
                 className={cn(
-                  'rounded-xl px-3 py-2 text-sm',
-                  remaining === 0 ? 'bg-teal-50 text-teal-800' : 'bg-amber-50 text-amber-900',
+                  'rounded-lg px-2 py-1.5 text-xs font-semibold',
+                  mode === 'split' ? 'bg-white text-teal-950 shadow-sm' : 'text-teal-900/60',
                 )}
+                onClick={() => {
+                  setMode('split')
+                  setError('')
+                }}
               >
-                Assigned {assigned} / {total} pax
-                {remaining === 0
-                  ? ' · ready to save'
-                  : remaining > 0
-                    ? ` · ${remaining} still to place`
-                    : ` · ${Math.abs(remaining)} over`}
-              </div>
-              {error ? <p className="text-sm text-red-600">{error}</p> : null}
+                Separate vans
+              </button>
             </div>
+
+            {mode === 'same' ? (
+              <div className="mt-3 space-y-3">
+                <div className="space-y-1.5">
+                  <Label>Put this group on</Label>
+                  <div className="flex flex-wrap gap-1">
+                    {boardVans.map((van) => (
+                      <button
+                        key={van}
+                        type="button"
+                        className={cn(
+                          'rounded-md px-2 py-1 text-[11px] font-semibold',
+                          sameVan === van
+                            ? 'bg-teal-800 text-white'
+                            : 'bg-teal-950/[0.05] text-teal-900 hover:bg-teal-100',
+                        )}
+                        onClick={() => pickSameVan(van)}
+                      >
+                        {vanCardTitle(van, vehiclePlan.vanMeta[String(van)] ?? emptyVanMeta())}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="same-van">Van #</Label>
+                    <Input
+                      id="same-van"
+                      type="number"
+                      min={1}
+                      value={sameVan}
+                      onChange={(event) => pickSameVan(Number(event.target.value) || 1)}
+                      className="h-10"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="same-seats">Seats</Label>
+                    <Input
+                      id="same-seats"
+                      type="number"
+                      min={MIN_VAN_CAPACITY}
+                      max={MAX_VAN_CAPACITY}
+                      value={sameSeats}
+                      onChange={(event) =>
+                        setSameSeats(clampVanCapacity(Number(event.target.value)))
+                      }
+                      className="h-10"
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {SEAT_PRESETS.map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      className={cn(
+                        'rounded-md px-1.5 py-1 text-[10px] font-semibold',
+                        sameSeats === preset
+                          ? 'bg-teal-800 text-white'
+                          : 'bg-teal-950/[0.05] text-teal-900 hover:bg-teal-100',
+                      )}
+                      onClick={() => setSameSeats(preset)}
+                    >
+                      {preset <= DEFAULT_VAN_CAPACITY ? `Van ${preset}` : `Bus ${preset}`}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[12px] leading-relaxed text-teal-900/55">
+                  All {total} guests stay on one vehicle. Raise seats if this is a bus.
+                </p>
+                {error ? <p className="text-sm text-red-600">{error}</p> : null}
+              </div>
+            ) : (
+              <div className="mt-3 space-y-3">
+                {legs.map((leg, index) => (
+                  <div
+                    key={`leg-${index}`}
+                    className="grid grid-cols-[1fr_1fr_auto] items-end gap-2"
+                  >
+                    <div className="space-y-1">
+                      <Label htmlFor={`split-van-${index}`}>Van #</Label>
+                      <Input
+                        id={`split-van-${index}`}
+                        type="number"
+                        min={1}
+                        value={leg.van}
+                        onChange={(event) =>
+                          updateLeg(index, { van: Number(event.target.value) || 1 })
+                        }
+                        className="h-10"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor={`split-pax-${index}`}>Pax</Label>
+                      <Input
+                        id={`split-pax-${index}`}
+                        type="number"
+                        min={1}
+                        value={leg.pax}
+                        onChange={(event) =>
+                          updateLeg(index, { pax: Number(event.target.value) || 0 })
+                        }
+                        className="h-10"
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="h-10 w-10"
+                      disabled={legs.length <= 2}
+                      onClick={() => setLegs((current) => current.filter((_, i) => i !== index))}
+                      aria-label="Remove van leg"
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
+                ))}
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => {
+                    const used = new Set(legs.map((leg) => leg.van))
+                    let van = Math.max(1, nextVanHint)
+                    while (used.has(van)) van += 1
+                    setLegs((current) => [
+                      ...current,
+                      { van, pax: Math.max(0, remaining) || 1, sortOrder: current.length },
+                    ])
+                    setError('')
+                  }}
+                >
+                  <Plus data-icon="inline-start" />
+                  Add van
+                </Button>
+
+                <div
+                  className={cn(
+                    'rounded-xl px-3 py-2 text-sm',
+                    remaining === 0 ? 'bg-teal-50 text-teal-800' : 'bg-amber-50 text-amber-900',
+                  )}
+                >
+                  Assigned {assigned} / {total} pax
+                  {remaining === 0
+                    ? ' · ready to save'
+                    : remaining > 0
+                      ? ` · ${remaining} still to place`
+                      : ` · ${Math.abs(remaining)} over`}
+                </div>
+                {error ? <p className="text-sm text-red-600">{error}</p> : null}
+              </div>
+            )}
 
             <DialogFooter className="mt-4">
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
                 Cancel
               </Button>
               <Button type="button" onClick={handleSave}>
-                Save split
+                {mode === 'same' ? 'Keep together' : 'Save split'}
               </Button>
             </DialogFooter>
           </>
