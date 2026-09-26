@@ -167,6 +167,8 @@ create table if not exists public.day_boat_plans (
   /** Source of truth for boat count + per-boat seats (e.g. [50,50,60]). */
   capacities jsonb not null default '[50, 50, 50]'::jsonb,
   boat_names jsonb not null default '["","",""]'::jsonb,
+  boat_kinds jsonb not null default '["own","own","own"]'::jsonb,
+  boat_labels jsonb not null default '["","",""]'::jsonb,
   boat_guides jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now()),

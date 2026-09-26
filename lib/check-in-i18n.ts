@@ -21,6 +21,8 @@ const COPY = {
     invalidQr: 'This check-in QR is not valid. Please ask marina staff for a new code.',
     cancelledBooking: 'This booking is cancelled. Please ask marina staff for help.',
     noShowBooking: 'This booking was marked no-show. Please ask marina staff for help.',
+    partnerSent:
+      'This booking was sent to another company. Please ask marina staff for help — there is no guest check-in QR.',
     programMismatch: 'Program does not match this booking. Please start again.',
     whichProgram: 'Which program today?',
     whichProgramSub: 'Choose the tour you are joining.',
@@ -161,6 +163,8 @@ const COPY = {
     invalidQr: 'यह चेक-इन QR मान्य नहीं है। कृपया स्टाफ से नया कोड माँगें।',
     cancelledBooking: 'यह बुकिंग रद्द है। कृपया मरीना स्टाफ से मदद लें।',
     noShowBooking: 'यह बुकिंग नो-शो चिह्नित है। कृपया मरीना स्टाफ से मदद लें।',
+    partnerSent:
+      'यह बुकिंग दूसरी कंपनी को भेजी गई है। कृपया मरीना स्टाफ से मदद लें — गेस्ट चेक-इन QR नहीं है।',
     programMismatch: 'प्रोग्राम इस बुकिंग से मेल नहीं खाता। कृपया फिर से शुरू करें।',
     whichProgram: 'आज कौन सा प्रोग्राम है?',
     whichProgramSub: 'जिस टूर में आप जा रहे हैं उसे चुनें।',

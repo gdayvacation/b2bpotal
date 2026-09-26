@@ -38,6 +38,7 @@ import {
   emptyBoatGuide,
   isActiveBooking,
   isNoTransfer,
+  isPartnerBoat,
   totalPassengers,
   type BoatGuide,
   type BoatNumber,
@@ -48,11 +49,11 @@ import {
 import {
   allocatePaxBreakdown,
   bookingPaxOnVan,
-  listVanNumbers,
+  listFleetVanNumbers,
   primaryVan,
   sortOrderOnVan,
 } from '@/lib/vehicle-assign'
-import { boatTheme } from '@/lib/boat-theme'
+import { boatThemeFor } from '@/lib/boat-theme'
 import {
   formatCheckInServicesOption,
   type CheckInServiceLine,
@@ -144,6 +145,7 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
     assignVanToBoat,
     setBoatCapacity,
     addDayBoat,
+    addPartnerBoat,
     removeDayBoat,
     resetDayBoatCapacities,
     resetDayBoatFleet,
@@ -156,6 +158,7 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
     getCheckInServices,
     getCheckInNote,
     setBoatName,
+    setBoatLabel,
     setBoatGuide,
   } = usePortal()
 
@@ -425,6 +428,14 @@ function BoatDailyBoard({ onBack }: { onBack: () => void }) {
             addDayBoat(selectedDate, program, capacity, draft)
             markDraft()
           }}
+          onAddPartnerBoat={() => {
+            addPartnerBoat(selectedDate, program, draft)
+            markDraft()
+          }}
+          onSetLabel={(boat, label) => {
+            setBoatLabel(selectedDate, program, boat, label, draft)
+            markDraft()
+          }}
           onRemoveBoat={(boat) => {
             removeDayBoat(selectedDate, program, boat, draft)
             markDraft()
@@ -524,6 +535,8 @@ function BoatBoard({
   onRename,
   onSetGuide,
   onAddBoat,
+  onAddPartnerBoat,
+  onSetLabel,
   onRemoveBoat,
   onResetCapacities,
   onResetFleet,
@@ -553,6 +566,8 @@ function BoatBoard({
   onRename: (boat: BoatNumber, name: string) => void
   onSetGuide: (boat: BoatNumber, guide: Partial<BoatGuide>) => void
   onAddBoat: (capacity?: number) => void
+  onAddPartnerBoat: () => void
+  onSetLabel: (boat: BoatNumber, label: string) => void
   onRemoveBoat: (boat: BoatNumber) => void
   onResetCapacities: () => void
   onResetFleet: () => void
@@ -611,7 +626,7 @@ function BoatBoard({
   const noVanBookings = transferBookings.filter((b) => primaryVan(vanAssignments[b.code]) === null)
 
   const vanGroups = useMemo(() => {
-    const vans = listVanNumbers(vanAssignments)
+    const vans = listFleetVanNumbers(vanAssignments)
     return vans
       .map((van) => {
         const items = transferBookings
@@ -837,6 +852,15 @@ function BoatBoard({
                   <Plus data-icon="inline-start" />
                   Add boat
                 </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!canAddBoat}
+                  onClick={onAddPartnerBoat}
+                >
+                  Send to Partner
+                </Button>
                 <div className="flex items-center gap-1.5 rounded-xl border border-teal-900/12 bg-white px-2 py-1">
                   <input
                     type="number"
@@ -1017,7 +1041,7 @@ function BoatBoard({
                               onClick={() => onAssignVan(group.van, boat)}
                               className={cn(
                                 'rounded-xl px-2 py-2 text-xs font-semibold transition-colors',
-                                boatTheme(boat).badge,
+                                boatThemeFor(plan, boat).badge,
                               )}
                             >
                               {boatDisplayName(plan, boat)}
@@ -1064,7 +1088,7 @@ function BoatBoard({
                               onClick={() => onAssignVan(group.van, boat)}
                               className={cn(
                                 'rounded-lg px-2 py-1.5 text-xs font-semibold text-white',
-                                boatTheme(boat).badge,
+                                boatThemeFor(plan, boat).badge,
                               )}
                             >
                               {boatDisplayName(plan, boat)}
@@ -1151,10 +1175,13 @@ function BoatBoard({
               {boatNumbers.map((boat) => {
                 const capacity = plan.capacities[boat - 1] ?? DEFAULT_BOAT_CAPACITY
                 const { vansHere, freeGuests, looseGuests, pax: loadPax } = boatArrangement(boat)
-                const over = loadPax > capacity
+                const partner = isPartnerBoat(plan, boat)
+                const over = !partner && loadPax > capacity
                 const bookingCount =
-                  vansHere.reduce((sum, group) => sum + group.items.length, 0) + freeGuests.length
-                const theme = boatTheme(boat)
+                  vansHere.reduce((sum, group) => sum + group.items.length, 0) +
+                  freeGuests.length +
+                  looseGuests.length
+                const theme = boatThemeFor(plan, boat)
                 return (
                   <Surface
                     key={boat}
@@ -1180,7 +1207,33 @@ function BoatBoard({
                     <div className={cn('shrink-0 border-b px-4 py-3.5', theme.headerBorder)}>
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0 flex-1">
-                          {editingBoat === boat ? (
+                          {partner ? (
+                            <div className="space-y-2 px-1 print:hidden">
+                              <p className="text-[10px] font-semibold tracking-wide text-neutral-500 uppercase">
+                                Send to Partner
+                              </p>
+                              <div className="grid grid-cols-[4.75rem_minmax(0,1fr)] gap-2">
+                                <input
+                                  type="text"
+                                  value={plan.labels[boat - 1] ?? ''}
+                                  maxLength={20}
+                                  placeholder="No."
+                                  onChange={(event) => onSetLabel(boat, event.target.value)}
+                                  className="h-8 w-full rounded-lg border border-neutral-200 bg-white px-2 text-sm font-semibold text-neutral-950 outline-none focus:border-neutral-400"
+                                  aria-label="Partner boat number"
+                                />
+                                <input
+                                  type="text"
+                                  value={plan.names[boat - 1] ?? ''}
+                                  maxLength={40}
+                                  placeholder="Boat name"
+                                  onChange={(event) => onRename(boat, event.target.value)}
+                                  className="h-8 w-full rounded-lg border border-neutral-200 bg-white px-2 text-sm font-semibold text-neutral-950 outline-none focus:border-neutral-400"
+                                  aria-label="Partner boat name"
+                                />
+                              </div>
+                            </div>
+                          ) : editingBoat === boat ? (
                             <input
                               type="text"
                               autoFocus
@@ -1224,6 +1277,11 @@ function BoatBoard({
                               </div>
                             </div>
                           )}
+                          {partner ? (
+                            <p className="hidden px-1 text-lg font-semibold text-neutral-950 print:block">
+                              {boatDisplayName(plan, boat)}
+                            </p>
+                          ) : null}
                         </div>
                         <div className="flex shrink-0 items-center gap-1.5">
                           <span
@@ -1245,8 +1303,9 @@ function BoatBoard({
                                 .join(' + ') || 'Empty'
                             }
                           >
-                            {loadPax}/{capacity}
+                            {partner ? `${loadPax} pax` : `${loadPax}/${capacity}`}
                           </span>
+                          {partner ? null : (
                           <Button
                             type="button"
                             variant="ghost"
@@ -1269,6 +1328,7 @@ function BoatBoard({
                           >
                             {editingBoat === boat ? 'Done' : 'Edit'}
                           </Button>
+                          )}
                           <Button
                             type="button"
                             variant="ghost"
@@ -1500,7 +1560,7 @@ function BoatBoard({
             {boatNumbers.map((boat) => {
               const guide = plan.guides?.[boat - 1] ?? emptyBoatGuide()
               const { vansHere, freeGuests, looseGuests, pax: loadPax } = boatArrangement(boat)
-              const theme = boatTheme(boat)
+              const theme = boatThemeFor(plan, boat)
               const hasAssistant =
                 Boolean(guide.assistantName.trim() || guide.assistantPhone.trim()) ||
                 showAssistantFor[boat] === true
@@ -1691,8 +1751,8 @@ function BoatBoard({
                       className={cn(
                         'rounded-xl px-3 py-3 text-sm font-semibold transition-colors',
                         plan.assignments[selectedGuest.code] === n
-                          ? boatTheme(n).badge
-                          : boatTheme(n).softBadge,
+                          ? boatThemeFor(plan, n).badge
+                          : boatThemeFor(plan, n).softBadge,
                       )}
                     >
                       {boatDisplayName(plan, n)}
@@ -1832,7 +1892,7 @@ function BoatBoard({
             rowNo += section.rows.length
             return { ...section, startNo }
           })
-          const theme = boatTheme(boat)
+          const theme = boatThemeFor(plan, boat)
 
           return (
             <div
@@ -2193,7 +2253,7 @@ function GuestBoatChip({
             onClick={() => onAssign(boat)}
             className={cn(
               'rounded-md px-2 py-1 text-[11px] font-semibold',
-              assignedBoat === boat ? boatTheme(boat).badge : boatTheme(boat).softBadge,
+              assignedBoat === boat ? boatThemeFor(plan, boat).badge : boatThemeFor(plan, boat).softBadge,
             )}
           >
             {labelForBoat(boat)}

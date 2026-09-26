@@ -39,16 +39,19 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { formatLongDate, formatShortDate, formatThb, toISODate } from '@/lib/format'
-import { boatTheme } from '@/lib/boat-theme'
+import { boatThemeFor } from '@/lib/boat-theme'
 import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
 import {
   DEFAULT_BOAT_CAPACITY,
   DEFAULT_VAN_CAPACITY,
   MIN_VAN_CAPACITY,
   MAX_VAN_CAPACITY,
+  MAX_DAY_BOATS,
   boatDisplayName,
   boatNumbersForPlan,
   clampVanCapacity,
+  isDummyVan,
+  isPartnerBoat,
   emptyVanMeta,
   formatPaxBreakdown,
   isActiveBooking,
@@ -72,7 +75,7 @@ import {
   allocatePaxBreakdown,
   bookingPaxOnVan,
   currentPaxOnVan,
-  listVanNumbers,
+  listFleetVanNumbers,
   sortOrderOnVan,
   suggestVanSplit,
 } from '@/lib/vehicle-assign'
@@ -84,11 +87,11 @@ const DEFAULT_DAY_VAN_COUNT = 4
 
 function nextAvailableVan(plan: DayVehiclePlan | null) {
   if (!plan) return DEFAULT_DAY_VAN_COUNT + 1
-  const assigned = listVanNumbers(plan.assignments)
+  const assigned = listFleetVanNumbers(plan.assignments)
   const saved = Object.entries(plan.vanMeta ?? {})
     .filter(([, meta]) => vanHasSavedMeta(meta))
     .map(([key]) => Number(key))
-    .filter((van) => Number.isFinite(van) && van >= 1)
+    .filter((van) => Number.isFinite(van) && van >= 1 && !isDummyVan(van))
   const maxVan =
     assigned.length > 0 || saved.length > 0 ? Math.max(0, ...assigned, ...saved) : 0
   return Math.max(maxVan, DEFAULT_DAY_VAN_COUNT) + 1
@@ -708,23 +711,30 @@ function VehicleBoard({
   specialVan: number | null
   onSpecialVan: (van: number | null) => void
 }) {
-  const { resolveVanMeta } = usePortal()
+  const {
+    resolveVanMeta,
+    addPartnerBoat,
+    removeDayBoat,
+    setBoatName,
+    setBoatLabel,
+    assignBookingToBoat,
+  } = usePortal()
   const [openVan, setOpenVan] = useState<number | null>(null)
   const [splitCode, setSplitCode] = useState<string | null>(null)
   const [sheetQuery, setSheetQuery] = useState('')
   const [activeZone, setActiveZone] = useState<string | null>(null)
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(() => new Set())
   const [dragCodes, setDragCodes] = useState<string[] | null>(null)
-  const [dropTarget, setDropTarget] = useState<'pool' | number | null>(null)
+  const [dropTarget, setDropTarget] = useState<'pool' | number | `boat-${number}` | null>(null)
   const [dragCode, setDragCode] = useState<string | null>(null)
   const [dragOverCode, setDragOverCode] = useState<string | null>(null)
 
   const capacity = plan.vanCapacity || DEFAULT_VAN_CAPACITY
-  const vanNumbers = listVanNumbers(plan.assignments)
+  const vanNumbers = listFleetVanNumbers(plan.assignments)
   const savedMetaVans = Object.entries(plan.vanMeta ?? {})
     .filter(([, meta]) => vanHasSavedMeta(meta))
     .map(([key]) => Number(key))
-    .filter((van) => Number.isFinite(van) && van >= 1)
+    .filter((van) => Number.isFinite(van) && van >= 1 && !isDummyVan(van))
   const maxVan =
     vanNumbers.length > 0 || savedMetaVans.length > 0
       ? Math.max(0, ...vanNumbers, ...savedMetaVans)
@@ -743,11 +753,24 @@ function VehicleBoard({
     setDropTarget(null)
   }, [date, program])
 
+  useEffect(() => {
+    for (const booking of bookings) {
+      const boat = boatPlan.assignments[booking.code]
+      if (!boat || !isPartnerBoat(boatPlan, boat)) continue
+      if (isNoTransfer(booking.pickupZone)) continue
+      if (plan.assignments[booking.code]?.length) continue
+      assignBookingToBoat(date, program, booking.code, boat)
+    }
+  }, [assignBookingToBoat, boatPlan, bookings, date, plan.assignments, program])
+
   const poolBookings = useMemo(() => {
     return [...bookings]
       .filter((booking) => {
         const legs = plan.assignments[booking.code]
-        return !legs?.length
+        if (legs?.length) return false
+        const boat = boatPlan.assignments[booking.code]
+        if (boat && isPartnerBoat(boatPlan, boat)) return false
+        return true
       })
       .sort((a, b) => {
         const needsA = totalPassengers(a) > capacity ? 0 : 1
@@ -760,7 +783,7 @@ function VehicleBoard({
           a.code.localeCompare(b.code)
         )
       })
-  }, [bookings, plan.assignments, capacity])
+  }, [bookings, boatPlan, plan.assignments, capacity])
 
   const zoneBar = useMemo(() => {
     const map = new Map<string, { count: number; pax: number }>()
@@ -915,6 +938,17 @@ function VehicleBoard({
     if (unique.length === 0) return
     onAssignMany(unique, van)
     setSelectedCodes(new Set())
+  }
+
+  function assignToPartnerBoat(codes: string[], boat: BoatNumber) {
+    const unique = [...new Set(codes)].filter((code) => bookings.some((item) => item.code === code))
+    if (unique.length === 0) return
+    for (const code of unique) {
+      assignBookingToBoat(date, program, code, boat)
+    }
+    setSelectedCodes(new Set())
+    setDragCodes(null)
+    setDropTarget(null)
   }
 
   const totalPax = bookings.reduce((sum, b) => sum + totalPassengers(b), 0)
@@ -1680,7 +1714,9 @@ function VehicleBoard({
                                 boatNumbers.length <= 3 ? 'grid-cols-3' : 'grid-cols-4',
                               )}
                             >
-                              {boatNumbers.map((boat) => (
+                              {boatNumbers.map((boat) => {
+                                const partner = isPartnerBoat(boatPlan, boat)
+                                return (
                                 <button
                                   key={boat}
                                   type="button"
@@ -1688,13 +1724,20 @@ function VehicleBoard({
                                   className={cn(
                                     'rounded-lg px-1.5 py-1.5 text-xs font-semibold transition-colors',
                                     assignedBoat === boat && !boatMixed
-                                      ? 'bg-teal-800 text-white'
-                                      : 'bg-teal-50 text-teal-800 hover:bg-teal-100',
+                                      ? partner
+                                        ? 'bg-neutral-800 text-white'
+                                        : 'bg-teal-800 text-white'
+                                      : partner
+                                        ? 'border border-neutral-200 bg-white text-neutral-800 hover:bg-neutral-50'
+                                        : 'bg-teal-50 text-teal-800 hover:bg-teal-100',
                                   )}
                                 >
-                                  {boat}
+                                  {partner
+                                    ? boatPlan.labels[boat - 1]?.trim() || 'P'
+                                    : boat}
                                 </button>
-                              ))}
+                                )
+                              })}
                             </div>
                           </div>
                         ) : null}
@@ -1706,7 +1749,7 @@ function VehicleBoard({
             </div>
           </div>
 
-          {byVan.some((v) => v.items.length > 0) || boatAssignedCount > 0 ? (
+          {bookings.length > 0 ? (
             <Surface className="p-4 sm:p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0">
@@ -1718,13 +1761,24 @@ function VehicleBoard({
                   </h3>
                   <p className="mt-1 text-sm text-teal-900/55">
                     Tap a boat number on each van card, or auto-assign so each van stays together.
-                    Default {DEFAULT_BOAT_CAPACITY} pax per boat.
+                    Default {DEFAULT_BOAT_CAPACITY} pax per boat. Overbooked leftovers can go on a
+                    partner boat with no color — write any number and name.
                     {noTransferBookings.length > 0
                       ? ` ${noTransferBookings.length} no-transfer booking${noTransferBookings.length === 1 ? '' : 's'} — use จัดการเรือ to place them freely.`
                       : ''}
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={boatNumbers.length >= MAX_DAY_BOATS}
+                    onClick={() => addPartnerBoat(date, program)}
+                  >
+                    <Plus data-icon="inline-start" />
+                    Send to Partner
+                  </Button>
                   <Button type="button" variant="outline" size="sm" onClick={onClearBoats}>
                     Clear boats
                   </Button>
@@ -1736,15 +1790,149 @@ function VehicleBoard({
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-3">
                 {byBoat.map(({ boat, capacity: boatCap, pax, items, over }) => {
-                  const theme = boatTheme(boat)
+                  const partner = isPartnerBoat(boatPlan, boat)
+                  const theme = boatThemeFor(boatPlan, boat)
+                  const boatDrop = dropTarget === `boat-${boat}`
                   return (
                   <div
                     key={boat}
                     className={cn(
                       'rounded-xl border px-3 py-3',
-                      over ? 'border-amber-400 bg-amber-50/50' : theme.sheet,
+                      partner
+                        ? cn(
+                            'border-neutral-200 bg-white',
+                            boatDrop && 'ring-2 ring-neutral-400/50',
+                          )
+                        : over
+                          ? 'border-amber-400 bg-amber-50/50'
+                          : theme.sheet,
                     )}
+                    onDragOver={
+                      partner
+                        ? (event) => {
+                            if (!dragCodes?.length) return
+                            event.preventDefault()
+                            event.dataTransfer.dropEffect = 'move'
+                            if (dropTarget !== `boat-${boat}`) setDropTarget(`boat-${boat}`)
+                          }
+                        : undefined
+                    }
+                    onDragLeave={
+                      partner
+                        ? () => {
+                            if (dropTarget === `boat-${boat}`) setDropTarget(null)
+                          }
+                        : undefined
+                    }
+                    onDrop={
+                      partner
+                        ? (event) => {
+                            event.preventDefault()
+                            const codes = readDragCodes(event, dragCodes)
+                            assignToPartnerBoat(codes, boat)
+                          }
+                        : undefined
+                    }
                   >
+                    {partner ? (
+                      <div className="space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="text-xs font-semibold tracking-wide text-neutral-500 uppercase">
+                            Send to Partner
+                          </p>
+                          <button
+                            type="button"
+                            className="text-neutral-400 hover:text-rose-700"
+                            title="Remove partner boat"
+                            onClick={() => {
+                              if (
+                                items.length > 0 &&
+                                !window.confirm(
+                                  'Remove this partner boat? Guests return to the leftover list.',
+                                )
+                              ) {
+                                return
+                              }
+                              removeDayBoat(date, program, boat)
+                            }}
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-2">
+                          <label className="space-y-1">
+                            <span className="block text-[10px] font-medium text-neutral-500">
+                              Number
+                            </span>
+                            <Input
+                              value={boatPlan.labels[boat - 1] ?? ''}
+                              onChange={(event) =>
+                                setBoatLabel(date, program, boat, event.target.value)
+                              }
+                              placeholder="e.g. 12"
+                              className="h-8 px-2 text-sm"
+                            />
+                          </label>
+                          <label className="space-y-1">
+                            <span className="block text-[10px] font-medium text-neutral-500">
+                              Boat name
+                            </span>
+                            <Input
+                              value={boatPlan.names[boat - 1] ?? ''}
+                              onChange={(event) =>
+                                setBoatName(date, program, boat, event.target.value)
+                              }
+                              placeholder="Other company boat"
+                              className="h-8 px-2 text-sm"
+                            />
+                          </label>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs text-neutral-500">
+                            {items.length} booking{items.length === 1 ? '' : 's'} · {pax} pax
+                          </p>
+                          {selectedList.length > 0 ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="h-7 bg-neutral-800 px-2 text-xs text-white hover:bg-neutral-900"
+                              onClick={() => assignToPartnerBoat(selectedList, boat)}
+                            >
+                              Add selected
+                            </Button>
+                          ) : null}
+                        </div>
+                        {items.length > 0 ? (
+                          <ul className="space-y-1">
+                            {items.map((booking) => (
+                              <li
+                                key={booking.code}
+                                className="flex items-center justify-between gap-2 rounded-lg bg-neutral-50 px-2 py-1 text-xs text-neutral-800"
+                              >
+                                <span className="min-w-0 truncate">
+                                  {booking.leadGuest} · {totalPassengers(booking)}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="shrink-0 text-neutral-400 hover:text-rose-700"
+                                  title="Return to guest list"
+                                  onClick={() =>
+                                    assignBookingToBoat(date, program, booking.code, null)
+                                  }
+                                >
+                                  ×
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="rounded-lg border border-dashed border-neutral-200 px-2 py-2 text-[11px] text-neutral-400">
+                            Drop leftover guests here to send them to another company.
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <>
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex min-w-0 items-start gap-1.5">
                         <span className={cn('mt-1 size-2.5 shrink-0 rounded-full', theme.swatch)} />
@@ -1774,14 +1962,16 @@ function VehicleBoard({
                     <p className="mt-1 text-xs text-teal-900/50">
                       {items.length} booking{items.length === 1 ? '' : 's'}
                     </p>
+                      </>
+                    )}
                   </div>
                   )
                 })}
               </div>
               {boatUnassignedPax > 0 ? (
                 <p className="mt-3 text-sm text-amber-900/80">
-                  {boatUnassignedPax} pax not on a boat yet — assign remaining vans or use
-                  Auto-assign boats.
+                  {boatUnassignedPax} pax not on a boat yet — assign remaining vans, or open a
+                  partner boat for overflow sent to another company.
                 </p>
               ) : boatAssignedCount > 0 ? (
                 <p className="mt-3 text-sm text-teal-800/70">All transfer bookings are on a boat.</p>

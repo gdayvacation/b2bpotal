@@ -214,6 +214,7 @@ export const DEFAULT_JB_CAPACITY = 40
 
 /** Boat assignment for a single departure day + program. */
 export type BoatNumber = number
+export type BoatKind = 'own' | 'partner'
 
 export type DayBoatPlan = {
   date: string
@@ -226,6 +227,10 @@ export type DayBoatPlan = {
   capacities: number[]
   /** Optional display names parallel to capacities (empty → "Boat N"). */
   names: string[]
+  /** Free fleet number text for partner boats (own boats ignore this). */
+  labels: string[]
+  /** Own fleet vs overflow sent to another company. */
+  kinds: BoatKind[]
   /** Guide + assistant contact per boat (parallel to capacities). */
   guides: BoatGuide[]
   /** booking code → boat number (1-based index into capacities) */
@@ -244,9 +249,12 @@ export const DEFAULT_BOAT_CAPACITY = 50
 /** Previous default still stored on older day boat plans. */
 export const LEGACY_BOAT_CAPACITY = 44
 export const DEFAULT_BOAT_COUNT = 3
-export const MAX_DAY_BOATS = 8
+export const MAX_DAY_BOATS = 12
+/** Overflow boat sent to another company — no seat cap of our own. */
+export const PARTNER_BOAT_CAPACITY = 200
 /** Display labels start at Boat 7 (fleet slot 1 → "Boat 7", 2 → "Boat 8", …). */
 export const DEFAULT_BOAT_LABEL_START = 7
+const PARTNER_NAME_MARK = '\u2060P|'
 
 /** @deprecated Prefer {@link boatNumbersForPlan} — kept for call sites that assume the default 3. */
 export const BOAT_NUMBERS: BoatNumber[] = [1, 2, 3]
@@ -267,6 +275,36 @@ export function defaultBoatCapacities(count = DEFAULT_BOAT_COUNT): number[] {
 export function defaultBoatNames(count = DEFAULT_BOAT_COUNT): string[] {
   const n = Math.max(1, Math.min(MAX_DAY_BOATS, Math.floor(count) || DEFAULT_BOAT_COUNT))
   return Array.from({ length: n }, () => '')
+}
+
+export function defaultBoatLabels(count = DEFAULT_BOAT_COUNT): string[] {
+  const n = Math.max(1, Math.min(MAX_DAY_BOATS, Math.floor(count) || DEFAULT_BOAT_COUNT))
+  return Array.from({ length: n }, () => '')
+}
+
+export function defaultBoatKinds(count = DEFAULT_BOAT_COUNT): BoatKind[] {
+  const n = Math.max(1, Math.min(MAX_DAY_BOATS, Math.floor(count) || DEFAULT_BOAT_COUNT))
+  return Array.from({ length: n }, () => 'own')
+}
+
+export function packBoatName(kind: BoatKind, label: string, name: string): string {
+  if (kind !== 'partner') return name.trim().slice(0, 40)
+  return `${PARTNER_NAME_MARK}${label.trim().slice(0, 20)}|${name.trim().slice(0, 40)}`
+}
+
+export function unpackBoatName(raw: string): { kind: BoatKind; label: string; name: string } {
+  const text = String(raw ?? '')
+  if (!text.startsWith(PARTNER_NAME_MARK)) {
+    return { kind: 'own', label: '', name: text.trim() }
+  }
+  const rest = text.slice(PARTNER_NAME_MARK.length)
+  const pipe = rest.indexOf('|')
+  if (pipe < 0) return { kind: 'partner', label: rest.trim(), name: '' }
+  return {
+    kind: 'partner',
+    label: rest.slice(0, pipe).trim(),
+    name: rest.slice(pipe + 1).trim(),
+  }
 }
 
 export function emptyBoatGuide(): BoatGuide {
@@ -318,9 +356,85 @@ export function normalizeBoatNames(
   const count = Math.max(1, Math.min(MAX_DAY_BOATS, boatCount || DEFAULT_BOAT_COUNT))
   const source = Array.isArray(names) ? names : []
   return Array.from({ length: count }, (_, index) =>
+    unpackBoatName(String(source[index] ?? '')).name.slice(0, 40),
+  )
+}
+
+export function normalizeBoatLabels(
+  labels: string[] | null | undefined,
+  boatCount: number,
+): string[] {
+  const count = Math.max(1, Math.min(MAX_DAY_BOATS, boatCount || DEFAULT_BOAT_COUNT))
+  const source = Array.isArray(labels) ? labels : []
+  return Array.from({ length: count }, (_, index) =>
     String(source[index] ?? '')
       .trim()
-      .slice(0, 40),
+      .slice(0, 20),
+  )
+}
+
+export function normalizeBoatKinds(
+  kinds: Array<BoatKind | string> | null | undefined,
+  boatCount: number,
+): BoatKind[] {
+  const count = Math.max(1, Math.min(MAX_DAY_BOATS, boatCount || DEFAULT_BOAT_COUNT))
+  const source = Array.isArray(kinds) ? kinds : []
+  return Array.from({ length: count }, (_, index) =>
+    source[index] === 'partner' ? 'partner' : 'own',
+  )
+}
+
+export function hydrateDayBoatPlan<T extends DayBoatPlan>(plan: T): T {
+  const capacities = normalizeBoatCapacities(plan.capacities)
+  const count = capacities.length
+  const kinds = normalizeBoatKinds(plan.kinds, count)
+  const labels = normalizeBoatLabels(plan.labels, count)
+  const names = normalizeBoatNames(plan.names, count)
+  const sourceNames = Array.isArray(plan.names) ? plan.names : []
+  for (let index = 0; index < count; index += 1) {
+    const packed = unpackBoatName(String(sourceNames[index] ?? ''))
+    if (packed.kind === 'partner') {
+      kinds[index] = 'partner'
+      if (packed.label) labels[index] = packed.label.slice(0, 20)
+      names[index] = packed.name.slice(0, 40)
+    }
+    if (kinds[index] === 'partner' && capacities[index] === DEFAULT_BOAT_CAPACITY) {
+      capacities[index] = PARTNER_BOAT_CAPACITY
+    }
+  }
+  return {
+    ...plan,
+    capacities,
+    names,
+    labels,
+    kinds,
+    guides: normalizeBoatGuides(plan.guides, count),
+  }
+}
+
+export function isPartnerBoat(
+  plan: Pick<DayBoatPlan, 'capacities' | 'kinds' | 'names'>,
+  boat: BoatNumber,
+): boolean {
+  const caps = normalizeBoatCapacities(plan.capacities)
+  if (normalizeBoatKinds(plan.kinds, caps.length)[boat - 1] === 'partner') return true
+  const raw = Array.isArray(plan.names) ? String(plan.names[boat - 1] ?? '') : ''
+  return unpackBoatName(raw).kind === 'partner'
+}
+
+export function persistBoatNames(plan: Pick<DayBoatPlan, 'capacities' | 'names' | 'labels' | 'kinds'>): string[] {
+  const hydrated = hydrateDayBoatPlan({
+    date: '',
+    program: 'PP',
+    capacities: plan.capacities,
+    names: plan.names ?? [],
+    labels: plan.labels ?? [],
+    kinds: plan.kinds ?? [],
+    guides: [],
+    assignments: {},
+  })
+  return hydrated.kinds.map((kind, index) =>
+    packBoatName(kind, hydrated.labels[index] ?? '', hydrated.names[index] ?? ''),
   )
 }
 
@@ -330,12 +444,28 @@ export function boatNumbersForPlan(plan: Pick<DayBoatPlan, 'capacities'>): BoatN
 }
 
 export function boatDisplayName(
-  plan: Pick<DayBoatPlan, 'names' | 'capacities'>,
+  plan: Pick<DayBoatPlan, 'names' | 'capacities' | 'kinds' | 'labels'>,
   boat: BoatNumber,
 ): string {
-  const caps = normalizeBoatCapacities(plan.capacities)
-  const names = normalizeBoatNames(plan.names, caps.length)
-  const custom = names[boat - 1]?.trim()
+  const hydrated = hydrateDayBoatPlan({
+    date: '',
+    program: 'PP',
+    capacities: plan.capacities,
+    names: plan.names ?? [],
+    labels: plan.labels ?? [],
+    kinds: plan.kinds ?? [],
+    guides: [],
+    assignments: {},
+  })
+  if (hydrated.kinds[boat - 1] === 'partner') {
+    const label = hydrated.labels[boat - 1]?.trim()
+    const name = hydrated.names[boat - 1]?.trim()
+    if (label && name) return `${label} · ${name}`
+    if (name) return name
+    if (label) return `Boat ${label}`
+    return 'Send to Partner'
+  }
+  const custom = hydrated.names[boat - 1]?.trim()
   return custom || defaultBoatLabel(boat)
 }
 
@@ -346,6 +476,8 @@ export function emptyDayBoatPlan(date: string, program: Program): DayBoatPlan {
     program,
     capacities,
     names: defaultBoatNames(capacities.length),
+    labels: defaultBoatLabels(capacities.length),
+    kinds: defaultBoatKinds(capacities.length),
     guides: defaultBoatGuides(capacities.length),
     assignments: {},
   }
@@ -448,6 +580,25 @@ export function vanOutsourceLabel(meta: Pick<VanMeta, 'outsourced' | 'outsourceC
 
 export const MIN_VAN_CAPACITY = 1
 export const MAX_VAN_CAPACITY = 40
+/** Overflow sent to another company — not a real fleet van. */
+export const DUMMY_VAN_NUMBER = 99
+export const DUMMY_VAN_LABEL = 'Send to Partner'
+
+export function isDummyVan(van: number | null | undefined) {
+  return van === DUMMY_VAN_NUMBER
+}
+
+export function dummyVanMeta(): VanMeta {
+  return { plate: DUMMY_VAN_LABEL, driver: '', phone: '' }
+}
+
+export function bookingOnPartnerBoat(
+  plan: Pick<DayBoatPlan, 'capacities' | 'kinds' | 'names' | 'assignments'>,
+  bookingCode: string,
+) {
+  const boat = plan.assignments[bookingCode]
+  return Boolean(boat && isPartnerBoat(plan, boat))
+}
 
 export function clampVanCapacity(value: number) {
   if (!Number.isFinite(value)) return DEFAULT_VAN_CAPACITY
@@ -496,6 +647,7 @@ export function vanSeatCapacity(
   plan: Pick<DayVehiclePlan, 'vanCapacity' | 'vanMeta'>,
   van: number,
 ) {
+  if (isDummyVan(van)) return PARTNER_BOAT_CAPACITY
   const custom = plan.vanMeta[String(van)]?.capacity
   if (typeof custom === 'number' && Number.isFinite(custom) && custom >= MIN_VAN_CAPACITY) {
     return clampVanCapacity(custom)

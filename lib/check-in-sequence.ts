@@ -1,4 +1,4 @@
-import { dayBoatPlanKey, isNoTransfer, totalPassengers, type Booking, type DayBoatPlan, type DayVehiclePlan, type Program } from '@/lib/types'
+import { dayBoatPlanKey, isDummyVan, isNoTransfer, totalPassengers, type Booking, type DayBoatPlan, type DayVehiclePlan, type Program } from '@/lib/types'
 import {
   bookingPaxOnVan,
   listVanNumbers,
@@ -146,7 +146,7 @@ export function orderedBookingsForSequence(
 ): Booking[] {
   const transfer = bookings.filter((booking) => !isNoTransfer(booking.pickupZone))
   const noTransfer = bookings.filter((booking) => isNoTransfer(booking.pickupZone))
-  const vanNums = listVanNumbers(vehiclePlan.assignments)
+  const vanNums = listVanNumbers(vehiclePlan.assignments).filter((van) => !isDummyVan(van))
   const seen = new Set<string>()
   const ordered: Booking[] = []
 

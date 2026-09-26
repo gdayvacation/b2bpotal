@@ -24,7 +24,7 @@ import {
   replaceBookedPaxSnapshot,
 } from '@/lib/check-in-booked-pax'
 import { recordPickupNoShow } from '@/lib/pickup-marina-sync'
-import { formatIncludeLabel, formatCollectTotal, collectTotal, formatLongDate, formatParkFeeTotal, formatShortDate, toISODate } from '@/lib/format'
+import { formatIncludeLabel, formatCollectTotal, collectTotal, formatLongDate, formatShortDate, toISODate } from '@/lib/format'
 import {
   getJobOrderAction,
   loadJobOrderActionMap,
@@ -53,7 +53,7 @@ import {
   autoAssignVans,
   bookingPaxOnVan,
   formatVanLegs,
-  listVanNumbers,
+  listFleetVanNumbers,
   paxBreakdownTotal,
   primaryVan,
   sortOrderOnVan,
@@ -1116,13 +1116,16 @@ function VanGroupSection({
                   <TableHead className="w-[8%] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     VC No.
                   </TableHead>
-                  <TableHead className="w-[11%] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[8%] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                    Agent
+                  </TableHead>
+                  <TableHead className="w-[6%] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Guest name
                   </TableHead>
                   <TableHead
                     className={cn(
                       'text-[11px] font-bold tracking-wide text-teal-900/80 uppercase',
-                      showCanoe ? 'w-[12%]' : 'w-[15%]',
+                      showCanoe ? 'w-[7%]' : 'w-[10%]',
                     )}
                   >
                     Hotel
@@ -1145,21 +1148,15 @@ function VanGroupSection({
                   <TableHead className="w-[5%] px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Park
                   </TableHead>
-                  <TableHead className="w-[4.5%] px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    Fee
-                  </TableHead>
                   {showCanoe ? (
                     <TableHead className="w-[5.5%] px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                       Canoe
                     </TableHead>
                   ) : null}
-                  <TableHead className="w-[5%] px-0.5 pr-0 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    COT
-                  </TableHead>
                   <TableHead className="w-[4.5%] px-0.5 pl-0 text-right text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Total
                   </TableHead>
-                  <TableHead className="w-[6%] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[16%] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                     Remark
                   </TableHead>
                   {PICKUP_ACTIONS.map((action) => (
@@ -1242,6 +1239,11 @@ function VanGroupSection({
                       </div>
                     </TableCell>
                     <TableCell>
+                      <div className="truncate" title={booking.agentName}>
+                        {booking.agentName || '—'}
+                      </div>
+                    </TableCell>
+                    <TableCell>
                       <div className="flex min-w-0 items-center gap-1">
                         <CheckInGuestCopyCell
                           guestName={booking.leadGuest}
@@ -1293,27 +1295,11 @@ function VanGroupSection({
                     <TableCell className="px-1 text-center text-xs whitespace-nowrap">
                       {formatIncludeLabel(booking.parkFee)}
                     </TableCell>
-                    <TableCell className="px-1 text-center tabular-nums text-xs font-medium text-teal-950">
-                      {formatParkFeeTotal(
-                        booking.parkFee,
-                        program,
-                        pax.adults,
-                        pax.children,
-                      )}
-                    </TableCell>
                     {showCanoe ? (
                       <TableCell className="px-1 text-center text-xs whitespace-nowrap">
                         {formatIncludeLabel(booking.canoe)}
                       </TableCell>
                     ) : null}
-                    <TableCell className="pr-0.5">
-                      <div
-                        className="truncate text-xs font-medium text-teal-950"
-                        title={showBookingMoney ? booking.cashOnTour : undefined}
-                      >
-                        {showBookingMoney ? booking.cashOnTour.trim() || '' : ''}
-                      </div>
-                    </TableCell>
                     <TableCell className="px-0.5 pl-0 text-right tabular-nums text-xs font-medium text-teal-950">
                       {formatCollectTotal(
                         booking.parkFee,
@@ -1402,7 +1388,7 @@ function VanGroupSection({
             <TableRow className="bg-teal-50/40 hover:bg-teal-50/40">
               {isCheckIn ? (
                 <>
-                  <TableCell colSpan={4} className="text-xs font-semibold text-teal-900/70">
+                  <TableCell colSpan={5} className="text-xs font-semibold text-teal-900/70">
                     Group total
                   </TableCell>
                   <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
@@ -1433,7 +1419,7 @@ function VanGroupSection({
                       wholeNoShow={originalTotals.tourLeaders > 0 && remainingTotals.tourLeaders === 0}
                     />
                   </TableCell>
-                  <TableCell colSpan={showCanoe ? 5 : 4} />
+                  <TableCell colSpan={showCanoe ? 3 : 2} />
                   <TableCell className="px-0.5 pl-0 text-right tabular-nums text-xs font-semibold text-teal-950">
                     {group.totals.collect > 0
                       ? group.totals.collect.toLocaleString('en-US')
@@ -1983,9 +1969,9 @@ function JobOrderPrintSheet({
 }) {
   const isCheckIn = variant === 'check-in'
   const showCanoe = isCheckIn && program === 'James Bond'
-  const trailingBeforeTotal = isCheckIn ? (showCanoe ? 5 : 4) : 0
+  const trailingBeforeTotal = isCheckIn ? (showCanoe ? 3 : 2) : 0
   const trailingAfterTotal = isCheckIn ? 4 : 0
-  const leadingColSpan = isCheckIn ? 4 : 5
+  const leadingColSpan = 5
 
   return (
     <div className="job-order-print-sheet hidden print:block">
@@ -2095,6 +2081,9 @@ function JobOrderPrintSheet({
                           <th className="w-[9%] border border-teal-900/20 px-1 py-1 font-semibold">
                             VC NO.
                           </th>
+                          <th className="w-[10%] border border-teal-900/20 px-1 py-1 font-semibold">
+                            AGENT
+                          </th>
                           <th className="w-[12%] border border-teal-900/20 px-1 py-1 font-semibold">
                             GUEST NAME
                           </th>
@@ -2138,15 +2127,11 @@ function JobOrderPrintSheet({
                           <th className="w-16 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
                             PARK
                           </th>
-                          <th className="w-10 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
-                            FEE
-                          </th>
                           {showCanoe ? (
                             <th className="w-16 border border-teal-900/20 px-0.5 py-1 text-center font-semibold">
                               CANOE
                             </th>
                           ) : null}
-                          <th className="w-14 border border-teal-900/20 px-1 py-1 font-semibold">COT</th>
                           <th className="w-12 border border-teal-900/20 px-0.5 py-1 text-right font-semibold">
                             TOTAL
                           </th>
@@ -2188,6 +2173,9 @@ function JobOrderPrintSheet({
                           <>
                             <td className="border border-teal-900/20 px-1 py-0.5">
                               {booking.agentRef || '—'}
+                            </td>
+                            <td className="border border-teal-900/20 px-1 py-0.5">
+                              {booking.agentName || '—'}
                             </td>
                             <td className="border border-teal-900/20 px-1 py-0.5">
                               {split ? `${booking.leadGuest} · split` : booking.leadGuest}
@@ -2265,22 +2253,11 @@ function JobOrderPrintSheet({
                             <td className="border border-teal-900/20 px-1 py-0.5 text-center whitespace-nowrap">
                               {formatIncludeLabel(booking.parkFee)}
                             </td>
-                            <td className="border border-teal-900/20 px-1 py-0.5 text-center tabular-nums">
-                              {formatParkFeeTotal(
-                                booking.parkFee,
-                                program,
-                                pax.adults,
-                                pax.children,
-                              )}
-                            </td>
                             {showCanoe ? (
                               <td className="border border-teal-900/20 px-1 py-0.5 text-center whitespace-nowrap">
                                 {formatIncludeLabel(booking.canoe)}
                               </td>
                             ) : null}
-                            <td className="border border-teal-900/20 px-1 py-0.5 font-medium">
-                              {showBookingMoney ? booking.cashOnTour.trim() || '' : ''}
-                            </td>
                             <td className="border border-teal-900/20 px-1 py-0.5 text-right tabular-nums font-semibold">
                               {formatCollectTotal(
                                 booking.parkFee,
@@ -2577,7 +2554,7 @@ function buildVanGroups(
     usingMockAssignments = true
   }
 
-  const vanNumbers = listVanNumbers(assignments)
+  const vanNumbers = listFleetVanNumbers(assignments)
   const groups: VanGroup[] = []
 
   for (const van of vanNumbers) {
@@ -2614,7 +2591,7 @@ function buildVanGroups(
   if (leftover.length > 0) {
     const mockVanStart = (vanNumbers[vanNumbers.length - 1] ?? 0) + 1
     const mockAssign = autoAssignVans(leftover, plan.vanCapacity || DEFAULT_VAN_CAPACITY)
-    const mockVans = listVanNumbers(mockAssign)
+    const mockVans = listFleetVanNumbers(mockAssign)
     if (mockVans.length === 0) {
       groups.push(makeGroup('unassigned', null, '', '', '', false, leftover.slice().sort(byPickup)))
     } else {

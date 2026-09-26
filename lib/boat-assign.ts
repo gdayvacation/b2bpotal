@@ -1,5 +1,11 @@
 import type { BoatNumber, Booking, DayBoatPlan, VanSplit } from '@/lib/types'
-import { boatNumbersForPlan, isNoTransfer, normalizeBoatCapacities, totalPassengers } from '@/lib/types'
+import {
+  boatNumbersForPlan,
+  isNoTransfer,
+  isPartnerBoat,
+  normalizeBoatCapacities,
+  totalPassengers,
+} from '@/lib/types'
 import { primaryVan } from '@/lib/vehicle-assign'
 
 type AssignableGroup = {
@@ -19,9 +25,13 @@ export function autoAssignBoats(
   bookings: Booking[],
   capacities: DayBoatPlan['capacities'],
   vanAssignments: Record<string, VanSplit[]> = {},
+  plan?: Pick<DayBoatPlan, 'kinds' | 'names'>,
 ): Record<string, BoatNumber> {
   const caps = normalizeBoatCapacities(capacities)
-  const boats = boatNumbersForPlan({ capacities: caps })
+  const boats = boatNumbersForPlan({ capacities: caps }).filter(
+    (boat) => !plan || !isPartnerBoat({ capacities: caps, kinds: plan.kinds, names: plan.names }, boat),
+  )
+  if (boats.length === 0) return {}
   const groups = buildGroups(bookings, vanAssignments)
   // Larger groups first so van cohorts stay together when capacity allows.
   const sorted = groups.slice().sort(

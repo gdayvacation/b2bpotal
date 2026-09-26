@@ -211,10 +211,18 @@ import {
   defaultBoatGuides,
   defaultBoatNames,
   emptyBoatGuide,
+  defaultBoatKinds,
+  defaultBoatLabels,
   emptyDayBoatPlan,
   emptyDayVehiclePlan,
+  hydrateDayBoatPlan,
   emptyPrivateTransferFields,
   emptyVanMeta,
+  dummyVanMeta,
+  DUMMY_VAN_LABEL,
+  DUMMY_VAN_NUMBER,
+  bookingOnPartnerBoat,
+  isDummyVan,
   isActiveBooking,
   isCorePickupZone,
   isNoTransfer,
@@ -223,8 +231,7 @@ import {
   isSpecialTransfer,
   isSpecialTransferKind,
   normalizeBoatCapacities,
-  normalizeBoatGuides,
-  normalizeBoatNames,
+  PARTNER_BOAT_CAPACITY,
   normalizeChargeAmount,
   privateTransferPriceFor,
   totalPassengers,
@@ -495,6 +502,14 @@ type PortalContextValue = {
     name: string,
     options?: { persist?: boolean },
   ) => void
+  /** Free number text for a partner / dummy boat. */
+  setBoatLabel: (
+    date: string,
+    program: Program,
+    boat: BoatNumber,
+    label: string,
+    options?: { persist?: boolean },
+  ) => void
   /** Set guide / assistant contacts for a boat on this day. */
   setBoatGuide: (
     date: string,
@@ -510,6 +525,8 @@ type PortalContextValue = {
     capacity?: number,
     options?: { persist?: boolean },
   ) => void
+  /** Open an uncolored dummy boat for overflow sent to another company. */
+  addPartnerBoat: (date: string, program: Program, options?: { persist?: boolean }) => void
   /** Remove a boat; guests on it become unassigned; higher boat numbers shift down. */
   removeDayBoat: (
     date: string,
@@ -1106,12 +1123,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         date >= todayISO()
           ? replaceLegacyBoatCapacity(stored.capacities)
           : normalizeBoatCapacities(stored.capacities)
-      return {
+      return hydrateDayBoatPlan({
         ...stored,
         capacities,
-        names: normalizeBoatNames(stored.names, capacities.length),
-        guides: normalizeBoatGuides(stored.guides, capacities.length),
-      }
+      })
     }
 
     const upsertPlan = (
@@ -1184,6 +1199,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       van: number,
       vehicleAssignments: DayVehiclePlan['assignments'],
     ) => {
+      if (isDummyVan(van)) return
       const countable = activeDayBookings(date, program).filter(
         (booking) =>
           getCheckInAttendance(checkInAttendance, date, program, booking.code) !== 'no-show',
@@ -1196,6 +1212,62 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       )
       if (!nextAssignments) return
       upsertPlan(date, program, (plan) => ({ ...plan, assignments: nextAssignments }))
+    }
+
+    const syncDummyVans = (
+      date: string,
+      program: Program,
+      boatAssignments: Record<string, BoatNumber>,
+    ) => {
+      const boatPlan = { ...getDayBoatPlan(date, program), assignments: boatAssignments }
+      const vehicle = getDayVehiclePlan(date, program)
+      const assignments = { ...vehicle.assignments }
+      let changed = false
+      let needDummy = false
+
+      for (const booking of activeDayBookings(date, program)) {
+        const onPartner = bookingOnPartnerBoat(boatPlan, booking.code)
+        const needVan = !isNoTransfer(booking.pickupZone)
+        const legs = assignments[booking.code]
+        const onDummy = Boolean(legs?.some((leg) => isDummyVan(leg.van)))
+        const hasRealVan = Boolean(legs?.some((leg) => !isDummyVan(leg.van)))
+
+        if (onPartner && needVan) {
+          if (!hasRealVan && !onDummy) {
+            assignments[booking.code] = [
+              {
+                van: DUMMY_VAN_NUMBER,
+                pax: totalPassengers(booking),
+                sortOrder: nextSortOrderForVan(assignments, DUMMY_VAN_NUMBER),
+              },
+            ]
+            changed = true
+          }
+          if (!hasRealVan) needDummy = true
+        } else if (onDummy && !onPartner) {
+          delete assignments[booking.code]
+          changed = true
+        }
+      }
+
+      needDummy =
+        needDummy ||
+        Object.values(assignments).some((legs) => legs.some((leg) => isDummyVan(leg.van)))
+
+      if (!changed && !needDummy) return
+
+      upsertVehiclePlan(date, program, (plan) => ({
+        ...plan,
+        assignments,
+        vanMeta: {
+          ...plan.vanMeta,
+          [String(DUMMY_VAN_NUMBER)]: {
+            ...dummyVanMeta(),
+            ...plan.vanMeta[String(DUMMY_VAN_NUMBER)],
+            plate: DUMMY_VAN_LABEL,
+          },
+        },
+      }))
     }
 
     const getFleetVan = (van: number) =>
@@ -2615,30 +2687,29 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           )
           if (!canFitBookingOnBoat(plan, countable, boat, booking).ok) return
         }
+        const currentBoat = getDayBoatPlan(date, program)
+        const nextBoatAssignments = { ...currentBoat.assignments }
+        if (boat === null) delete nextBoatAssignments[bookingCode]
+        else nextBoatAssignments[bookingCode] = boat
         upsertPlan(
           date,
           program,
-          (plan) => {
-            const assignments = { ...plan.assignments }
-            if (boat === null) delete assignments[bookingCode]
-            else assignments[bookingCode] = boat
-            return { ...plan, assignments }
-          },
+          (plan) => ({ ...plan, assignments: nextBoatAssignments }),
           options,
         )
+        syncDummyVans(date, program, nextBoatAssignments)
       },
       setBoatCapacity: (date, program, boat, capacity, options) => {
         upsertPlan(
           date,
           program,
           (plan) => {
-            const capacities = normalizeBoatCapacities(plan.capacities)
-            const names = normalizeBoatNames(plan.names, capacities.length)
-            const guides = normalizeBoatGuides(plan.guides, capacities.length)
+            const next = hydrateDayBoatPlan(plan)
             const index = boat - 1
-            if (index < 0 || index >= capacities.length) return plan
-            capacities[index] = Math.max(1, Math.floor(capacity) || 1)
-            return { ...plan, capacities, names, guides }
+            if (index < 0 || index >= next.capacities.length) return plan
+            if (next.kinds[index] === 'partner') return plan
+            next.capacities[index] = Math.max(1, Math.floor(capacity) || 1)
+            return next
           },
           options,
         )
@@ -2648,13 +2719,27 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           date,
           program,
           (plan) => {
-            const capacities = normalizeBoatCapacities(plan.capacities)
-            const names = normalizeBoatNames(plan.names, capacities.length)
-            const guides = normalizeBoatGuides(plan.guides, capacities.length)
+            const next = hydrateDayBoatPlan(plan)
             const index = boat - 1
-            if (index < 0 || index >= names.length) return plan
-            names[index] = name.trim().slice(0, 40)
-            return { ...plan, capacities, names, guides }
+            if (index < 0 || index >= next.names.length) return plan
+            next.names[index] = name.trim().slice(0, 40)
+            return next
+          },
+          options,
+        )
+      },
+      setBoatLabel: (date, program, boat, label, options) => {
+        upsertPlan(
+          date,
+          program,
+          (plan) => {
+            const next = hydrateDayBoatPlan(plan)
+            const index = boat - 1
+            if (index < 0 || index >= next.labels.length || next.kinds[index] !== 'partner') {
+              return plan
+            }
+            next.labels[index] = label.trim().slice(0, 20)
+            return next
           },
           options,
         )
@@ -2664,13 +2749,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           date,
           program,
           (plan) => {
-            const capacities = normalizeBoatCapacities(plan.capacities)
-            const names = normalizeBoatNames(plan.names, capacities.length)
-            const guides = normalizeBoatGuides(plan.guides, capacities.length)
+            const next = hydrateDayBoatPlan(plan)
             const index = boat - 1
-            if (index < 0 || index >= guides.length) return plan
-            const prev = guides[index] ?? emptyBoatGuide()
-            guides[index] = {
+            if (index < 0 || index >= next.guides.length) return plan
+            const prev = next.guides[index] ?? emptyBoatGuide()
+            next.guides[index] = {
               guideName:
                 guide.guideName !== undefined
                   ? guide.guideName.trim().slice(0, 60)
@@ -2688,7 +2771,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
                   ? guide.assistantPhone.trim().slice(0, 30)
                   : prev.assistantPhone,
             }
-            return { ...plan, capacities, names, guides }
+            return next
           },
           options,
         )
@@ -2698,54 +2781,73 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           date,
           program,
           (plan) => {
-            const capacities = normalizeBoatCapacities(plan.capacities)
-            const names = normalizeBoatNames(plan.names, capacities.length)
-            const guides = normalizeBoatGuides(plan.guides, capacities.length)
-            if (capacities.length >= MAX_DAY_BOATS) return plan
+            const next = hydrateDayBoatPlan(plan)
+            if (next.capacities.length >= MAX_DAY_BOATS) return plan
             const nextCap = Math.max(
               1,
               Math.floor(capacity ?? DEFAULT_BOAT_CAPACITY) || DEFAULT_BOAT_CAPACITY,
             )
             return {
-              ...plan,
-              capacities: [...capacities, nextCap],
-              names: [...names, ''],
-              guides: [...guides, emptyBoatGuide()],
+              ...next,
+              capacities: [...next.capacities, nextCap],
+              names: [...next.names, ''],
+              labels: [...next.labels, ''],
+              kinds: [...next.kinds, 'own'],
+              guides: [...next.guides, emptyBoatGuide()],
+            }
+          },
+          options,
+        )
+      },
+      addPartnerBoat: (date, program, options) => {
+        upsertPlan(
+          date,
+          program,
+          (plan) => {
+            const next = hydrateDayBoatPlan(plan)
+            if (next.capacities.length >= MAX_DAY_BOATS) return plan
+            return {
+              ...next,
+              capacities: [...next.capacities, PARTNER_BOAT_CAPACITY],
+              names: [...next.names, ''],
+              labels: [...next.labels, ''],
+              kinds: [...next.kinds, 'partner'],
+              guides: [...next.guides, emptyBoatGuide()],
             }
           },
           options,
         )
       },
       removeDayBoat: (date, program, boat, options) => {
+        const current = hydrateDayBoatPlan(getDayBoatPlan(date, program))
+        if (current.capacities.length <= 1) return
+        const index = boat - 1
+        if (index < 0 || index >= current.capacities.length) return
+        const assignments: Record<string, BoatNumber> = {}
+        for (const [code, assigned] of Object.entries(current.assignments)) {
+          if (assigned === boat) continue
+          if (assigned > boat) assignments[code] = assigned - 1
+          else assignments[code] = assigned
+        }
         upsertPlan(
           date,
           program,
           (plan) => {
-            const capacities = normalizeBoatCapacities(plan.capacities)
-            const names = normalizeBoatNames(plan.names, capacities.length)
-            const guides = normalizeBoatGuides(plan.guides, capacities.length)
-            if (capacities.length <= 1) return plan
-            const index = boat - 1
-            if (index < 0 || index >= capacities.length) return plan
-            const nextCaps = capacities.filter((_, i) => i !== index)
-            const nextNames = names.filter((_, i) => i !== index)
-            const nextGuides = guides.filter((_, i) => i !== index)
-            const assignments: Record<string, BoatNumber> = {}
-            for (const [code, assigned] of Object.entries(plan.assignments)) {
-              if (assigned === boat) continue
-              if (assigned > boat) assignments[code] = assigned - 1
-              else assignments[code] = assigned
-            }
+            const next = hydrateDayBoatPlan(plan)
+            if (next.capacities.length <= 1) return plan
             return {
-              ...plan,
-              capacities: nextCaps,
-              names: nextNames,
-              guides: nextGuides,
+              ...next,
+              capacities: next.capacities.filter((_, i) => i !== index),
+              names: next.names.filter((_, i) => i !== index),
+              labels: next.labels.filter((_, i) => i !== index),
+              kinds: next.kinds.filter((_, i) => i !== index),
+              guides: next.guides.filter((_, i) => i !== index),
               assignments,
             }
           },
           options,
         )
+        syncDummyVans(date, program, assignments)
       },
       resetDayBoatCapacities: (date, program) => {
         const fromDate = todayISO()
@@ -2764,13 +2866,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             const capacities = normalizeBoatCapacities(existing.capacities).map(
               () => DEFAULT_BOAT_CAPACITY,
             )
-            const updated: DayBoatPlan = {
+            const aligned = hydrateDayBoatPlan({
               ...existing,
               date: planDate,
               program,
               capacities,
-              names: normalizeBoatNames(existing.names, capacities.length),
-              guides: normalizeBoatGuides(existing.guides, capacities.length),
+            })
+            const updated: DayBoatPlan = {
+              ...aligned,
+              capacities: aligned.capacities.map((cap, index) =>
+                aligned.kinds[index] === 'partner' ? PARTNER_BOAT_CAPACITY : DEFAULT_BOAT_CAPACITY,
+              ),
             }
             next[key] = updated
             boatPlanDirtyKeysRef.current.delete(key)
@@ -2795,6 +2901,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               ...plan,
               capacities,
               names: defaultBoatNames(capacities.length),
+              labels: defaultBoatLabels(capacities.length),
+              kinds: defaultBoatKinds(capacities.length),
               guides: defaultBoatGuides(capacities.length),
               assignments,
             }
@@ -2808,34 +2916,33 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             getCheckInAttendance(checkInAttendance, date, program, booking.code) !== 'no-show',
         )
         const vehiclePlan = getDayVehiclePlan(date, program)
+        const currentPlan = getDayBoatPlan(date, program)
+        const nextAssignments = autoAssignBoats(
+          dayBookings,
+          currentPlan.capacities,
+          vehiclePlan.assignments,
+          currentPlan,
+        )
+        for (const booking of activeDayBookings(date, program)) {
+          if (getCheckInAttendance(checkInAttendance, date, program, booking.code) === 'no-show') {
+            delete nextAssignments[booking.code]
+          }
+        }
         upsertPlan(
           date,
           program,
-          (plan) => {
-            const nextAssignments = autoAssignBoats(
-              dayBookings,
-              plan.capacities,
-              vehiclePlan.assignments,
-            )
-            // Keep no-show bookings off boats even if they were previously assigned.
-            for (const booking of activeDayBookings(date, program)) {
-              if (
-                getCheckInAttendance(checkInAttendance, date, program, booking.code) === 'no-show'
-              ) {
-                delete nextAssignments[booking.code]
-              }
-            }
-            return {
-              ...plan,
-              capacities: normalizeBoatCapacities(plan.capacities),
-              assignments: nextAssignments,
-            }
-          },
+          (plan) => ({
+            ...plan,
+            capacities: normalizeBoatCapacities(plan.capacities),
+            assignments: nextAssignments,
+          }),
           options,
         )
+        syncDummyVans(date, program, nextAssignments)
       },
       clearDayBoatAssignments: (date, program, options) => {
         upsertPlan(date, program, (plan) => ({ ...plan, assignments: {} }), options)
+        syncDummyVans(date, program, {})
       },
       commitDayBoatPlan: async (date, program) => {
         const key = dayBoatPlanKey(date, program)
@@ -2864,19 +2971,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           )
           .map((booking) => booking.code)
         if (codes.length === 0) return
+        const nextBoatAssignments = { ...getDayBoatPlan(date, program).assignments }
+        for (const code of codes) {
+          if (boat === null) delete nextBoatAssignments[code]
+          else nextBoatAssignments[code] = boat
+        }
         upsertPlan(
           date,
           program,
-          (plan) => {
-            const assignments = { ...plan.assignments }
-            for (const code of codes) {
-              if (boat === null) delete assignments[code]
-              else assignments[code] = boat
-            }
-            return { ...plan, assignments }
-          },
+          (plan) => ({ ...plan, assignments: nextBoatAssignments }),
           options,
         )
+        syncDummyVans(date, program, nextBoatAssignments)
       },
       assignBookingToVan: (date, program, bookingCode, van) => {
         const booking = bookings.find((item) => item.code === bookingCode && isActiveBooking(item))
@@ -2994,20 +3100,39 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }))
       },
       autoAssignDayVans: (date, program) => {
-        const dayBookings = activeDayBookings(date, program)
+        const boatPlan = getDayBoatPlan(date, program)
+        const current = getDayVehiclePlan(date, program)
+        const dayBookings = activeDayBookings(date, program).filter(
+          (booking) => !bookingOnPartnerBoat(boatPlan, booking.code),
+        )
+        const kept: Record<string, VanSplit[]> = {}
+        for (const [code, legs] of Object.entries(current.assignments)) {
+          if (legs.some((leg) => isDummyVan(leg.van)) || bookingOnPartnerBoat(boatPlan, code)) {
+            kept[code] = legs
+          }
+        }
         upsertVehiclePlan(date, program, (plan) => ({
           ...plan,
-          assignments: autoAssignVans(dayBookings, plan.vanCapacity),
+          assignments: { ...autoAssignVans(dayBookings, plan.vanCapacity), ...kept },
         }))
       },
       clearDayVanAssignments: (date, program) => {
-        upsertVehiclePlan(date, program, (plan) => ({
-          ...plan,
-          assignments: {},
-          vanMeta: Object.fromEntries(
-            Object.entries(plan.vanMeta ?? {}).filter(([, meta]) => isSpecialTransfer(meta)),
-          ),
-        }))
+        upsertVehiclePlan(date, program, (plan) => {
+          const assignments: Record<string, VanSplit[]> = {}
+          for (const [code, legs] of Object.entries(plan.assignments)) {
+            const dummyLegs = legs.filter((leg) => isDummyVan(leg.van))
+            if (dummyLegs.length > 0) assignments[code] = dummyLegs
+          }
+          return {
+            ...plan,
+            assignments,
+            vanMeta: Object.fromEntries(
+              Object.entries(plan.vanMeta ?? {}).filter(
+                ([key, meta]) => isSpecialTransfer(meta) || isDummyVan(Number(key)),
+              ),
+            ),
+          }
+        })
       },
     }
   }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])

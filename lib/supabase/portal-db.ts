@@ -62,11 +62,14 @@ import {
   dayVehiclePlanKey,
   emptyDayBoatPlan,
   emptyDayVehiclePlan,
+  hydrateDayBoatPlan,
   isSpecialTransferKind,
   normalizeBoatCapacities,
   normalizeBoatGuides,
-  normalizeBoatNames,
+  normalizeBoatKinds,
+  normalizeBoatLabels,
   normalizeChargeAmount,
+  persistBoatNames,
 } from '@/lib/types'
 
 type AgentRow = {
@@ -137,6 +140,8 @@ type BoatPlanRow = {
   capacity_3: number
   capacities?: number[] | string | null
   boat_names?: string[] | string | null
+  boat_kinds?: Array<string> | string | null
+  boat_labels?: string[] | string | null
   boat_guides?: unknown
 }
 
@@ -390,7 +395,22 @@ function parseBoatNames(plan: BoatPlanRow, boatCount: number): string[] {
       fromJson = null
     }
   }
-  return normalizeBoatNames(fromJson, boatCount)
+  const count = Math.max(1, boatCount)
+  const source = fromJson ?? []
+  return Array.from({ length: count }, (_, index) => String(source[index] ?? ''))
+}
+
+function parseJsonStringArray(raw: string[] | string | null | undefined): string[] | null {
+  if (Array.isArray(raw)) return raw.map((value) => String(value ?? ''))
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (Array.isArray(parsed)) return parsed.map((value) => String(value ?? ''))
+    } catch {
+      return null
+    }
+  }
+  return null
 }
 
 function parseBoatGuides(plan: BoatPlanRow, boatCount: number) {
@@ -430,14 +450,16 @@ function buildBoatPlans(
     const date = asDateString(plan.date)
     const key = dayBoatPlanKey(date, plan.program)
     const capacities = parseBoatCapacities(plan)
-    next[key] = {
+    next[key] = hydrateDayBoatPlan({
       date,
       program: plan.program,
       capacities,
       names: parseBoatNames(plan, capacities.length),
+      labels: normalizeBoatLabels(parseJsonStringArray(plan.boat_labels), capacities.length),
+      kinds: normalizeBoatKinds(parseJsonStringArray(plan.boat_kinds), capacities.length),
       guides: parseBoatGuides(plan, capacities.length),
       assignments: {},
-    }
+    })
   }
   for (const row of assignments) {
     const date = asDateString(row.date)
@@ -970,9 +992,12 @@ export async function upsertAvailabilityRows(rows: Availability[]) {
 
 export async function saveDayBoatPlan(plan: DayBoatPlan) {
   const supabase = getSupabaseBrowserClient()
-  const capacities = normalizeBoatCapacities(plan.capacities)
-  const boat_names = normalizeBoatNames(plan.names, capacities.length)
-  const boat_guides = normalizeBoatGuides(plan.guides, capacities.length)
+  const hydrated = hydrateDayBoatPlan(plan)
+  const capacities = hydrated.capacities
+  const boat_names = persistBoatNames(hydrated)
+  const boat_guides = normalizeBoatGuides(hydrated.guides, capacities.length)
+  const boat_kinds = hydrated.kinds
+  const boat_labels = hydrated.labels
 
   const legacyCaps = {
     date: plan.date,
@@ -985,10 +1010,11 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
   const warnings: string[] = []
   let planError: { message: string } | null = null
 
+  const withKinds = { ...legacyCaps, capacities, boat_names, boat_guides, boat_kinds, boat_labels }
   const fullRow = { ...legacyCaps, capacities, boat_names, boat_guides }
   const withoutGuides = { ...legacyCaps, capacities, boat_names }
   const withoutNames = { ...legacyCaps, capacities }
-  const attempts = [fullRow, withoutGuides, withoutNames, legacyCaps] as const
+  const attempts = [withKinds, fullRow, withoutGuides, withoutNames, legacyCaps] as const
 
   for (let index = 0; index < attempts.length; index += 1) {
     const { error } = await supabase.from('day_boat_plans').upsert(attempts[index]!)
@@ -1001,7 +1027,9 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
       /Could not find the .* column|schema cache|column .* does not exist/i.test(error.message)
     if (!schemaGap || index === attempts.length - 1) break
 
-    const sqlFile = /boat_guides/i.test(error.message)
+    const sqlFile = /boat_kinds|boat_labels/i.test(error.message)
+      ? 'supabase/add-partner-boats.sql'
+      : /boat_guides/i.test(error.message)
       ? 'supabase/add-boat-guides.sql'
       : /boat_names/i.test(error.message)
         ? 'supabase/add-boat-names.sql'

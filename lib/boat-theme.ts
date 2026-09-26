@@ -1,5 +1,5 @@
-import type { BoatNumber } from '@/lib/types'
-import { DEFAULT_BOAT_LABEL_START } from '@/lib/types'
+import type { BoatNumber, DayBoatPlan } from '@/lib/types'
+import { DEFAULT_BOAT_LABEL_START, isPartnerBoat } from '@/lib/types'
 
 export type BoatColorKey = 'orange' | 'green' | 'violet' | 'sky' | 'rose' | 'amber' | 'teal' | 'slate'
 
@@ -140,4 +140,27 @@ export function boatTheme(boat: BoatNumber): BoatTheme {
     fleetNumber: boatFleetNumber(boat),
     ...THEMES[key],
   }
+}
+
+/** Neutral card for overflow sent to another company — no fleet color. */
+export const PARTNER_BOAT_THEME: BoatTheme = {
+  key: 'slate',
+  colorName: '',
+  fleetNumber: 0,
+  sheet: 'border-neutral-200 bg-white',
+  headerBorder: 'border-neutral-200',
+  title: 'text-neutral-950',
+  badge: 'bg-neutral-800 text-white hover:bg-neutral-900',
+  softBadge: 'border border-neutral-200 bg-white text-neutral-800',
+  ring: 'ring-neutral-400/50',
+  swatch: 'bg-transparent border border-neutral-300',
+  printHex: '#737373',
+}
+
+export function boatThemeFor(
+  plan: Pick<DayBoatPlan, 'capacities' | 'kinds' | 'names'> | null | undefined,
+  boat: BoatNumber,
+): BoatTheme {
+  if (plan && isPartnerBoat(plan, boat)) return PARTNER_BOAT_THEME
+  return boatTheme(boat)
 }

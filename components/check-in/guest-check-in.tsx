@@ -53,7 +53,9 @@ import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { listVanNumbers, primaryVan } from '@/lib/vehicle-assign'
 import { cn } from '@/lib/utils'
 import {
+  bookingOnPartnerBoat,
   isActiveBooking,
+  isDummyVan,
   isNoTransfer,
   boatDisplayName,
   totalPassengers,
@@ -224,22 +226,26 @@ function GuestCheckInForm({
 
   const dayBookings = useMemo(() => {
     if (!program) return [] as Booking[]
+    const boatPlan = getDayBoatPlan(tourDate, program)
     return bookings
       .filter(
         (b) =>
           isActiveBooking(b) &&
           b.date === tourDate &&
           b.program === program &&
-          getCheckInAttendance(tourDate, program, b.code) !== 'no-show',
+          getCheckInAttendance(tourDate, program, b.code) !== 'no-show' &&
+          !bookingOnPartnerBoat(boatPlan, b.code),
       )
       .sort(
         (a, b) =>
           a.leadGuest.localeCompare(b.leadGuest) || a.code.localeCompare(b.code),
       )
-  }, [bookings, getCheckInAttendance, program, tourDate])
+  }, [bookings, getCheckInAttendance, getDayBoatPlan, program, tourDate])
 
   const vehiclePlan = program ? getDayVehiclePlan(tourDate, program) : null
-  const vanNumbers = vehiclePlan ? listVanNumbers(vehiclePlan.assignments) : []
+  const vanNumbers = vehiclePlan
+    ? listVanNumbers(vehiclePlan.assignments).filter((van) => !isDummyVan(van))
+    : []
   const vanOptions = useMemo(() => {
     if (!vehiclePlan) return [] as Array<{ van: number; plate: string }>
     return vanNumbers.map((van) => {
@@ -349,6 +355,12 @@ function GuestCheckInForm({
       setStep('welcome')
       return
     }
+    if (bookingOnPartnerBoat(getDayBoatPlan(booking.date, booking.program), booking.code)) {
+      setLockedReady(true)
+      setError(t('partnerSent'))
+      setStep('welcome')
+      return
+    }
 
     setProgram(booking.program)
     setBookingCode(booking.code)
@@ -370,6 +382,7 @@ function GuestCheckInForm({
     bookings,
     getCheckInAttendance,
     getCheckInEnrollments,
+    getDayBoatPlan,
     hydrated,
     lockedCode,
   ])

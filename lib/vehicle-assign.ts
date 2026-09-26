@@ -1,5 +1,5 @@
 import type { Booking, VanSplit } from '@/lib/types'
-import { isNoTransfer, isPrivateTransfer, totalPassengers } from '@/lib/types'
+import { isDummyVan, isNoTransfer, isPrivateTransfer, totalPassengers } from '@/lib/types'
 
 /**
  * Auto-assign vans by pickup zone. Same zone stays together.
@@ -80,6 +80,10 @@ export function listVanNumbers(assignments: Record<string, VanSplit[]>): number[
     }
   }
   return [...nums].sort((a, b) => a - b)
+}
+
+export function listFleetVanNumbers(assignments: Record<string, VanSplit[]>): number[] {
+  return listVanNumbers(assignments).filter((van) => !isDummyVan(van))
 }
 
 export function primaryVan(legs: VanSplit[] | undefined): number | null {

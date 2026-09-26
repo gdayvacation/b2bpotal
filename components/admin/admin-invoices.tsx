@@ -6,6 +6,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { cn } from 'cn'
 import { ArrowDown, ArrowUp, ArrowUpDown, CalendarIcon, ChevronDown, FileText, Printer, Settings2, Share2, Trash2, Undo2 } from 'lucide-react'
 import { InvoiceEditDialog } from '@/components/admin/admin-invoice-edit-dialog'
+import { InvoiceDummyVanPanel } from '@/components/admin/admin-invoice-dummy-van'
 import { InvoicePrintSheet } from '@/components/admin/admin-invoice-print'
 import { useInvoiceStore } from '@/components/admin/use-invoice-store'
 import { usePortal } from '@/components/portal-provider'
@@ -54,6 +55,7 @@ import {
   type PaymentChannel,
 } from '@/lib/invoice'
 import {
+  bookingOnPartnerBoat,
   formatPaxBreakdown,
   isActiveBooking,
   type Booking,
@@ -63,7 +65,7 @@ import {
 import { addDaysISO, dateFromISO, formatShortDate, todayISO, toISODate } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 
-type Tab = 'bills' | 'documents' | 'notes' | 'receipts'
+type Tab = 'bills' | 'dummy' | 'documents' | 'notes' | 'receipts'
 type GroupBy = 'date' | 'agent'
 type PrintMode = 'invoice' | 'billing_note' | 'receipt'
 type BillSortKey = 'agent' | 'status'
@@ -71,7 +73,13 @@ type BillProgram = Program
 type SortDir = 'asc' | 'desc'
 
 function isTab(value: string | null): value is Tab {
-  return value === 'bills' || value === 'documents' || value === 'notes' || value === 'receipts'
+  return (
+    value === 'bills' ||
+    value === 'dummy' ||
+    value === 'documents' ||
+    value === 'notes' ||
+    value === 'receipts'
+  )
 }
 
 function sheetMode(doc: InvoiceDocument, tab: Tab): PrintMode {
@@ -94,6 +102,7 @@ type BillRow = {
   hasRates: boolean
   hasNoShow: boolean
   hasExtra: boolean
+  sentOut: boolean
   invoice?: InvoiceDocument
 }
 
@@ -260,7 +269,7 @@ function InvoicePayStatus({
 }
 
 export function AdminInvoices() {
-  const { agents, bookings, getCheckInAttendance } = usePortal()
+  const { agents, bookings, getCheckInAttendance, getDayBoatPlan, getDayVehiclePlan } = usePortal()
   const store = useInvoiceStore()
   const router = useRouter()
   const pathname = usePathname()
@@ -376,6 +385,7 @@ export function AdminInvoices() {
           hasRates: agencyRatesReady(rates),
           hasNoShow: items.some((item) => item.lineKind === 'no_show'),
           hasExtra: items.some((item) => EXTRA_LINE_KINDS.has(item.lineKind)),
+          sentOut: bookingOnPartnerBoat(getDayBoatPlan(booking.date, booking.program), booking.code),
           invoice: store.invoices.find(
             (doc) =>
               doc.kind === 'invoice' &&
@@ -411,6 +421,7 @@ export function AdminInvoices() {
     bookings,
     fromDate,
     getCheckInAttendance,
+    getDayBoatPlan,
     groupBy,
     includeOtherService,
     includePending,
@@ -795,7 +806,7 @@ export function AdminInvoices() {
       <div className="print:hidden">
       <PageHeader
         title="Invoice / Receipt"
-        description="Pick a date first. Then open Bills, Invoices, Billing notes, or Receipts for that date."
+        description="Pick a date first. Bills invoice the agent as usual. Send to Partner is the sent-out list for checking partner invoices back to us."
         actions={
           <Link href="/admin/invoices/setup">
             <Button type="button" variant="outline" className="h-10 rounded-xl">
@@ -869,7 +880,7 @@ export function AdminInvoices() {
         </div>
       </Surface>
 
-      <div className="mb-4">
+      <div className="mb-4 flex flex-wrap items-center gap-2">
         <SegmentedControl>
           <Segment active={tab === 'bills'} onClick={() => goTab('bills')}>
             Bills
@@ -882,6 +893,19 @@ export function AdminInvoices() {
           </Segment>
           <Segment active={tab === 'receipts'} onClick={() => goTab('receipts')}>
             Receipts
+          </Segment>
+        </SegmentedControl>
+        <SegmentedControl className="border-violet-900/12 bg-gradient-to-r from-violet-950/[0.06] via-fuchsia-950/[0.04] to-neutral-950/[0.03]">
+          <Segment
+            active={tab === 'dummy'}
+            onClick={() => goTab('dummy')}
+            className={
+              tab === 'dummy'
+                ? 'from-violet-700 to-fuchsia-700 shadow-violet-700/20'
+                : 'text-violet-900/55 hover:bg-white/70 hover:text-violet-950'
+            }
+          >
+            Send to Partner
           </Segment>
         </SegmentedControl>
       </div>
@@ -905,7 +929,23 @@ export function AdminInvoices() {
         </p>
       ) : null}
 
-      {tab === 'bills' ? (
+      {tab === 'dummy' ? (
+        <InvoiceDummyVanPanel
+          bookings={bookings}
+          fromDate={fromDate}
+          toDate={toDate}
+          agentSlug={agentSlug}
+          getDayVehiclePlan={getDayVehiclePlan}
+          getDayBoatPlan={getDayBoatPlan}
+          getCheckInAttendance={getCheckInAttendance}
+          agentInvoiceNo={(code) =>
+            store.invoices.find(
+              (doc) =>
+                doc.kind === 'invoice' && doc.items.some((item) => item.bookingCode === code),
+            )?.number ?? ''
+          }
+        />
+      ) : tab === 'bills' ? (
         <>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-3">
@@ -1069,6 +1109,9 @@ export function AdminInvoices() {
                               ) : null}
                               {row.hasExtra ? (
                                 <BillFlag label="Extra" title="This booking has an extra charge" />
+                              ) : null}
+                              {row.sentOut ? (
+                                <BillFlag label="Sent" title="Sent to another company on a partner boat" />
                               ) : null}
                             </span>
                           </TableCell>

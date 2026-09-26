@@ -1,5 +1,7 @@
 import {
   DEFAULT_BOAT_CAPACITY,
+  isDummyVan,
+  isPartnerBoat,
   totalPassengers,
   type BoatNumber,
   type Booking,
@@ -23,17 +25,18 @@ export function boatAssignedPax(
 }
 
 export function boatRemainingSeats(
-  plan: Pick<DayBoatPlan, 'capacities' | 'assignments'>,
+  plan: Pick<DayBoatPlan, 'capacities' | 'assignments' | 'kinds' | 'names'>,
   bookings: Booking[],
   boat: BoatNumber,
   excludeCode?: string,
 ): number {
+  if (isPartnerBoat(plan, boat)) return 999
   const capacity = plan.capacities[boat - 1] ?? DEFAULT_BOAT_CAPACITY
   return capacity - boatAssignedPax(bookings, plan.assignments, boat, excludeCode)
 }
 
 export function canFitBookingOnBoat(
-  plan: Pick<DayBoatPlan, 'capacities' | 'assignments'>,
+  plan: Pick<DayBoatPlan, 'capacities' | 'assignments' | 'kinds' | 'names'>,
   bookings: Booking[],
   boat: BoatNumber,
   booking: Booking,
@@ -83,7 +86,7 @@ export function adoptAllVansOntoSharedBoats(
 ): Record<string, BoatNumber> | null {
   let assignments = boatAssignments
   let changed = false
-  for (const van of listVanNumbers(vehicleAssignments)) {
+  for (const van of listVanNumbers(vehicleAssignments).filter((item) => !isDummyVan(item))) {
     const next = adoptVanBookingsOntoSharedBoat(bookings, vehicleAssignments, assignments, van)
     if (!next) continue
     assignments = next
