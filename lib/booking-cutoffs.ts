@@ -230,6 +230,33 @@ export function lateCancelNotice(settings: BookingCutoffSettings): string {
   return `Cancel the whole booking after ${settings.lateFeeFromTime} Thailand time is charged at full price (no refund).`
 }
 
+export function cancelWindowForDate(
+  settings: BookingCutoffSettings,
+  travelDate: string,
+  now: Date = new Date(),
+) {
+  const freeUntil = formatCutoffDeadline(
+    travelDate,
+    settings.cancelBeforeDays,
+    settings.lateFeeFromTime,
+  )
+  const closeUntil = formatCutoffDeadline(
+    travelDate,
+    settings.cancelBeforeDays,
+    settings.cancelUntilTime,
+  )
+  const open = isCancelOpenForDate(settings, travelDate, now)
+  const late = isLateAmendmentForDate(settings, travelDate, now)
+  return {
+    freeUntil,
+    closeUntil,
+    isOpen: open,
+    isFree: open && !late,
+    isLateCharge: late,
+    isClosed: !open,
+  }
+}
+
 export function lateReduceNotice(
   settings: BookingCutoffSettings,
   removed: Pick<Booking, 'adults' | 'children'>,

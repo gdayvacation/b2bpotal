@@ -40,6 +40,10 @@ export type BookingActionOptions = {
    * Admin can set 0 (complimentary) or any amount; agents ignore this and use the rule.
    */
   lateChangeFee?: number
+  /** Admin cancel: override late-cancel rule. */
+  lateCancel?: boolean
+  /** Admin cancel: exact THB to bill (0 = no charge). */
+  cancelFee?: number
 }
 
 export const CORE_PICKUP_ZONE_NAMES = ['Patong', 'Kata', 'Karon', 'Other'] as const
@@ -152,6 +156,10 @@ export type Booking = {
    * +300 per AD / CH after the late-fee time; infant and tour leader are free.
    */
   lateChangeFee?: number
+  /** Agent cancelled after the late-fee time — invoice at full tour price. */
+  lateCancel?: boolean
+  /** Admin-set cancel charge (THB). 0 = complimentary. Unset = follow lateCancel rule. */
+  cancelFee?: number
 }
 
 export function isPrivateTransfer(

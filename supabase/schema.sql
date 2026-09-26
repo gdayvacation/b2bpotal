@@ -117,6 +117,8 @@ create table if not exists public.bookings (
   status text not null default 'Pending Pickup Time'
     check (status in ('Confirmed', 'Pending Pickup Time', 'Cancelled')),
   late_change_fee int not null default 0 check (late_change_fee >= 0),
+  late_cancel boolean not null default false,
+  cancel_fee int null check (cancel_fee is null or cancel_fee >= 0),
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now()),
   constraint bookings_pax_positive

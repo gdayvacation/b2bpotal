@@ -1863,20 +1863,33 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const blocked = agentModifyBlocked(existing, options)
         if (blocked) return { ok: false, error: blocked }
 
+        const lateCancel =
+          options?.lateCancel !== undefined
+            ? options.lateCancel
+            : !options?.bypassCutoff && isLateAmendmentForDate(bookingCutoffs, existing.date)
+        const cancelFee =
+          options?.cancelFee !== undefined
+            ? Math.max(0, Math.floor(options.cancelFee))
+            : existing.cancelFee
         setBookings((current) =>
           current.map((booking) =>
-            booking.code === code ? { ...booking, status: 'Cancelled' } : booking,
+            booking.code === code
+              ? { ...booking, status: 'Cancelled', lateCancel, cancelFee }
+              : booking,
           ),
         )
-        persistBookingWrite('updateBookingStatus', updateBookingStatus(code, 'Cancelled'))
-        const lateCancel =
-          !options?.bypassCutoff && isLateAmendmentForDate(bookingCutoffs, existing.date)
+        persistBookingWrite(
+          'updateBookingStatus',
+          updateBookingStatus(code, 'Cancelled', { lateCancel, cancelFee }),
+        )
         logBookingEvent(
           code,
           'cancelled',
           lateCancel
-            ? `Cancelled after ${bookingCutoffs.lateFeeFromTime} · full price charged (no refund) · was ${existing.date}`
-            : `Cancelled · was ${existing.date}`,
+            ? cancelFee !== undefined
+              ? `Cancelled · charge ${cancelFee.toLocaleString('en-US')} THB · was ${existing.date}`
+              : `Cancelled after ${bookingCutoffs.lateFeeFromTime} · full price charged (no refund) · was ${existing.date}`
+            : `Cancelled · no cancel charge · was ${existing.date}`,
           options?.actor,
         )
 

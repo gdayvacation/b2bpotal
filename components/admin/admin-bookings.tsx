@@ -22,7 +22,9 @@ import {
   X,
 } from 'lucide-react'
 import { VoucherPreview } from '@/components/agent/voucher-view'
+import { CancelConditionNotice } from '@/components/amendment-policy-notice'
 import { BookingHistoryDialog } from '@/components/booking-history-dialog'
+import { useInvoiceStore } from '@/components/admin/use-invoice-store'
 import { ChangeBookingDateDialog } from '@/components/change-booking-date-dialog'
 import { EditBookingDialog } from '@/components/edit-booking-dialog'
 import { usePortal } from '@/components/portal-provider'
@@ -50,6 +52,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { formatShortDate, startOfToday, toISODate } from '@/lib/format'
+import { bookingTourAmount, ratesForAgent } from '@/lib/invoice'
+import { formatThbAmount, isLateAmendmentForDate } from '@/lib/booking-cutoffs'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { isNoTransfer, isPrivateTransfer, totalPassengers, type Booking, type Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -59,6 +63,73 @@ function searchFromISO() {
   const d = startOfToday()
   d.setDate(d.getDate() - 7)
   return toISODate(d)
+}
+
+function AdminCancelChargeField({
+  suggested,
+  value,
+  onChange,
+  lateWindow,
+}: {
+  suggested: number
+  value: string
+  onChange: (value: string) => void
+  lateWindow: boolean
+}) {
+  const parsed = Math.max(0, Math.floor(Number(value.replace(/,/g, '')) || 0))
+  return (
+    <div className="rounded-xl border border-teal-900/10 bg-teal-950/[0.03] px-3.5 py-3">
+      <p className="text-[10px] font-semibold tracking-wide text-teal-800/60 uppercase">
+        Cancel charge for Bills
+      </p>
+      <p className="mt-1 text-xs leading-relaxed text-teal-900/65">
+        {lateWindow
+          ? 'Agent rule now is late cancel — full tour price. You can still choose no charge or another amount.'
+          : 'Agent rule now is free cancel. You can still add a charge if needed.'}{' '}
+        This cancel amount, plus any existing change-date fee, goes to Bills.
+      </p>
+      <div className="mt-2.5 flex flex-wrap gap-1.5">
+        <button
+          type="button"
+          onClick={() => onChange('0')}
+          className={cn(
+            'rounded-full px-2.5 py-1 text-[11px] font-semibold',
+            parsed === 0
+              ? 'bg-teal-800 text-white'
+              : 'bg-white/80 text-teal-900/70 ring-1 ring-teal-900/10',
+          )}
+        >
+          No charge
+        </button>
+        {suggested > 0 ? (
+          <button
+            type="button"
+            onClick={() => onChange(String(suggested))}
+            className={cn(
+              'rounded-full px-2.5 py-1 text-[11px] font-semibold',
+              parsed === suggested
+                ? 'bg-teal-800 text-white'
+                : 'bg-white/80 text-teal-900/70 ring-1 ring-teal-900/10',
+            )}
+          >
+            Full price {formatThbAmount(suggested)}
+          </button>
+        ) : null}
+      </div>
+      <label className="mt-2.5 block">
+        <span className="text-[11px] font-medium text-teal-900/70">Amount (THB)</span>
+        <input
+          type="number"
+          min={0}
+          step={1}
+          inputMode="numeric"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="mt-1 h-10 w-full rounded-lg border border-teal-900/12 bg-white px-3 text-sm text-teal-950 outline-none focus:border-teal-700"
+        />
+      </label>
+    </div>
+  )
 }
 
 function looksLikeBookingCodeQuery(query: string) {
@@ -204,7 +275,7 @@ function BookingStatusMenu({
   onVoucher,
 }: {
   booking: Booking
-  onCancel: (code: string) => void
+  onCancel: (booking: Booking) => void
   onChangeDate: (booking: Booking) => void
   onRebook: (booking: Booking) => void
   onEdit: (booking: Booking) => void
@@ -281,7 +352,7 @@ function BookingStatusMenu({
               className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-rose-700 hover:bg-rose-50"
               onClick={() => {
                 setOpen(false)
-                onCancel(booking.code)
+                onCancel(booking)
               }}
             >
               Cancel booking
@@ -305,7 +376,8 @@ function BookingStatusMenu({
 }
 
 export function AdminBookings() {
-  const { bookings, cancelBooking, hydrated, setBookingPickupTime } = usePortal()
+  const { bookings, bookingCutoffs, cancelBooking, hydrated, setBookingPickupTime } = usePortal()
+  const invoiceStore = useInvoiceStore()
   const searchParams = useSearchParams()
   const createdCode = searchParams.get('created')
   const [quick, setQuick] = useState<QuickFilter>('all')
@@ -325,6 +397,9 @@ export function AdminBookings() {
   const [editStartWithTransfer, setEditStartWithTransfer] = useState(false)
   const [historyTarget, setHistoryTarget] = useState<Booking | null>(null)
   const [voucherTarget, setVoucherTarget] = useState<Booking | null>(null)
+  const [cancelTarget, setCancelTarget] = useState<Booking | null>(null)
+  const [cancelCharge, setCancelCharge] = useState('0')
+  const [cancelError, setCancelError] = useState('')
 
   const adminActor = { role: 'admin' as const, name: 'Admin' }
 
@@ -456,15 +531,29 @@ export function AdminBookings() {
     if (next) setQuick('all')
   }
 
-  function handleCancel(code: string) {
-    if (
-      !window.confirm(
-        `Cancel booking ${code}? Seats will free up on the departure date. This cannot be undone from here.`,
-      )
-    ) {
+  function openCancel(booking: Booking) {
+    const rates = ratesForAgent(invoiceStore.rates, booking.agentSlug)
+    const suggested = bookingTourAmount(booking, rates)
+    const late = isLateAmendmentForDate(bookingCutoffs, booking.date)
+    setCancelCharge(late && suggested > 0 ? String(suggested) : '0')
+    setCancelError('')
+    setCancelTarget(booking)
+  }
+
+  function confirmAdminCancel() {
+    if (!cancelTarget) return
+    const amount = Math.max(0, Math.floor(Number(cancelCharge.replace(/,/g, '')) || 0))
+    const result = cancelBooking(cancelTarget.code, {
+      bypassCutoff: true,
+      actor: adminActor,
+      lateCancel: amount > 0,
+      cancelFee: amount,
+    })
+    if (!result.ok) {
+      setCancelError(result.error)
       return
     }
-    cancelBooking(code, { bypassCutoff: true, actor: { role: 'admin', name: 'Admin' } })
+    setCancelTarget(null)
   }
 
   function openPickupDialog(booking: Booking) {
@@ -806,7 +895,7 @@ export function AdminBookings() {
                     <TableCell className="px-2" onClick={(event) => event.stopPropagation()}>
                       <BookingStatusMenu
                         booking={booking}
-                        onCancel={handleCancel}
+                        onCancel={openCancel}
                         onChangeDate={setDateTarget}
                         onRebook={setRebookTarget}
                         onEdit={openEditDetails}
@@ -915,6 +1004,70 @@ export function AdminBookings() {
           {voucherTarget ? (
             <VoucherPreview booking={voucherTarget} slug={voucherTarget.agentSlug} embedded />
           ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={cancelTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setCancelTarget(null)
+            setCancelError('')
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cancel booking</DialogTitle>
+            <DialogDescription>
+              {cancelTarget
+                ? `${cancelTarget.code} · ${formatShortDate(cancelTarget.date)} · ${totalPassengers(cancelTarget)} pax. Admin can cancel anytime. Seats will free up.`
+                : null}
+            </DialogDescription>
+          </DialogHeader>
+          {cancelTarget ? (
+            <div className="space-y-3">
+              <CancelConditionNotice
+                settings={bookingCutoffs}
+                travelDate={cancelTarget.date}
+                booking={cancelTarget}
+                adminAnytime
+              />
+              {(cancelTarget.lateChangeFee ?? 0) > 0 ? (
+                <p className="text-xs leading-relaxed text-teal-900/70">
+                  Existing change-date fee {formatThbAmount(cancelTarget.lateChangeFee ?? 0)} still
+                  goes to Bills with this booking.
+                </p>
+              ) : null}
+              <AdminCancelChargeField
+                suggested={bookingTourAmount(
+                  cancelTarget,
+                  ratesForAgent(invoiceStore.rates, cancelTarget.agentSlug),
+                )}
+                value={cancelCharge}
+                onChange={setCancelCharge}
+                lateWindow={isLateAmendmentForDate(bookingCutoffs, cancelTarget.date)}
+              />
+            </div>
+          ) : null}
+          {cancelError ? <p className="text-sm text-red-600">{cancelError}</p> : null}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setCancelTarget(null)
+                setCancelError('')
+              }}
+            >
+              Keep booking
+            </Button>
+            <Button type="button" variant="destructive" onClick={confirmAdminCancel}>
+              {Number(cancelCharge.replace(/,/g, '')) > 0
+                ? 'Cancel and charge'
+                : 'Cancel — no charge'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

@@ -2,10 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CalendarDays, ChevronDown, History, Pencil, Search, X } from 'lucide-react'
-import {
-  AmendmentPolicyNotice,
-  LateCancelNotice,
-} from '@/components/amendment-policy-notice'
+import { CancelConditionNotice } from '@/components/amendment-policy-notice'
 import { BookingHistoryDialog } from '@/components/booking-history-dialog'
 import { ChangeBookingDateDialog } from '@/components/change-booking-date-dialog'
 import { EditBookingDialog } from '@/components/edit-booking-dialog'
@@ -810,10 +807,12 @@ export function BookingsTable({
                 : null}
             </DialogDescription>
           </DialogHeader>
-          {cancelTarget && isLateAmendment(cancelTarget.date) ? (
-            <LateCancelNotice settings={bookingCutoffs} />
-          ) : cancelTarget ? (
-            <AmendmentPolicyNotice settings={bookingCutoffs} variant="compact" />
+          {cancelTarget ? (
+            <CancelConditionNotice
+              settings={bookingCutoffs}
+              travelDate={cancelTarget.date}
+              booking={cancelTarget}
+            />
           ) : null}
           {cancelError ? <p className="text-sm text-red-600">{cancelError}</p> : null}
           <DialogFooter>

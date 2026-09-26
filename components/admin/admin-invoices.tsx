@@ -58,6 +58,7 @@ import {
   isActiveBooking,
   type Booking,
   type CheckInAttendance,
+  type Program,
 } from '@/lib/types'
 import { addDaysISO, dateFromISO, formatShortDate, todayISO, toISODate } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
@@ -65,7 +66,8 @@ import { usePortalTodayISO } from '@/lib/use-portal-today'
 type Tab = 'bills' | 'documents' | 'notes' | 'receipts'
 type GroupBy = 'date' | 'agent'
 type PrintMode = 'invoice' | 'billing_note' | 'receipt'
-type BillSortKey = 'agent' | 'program' | 'status'
+type BillSortKey = 'agent' | 'status'
+type BillProgram = Program
 type SortDir = 'asc' | 'desc'
 
 function isTab(value: string | null): value is Tab {
@@ -90,7 +92,22 @@ type BillRow = {
   attendance: CheckInAttendance | null
   billTotal: number
   hasRates: boolean
+  hasNoShow: boolean
+  hasExtra: boolean
   invoice?: InvoiceDocument
+}
+
+const EXTRA_LINE_KINDS = new Set(['change_date', 'private_transfer', 'extra_zone', 'other'])
+
+function BillFlag({ label, title }: { label: string; title: string }) {
+  return (
+    <span
+      className="inline-flex shrink-0 rounded px-1 py-px text-[10px] font-bold leading-none tracking-wide text-rose-600"
+      title={title}
+    >
+      {label}
+    </span>
+  )
 }
 
 function billStatusLabel(row: BillRow) {
@@ -259,6 +276,7 @@ export function AdminInvoices() {
   const [toDate, setToDate] = useState(todayISO())
   const [calendarOpen, setCalendarOpen] = useState(false)
   const [agentSlug, setAgentSlug] = useState('all')
+  const [billProgram, setBillProgram] = useState<BillProgram>('PP')
   const [includePending, setIncludePending] = useState(true)
   const [includeOtherService, setIncludeOtherService] = useState(false)
   const [selectedCodes, setSelectedCodes] = useState<string[]>([])
@@ -330,10 +348,18 @@ export function AdminInvoices() {
     })
   }
 
+  function bookingInvoiceItems(booking: Booking) {
+    return buildInvoiceItemsForBooking(booking, ratesForAgent(store.rates, booking.agentSlug), {
+      includeOtherService,
+      attendance: getCheckInAttendance(booking.date, booking.program, booking.code),
+    })
+  }
+
   const rows = useMemo<BillRow[]>(() => {
     const list = bookings
       .filter((booking) => booking.date >= fromDate && booking.date <= toDate)
       .filter((booking) => (agentSlug === 'all' ? true : booking.agentSlug === agentSlug))
+      .filter((booking) => booking.program === billProgram)
       .filter((booking) => {
         const attendance = getCheckInAttendance(booking.date, booking.program, booking.code)
         if (booking.status === 'Cancelled') return true
@@ -342,12 +368,14 @@ export function AdminInvoices() {
       })
       .map((booking) => {
         const rates = ratesForAgent(store.rates, booking.agentSlug)
-        const items = buildInvoiceItemsForBooking(booking, rates, { includeOtherService })
+        const items = bookingInvoiceItems(booking)
         return {
           booking,
           attendance: getCheckInAttendance(booking.date, booking.program, booking.code),
           billTotal: itemsGrandTotal(items),
           hasRates: agencyRatesReady(rates),
+          hasNoShow: items.some((item) => item.lineKind === 'no_show'),
+          hasExtra: items.some((item) => EXTRA_LINE_KINDS.has(item.lineKind)),
           invoice: store.invoices.find(
             (doc) =>
               doc.kind === 'invoice' &&
@@ -362,10 +390,6 @@ export function AdminInvoices() {
         let cmp = 0
         if (billSort.key === 'agent') {
           cmp = a.booking.agentName.localeCompare(b.booking.agentName)
-        } else if (billSort.key === 'program') {
-          const left = a.booking.program === 'PP' ? 'PP' : 'JB'
-          const right = b.booking.program === 'PP' ? 'PP' : 'JB'
-          cmp = left.localeCompare(right)
         } else {
           cmp =
             billStatusRank(a) - billStatusRank(b) ||
@@ -390,6 +414,7 @@ export function AdminInvoices() {
     groupBy,
     includeOtherService,
     includePending,
+    billProgram,
     store.invoices,
     store.rates,
     toDate,
@@ -494,10 +519,7 @@ export function AdminInvoices() {
     const created: InvoiceDocument[] = []
     let existing = store.invoices
     for (const [slug, agentBookings] of groupedByAgent(selectedBookings)) {
-      const rates = ratesForAgent(store.rates, slug)
-      const items = agentBookings.flatMap((booking) =>
-        buildInvoiceItemsForBooking(booking, rates, { includeOtherService }),
-      )
+      const items = agentBookings.flatMap((booking) => bookingInvoiceItems(booking))
       if (items.length === 0) continue
       const doc = newInvoiceDocument({
         existing,
@@ -572,6 +594,12 @@ export function AdminInvoices() {
     setPreview(created[0] ?? null)
     goTab('notes')
     setMessage(`Created ${created.length} billing note(s).`)
+  }
+
+  async function toggleSendToAgent(doc: InvoiceDocument) {
+    const next = { ...doc, sendToAgent: !doc.sendToAgent }
+    await store.replaceDocument(next)
+    if (preview?.id === doc.id) setPreview(next)
   }
 
   async function confirmPayment(
@@ -670,8 +698,7 @@ export function AdminInvoices() {
       setMessage(`Set agency prices first for ${row.booking.agentName}.`)
       return
     }
-    const rates = ratesForAgent(store.rates, row.booking.agentSlug)
-    const items = buildInvoiceItemsForBooking(row.booking, rates, { includeOtherService })
+    const items = bookingInvoiceItems(row.booking)
     if (items.length === 0) {
       setMessage('No billable lines for this booking.')
       return
@@ -884,6 +911,28 @@ export function AdminInvoices() {
             <div className="flex flex-wrap items-center gap-3">
               <SegmentedControl className="rounded-xl p-0.5">
                 <Segment
+                  active={billProgram === 'PP'}
+                  onClick={() => {
+                    setBillProgram('PP')
+                    setSelectedCodes([])
+                  }}
+                  className="rounded-lg px-2.5 py-1 text-xs"
+                >
+                  PP
+                </Segment>
+                <Segment
+                  active={billProgram === 'James Bond'}
+                  onClick={() => {
+                    setBillProgram('James Bond')
+                    setSelectedCodes([])
+                  }}
+                  className="rounded-lg px-2.5 py-1 text-xs"
+                >
+                  JB
+                </Segment>
+              </SegmentedControl>
+              <SegmentedControl className="rounded-xl p-0.5">
+                <Segment
                   active={groupBy === 'date'}
                   onClick={() => setGroupBy('date')}
                   className="rounded-lg px-2.5 py-1 text-xs"
@@ -968,16 +1017,9 @@ export function AdminInvoices() {
                       >
                         Agent
                       </BillSortHead>
-                      <TableHead className="min-w-[14rem]">Guest</TableHead>
-                      <BillSortHead
-                        column="program"
-                        active={billSort?.key === 'program'}
-                        dir={billSort?.dir ?? 'asc'}
-                        onSort={toggleBillSort}
-                      >
-                        Program
-                      </BillSortHead>
+                      <TableHead className="min-w-[10rem]">Guest</TableHead>
                       <TableHead>Pax</TableHead>
+                      <TableHead className="min-w-[14rem] w-[14rem]">Note</TableHead>
                       <TableHead className="w-20">Check-in</TableHead>
                       <BillSortHead
                         column="status"
@@ -1019,11 +1061,26 @@ export function AdminInvoices() {
                             {booking.code}
                           </TableCell>
                           <TableCell>{booking.agentName}</TableCell>
-                          <TableCell className="min-w-[14rem]" title={booking.leadGuest}>
-                            {booking.leadGuest}
+                          <TableCell className="min-w-[10rem]" title={booking.leadGuest}>
+                            <span className="inline-flex min-w-0 items-center gap-1">
+                              <span className="truncate">{booking.leadGuest}</span>
+                              {row.hasNoShow ? (
+                                <BillFlag label="NS" title="This booking has a no-show guest" />
+                              ) : null}
+                              {row.hasExtra ? (
+                                <BillFlag label="Extra" title="This booking has an extra charge" />
+                              ) : null}
+                            </span>
                           </TableCell>
-                          <TableCell>{booking.program === 'PP' ? 'PP' : 'JB'}</TableCell>
                           <TableCell>{formatPaxBreakdown(booking)}</TableCell>
+                          <TableCell className="min-w-[14rem] w-[14rem] whitespace-normal">
+                            <div
+                              className="break-words text-xs leading-snug text-teal-900/70"
+                              title={booking.note.trim() || undefined}
+                            >
+                              {booking.note.trim() || '—'}
+                            </div>
+                          </TableCell>
                           <TableCell className="w-20 text-xs">
                             {checkInStatusLabel(row.attendance, !isActiveBooking(booking))}
                           </TableCell>
@@ -1119,6 +1176,7 @@ export function AdminInvoices() {
                       <TableHead className="text-right">Total</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Receipt</TableHead>
+                      <TableHead>Send</TableHead>
                       <TableHead />
                     </TableRow>
                   </TableHeader>
@@ -1159,6 +1217,25 @@ export function AdminInvoices() {
                           ) : (
                             <span className="text-teal-900/35">—</span>
                           )}
+                        </TableCell>
+                        <TableCell>
+                          <button
+                            type="button"
+                            className={cn(
+                              'rounded-full px-2.5 py-1 text-[11px] font-semibold',
+                              doc.sendToAgent
+                                ? 'bg-teal-800 text-white'
+                                : 'bg-teal-950/[0.04] text-teal-900/45 ring-1 ring-teal-900/10',
+                            )}
+                            onClick={() => void toggleSendToAgent(doc)}
+                            title={
+                              doc.sendToAgent
+                                ? 'Marked to send to the agent. Click to set Not send.'
+                                : 'Not send. Click to mark Send to the agent.'
+                            }
+                          >
+                            {doc.sendToAgent ? 'Send' : 'Not send'}
+                          </button>
                         </TableCell>
                         <TableCell>
                           <div className="flex justify-end gap-2">

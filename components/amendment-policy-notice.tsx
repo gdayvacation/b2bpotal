@@ -2,6 +2,7 @@
 
 import {
   amendmentPolicyLines,
+  cancelWindowForDate,
   dateChangeFeeAmount,
   formatThbAmount,
   lateCancelNotice,
@@ -93,6 +94,68 @@ export function LateCancelNotice({
       )}
     >
       {lateCancelNotice(settings)}
+    </div>
+  )
+}
+
+export function CancelConditionNotice({
+  settings,
+  travelDate,
+  booking,
+  adminAnytime = false,
+  className,
+}: {
+  settings: BookingCutoffSettings
+  travelDate: string
+  booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>
+  adminAnytime?: boolean
+  className?: string
+}) {
+  const window = cancelWindowForDate(settings, travelDate)
+  const chargeable = chargeablePax(booking)
+  return (
+    <div
+      className={cn(
+        'space-y-2 rounded-xl border border-amber-200/80 bg-amber-50/90 px-3.5 py-3 text-left',
+        className,
+      )}
+    >
+      <p className="text-[10px] font-semibold tracking-wide text-amber-800/70 uppercase">
+        Cancel conditions · {settings.timezone}
+        {adminAnytime ? ' · admin can cancel anytime' : ''}
+      </p>
+      <ul className="list-disc space-y-1 pl-4 text-xs leading-relaxed text-amber-950/85">
+        <li>Free until {window.freeUntil}.</li>
+        <li>
+          After {settings.lateFeeFromTime} until {window.closeUntil}: cancel is still allowed, but
+          the full tour price is charged (no refund).
+        </li>
+        <li>After {window.closeUntil}: cancel is closed.</li>
+      </ul>
+      {window.isLateCharge ? (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-rose-950">
+          <p className="text-[10px] font-semibold tracking-wide text-rose-800/70 uppercase">
+            Extra charge applies
+          </p>
+          <p className="mt-1 text-xs leading-relaxed">
+            This cancel is after {settings.lateFeeFromTime}. Full tour price will be billed to the
+            agent
+            {chargeable > 0
+              ? ` (${booking.adults} AD + ${booking.children} CH${booking.infants ? ` + ${booking.infants} INF` : ''}${booking.tourLeaders ? ` + ${booking.tourLeaders} TL` : ''})`
+              : ''}
+            .
+          </p>
+        </div>
+      ) : (
+        <div className="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-teal-950">
+          <p className="text-[10px] font-semibold tracking-wide text-teal-800/70 uppercase">
+            This cancel is free
+          </p>
+          <p className="mt-1 text-xs leading-relaxed">
+            It is before {settings.lateFeeFromTime}. No extra charge on this booking.
+          </p>
+        </div>
+      )}
     </div>
   )
 }

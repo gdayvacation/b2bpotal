@@ -119,6 +119,8 @@ type BookingRow = {
   pickup_time: string
   status: Booking['status']
   late_change_fee?: number | null
+  late_cancel?: boolean | null
+  cancel_fee?: number | null
 }
 
 type AvailabilityRow = {
@@ -282,6 +284,9 @@ function mapBooking(row: BookingRow): Booking {
     pickupTime: row.pickup_time,
     status: row.status,
     lateChangeFee: Math.max(0, Math.floor(Number(row.late_change_fee) || 0)),
+    lateCancel: row.late_cancel === true,
+    cancelFee:
+      row.cancel_fee == null ? undefined : Math.max(0, Math.floor(Number(row.cancel_fee) || 0)),
   }
 }
 
@@ -313,6 +318,8 @@ function bookingToRow(booking: Booking): BookingRow {
     pickup_time: booking.pickupTime,
     status: booking.status,
     late_change_fee: Math.max(0, Math.floor(Number(booking.lateChangeFee) || 0)),
+    late_cancel: booking.lateCancel === true,
+    cancel_fee: booking.cancelFee == null ? null : Math.max(0, Math.floor(booking.cancelFee)),
   }
 }
 
@@ -656,15 +663,28 @@ export async function insertBooking(booking: Booking) {
   const row = bookingToRow(booking)
   const { error } = await supabase.from('bookings').insert(row)
   if (!error) return
-  const { late_change_fee: _lateChangeFee, ...withoutFee } = row
+  const { late_cancel: _lateCancel, cancel_fee: _cancelFee, ...withoutCancel } = row
+  const { error: withoutCancelError } = await supabase.from('bookings').insert(withoutCancel)
+  if (!withoutCancelError) return
+  const { late_change_fee: _lateChangeFee, ...withoutFee } = withoutCancel
   const { error: fallbackError } = await supabase.from('bookings').insert(withoutFee)
   if (fallbackError) throw new Error(`insert booking: ${fallbackError.message}`)
 }
 
-export async function updateBookingStatus(code: string, status: Booking['status']) {
+export async function updateBookingStatus(
+  code: string,
+  status: Booking['status'],
+  extra?: { lateCancel?: boolean; cancelFee?: number },
+) {
   const supabase = getSupabaseBrowserClient()
-  const { error } = await supabase.from('bookings').update({ status }).eq('code', code)
-  if (error) throw new Error(`update booking status: ${error.message}`)
+  const patch: Record<string, unknown> = { status }
+  if (extra?.lateCancel !== undefined) patch.late_cancel = extra.lateCancel
+  if (extra?.cancelFee !== undefined) patch.cancel_fee = Math.max(0, Math.floor(extra.cancelFee))
+  const { error } = await supabase.from('bookings').update(patch).eq('code', code)
+  if (!error) return
+  const { error: fallbackError } = await supabase.from('bookings').update({ status }).eq('code', code)
+  if (!fallbackError) return
+  throw new Error(`update booking status: ${fallbackError.message}`)
 }
 
 export async function updateBookingPickup(

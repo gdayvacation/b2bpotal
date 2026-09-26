@@ -62,6 +62,7 @@ type InvoiceRow = {
   receipt_no: string | null
   linked_invoice_ids: unknown
   created_at: string
+  send_to_agent?: boolean | null
 }
 
 type ItemRow = {
@@ -93,6 +94,7 @@ function num(value: unknown) {
 function isLineKind(value: unknown): value is InvoiceLineKind {
   return (
     value === 'tour' ||
+    value === 'no_show' ||
     value === 'change_date' ||
     value === 'cancel' ||
     value === 'private_transfer' ||
@@ -242,6 +244,7 @@ function mapInvoice(row: InvoiceRow, items: InvoiceItem[]): InvoiceDocument {
     linkedInvoiceIds: parseLinkedIds(row.linked_invoice_ids),
     items: items.slice().sort((a, b) => a.sortOrder - b.sortOrder),
     createdAt: row.created_at,
+    sendToAgent: row.send_to_agent === true,
   }
 }
 
@@ -261,6 +264,7 @@ function invoiceToRow(doc: InvoiceDocument, includeChannel = true): InvoiceRow {
     receipt_no: doc.receiptNo,
     linked_invoice_ids: doc.linkedInvoiceIds,
     created_at: doc.createdAt,
+    send_to_agent: doc.sendToAgent === true,
   }
 }
 
@@ -432,14 +436,21 @@ export async function saveInvoiceDocument(doc: InvoiceDocument): Promise<{ error
   if (!hasSupabaseConfig()) return {}
   try {
     const supabase = getSupabaseBrowserClient()
-    const { error: invoiceError } = await supabase.from('invoices').upsert(invoiceToRow(doc))
+    const row = invoiceToRow(doc)
+    const { error: invoiceError } = await supabase.from('invoices').upsert(row)
     if (invoiceError) {
-      const missingChannel = /payment_channel|schema cache|column/i.test(invoiceError.message)
-      if (missingChannel) {
-        const retry = await supabase.from('invoices').upsert(invoiceToRow(doc, false))
-        if (retry.error) {
-          console.warn('[supabase] invoice save failed', retry.error.message)
-          return { error: retry.error.message }
+      const missingColumn = /payment_channel|send_to_agent|schema cache|column/i.test(
+        invoiceError.message,
+      )
+      if (missingColumn) {
+        const { send_to_agent: _send, ...withoutSend } = row
+        const retrySend = await supabase.from('invoices').upsert(withoutSend)
+        if (retrySend.error) {
+          const retry = await supabase.from('invoices').upsert(invoiceToRow(doc, false))
+          if (retry.error) {
+            console.warn('[supabase] invoice save failed', retry.error.message)
+            return { error: retry.error.message }
+          }
         }
       } else {
         console.warn('[supabase] invoice save failed', invoiceError.message)

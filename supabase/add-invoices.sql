@@ -62,6 +62,7 @@ create table if not exists public.invoices (
   payment_channel text,
   receipt_no text,
   linked_invoice_ids jsonb not null default '[]'::jsonb,
+  send_to_agent boolean not null default false,
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );

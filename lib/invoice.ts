@@ -1,6 +1,6 @@
+import { originalBookedPax, type BookedPaxSnapshot } from '@/lib/check-in-booked-pax'
 import { parseCashOnTourAmount } from '@/lib/format'
 import {
-  chargeablePax,
   isPrivateTransfer,
   type Booking,
   type CheckInAttendance,
@@ -29,6 +29,7 @@ export function parsePaymentChannel(value: unknown): PaymentChannel | null {
 }
 export type InvoiceLineKind =
   | 'tour'
+  | 'no_show'
   | 'change_date'
   | 'cancel'
   | 'private_transfer'
@@ -100,6 +101,8 @@ export type InvoiceDocument = {
   linkedInvoiceIds: string[]
   items: InvoiceItem[]
   createdAt: string
+  /** Admin marked this invoice to send to the agent. */
+  sendToAgent?: boolean
 }
 
 export const DEFAULT_INVOICE_SETTINGS: InvoiceSettings = {
@@ -281,19 +284,77 @@ function moneyId() {
   return crypto.randomUUID()
 }
 
+function snapshotTotal(row: BookedPaxSnapshot) {
+  return row.adults + row.children + row.infants + row.tourLeaders
+}
+
+export function bookingTourAmount(
+  booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>,
+  rates: AgencyInvoiceRates,
+) {
+  return snapshotAmount(
+    {
+      adults: booking.adults,
+      children: booking.children,
+      infants: booking.infants,
+      tourLeaders: booking.tourLeaders,
+    },
+    rates,
+  )
+}
+
+function snapshotAmount(row: BookedPaxSnapshot, rates: AgencyInvoiceRates) {
+  return (
+    row.adults * rates.adultPrice +
+    row.children * rates.childPrice +
+    row.infants * rates.infantPrice +
+    row.tourLeaders * rates.tourLeaderPrice
+  )
+}
+
+function emptySnapshot(): BookedPaxSnapshot {
+  return { adults: 0, children: 0, infants: 0, tourLeaders: 0 }
+}
+
+export function noShowPaxForInvoice(
+  booking: Booking,
+  original: BookedPaxSnapshot,
+  attendance: CheckInAttendance | null | undefined,
+): BookedPaxSnapshot {
+  const current = {
+    adults: booking.adults,
+    children: booking.children,
+    infants: booking.infants,
+    tourLeaders: booking.tourLeaders,
+  }
+  if (attendance === 'no-show') {
+    return {
+      adults: Math.max(original.adults, current.adults),
+      children: Math.max(original.children, current.children),
+      infants: Math.max(original.infants, current.infants),
+      tourLeaders: Math.max(original.tourLeaders, current.tourLeaders),
+    }
+  }
+  return {
+    adults: Math.max(0, original.adults - current.adults),
+    children: Math.max(0, original.children - current.children),
+    infants: Math.max(0, original.infants - current.infants),
+    tourLeaders: Math.max(0, original.tourLeaders - current.tourLeaders),
+  }
+}
+
 export function buildInvoiceItemsForBooking(
   booking: Booking,
   rates: AgencyInvoiceRates,
-  options?: { includeOtherService?: boolean },
+  options?: { includeOtherService?: boolean; attendance?: CheckInAttendance | null },
 ): Omit<InvoiceItem, 'invoiceId'>[] {
   const items: Omit<InvoiceItem, 'invoiceId'>[] = []
   const voucherNo = bookingVoucherNo(booking)
 
   if (booking.status === 'Cancelled') {
-    const pax = chargeablePax(booking)
-    const unit = rates.cancelPrice
-    const amount = unit * pax
-    if (amount > 0) {
+    const adminFee = booking.cancelFee
+    const hasAdminFee = typeof adminFee === 'number' && Number.isFinite(adminFee)
+    if (hasAdminFee && adminFee > 0) {
       items.push({
         id: moneyId(),
         bookingCode: booking.code,
@@ -304,44 +365,102 @@ export function buildInvoiceItemsForBooking(
         children: booking.children,
         infants: booking.infants,
         tourLeaders: booking.tourLeaders,
-        adultPrice: unit,
-        childPrice: unit,
+        adultPrice: 0,
+        childPrice: 0,
         infantPrice: 0,
         tourLeaderPrice: 0,
+        cot: 0,
+        amount: Math.max(0, Math.floor(adminFee)),
+        lineKind: 'cancel',
+        sortOrder: items.length,
+      })
+    } else if (!hasAdminFee && booking.lateCancel) {
+      const pax = {
+        adults: booking.adults,
+        children: booking.children,
+        infants: booking.infants,
+        tourLeaders: booking.tourLeaders,
+      }
+      const amount = snapshotAmount(pax, rates)
+      items.push({
+        id: moneyId(),
+        bookingCode: booking.code,
+        travelDate: booking.date,
+        voucherNo,
+        description: `Cancel · full price · ${programLabel(booking.program)}`,
+        adults: pax.adults,
+        children: pax.children,
+        infants: pax.infants,
+        tourLeaders: pax.tourLeaders,
+        adultPrice: rates.adultPrice,
+        childPrice: rates.childPrice,
+        infantPrice: rates.infantPrice,
+        tourLeaderPrice: rates.tourLeaderPrice,
         cot: 0,
         amount,
         lineKind: 'cancel',
         sortOrder: items.length,
       })
     }
-    return items
+  } else {
+    const original = originalBookedPax(booking.date, booking.program, booking)
+    const noShow = noShowPaxForInvoice(booking, original, options?.attendance)
+    const wholeNoShow = options?.attendance === 'no-show'
+    const tourPax = wholeNoShow
+      ? emptySnapshot()
+      : {
+          adults: booking.adults,
+          children: booking.children,
+          infants: booking.infants,
+          tourLeaders: booking.tourLeaders,
+        }
+    const tourAmount = snapshotAmount(tourPax, rates)
+
+    if (snapshotTotal(tourPax) > 0 || tourAmount > 0) {
+      items.push({
+        id: moneyId(),
+        bookingCode: booking.code,
+        travelDate: booking.date,
+        voucherNo,
+        description: programLabel(booking.program),
+        adults: tourPax.adults,
+        children: tourPax.children,
+        infants: tourPax.infants,
+        tourLeaders: tourPax.tourLeaders,
+        adultPrice: rates.adultPrice,
+        childPrice: rates.childPrice,
+        infantPrice: rates.infantPrice,
+        tourLeaderPrice: rates.tourLeaderPrice,
+        cot: 0,
+        amount: tourAmount,
+        lineKind: 'tour',
+        sortOrder: items.length,
+      })
+    }
+
+    const noShowAmount = snapshotAmount(noShow, rates)
+    if (snapshotTotal(noShow) > 0) {
+      items.push({
+        id: moneyId(),
+        bookingCode: booking.code,
+        travelDate: booking.date,
+        voucherNo,
+        description: `No show ${snapshotTotal(noShow)}`,
+        adults: noShow.adults,
+        children: noShow.children,
+        infants: noShow.infants,
+        tourLeaders: noShow.tourLeaders,
+        adultPrice: rates.adultPrice,
+        childPrice: rates.childPrice,
+        infantPrice: rates.infantPrice,
+        tourLeaderPrice: rates.tourLeaderPrice,
+        cot: 0,
+        amount: noShowAmount,
+        lineKind: 'no_show',
+        sortOrder: items.length,
+      })
+    }
   }
-
-  const tourAmount =
-    booking.adults * rates.adultPrice +
-    booking.children * rates.childPrice +
-    booking.infants * rates.infantPrice +
-    booking.tourLeaders * rates.tourLeaderPrice
-
-  items.push({
-    id: moneyId(),
-    bookingCode: booking.code,
-    travelDate: booking.date,
-    voucherNo,
-    description: programLabel(booking.program),
-    adults: booking.adults,
-    children: booking.children,
-    infants: booking.infants,
-    tourLeaders: booking.tourLeaders,
-    adultPrice: rates.adultPrice,
-    childPrice: rates.childPrice,
-    infantPrice: rates.infantPrice,
-    tourLeaderPrice: rates.tourLeaderPrice,
-    cot: 0,
-    amount: tourAmount,
-    lineKind: 'tour',
-    sortOrder: items.length,
-  })
 
   const lateFee = Math.max(0, booking.lateChangeFee ?? 0)
   if (lateFee > 0) {
@@ -521,5 +640,6 @@ export function newInvoiceDocument(input: {
     linkedInvoiceIds: input.linkedInvoiceIds ?? [],
     items,
     createdAt: new Date().toISOString(),
+    sendToAgent: false,
   }
 }
