@@ -1,7 +1,7 @@
 'use client'
 
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { nextBookingCode, todayISO, uniqueAgentSlug } from '@/lib/format'
+import { formatThb, nextBookingCode, todayISO, uniqueAgentSlug } from '@/lib/format'
 import { autoAssignBoats } from '@/lib/boat-assign'
 import {
   CHECK_IN_ATTENDANCE_STORAGE_KEY,
@@ -97,7 +97,7 @@ import {
   adoptVanBookingsOntoSharedBoat,
   canFitBookingOnBoat,
 } from '@/lib/boat-load'
-import { autoAssignVans, bookingPaxOnVan, nextSortOrderForVan, normalizeAssignments, reorderVanAssignments } from '@/lib/vehicle-assign'
+import { autoAssignVans, bookingPaxOnVan, listFleetVanNumbers, nextSortOrderForVan, normalizeAssignments, reorderVanAssignments } from '@/lib/vehicle-assign'
 import {
   bookingClosedMessage,
   cancelClosedMessage,
@@ -221,15 +221,26 @@ import {
   dummyVanMeta,
   DUMMY_VAN_LABEL,
   DUMMY_VAN_NUMBER,
+  NO_TRANSFER_VAN_NUMBER,
+  NO_TRANSFER_VAN_LABEL,
   bookingOnPartnerBoat,
+  bookingTransferKind,
   isDummyVan,
+  isNoTransferVan,
+  isVirtualVan,
+  noTransferVanMeta,
+  vanTransferKind,
   isActiveBooking,
   isCorePickupZone,
   isNoTransfer,
   isPrivateTransfer,
   isPrivateTransferZone,
+  isPartnerBoat,
   isSpecialTransfer,
   isSpecialTransferKind,
+  packVanPlate,
+  unpackVanPlate,
+  boatNumbersForPlan,
   normalizeBoatCapacities,
   PARTNER_BOAT_CAPACITY,
   normalizeChargeAmount,
@@ -564,6 +575,8 @@ type PortalContextValue = {
     boat: BoatNumber | null,
     options?: { persist?: boolean },
   ) => void
+  assignVanToPartnerBoat: (date: string, program: Program, van: number) => void
+  addPartnerVan: (date: string, program: Program, company: string, bookingCodes?: string[]) => number | null
   getDayVehiclePlan: (date: string, program: Program) => DayVehiclePlan
   assignBookingToVan: (
     date: string,
@@ -593,12 +606,16 @@ type PortalContextValue = {
     date: string,
     program: Program,
     van: number,
-    meta: Partial<VanMeta> & { capacity?: number | null; specialKind?: VanMeta['specialKind'] | null },
+    meta: Omit<Partial<VanMeta>, 'capacity' | 'specialKind'> & {
+      capacity?: number | null
+      specialKind?: VanMeta['specialKind'] | null
+    },
   ) => void
   getFleetVan: (van: number) => FleetVan | null
   resolveVanMeta: (van: number, dayMeta?: VanMeta | null) => VanMeta & { fromFleet: boolean; incomplete: boolean }
   autoAssignDayVans: (date: string, program: Program) => void
   clearDayVanAssignments: (date: string, program: Program) => void
+  removeDayVan: (date: string, program: Program, van: number) => void
 }
 
 const PortalContext = createContext<PortalContextValue | null>(null)
@@ -1193,13 +1210,107 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       })
     }
 
+    const findPartnerBoatByCompany = (plan: DayBoatPlan, company: string) => {
+      const target = company.trim().toLowerCase()
+      if (!target) return null
+      for (const boat of boatNumbersForPlan(plan)) {
+        if (!isPartnerBoat(plan, boat)) continue
+        const name = (plan.names[boat - 1] ?? '').trim().toLowerCase()
+        const label = (plan.labels[boat - 1] ?? '').trim().toLowerCase()
+        if (name === target || label === target) return boat
+      }
+      return null
+    }
+
+    const findPartnerBoatHoldingCodes = (plan: DayBoatPlan, codes: string[]) => {
+      if (codes.length === 0) return null
+      const wanted = new Set(codes)
+      for (const boat of boatNumbersForPlan(plan)) {
+        if (!isPartnerBoat(plan, boat)) continue
+        const hasGuest = Object.entries(plan.assignments).some(
+          ([code, assigned]) => assigned === boat && wanted.has(code),
+        )
+        if (hasGuest) return boat
+      }
+      return null
+    }
+
+    const findSolePartnerBoat = (plan: DayBoatPlan) => {
+      const boats = boatNumbersForPlan(plan).filter((boat) => isPartnerBoat(plan, boat))
+      return boats.length === 1 ? boats[0] : null
+    }
+
+    const findLinkedPartnerBoat = (
+      plan: DayBoatPlan,
+      company: string,
+      previousCompany: string,
+      codes: string[],
+    ) =>
+      findPartnerBoatByCompany(plan, company) ||
+      (previousCompany && previousCompany.toLowerCase() !== company.toLowerCase()
+        ? findPartnerBoatByCompany(plan, previousCompany)
+        : null) ||
+      findPartnerBoatHoldingCodes(plan, codes) ||
+      findSolePartnerBoat(plan)
+
+    const syncPartnerVanToBoat = (
+      date: string,
+      program: Program,
+      van: number,
+      vehicleAssignments: DayVehiclePlan['assignments'],
+      previousCompany = '',
+      metaOverride?: VanMeta,
+    ) => {
+      const vehicle = getDayVehiclePlan(date, program)
+      const meta = metaOverride ?? vehicle.vanMeta[String(van)]
+      if (vanTransferKind(van, meta) !== 'partner') return
+      const company = (
+        meta?.outsourceCompany?.trim() ||
+        meta?.label?.trim() ||
+        meta?.plate?.trim() ||
+        'Partner'
+      ).slice(0, 40)
+      const codes = activeDayBookings(date, program)
+        .filter((booking) => bookingPaxOnVan(booking, vehicleAssignments[booking.code], van) > 0)
+        .map((booking) => booking.code)
+      upsertPlan(date, program, (plan) => {
+        let next = hydrateDayBoatPlan(plan)
+        let boat = findLinkedPartnerBoat(next, company, previousCompany, codes)
+        if (!boat) {
+          if (next.capacities.length >= MAX_DAY_BOATS) return plan
+          next = {
+            ...next,
+            capacities: [...next.capacities, PARTNER_BOAT_CAPACITY],
+            names: [...next.names, company],
+            labels: [...next.labels, ''],
+            kinds: [...next.kinds, 'partner'],
+            guides: [...next.guides, emptyBoatGuide()],
+          }
+          boat = next.capacities.length
+        }
+        if ((next.names[boat - 1] ?? '').trim() !== company) {
+          const names = [...next.names]
+          names[boat - 1] = company
+          next = { ...next, names }
+        }
+        if (codes.length === 0) return next
+        const assignments = { ...next.assignments }
+        for (const code of codes) assignments[code] = boat
+        return { ...next, assignments }
+      })
+    }
+
     const followVanOntoBoat = (
       date: string,
       program: Program,
       van: number,
       vehicleAssignments: DayVehiclePlan['assignments'],
     ) => {
-      if (isDummyVan(van)) return
+      const meta = getDayVehiclePlan(date, program).vanMeta[String(van)]
+      if (isDummyVan(van) || vanTransferKind(van, meta) === 'partner') {
+        syncPartnerVanToBoat(date, program, van, vehicleAssignments)
+        return
+      }
       const countable = activeDayBookings(date, program).filter(
         (booking) =>
           getCheckInAttendance(checkInAttendance, date, program, booking.code) !== 'no-show',
@@ -1230,7 +1341,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const needVan = !isNoTransfer(booking.pickupZone)
         const legs = assignments[booking.code]
         const onDummy = Boolean(legs?.some((leg) => isDummyVan(leg.van)))
-        const hasRealVan = Boolean(legs?.some((leg) => !isDummyVan(leg.van)))
+        const hasRealVan = Boolean(legs?.some((leg) => !isVirtualVan(leg.van)))
 
         if (onPartner && needVan) {
           if (!hasRealVan && !onDummy) {
@@ -1270,11 +1381,84 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       }))
     }
 
+    const withVirtualVanMeta = (
+      vanMeta: DayVehiclePlan['vanMeta'],
+      van: number | null,
+    ): DayVehiclePlan['vanMeta'] => {
+      if (van === null) return vanMeta
+      if (isDummyVan(van)) {
+        return {
+          ...vanMeta,
+          [String(DUMMY_VAN_NUMBER)]: {
+            ...dummyVanMeta(),
+            ...vanMeta[String(DUMMY_VAN_NUMBER)],
+            plate: DUMMY_VAN_LABEL,
+          },
+        }
+      }
+      if (isNoTransferVan(van)) {
+        return {
+          ...vanMeta,
+          [String(NO_TRANSFER_VAN_NUMBER)]: {
+            ...noTransferVanMeta(),
+            ...vanMeta[String(NO_TRANSFER_VAN_NUMBER)],
+            plate: NO_TRANSFER_VAN_LABEL,
+          },
+        }
+      }
+      return vanMeta
+    }
+
+    const persistPrivateTransferInvoice = (
+      codes: string[],
+      chargeAmount: number,
+      mode: 'apply' | 'clear-ops',
+    ) => {
+      if (codes.length === 0) return
+      const amount = normalizeChargeAmount(chargeAmount)
+      setBookings((current) => {
+        let changed = false
+        const next = current.map((booking) => {
+          if (!codes.includes(booking.code) || !isActiveBooking(booking)) return booking
+          if (isPrivateTransferZone(booking.pickupZone) || isNoTransfer(booking.pickupZone)) {
+            return booking
+          }
+          if (mode === 'clear-ops' || amount <= 0) {
+            if (!booking.privateTransferVehicle && !booking.privateTransferPrice) return booking
+            changed = true
+            return { ...booking, ...emptyPrivateTransferFields() }
+          }
+          const vehicle =
+            booking.privateTransferVehicle === 'Car' || booking.privateTransferVehicle === 'Van'
+              ? booking.privateTransferVehicle
+              : 'Van'
+          const price = formatThb(amount)
+          if (
+            booking.privateTransferVehicle === vehicle &&
+            booking.privateTransferPrice === price
+          ) {
+            return booking
+          }
+          changed = true
+          return { ...booking, privateTransferVehicle: vehicle, privateTransferPrice: price }
+        })
+        if (changed) {
+          for (const booking of next) {
+            if (!codes.includes(booking.code)) continue
+            persistBookingWrite('updateBookingDetails', updateBookingDetails(booking))
+          }
+        }
+        return changed ? next : current
+      })
+    }
+
     const getFleetVan = (van: number) =>
       fleetVans.find((item) => item.vanNumber === van) ?? null
 
     const resolveVanMeta = (_van: number, dayMeta?: VanMeta | null) => {
-      const plate = dayMeta?.plate?.trim() || ''
+      const identity = unpackVanPlate(dayMeta?.plate ?? '')
+      const plate = identity.plate || dayMeta?.plate?.trim() || ''
+      const label = dayMeta?.label?.trim() || identity.label
       const driver = dayMeta?.driver?.trim() || ''
       const phone = dayMeta?.phone?.trim() || ''
       const specialKind = isSpecialTransferKind(dayMeta?.specialKind)
@@ -1282,6 +1466,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         : undefined
       return {
         plate,
+        label,
         driver,
         phone,
         capacity: dayMeta?.capacity,
@@ -2963,6 +3148,67 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       },
       assignVanToBoat: (date, program, van, boat, options) => {
         const vehiclePlan = getDayVehiclePlan(date, program)
+        const boatPlan = getDayBoatPlan(date, program)
+        const dayBookings = activeDayBookings(date, program).filter(
+          (booking) =>
+            getCheckInAttendance(checkInAttendance, date, program, booking.code) !== 'no-show',
+        )
+        const codes = dayBookings
+          .filter((booking) => {
+            if (bookingPaxOnVan(booking, vehiclePlan.assignments[booking.code], van) > 0) return true
+            return (
+              isNoTransferVan(van) && bookingTransferKind(booking, vehiclePlan, boatPlan) === 'no_transfer'
+            )
+          })
+          .map((booking) => booking.code)
+        if (codes.length === 0) return
+        if (isNoTransferVan(van)) {
+          const assignments = { ...vehiclePlan.assignments }
+          let vehicleChanged = false
+          for (const code of codes) {
+            const item = dayBookings.find((row) => row.code === code)
+            if (!item) continue
+            if (bookingPaxOnVan(item, assignments[code], van) > 0) continue
+            assignments[code] = [
+              { van, pax: totalPassengers(item), sortOrder: nextSortOrderForVan(assignments, van) },
+            ]
+            vehicleChanged = true
+          }
+          if (vehicleChanged) {
+            upsertVehiclePlan(date, program, (plan) => ({
+              ...plan,
+              assignments,
+              vanMeta: withVirtualVanMeta(plan.vanMeta, van),
+            }))
+          }
+        }
+        upsertPlan(
+          date,
+          program,
+          (plan) => {
+            const assignments = { ...plan.assignments }
+            for (const code of codes) {
+              if (boat === null) delete assignments[code]
+              else assignments[code] = boat
+            }
+            return { ...plan, assignments }
+          },
+          options,
+        )
+        const nextBoatAssignments = { ...getDayBoatPlan(date, program).assignments }
+        for (const code of codes) {
+          if (boat === null) delete nextBoatAssignments[code]
+          else nextBoatAssignments[code] = boat
+        }
+        syncDummyVans(date, program, nextBoatAssignments)
+      },
+      assignVanToPartnerBoat: (date, program, van) => {
+        const vehiclePlan = getDayVehiclePlan(date, program)
+        const meta = vehiclePlan.vanMeta[String(van)]
+        if (vanTransferKind(van, meta) === 'partner' || isDummyVan(van)) {
+          syncPartnerVanToBoat(date, program, van, vehiclePlan.assignments, '', meta)
+          return
+        }
         const codes = activeDayBookings(date, program)
           .filter((booking) => bookingPaxOnVan(booking, vehiclePlan.assignments[booking.code], van) > 0)
           .filter(
@@ -2970,24 +3216,82 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               getCheckInAttendance(checkInAttendance, date, program, booking.code) !== 'no-show',
           )
           .map((booking) => booking.code)
-        if (codes.length === 0) return
-        const nextBoatAssignments = { ...getDayBoatPlan(date, program).assignments }
-        for (const code of codes) {
-          if (boat === null) delete nextBoatAssignments[code]
-          else nextBoatAssignments[code] = boat
+        let assignedBoat: BoatNumber | null = null
+        upsertPlan(date, program, (plan) => {
+          let next = hydrateDayBoatPlan(plan)
+          let boat = boatNumbersForPlan(next).find((item) => isPartnerBoat(next, item))
+          if (!boat) {
+            if (next.capacities.length >= MAX_DAY_BOATS) return plan
+            next = {
+              ...next,
+              capacities: [...next.capacities, PARTNER_BOAT_CAPACITY],
+              names: [...next.names, ''],
+              labels: [...next.labels, ''],
+              kinds: [...next.kinds, 'partner'],
+              guides: [...next.guides, emptyBoatGuide()],
+            }
+            boat = next.capacities.length
+          }
+          assignedBoat = boat
+          if (codes.length === 0) return next
+          const assignments = { ...next.assignments }
+          for (const code of codes) assignments[code] = boat
+          return { ...next, assignments }
+        })
+        if (assignedBoat && codes.length > 0) {
+          const nextAssignments = { ...getDayBoatPlan(date, program).assignments }
+          for (const code of codes) nextAssignments[code] = assignedBoat
+          syncDummyVans(date, program, nextAssignments)
         }
-        upsertPlan(
-          date,
-          program,
-          (plan) => ({ ...plan, assignments: nextBoatAssignments }),
-          options,
-        )
-        syncDummyVans(date, program, nextBoatAssignments)
+      },
+      addPartnerVan: (date, program, company, bookingCodes = []) => {
+        const name = company.trim().slice(0, 40)
+        if (!name) return null
+        const current = getDayVehiclePlan(date, program)
+        const assigned = listFleetVanNumbers(current.assignments)
+        const saved = Object.keys(current.vanMeta ?? {})
+          .map(Number)
+          .filter((van) => Number.isFinite(van) && van >= 1 && !isVirtualVan(van))
+        const listed = [...new Set([...assigned, ...saved])]
+        const maxVan = listed.length > 0 ? Math.max(...listed) : 0
+        const van = Math.max(maxVan, 3) + 1
+        const nextMeta: VanMeta = {
+          ...emptyVanMeta(),
+          specialKind: 'partner',
+          outsourceCompany: name,
+          label: name,
+          plate: packVanPlate(name, name),
+        }
+        const assignments = { ...current.assignments }
+        for (const code of bookingCodes) {
+          const booking = bookings.find((item) => item.code === code && isActiveBooking(item))
+          if (!booking || booking.date !== date || booking.program !== program) continue
+          assignments[code] = [
+            {
+              van,
+              pax: totalPassengers(booking),
+              sortOrder: nextSortOrderForVan(assignments, van),
+            },
+          ]
+        }
+        upsertVehiclePlan(date, program, (plan) => ({
+          ...plan,
+          assignments,
+          vanMeta: {
+            ...plan.vanMeta,
+            [String(van)]: nextMeta,
+          },
+        }))
+        syncPartnerVanToBoat(date, program, van, assignments, '', nextMeta)
+        return van
       },
       assignBookingToVan: (date, program, bookingCode, van) => {
         const booking = bookings.find((item) => item.code === bookingCode && isActiveBooking(item))
         const pax = booking ? totalPassengers(booking) : 0
         const current = getDayVehiclePlan(date, program)
+        const prevKind = booking
+          ? bookingTransferKind(booking, current, getDayBoatPlan(date, program))
+          : 'unassigned'
         const assignments = { ...current.assignments }
         if (van === null) delete assignments[bookingCode]
         else {
@@ -2995,17 +3299,39 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             { van, pax, sortOrder: nextSortOrderForVan(assignments, van) },
           ]
         }
-        upsertVehiclePlan(date, program, (plan) => ({ ...plan, assignments }))
+        upsertVehiclePlan(date, program, (plan) => ({
+          ...plan,
+          assignments,
+          vanMeta: withVirtualVanMeta(plan.vanMeta, van),
+        }))
         if (van !== null) followVanOntoBoat(date, program, van, assignments)
+        const nextKind =
+          van === null
+            ? 'unassigned'
+            : vanTransferKind(van, withVirtualVanMeta(current.vanMeta, van)[String(van)])
+        if (nextKind === 'private') {
+          persistPrivateTransferInvoice(
+            [bookingCode],
+            normalizeChargeAmount(current.vanMeta[String(van)]?.chargeAmount),
+            'apply',
+          )
+        } else if (prevKind === 'private') {
+          persistPrivateTransferInvoice([bookingCode], 0, 'clear-ops')
+        }
       },
       assignBookingsToVan: (date, program, bookingCodes, van) => {
         if (bookingCodes.length === 0) return
+        const current = getDayVehiclePlan(date, program)
+        const boatPlan = getDayBoatPlan(date, program)
         const paxByCode = new Map<string, number>()
+        const leavingPrivate: string[] = []
         for (const code of bookingCodes) {
           const item = bookings.find((row) => row.code === code && isActiveBooking(row))
           if (item) paxByCode.set(code, totalPassengers(item))
+          if (item && bookingTransferKind(item, current, boatPlan) === 'private') {
+            leavingPrivate.push(code)
+          }
         }
-        const current = getDayVehiclePlan(date, program)
         const assignments = { ...current.assignments }
         for (const code of bookingCodes) {
           if (van === null) {
@@ -3016,8 +3342,25 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           if (pax === undefined) continue
           assignments[code] = [{ van, pax, sortOrder: nextSortOrderForVan(assignments, van) }]
         }
-        upsertVehiclePlan(date, program, (plan) => ({ ...plan, assignments }))
+        upsertVehiclePlan(date, program, (plan) => ({
+          ...plan,
+          assignments,
+          vanMeta: withVirtualVanMeta(plan.vanMeta, van),
+        }))
         if (van !== null) followVanOntoBoat(date, program, van, assignments)
+        const nextKind =
+          van === null
+            ? 'unassigned'
+            : vanTransferKind(van, withVirtualVanMeta(current.vanMeta, van)[String(van)])
+        if (nextKind === 'private') {
+          persistPrivateTransferInvoice(
+            bookingCodes,
+            normalizeChargeAmount(current.vanMeta[String(van)]?.chargeAmount),
+            'apply',
+          )
+        } else if (leavingPrivate.length > 0) {
+          persistPrivateTransferInvoice(leavingPrivate, 0, 'clear-ops')
+        }
       },
       setBookingVanSplits: (date, program, bookingCode, legs) => {
         const current = getDayVehiclePlan(date, program)
@@ -3069,16 +3412,21 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             : isSpecialTransferKind(prev.specialKind)
               ? prev.specialKind
               : undefined
+        const label =
+          meta.label !== undefined ? meta.label.trim() : prev.label?.trim() || ''
+        const plateRaw = meta.plate !== undefined ? meta.plate.trim() : unpackVanPlate(prev.plate).plate
         const next: VanMeta = {
-          plate: meta.plate !== undefined ? meta.plate.trim() : prev.plate.trim(),
+          plate: packVanPlate(label, plateRaw),
+          label,
           driver: meta.driver !== undefined ? meta.driver.trim() : prev.driver.trim(),
           phone: meta.phone !== undefined ? meta.phone.trim() : prev.phone.trim(),
           outsourced,
-          outsourceCompany: outsourced
-            ? meta.outsourceCompany !== undefined
-              ? meta.outsourceCompany.trim()
-              : prev.outsourceCompany?.trim() || ''
-            : '',
+          outsourceCompany:
+            outsourced || specialKind === 'partner'
+              ? meta.outsourceCompany !== undefined
+                ? meta.outsourceCompany.trim()
+                : prev.outsourceCompany?.trim() || ''
+              : '',
           ...(nextCapacity !== undefined ? { capacity: nextCapacity } : {}),
           ...(specialKind ? { specialKind } : {}),
           transferIn:
@@ -3098,16 +3446,33 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             [String(van)]: next,
           },
         }))
+        if (vanTransferKind(van, next) === 'private') {
+          const codes = Object.entries(plan.assignments)
+            .filter(([, legs]) => legs.some((leg) => leg.van === van))
+            .map(([code]) => code)
+          persistPrivateTransferInvoice(codes, next.chargeAmount ?? 0, 'apply')
+        }
+        if (vanTransferKind(van, next) === 'partner') {
+          const prevCompany =
+            prev.outsourceCompany?.trim() || prev.label?.trim() || unpackVanPlate(prev.plate).plate || ''
+          syncPartnerVanToBoat(date, program, van, plan.assignments, prevCompany, next)
+        }
       },
       autoAssignDayVans: (date, program) => {
         const boatPlan = getDayBoatPlan(date, program)
         const current = getDayVehiclePlan(date, program)
-        const dayBookings = activeDayBookings(date, program).filter(
-          (booking) => !bookingOnPartnerBoat(boatPlan, booking.code),
-        )
+        const dayBookings = activeDayBookings(date, program).filter((booking) => {
+          if (bookingOnPartnerBoat(boatPlan, booking.code)) return false
+          const kind = bookingTransferKind(booking, current, boatPlan)
+          return kind === 'unassigned' || kind === 'company'
+        })
         const kept: Record<string, VanSplit[]> = {}
         for (const [code, legs] of Object.entries(current.assignments)) {
-          if (legs.some((leg) => isDummyVan(leg.van)) || bookingOnPartnerBoat(boatPlan, code)) {
+          if (
+            legs.some((leg) => isVirtualVan(leg.van)) ||
+            bookingOnPartnerBoat(boatPlan, code) ||
+            vanTransferKind(legs[0]?.van ?? 0, current.vanMeta[String(legs[0]?.van)]) !== 'company'
+          ) {
             kept[code] = legs
           }
         }
@@ -3120,19 +3485,108 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         upsertVehiclePlan(date, program, (plan) => {
           const assignments: Record<string, VanSplit[]> = {}
           for (const [code, legs] of Object.entries(plan.assignments)) {
-            const dummyLegs = legs.filter((leg) => isDummyVan(leg.van))
-            if (dummyLegs.length > 0) assignments[code] = dummyLegs
+            const keptLegs = legs.filter((leg) => {
+              if (isVirtualVan(leg.van)) return true
+              return vanTransferKind(leg.van, plan.vanMeta[String(leg.van)]) !== 'company'
+            })
+            if (keptLegs.length > 0) assignments[code] = keptLegs
           }
           return {
             ...plan,
             assignments,
             vanMeta: Object.fromEntries(
-              Object.entries(plan.vanMeta ?? {}).filter(
-                ([key, meta]) => isSpecialTransfer(meta) || isDummyVan(Number(key)),
-              ),
+              Object.entries(plan.vanMeta ?? {}).filter(([key, meta]) => {
+                const van = Number(key)
+                return (
+                  isSpecialTransfer(meta) ||
+                  meta.specialKind === 'partner' ||
+                  isVirtualVan(van) ||
+                  meta.outsourced === true
+                )
+              }),
             ),
           }
         })
+      },
+      removeDayVan: (date, program, van) => {
+        if (!Number.isFinite(van) || van < 1 || isDummyVan(van)) return
+        const current = getDayVehiclePlan(date, program)
+        const boatPlan = getDayBoatPlan(date, program)
+        const meta = current.vanMeta[String(van)]
+        const partnerCompany =
+          meta?.outsourceCompany?.trim() || meta?.label?.trim() || unpackVanPlate(meta?.plate).plate || ''
+        const dropPartnerBoat = vanTransferKind(van, meta) === 'partner'
+        const returning: string[] = []
+        const leavingPrivate: string[] = []
+        const assignments: Record<string, VanSplit[]> = {}
+        for (const [code, legs] of Object.entries(current.assignments)) {
+          if (legs.some((leg) => leg.van === van)) {
+            returning.push(code)
+            const booking = bookings.find((row) => row.code === code && isActiveBooking(row))
+            if (booking && bookingTransferKind(booking, current, boatPlan) === 'private') {
+              leavingPrivate.push(code)
+            }
+            continue
+          }
+          assignments[code] = legs
+        }
+        const vanMeta = { ...current.vanMeta }
+        delete vanMeta[String(van)]
+        const linkedBoat = dropPartnerBoat
+          ? findLinkedPartnerBoat(boatPlan, partnerCompany, partnerCompany, returning)
+          : null
+        const otherPartnerStillUsesBoat = Boolean(
+          linkedBoat &&
+            Object.entries(vanMeta).some(([key, other]) => {
+              if (vanTransferKind(Number(key), other) !== 'partner') return false
+              const name = (
+                other.outsourceCompany?.trim() ||
+                other.label?.trim() ||
+                unpackVanPlate(other.plate).plate ||
+                ''
+              ).toLowerCase()
+              const boatName = (boatPlan.names[linkedBoat - 1] ?? '').trim().toLowerCase()
+              const boatLabel = (boatPlan.labels[linkedBoat - 1] ?? '').trim().toLowerCase()
+              return Boolean(name) && (name === boatName || name === boatLabel)
+            }),
+        )
+        upsertVehiclePlan(date, program, (plan) => ({
+          ...plan,
+          assignments,
+          vanMeta,
+        }))
+        if (returning.length > 0 || (linkedBoat && !otherPartnerStillUsesBoat)) {
+          upsertPlan(date, program, (plan) => {
+            let next = hydrateDayBoatPlan(plan)
+            if (returning.length > 0) {
+              const nextAssignments = { ...next.assignments }
+              for (const code of returning) delete nextAssignments[code]
+              next = { ...next, assignments: nextAssignments }
+            }
+            if (!linkedBoat || otherPartnerStillUsesBoat) return next
+            const index = linkedBoat - 1
+            if (index < 0 || index >= next.capacities.length || next.capacities.length <= 1) {
+              return next
+            }
+            const kept: Record<string, BoatNumber> = {}
+            for (const [code, assigned] of Object.entries(next.assignments)) {
+              if (assigned === linkedBoat) continue
+              kept[code] = assigned > linkedBoat ? assigned - 1 : assigned
+            }
+            return {
+              ...next,
+              capacities: next.capacities.filter((_, i) => i !== index),
+              names: next.names.filter((_, i) => i !== index),
+              labels: next.labels.filter((_, i) => i !== index),
+              kinds: next.kinds.filter((_, i) => i !== index),
+              guides: next.guides.filter((_, i) => i !== index),
+              assignments: kept,
+            }
+          })
+        }
+        if (leavingPrivate.length > 0) {
+          persistPrivateTransferInvoice(leavingPrivate, 0, 'clear-ops')
+        }
       },
     }
   }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])

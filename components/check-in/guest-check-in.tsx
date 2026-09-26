@@ -54,8 +54,10 @@ import { listVanNumbers, primaryVan } from '@/lib/vehicle-assign'
 import { cn } from '@/lib/utils'
 import {
   bookingOnPartnerBoat,
+  bookingTransferKind,
   isActiveBooking,
-  isDummyVan,
+  isVirtualVan,
+  vanTransferKind,
   isNoTransfer,
   boatDisplayName,
   totalPassengers,
@@ -227,6 +229,7 @@ function GuestCheckInForm({
   const dayBookings = useMemo(() => {
     if (!program) return [] as Booking[]
     const boatPlan = getDayBoatPlan(tourDate, program)
+    const vehiclePlan = getDayVehiclePlan(tourDate, program)
     return bookings
       .filter(
         (b) =>
@@ -234,17 +237,21 @@ function GuestCheckInForm({
           b.date === tourDate &&
           b.program === program &&
           getCheckInAttendance(tourDate, program, b.code) !== 'no-show' &&
-          !bookingOnPartnerBoat(boatPlan, b.code),
+          !bookingOnPartnerBoat(boatPlan, b.code) &&
+          bookingTransferKind(b, vehiclePlan, boatPlan) !== 'partner',
       )
       .sort(
         (a, b) =>
           a.leadGuest.localeCompare(b.leadGuest) || a.code.localeCompare(b.code),
       )
-  }, [bookings, getCheckInAttendance, getDayBoatPlan, program, tourDate])
+  }, [bookings, getCheckInAttendance, getDayBoatPlan, getDayVehiclePlan, program, tourDate])
 
   const vehiclePlan = program ? getDayVehiclePlan(tourDate, program) : null
   const vanNumbers = vehiclePlan
-    ? listVanNumbers(vehiclePlan.assignments).filter((van) => !isDummyVan(van))
+    ? listVanNumbers(vehiclePlan.assignments).filter(
+        (van) =>
+          !isVirtualVan(van) && vanTransferKind(van, vehiclePlan.vanMeta[String(van)]) !== 'partner',
+      )
     : []
   const vanOptions = useMemo(() => {
     if (!vehiclePlan) return [] as Array<{ van: number; plate: string }>
@@ -355,7 +362,12 @@ function GuestCheckInForm({
       setStep('welcome')
       return
     }
-    if (bookingOnPartnerBoat(getDayBoatPlan(booking.date, booking.program), booking.code)) {
+    const boatPlan = getDayBoatPlan(booking.date, booking.program)
+    const vehicle = getDayVehiclePlan(booking.date, booking.program)
+    if (
+      bookingOnPartnerBoat(boatPlan, booking.code) ||
+      bookingTransferKind(booking, vehicle, boatPlan) === 'partner'
+    ) {
       setLockedReady(true)
       setError(t('partnerSent'))
       setStep('welcome')

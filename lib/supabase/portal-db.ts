@@ -64,6 +64,8 @@ import {
   emptyDayVehiclePlan,
   hydrateDayBoatPlan,
   isSpecialTransferKind,
+  packVanPlate,
+  unpackVanPlate,
   normalizeBoatCapacities,
   normalizeBoatGuides,
   normalizeBoatKinds,
@@ -495,8 +497,10 @@ function buildVehiclePlans(
     const plan = next[key] ?? emptyDayVehiclePlan(date, meta.program)
     const capacity = Number(meta.capacity)
     const charge = Number(meta.charge_amount)
+    const identity = unpackVanPlate(meta.plate ?? '')
     plan.vanMeta[String(meta.van_number)] = {
-      plate: meta.plate ?? '',
+      plate: identity.plate,
+      ...(identity.label ? { label: identity.label } : {}),
       driver: meta.driver ?? '',
       phone: meta.phone ?? '',
       ...(Number.isFinite(capacity) && capacity >= 1 ? { capacity: Math.floor(capacity) } : {}),
@@ -758,30 +762,7 @@ export async function updateBookingRebook(
 export async function updateBookingDetails(booking: Booking) {
   const supabase = getSupabaseBrowserClient()
   const row = bookingToRow(booking)
-  const { error } = await supabase
-    .from('bookings')
-    .update({
-      agent_ref: row.agent_ref,
-      park_fee: row.park_fee,
-      canoe: row.canoe,
-      adults: row.adults,
-      children: row.children,
-      infants: row.infants,
-      tour_leaders: row.tour_leaders,
-      lead_guest: row.lead_guest,
-      pickup_zone: row.pickup_zone,
-      pickup_hotel: row.pickup_hotel,
-      room_number: row.room_number,
-      note: row.note,
-      cash_on_tour: row.cash_on_tour,
-      transfer_extra_charge: row.transfer_extra_charge,
-      pickup_time: row.pickup_time,
-      status: row.status,
-      late_change_fee: row.late_change_fee,
-    })
-    .eq('code', booking.code)
-  if (!error) return
-  const { late_change_fee: _lateChangeFee, ...withoutFee } = {
+  const payload = {
     agent_ref: row.agent_ref,
     park_fee: row.park_fee,
     canoe: row.canoe,
@@ -796,13 +777,27 @@ export async function updateBookingDetails(booking: Booking) {
     note: row.note,
     cash_on_tour: row.cash_on_tour,
     transfer_extra_charge: row.transfer_extra_charge,
+    private_transfer_vehicle: row.private_transfer_vehicle,
+    private_transfer_price: row.private_transfer_price,
+    private_driver_name: row.private_driver_name,
+    private_driver_phone: row.private_driver_phone,
     pickup_time: row.pickup_time,
     status: row.status,
     late_change_fee: row.late_change_fee,
   }
+  const { error } = await supabase.from('bookings').update(payload).eq('code', booking.code)
+  if (!error) return
+  const {
+    late_change_fee: _lateChangeFee,
+    private_transfer_vehicle: _vehicle,
+    private_transfer_price: _price,
+    private_driver_name: _driver,
+    private_driver_phone: _phone,
+    ...withoutPrivate
+  } = payload
   const { error: fallbackError } = await supabase
     .from('bookings')
-    .update(withoutFee)
+    .update(withoutPrivate)
     .eq('code', booking.code)
   if (fallbackError) throw new Error(`update booking details: ${fallbackError.message}`)
 }
@@ -1104,7 +1099,7 @@ export async function saveDayVehiclePlan(plan: DayVehiclePlan) {
       date: plan.date,
       program: plan.program,
       van_number: Number(van),
-      plate: typed.plate ?? '',
+      plate: packVanPlate(typed.label ?? '', typed.plate ?? ''),
       driver: typed.driver ?? '',
       phone: typed.phone ?? '',
       outsourced: typed.outsourced === true,

@@ -120,6 +120,8 @@ import { cn } from '@/lib/utils'
 import {
   boatDisplayName,
   boatNumbersForPlan,
+  bookingOnPartnerBoat,
+  bookingTransferKind,
   DUMMY_VAN_LABEL,
   isActiveBooking,
   isDummyVan,
@@ -127,6 +129,7 @@ import {
   isNoTransfer,
   totalPassengers,
   vanOutsourceLabel,
+  vanTransferKind,
   type Booking,
   type Program,
   type VanSplit,
@@ -234,14 +237,17 @@ function lineMatchesBoardQuery(
 
 function driverGroupTitle(group: DriverGroup, showProgram: boolean) {
   const program = showProgram ? `${programLabel(group.program)} · ` : ''
-  if (group.dummy) return `${program}${DUMMY_VAN_LABEL}`
+  if (group.dummy) {
+    const company = group.outsourceCompany.trim()
+    return `${program}${company || 'Tour partner'}`
+  }
   if (group.van !== null) return `${program}Van ${group.van}`
   if (group.id.includes('no-transfer')) return `${program}No Transfer`
   return `${program}Unassigned / no van`
 }
 
 function vanGroupPlate(group: DriverGroup) {
-  if (group.dummy) return DUMMY_VAN_LABEL
+  if (group.dummy) return group.outsourceCompany.trim() || 'Tour partner'
   const plate = group.plate?.trim()
   if (plate) return plate
   if (group.van !== null) return `Van ${group.van}`
@@ -1086,7 +1092,7 @@ function TodayBoardTab({
   const [calendarOpen, setCalendarOpen] = useState(false)
   const [helperGroupId, setHelperGroupId] = useState<string | null>(null)
   const [boardQuery, setBoardQuery] = useState('')
-  const [dummyVanOpen, setDummyVanOpen] = useState(false)
+  const [boardView, setBoardView] = useState<'check-in' | 'partner'>('check-in')
   const boardDateObj = useMemo(() => new Date(`${boardDate}T12:00:00`), [boardDate])
   const portalTodayObj = useMemo(() => new Date(`${portalToday}T12:00:00`), [portalToday])
   const isToday = boardDate === portalToday
@@ -1127,12 +1133,11 @@ function TodayBoardTab({
       if (programBookings.length === 0) continue
       const plan = getDayVehiclePlan(boardDate, program)
       const boatPlan = getDayBoatPlan(boardDate, program)
-      const transfer = programBookings.filter((b) => !isNoTransfer(b.pickupZone))
-      const noTransfer = programBookings.filter((b) => isNoTransfer(b.pickupZone))
       const vanNums = listVanNumbers(plan.assignments)
+      const placed = new Set<string>()
 
       for (const van of vanNums) {
-        const vanBookings = transfer
+        const vanBookings = programBookings
           .filter((b) => bookingPaxOnVan(b, plan.assignments[b.code], van) > 0)
           .sort(
             (a, b) =>
@@ -1142,6 +1147,8 @@ function TodayBoardTab({
           )
         if (vanBookings.length === 0) continue
         const meta = resolveVanMeta(van, plan.vanMeta[String(van)])
+        const sentOut = vanTransferKind(van, meta) === 'partner' || isDummyVan(van)
+        for (const booking of vanBookings) placed.add(booking.code)
         result.push(
           makeDriverGroup(
             `${program}-van-${van}`,
@@ -1158,13 +1165,46 @@ function TodayBoardTab({
             getCheckInAttendance,
             {
               outsourced: meta.outsourced === true,
-              outsourceCompany: meta.outsourceCompany?.trim() || '',
+              outsourceCompany: meta.outsourceCompany?.trim() || meta.label?.trim() || '',
+              sentOut,
             },
           ),
         )
       }
 
-      const unassigned = transfer.filter((b) => primaryVan(plan.assignments[b.code]) === null)
+      const leftoverPartner = programBookings.filter(
+        (booking) =>
+          !placed.has(booking.code) &&
+          (bookingTransferKind(booking, plan, boatPlan) === 'partner' ||
+            bookingOnPartnerBoat(boatPlan, booking.code)),
+      )
+      if (leftoverPartner.length > 0) {
+        for (const booking of leftoverPartner) placed.add(booking.code)
+        result.push(
+          makeDriverGroup(
+            `${program}-tour-partner`,
+            program,
+            null,
+            '',
+            '',
+            '',
+            leftoverPartner,
+            boardDate,
+            boatPlan.assignments,
+            plan.assignments,
+            getCheckInEnrollments,
+            getCheckInAttendance,
+            { sentOut: true, outsourceCompany: 'Tour partner' },
+          ),
+        )
+      }
+
+      const unassigned = programBookings.filter(
+        (b) =>
+          !placed.has(b.code) &&
+          !isNoTransfer(b.pickupZone) &&
+          primaryVan(plan.assignments[b.code]) === null,
+      )
       if (unassigned.length > 0) {
         result.push(
           makeDriverGroup(
@@ -1184,6 +1224,9 @@ function TodayBoardTab({
         )
       }
 
+      const noTransfer = programBookings.filter(
+        (b) => !placed.has(b.code) && isNoTransfer(b.pickupZone),
+      )
       if (noTransfer.length > 0) {
         result.push(
           makeDriverGroup(
@@ -1222,6 +1265,7 @@ function TodayBoardTab({
     let waiting = 0
     let noShow = 0
     for (const group of groups) {
+      if (group.dummy) continue
       for (const line of group.lines) {
         if (seen.has(line.booking.code)) continue
         seen.add(line.booking.code)
@@ -1242,6 +1286,7 @@ function TodayBoardTab({
     const rows: DayServiceDetail[] = []
     const seen = new Set<string>()
     for (const group of groups) {
+      if (group.dummy) continue
       for (const line of group.lines) {
         if (seen.has(line.booking.code)) continue
         seen.add(line.booking.code)
@@ -1287,6 +1332,7 @@ function TodayBoardTab({
     if (!date) return
     onBoardDateChange(toISODate(date))
     setSelectedCode(null)
+    setBoardView('check-in')
     setCalendarOpen(false)
   }
 
@@ -1296,13 +1342,18 @@ function TodayBoardTab({
     () => dummyGroups.reduce((count, group) => count + group.lines.length, 0),
     [dummyGroups],
   )
+  const dummyPaxCount = useMemo(
+    () => dummyGroups.reduce((sum, group) => sum + group.seatsTotal, 0),
+    [dummyGroups],
+  )
 
   const visibleGroups = useMemo(() => {
-    if (!isHelper) return regularGroups
+    const source = !isHelper && boardView === 'partner' ? dummyGroups : regularGroups
+    if (!isHelper) return source
     const selected =
       regularGroups.find((group) => group.id === helperGroupId) ?? regularGroups[0]
     return selected ? [selected] : []
-  }, [regularGroups, helperGroupId, isHelper])
+  }, [boardView, dummyGroups, regularGroups, helperGroupId, isHelper])
 
   const listedGroups = useMemo(() => {
     const query = boardQuery.trim()
@@ -1371,6 +1422,39 @@ function TodayBoardTab({
               Today
             </Button>
           ) : null}
+          {!isHelper ? (
+            <div className="flex flex-1 gap-1 rounded-2xl bg-teal-950/[0.04] p-1 sm:flex-none sm:gap-1.5">
+              <button
+                type="button"
+                onClick={() => setBoardView('check-in')}
+                className={cn(
+                  'min-h-9 flex-1 rounded-xl px-2.5 py-1.5 text-[13px] font-semibold transition-all sm:min-h-0 sm:flex-none sm:px-3 sm:py-2 sm:text-sm',
+                  boardView === 'check-in'
+                    ? 'bg-white text-teal-950 shadow-sm'
+                    : 'text-teal-900/55 hover:text-teal-950',
+                )}
+              >
+                Check-in
+              </button>
+              <button
+                type="button"
+                onClick={() => setBoardView('partner')}
+                className={cn(
+                  'min-h-9 flex-1 rounded-xl px-2.5 py-1.5 text-[13px] font-semibold transition-all sm:min-h-0 sm:flex-none sm:px-3 sm:py-2 sm:text-sm',
+                  boardView === 'partner'
+                    ? 'bg-white text-teal-950 shadow-sm'
+                    : 'text-teal-900/55 hover:text-teal-950',
+                )}
+              >
+                Tour partner
+                {dummyBookingCount > 0 ? (
+                  <span className="ml-1.5 text-[11px] font-medium tabular-nums text-teal-900/45">
+                    {dummyBookingCount}
+                  </span>
+                ) : null}
+              </button>
+            </div>
+          ) : null}
           <div className="flex flex-1 gap-1 rounded-2xl bg-teal-950/[0.04] p-1 sm:flex-none sm:gap-1.5">
             {(
               [
@@ -1398,33 +1482,29 @@ function TodayBoardTab({
           {groups.length > 0 ? (
             <CheckInSearchField value={boardQuery} onChange={setBoardQuery} />
           ) : null}
-          {dummyGroups.length > 0 ? (
-            <Button
-              type="button"
-              variant="outline"
-              className="h-10 shrink-0 gap-1.5 border-neutral-200 bg-white px-3 text-sm font-semibold text-neutral-800"
-              onClick={() => setDummyVanOpen(true)}
-            >
-              Send to Partner
-              <span className="rounded-md bg-neutral-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-neutral-600 uppercase">
-                Sent out
-              </span>
-              <span className="text-[11px] font-medium tabular-nums text-neutral-500">
-                {dummyBookingCount}
-              </span>
-            </Button>
-          ) : null}
         </div>
-        <div className="flex flex-wrap gap-1.5 text-[11px] font-semibold sm:gap-2 sm:text-xs">
-          <StatPill tone="emerald" label="Checked in" shortLabel="In" value={summary.checked} />
-          <StatPill tone="amber" label="Waiting" shortLabel="Wait" value={summary.waiting} />
-          <StatPill tone="rose" label="No-show" shortLabel="NS" value={summary.noShow} />
-          <StatPill tone="teal" label="Total seats" shortLabel="Total" value={summary.total} />
-        </div>
+        {boardView === 'partner' && !isHelper ? (
+          <div className="flex flex-wrap gap-1.5 text-[11px] font-semibold sm:gap-2 sm:text-xs">
+            <StatPill tone="teal" label="Partner bookings" shortLabel="Bk" value={dummyBookingCount} />
+            <StatPill tone="teal" label="Partner pax" shortLabel="Pax" value={dummyPaxCount} />
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-1.5 text-[11px] font-semibold sm:gap-2 sm:text-xs">
+            <StatPill tone="emerald" label="Checked in" shortLabel="In" value={summary.checked} />
+            <StatPill tone="amber" label="Waiting" shortLabel="Wait" value={summary.waiting} />
+            <StatPill tone="rose" label="No-show" shortLabel="NS" value={summary.noShow} />
+            <StatPill tone="teal" label="Total seats" shortLabel="Total" value={summary.total} />
+          </div>
+        )}
       </div>
 
-      {!isHelper ? (
+      {!isHelper && boardView === 'check-in' ? (
         <DayServiceSummary rows={dayServiceSummary} onOpen={() => setDayServicesOpen(true)} />
+      ) : null}
+      {!isHelper && boardView === 'partner' ? (
+        <p className="rounded-2xl border border-neutral-200 bg-white px-3.5 py-2.5 text-sm text-neutral-700">
+          Tour partner vans are listed for detail only — no marina check-in, QR, or ticket.
+        </p>
       ) : null}
 
       {isHelper && regularGroups.length > 0 ? (
@@ -1466,9 +1546,11 @@ function TodayBoardTab({
             <div className="gday-sheet rounded-[1.5rem] px-4 py-8 text-center text-sm text-teal-900/55 sm:px-5">
               {boardQuery.trim()
                 ? `No bookings match “${boardQuery.trim()}”.`
-                : dummyGroups.length > 0
-                  ? 'No assigned van groups here. Open Send to Partner to see sent-out bookings.'
-                  : 'No van groups to show.'}
+                : boardView === 'partner'
+                  ? 'No tour partner bookings for this day.'
+                  : dummyGroups.length > 0
+                    ? 'No vans to check in here. Open Tour partner to see sent-out bookings.'
+                    : 'No van groups to show.'}
             </div>
           ) : (
             listedGroups.map((group) => (
@@ -1482,7 +1564,7 @@ function TodayBoardTab({
                 sequences={getGuestSequences(boardDate, group.program)}
                 searchQuery={boardQuery}
                 onSetBookingSequenceStart={
-                  isHelper
+                  isHelper || group.dummy
                     ? undefined
                     : (code, start) =>
                         setCheckInSequenceBookingStart(boardDate, group.program, code, start)
@@ -1514,46 +1596,6 @@ function TodayBoardTab({
         dateLabel={formatShortDate(boardDate)}
         rows={dayServiceDetails}
       />
-
-      <Dialog open={dummyVanOpen} onOpenChange={setDummyVanOpen}>
-        <DialogContent className="flex max-h-[88vh] w-full max-w-[calc(100%-1.5rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-6xl">
-          <DialogHeader className="border-b border-teal-900/8 px-5 py-4">
-            <DialogTitle>Send to Partner</DialogTitle>
-            <DialogDescription>
-              Sent to another company · no guest QR · still on invoice
-            </DialogDescription>
-          </DialogHeader>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">
-            {dummyGroups.length === 0 ? (
-              <p className="py-8 text-center text-sm text-teal-900/50">
-                No Send to Partner bookings for this day.
-              </p>
-            ) : (
-              dummyGroups.map((group) => (
-                <DriverGroupCard
-                  key={group.id}
-                  group={group}
-                  showProgram={programFilter === 'all' || dummyGroups.length > 1}
-                  today={boardDate}
-                  origin={origin}
-                  variant={variant}
-                  sequences={getGuestSequences(boardDate, group.program)}
-                  searchQuery={boardQuery}
-                  onSetBookingSequenceStart={
-                    isHelper
-                      ? undefined
-                      : (code, start) =>
-                          setCheckInSequenceBookingStart(boardDate, group.program, code, start)
-                  }
-                  onSelectBooking={(code) => {
-                    if (!isHelper) setSelectedCode(code)
-                  }}
-                />
-              ))
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }
@@ -1740,7 +1782,7 @@ function makeDriverGroup(
   vanAssignments: Record<string, VanSplit[]>,
   getEnrollments: ReturnType<typeof usePortal>['getCheckInEnrollments'],
   getAttendance: ReturnType<typeof usePortal>['getCheckInAttendance'],
-  outsource?: { outsourced?: boolean; outsourceCompany?: string },
+  outsource?: { outsourced?: boolean; outsourceCompany?: string; sentOut?: boolean },
 ): DriverGroup {
   const lines = bookings.map((booking) =>
     buildBookingLine(
@@ -1777,7 +1819,7 @@ function makeDriverGroup(
     phone,
     outsourced: outsource?.outsourced === true,
     outsourceCompany: outsource?.outsourceCompany?.trim() || '',
-    dummy: isDummyVan(van),
+    dummy: outsource?.sentOut === true || isDummyVan(van),
     lines,
     checked,
     waiting,
@@ -1886,9 +1928,11 @@ function DriverGroupCard({
           >
             {group.dummy ? (
               <>
-                <span className="tracking-wide">{DUMMY_VAN_LABEL}</span>
+                <span className="tracking-wide">
+                  {group.outsourceCompany.trim() || DUMMY_VAN_LABEL}
+                </span>
                 <span className="ml-2 inline-flex rounded-md border border-neutral-200 bg-white px-1.5 py-0.5 align-middle text-[10px] font-semibold tracking-wide text-neutral-700 uppercase">
-                  Sent out
+                  Tour partner
                 </span>
               </>
             ) : group.van !== null ? (
@@ -1911,7 +1955,7 @@ function DriverGroupCard({
           </p>
           {group.dummy ? (
             <p className="mt-0.5 text-[12px] leading-snug text-neutral-600 sm:text-xs">
-              Sent to another company · no guest QR · still on invoice
+              Partner picks guests up · details only · no marina check-in
             </p>
           ) : group.van !== null ? (
             <p className="mt-0.5 text-[12px] leading-snug text-teal-900/60 sm:text-xs">
@@ -1971,13 +2015,15 @@ function DriverGroupCard({
           const sentOut =
             groupSentOut ||
             (line.boat != null && isPartnerBoat(boatPlan, line.boat))
-          const statusNote = wholeNoShow
-            ? 'Whole booking no-show'
-            : line.status === 'checked'
-              ? `In · ${progressLabel}`
-              : partialNoShow
-                ? `Wait · ${progressLabel} · NS ${missingPax}`
-                : `Wait · ${progressLabel}`
+          const statusNote = groupSentOut
+            ? 'Tour partner · no check-in needed'
+            : wholeNoShow
+              ? 'Whole booking no-show'
+              : line.status === 'checked'
+                ? `In · ${progressLabel}`
+                : partialNoShow
+                  ? `Wait · ${progressLabel} · NS ${missingPax}`
+                  : `Wait · ${progressLabel}`
 
           return (
             <div
@@ -2030,7 +2076,7 @@ function DriverGroupCard({
                       booking={line.booking}
                       date={today}
                       boat={line.boat}
-                      disabled={isHelper || wholeNoShow}
+                      disabled={isHelper || wholeNoShow || groupSentOut}
                     />
                     <span>Park {formatIncludeShort(line.booking.parkFee)}</span>
                   </div>

@@ -45,7 +45,7 @@ const nav = [
   },
   {
     href: '/admin/daily-board',
-    label: 'Daily Board',
+    label: 'จัดการรถ / เรือ / ไกด์',
     icon: Ship,
     tone: 'bg-cyan-100 text-cyan-700 group-hover:bg-cyan-200/80',
   },

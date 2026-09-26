@@ -500,11 +500,13 @@ export type VanSplit = {
   sortOrder: number
 }
 
-export type SpecialTransferKind = 'private' | 'other'
+export type SpecialTransferKind = 'private' | 'other' | 'partner'
 
 export type VanMeta = {
   /** Vehicle plate / fleet number for ops. */
   plate: string
+  /** Display name for private / partner vans. */
+  label?: string
   /** Driver name for ops. */
   driver: string
   /** Driver telephone. */
@@ -513,27 +515,47 @@ export type VanMeta = {
   capacity?: number
   /** Hired from an outside van company for this day. */
   outsourced?: boolean
-  /** Outside company name when outsourced. */
+  /** Outside company name when outsourced or tour partner. */
   outsourceCompany?: string
-  /** Extra van: Private Van or Other Service. */
+  /** Extra van: Private Van, Other Service, or Tour Partner. */
   specialKind?: SpecialTransferKind
   transferIn?: boolean
   transferOut?: boolean
-  /** Charge in THB for this special transfer. */
+  /** Charge in THB for outsource / private — used to check and pay. */
   chargeAmount?: number
 }
 
+const VAN_LABEL_MARK = '\u2060|'
+
+export function packVanPlate(label: string, plate: string) {
+  const name = label.trim()
+  const number = plate.trim()
+  if (!name) return number
+  return `${name}${VAN_LABEL_MARK}${number}`
+}
+
+export function unpackVanPlate(raw: string | null | undefined): { label: string; plate: string } {
+  const text = String(raw ?? '')
+  const index = text.indexOf(VAN_LABEL_MARK)
+  if (index < 0) return { label: '', plate: text.trim() }
+  return {
+    label: text.slice(0, index).trim(),
+    plate: text.slice(index + VAN_LABEL_MARK.length).trim(),
+  }
+}
+
 export function isSpecialTransferKind(value: unknown): value is SpecialTransferKind {
-  return value === 'private' || value === 'other'
+  return value === 'private' || value === 'other' || value === 'partner'
 }
 
 export function isSpecialTransfer(meta?: Pick<VanMeta, 'specialKind'> | null) {
-  return isSpecialTransferKind(meta?.specialKind)
+  return meta?.specialKind === 'private' || meta?.specialKind === 'other'
 }
 
 export function specialTransferKindLabel(kind?: SpecialTransferKind | null) {
   if (kind === 'private') return 'Private Van'
   if (kind === 'other') return 'Other Service'
+  if (kind === 'partner') return 'Tour Partner Van'
   return ''
 }
 
@@ -561,6 +583,8 @@ export function vanHasSavedMeta(meta?: VanMeta | null) {
     Boolean(meta.phone?.trim()) ||
     meta.outsourced === true ||
     isSpecialTransfer(meta) ||
+    meta.specialKind === 'partner' ||
+    Boolean(meta.label?.trim()) ||
     normalizeChargeAmount(meta.chargeAmount) > 0
   )
 }
@@ -580,16 +604,83 @@ export function vanOutsourceLabel(meta: Pick<VanMeta, 'outsourced' | 'outsourceC
 
 export const MIN_VAN_CAPACITY = 1
 export const MAX_VAN_CAPACITY = 40
+
+/** Ops bucket — guest is not picked up by any van. */
+export const NO_TRANSFER_VAN_NUMBER = 97
+export const NO_TRANSFER_VAN_LABEL = 'No Transfers'
+
 /** Overflow sent to another company — not a real fleet van. */
 export const DUMMY_VAN_NUMBER = 99
 export const DUMMY_VAN_LABEL = 'Send to Partner'
+
+export const TRANSFER_KINDS = [
+  'company',
+  'outsource',
+  'no_transfer',
+  'private',
+  'partner',
+] as const
+export type TransferKind = (typeof TRANSFER_KINDS)[number]
+export type BookingTransferKind = TransferKind | 'unassigned'
+
+export const TRANSFER_KIND_LABELS: Record<TransferKind, string> = {
+  company: 'Company van',
+  outsource: 'Outsource van',
+  no_transfer: 'No transfers',
+  private: 'Private transfers',
+  partner: 'Tour partner van',
+}
 
 export function isDummyVan(van: number | null | undefined) {
   return van === DUMMY_VAN_NUMBER
 }
 
+export function isNoTransferVan(van: number | null | undefined) {
+  return van === NO_TRANSFER_VAN_NUMBER
+}
+
+/** Partner / no-transfer buckets — not a real fleet van. */
+export function isVirtualVan(van: number | null | undefined) {
+  return isDummyVan(van) || isNoTransferVan(van)
+}
+
 export function dummyVanMeta(): VanMeta {
   return { plate: DUMMY_VAN_LABEL, driver: '', phone: '' }
+}
+
+export function noTransferVanMeta(): VanMeta {
+  return { plate: NO_TRANSFER_VAN_LABEL, driver: '', phone: '' }
+}
+
+export function vanTransferKind(
+  van: number,
+  meta?: Pick<VanMeta, 'outsourced' | 'specialKind'> | null,
+): TransferKind {
+  if (isDummyVan(van)) return 'partner'
+  if (isNoTransferVan(van)) return 'no_transfer'
+  if (meta?.specialKind === 'partner') return 'partner'
+  if (meta?.specialKind === 'private') return 'private'
+  if (meta?.outsourced === true) return 'outsource'
+  return 'company'
+}
+
+export function bookingTransferKind(
+  booking: Pick<Booking, 'code' | 'pickupZone' | 'privateTransferVehicle'>,
+  plan: Pick<DayVehiclePlan, 'assignments' | 'vanMeta'>,
+  boatPlan?: Pick<DayBoatPlan, 'capacities' | 'kinds' | 'names' | 'assignments'> | null,
+): BookingTransferKind {
+  const legs = plan.assignments[booking.code] ?? []
+  const vans = [...new Set(legs.map((leg) => leg.van).filter((van) => van > 0))]
+  if (vans.some((van) => isDummyVan(van))) return 'partner'
+  if (vans.some((van) => isNoTransferVan(van))) return 'no_transfer'
+  const kinds = vans.map((van) => vanTransferKind(van, plan.vanMeta[String(van)]))
+  if (kinds.includes('private')) return 'private'
+  if (kinds.includes('outsource')) return 'outsource'
+  if (kinds.includes('company')) return 'company'
+  if (isNoTransfer(booking.pickupZone)) return 'no_transfer'
+  if (isPrivateTransfer(booking)) return 'private'
+  if (boatPlan && bookingOnPartnerBoat(boatPlan, booking.code)) return 'partner'
+  return 'unassigned'
 }
 
 export function bookingOnPartnerBoat(
@@ -647,7 +738,7 @@ export function vanSeatCapacity(
   plan: Pick<DayVehiclePlan, 'vanCapacity' | 'vanMeta'>,
   van: number,
 ) {
-  if (isDummyVan(van)) return PARTNER_BOAT_CAPACITY
+  if (isVirtualVan(van)) return PARTNER_BOAT_CAPACITY
   const custom = plan.vanMeta[String(van)]?.capacity
   if (typeof custom === 'number' && Number.isFinite(custom) && custom >= MIN_VAN_CAPACITY) {
     return clampVanCapacity(custom)
