@@ -117,6 +117,20 @@ function vanBoardLabel(van: number, plan: DayVehiclePlan) {
   return `Van ${van}`
 }
 
+function partnerBoatLinkedToVan(plan: DayVehiclePlan, boatPlan: DayBoatPlan, boat: number) {
+  if (!isPartnerBoat(boatPlan, boat)) return true
+  const name = (boatPlan.names[boat - 1] ?? '').trim().toLowerCase()
+  const label = (boatPlan.labels[boat - 1] ?? '').trim().toLowerCase()
+  if (!name && !label) return false
+  return Object.entries(plan.vanMeta ?? {}).some(([key, meta]) => {
+    const van = Number(key)
+    if (!Number.isFinite(van) || isVirtualVan(van)) return false
+    if (vanTransferKind(van, meta) !== 'partner') return false
+    const company = (meta.outsourceCompany || meta.label || '').trim().toLowerCase()
+    return Boolean(company) && (company === name || company === label)
+  })
+}
+
 function nextAvailableVan(plan: DayVehiclePlan | null) {
   const listed = listedDayVans(plan)
   const maxVan = listed.length > 0 ? Math.max(...listed) : 0
@@ -2201,16 +2215,6 @@ function VehicleBoard({
                       Add rental boat
                     </Button>
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={boatNumbers.length >= MAX_DAY_BOATS}
-                    onClick={() => setPartnerDraftOpen(true)}
-                  >
-                    <Plus data-icon="inline-start" />
-                    Partner tour boat
-                  </Button>
                   <Button type="button" variant="outline" size="sm" onClick={onClearBoats}>
                     Clear boats
                   </Button>
@@ -2221,7 +2225,9 @@ function VehicleBoard({
                 </div>
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                {byBoat.map(({ boat, capacity: boatCap, pax, items, over, groups }) => {
+                {byBoat
+                  .filter(({ boat }) => partnerBoatLinkedToVan(plan, boatPlan, boat))
+                  .map(({ boat, capacity: boatCap, pax, items, over, groups }) => {
                   const partner = isPartnerBoat(boatPlan, boat)
                   const theme = boatThemeFor(boatPlan, boat)
                   const boatDrop = dropTarget === `boat-${boat}`
