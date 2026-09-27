@@ -24,19 +24,22 @@ import { Label } from '@/components/ui/label'
 import { CheckInI18nProvider, CheckInLanguageSwitch, useCheckInI18n } from '@/components/check-in/check-in-i18n'
 import { NationalityCombobox } from '@/components/check-in/nationality-combobox'
 import { enrolledSeatCount, guestDisplayName } from '@/lib/check-in-enrollment'
-import { DEFAULT_INVOICE_SETTINGS } from '@/lib/invoice'
 import {
   CHECK_IN_SERVICE_KINDS,
   checkInServiceLabel,
+  servicePricedPerBoat,
   type CheckInServiceKind,
   type CheckInServiceLine,
 } from '@/lib/check-in-services'
 import { sequenceJustCheckedInLabel } from '@/lib/check-in-sequence'
 import { boatTheme } from '@/lib/boat-theme'
-import { matchNationality } from '@/lib/nationalities'
 import {
-  collectTotal,
-  formatCollectTotal,
+  isThaiNationality,
+  matchNationality,
+  thaiGuestCount,
+  thaiParkFeeTotal,
+} from '@/lib/nationalities'
+import {
   formatIncludeLabel,
   formatLongDate,
   parseCashOnTourAmount,
@@ -134,31 +137,52 @@ function programLabel(program: Program) {
   return program === 'PP' ? 'Phi Phi' : 'James Bond'
 }
 
-function paymentDue(booking: Booking) {
-  const collect = collectTotal(
-    booking.parkFee,
-    booking.program,
-    booking.adults,
-    booking.children,
-    booking.cashOnTour,
-  )
+function paymentDue(booking: Booking, nationalities: string[] = []) {
+  const thaiCount = thaiGuestCount(nationalities.map((nationality) => ({ nationality })))
+  const allThai = nationalities.length > 0 && thaiCount === nationalities.length
+  const thaiParkFeeAmount = thaiParkFeeTotal(thaiCount)
+  const foreignerPark = allThai
+    ? 0
+    : parkFeeTotal(
+        booking.parkFee,
+        booking.program,
+        booking.adults,
+        booking.children,
+      )
+  const cashAmount = parseCashOnTourAmount(booking.cashOnTour)
+  const collect = foreignerPark + cashAmount
   const transferNote = booking.transferExtraCharge.trim()
   const cashNote = booking.cashOnTour.trim()
-  const hasCashText = Boolean(cashNote) && parseCashOnTourAmount(cashNote) === 0
+  const hasCashText = Boolean(cashNote) && cashAmount === 0
   return {
     amount: collect,
     // Transfer extra is back-office only — do not drive guest payment UI.
     needsStaff: collect > 0 || hasCashText,
-    parkFeeAmount: parkFeeTotal(
-      booking.parkFee,
-      booking.program,
-      booking.adults,
-      booking.children,
-    ),
-    cashAmount: parseCashOnTourAmount(booking.cashOnTour),
+    parkFeeAmount: foreignerPark,
+    thaiParkFeeAmount,
+    thaiCount,
+    cashAmount,
     cashNote,
     transferNote,
   }
+}
+
+function ThaiParkFeeNote({ count }: { count: number }) {
+  const { t } = useCheckInI18n()
+  if (count < 1) return null
+  return (
+    <div className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-3 text-left text-sm text-amber-950">
+      <p className="font-semibold">{t('thaiParkFeeTitle')}</p>
+      <p className="mt-1 text-amber-900/80">{t('thaiParkFeeBody')}</p>
+      <p className="mt-1.5 font-semibold tabular-nums">
+        {t('thaiParkFeeCollect', {
+          count,
+          plural: englishPlural(count),
+          amount: thaiParkFeeTotal(count).toLocaleString('en-US'),
+        })}
+      </p>
+    </div>
+  )
 }
 
 export function GuestCheckIn({
@@ -385,7 +409,14 @@ function GuestCheckInForm({
     )
     const attendance = getCheckInAttendance(booking.date, booking.program, booking.code)
     if (attendance === 'checked' || already >= seats) {
-      setDoneNeedsPayment(paymentDue(booking).needsStaff)
+      setDoneNeedsPayment(
+        paymentDue(
+          booking,
+          getCheckInEnrollments(booking.date, booking.program, booking.code).map(
+            (item) => item.nationality,
+          ),
+        ).needsStaff,
+      )
       setStep('done')
       return
     }
@@ -456,7 +487,16 @@ function GuestCheckInForm({
         lockedBooking.code,
       )
       if (attendance === 'checked' || already >= seats) {
-        setDoneNeedsPayment(paymentDue(lockedBooking).needsStaff)
+        setDoneNeedsPayment(
+          paymentDue(
+            lockedBooking,
+            getCheckInEnrollments(
+              lockedBooking.date,
+              lockedBooking.program,
+              lockedBooking.code,
+            ).map((item) => item.nationality),
+          ).needsStaff,
+        )
         setStep('done')
       } else {
         setStep('scope')
@@ -496,7 +536,14 @@ function GuestCheckInForm({
     const alreadyDone = attendance === 'checked' || enrolledCount >= seats
     setBookingCode(code)
     if (alreadyDone) {
-      setDoneNeedsPayment(paymentDue(booking).needsStaff)
+      setDoneNeedsPayment(
+        paymentDue(
+          booking,
+          getCheckInEnrollments(tourDate, booking.program, booking.code).map(
+            (item) => item.nationality,
+          ),
+        ).needsStaff,
+      )
       setStep('done')
       return
     }
@@ -532,7 +579,12 @@ function GuestCheckInForm({
       return
     }
 
-    setDoneNeedsPayment(paymentDue(selectedBooking).needsStaff)
+    setDoneNeedsPayment(
+      paymentDue(
+        selectedBooking,
+        payload.map((guest) => guest.nationality),
+      ).needsStaff,
+    )
     setStep('done')
   }
 
@@ -886,7 +938,16 @@ function GuestCheckInForm({
                 <Button
                   className="h-12 w-full text-base"
                   onClick={() => {
-                    setDoneNeedsPayment(paymentDue(selectedBooking).needsStaff)
+                    setDoneNeedsPayment(
+                      paymentDue(
+                        selectedBooking,
+                        getCheckInEnrollments(
+                          selectedBooking.date,
+                          selectedBooking.program,
+                          selectedBooking.code,
+                        ).map((item) => item.nationality),
+                      ).needsStaff,
+                    )
                     setStep('done')
                   }}
                 >
@@ -1081,6 +1142,9 @@ function GuestCheckInForm({
                       noMatchText={t('nationalityNoMatch')}
                       errorText={t('nationalityRequired')}
                     />
+                    {isThaiNationality(guest.nationality) ? (
+                      <ThaiParkFeeNote count={1} />
+                    ) : null}
                     <BirthdayPickers
                       year={guest.birthYear}
                       month={guest.birthMonth}
@@ -1241,6 +1305,7 @@ function GuestCheckInForm({
                   noMatchText={t('nationalityNoMatch')}
                   errorText={t('nationalityRequired')}
                 />
+                {isThaiNationality(guests[0].nationality) ? <ThaiParkFeeNote count={1} /> : null}
                 <BirthdayPickers
                   year={guests[0].birthYear}
                   month={guests[0].birthMonth}
@@ -1298,6 +1363,22 @@ function GuestCheckInForm({
             paid={marinaPaid}
             services={marinaServices}
             booking={selectedBooking}
+            thaiCount={Math.max(
+              thaiGuestCount(
+                guests.map((guest) => ({
+                  nationality: matchNationality(guest.nationality) ?? guest.nationality,
+                })),
+              ),
+              selectedBooking
+                ? thaiGuestCount(
+                    getCheckInEnrollments(
+                      selectedBooking.date,
+                      selectedBooking.program,
+                      selectedBooking.code,
+                    ),
+                  )
+                : 0,
+            )}
             guestNames={
               guests.some((guest) => guest.firstName.trim() || guest.lastName.trim())
                 ? guests.map((guest) => guestDisplayName(guest)).filter(Boolean)
@@ -1394,10 +1475,10 @@ function GuestMarinaReceipt({ booking }: { booking: Booking }) {
             Payment receipt
           </p>
           <p className="mt-1 text-center font-display text-base font-semibold">
-            {DEFAULT_INVOICE_SETTINGS.companyName}
+            {booking.leadGuest}
           </p>
           <p className="mt-0.5 text-center text-[10px] leading-snug text-teal-900/50">
-            {DEFAULT_INVOICE_SETTINGS.addressEn}
+            Collected at marina
           </p>
 
           <div className="mt-3 space-y-1 border-t border-dashed border-teal-900/15 pt-3 text-[12px]">
@@ -1446,9 +1527,15 @@ function GuestMarinaReceipt({ booking }: { booking: Booking }) {
   )
 }
 
-function PaymentDueAlert({ booking }: { booking: Booking }) {
+function PaymentDueAlert({
+  booking,
+  nationalities = [],
+}: {
+  booking: Booking
+  nationalities?: string[]
+}) {
   const { t } = useCheckInI18n()
-  const due = paymentDue(booking)
+  const due = paymentDue(booking, nationalities)
   if (!due.needsStaff) return null
   return (
     <div
@@ -1482,7 +1569,10 @@ function ConfirmStep({
   onConfirm: () => void
 }) {
   const { t } = useCheckInI18n()
-  const due = paymentDue(booking)
+  const nationalities = guests.map(
+    (guest) => matchNationality(guest.nationality) ?? guest.nationality.trim(),
+  )
+  const due = paymentDue(booking, nationalities)
   const first = guests[0]
   const leadMatch = first
     ? normalizeName(`${first.firstName} ${first.lastName}`) ===
@@ -1514,6 +1604,12 @@ function ConfirmStep({
             value={`${due.parkFeeAmount.toLocaleString('en-US')} THB`}
           />
         ) : null}
+        {due.thaiParkFeeAmount > 0 ? (
+          <DetailRow
+            label={t('thaiParkFeeTitle')}
+            value={`${due.thaiParkFeeAmount.toLocaleString('en-US')} THB`}
+          />
+        ) : null}
         {due.cashNote ? (
           <DetailRow
             label={t('cashOnTour')}
@@ -1529,13 +1625,7 @@ function ConfirmStep({
         {due.amount > 0 ? (
           <DetailRow
             label={t('totalCollect')}
-            value={`${formatCollectTotal(
-              booking.parkFee,
-              booking.program,
-              booking.adults,
-              booking.children,
-              booking.cashOnTour,
-            )} THB`}
+            value={`${due.amount.toLocaleString('en-US')} THB`}
             strong
           />
         ) : null}
@@ -1575,8 +1665,10 @@ function ConfirmStep({
           ) : null}
         </div>
 
+        {due.thaiCount > 0 ? <ThaiParkFeeNote count={due.thaiCount} /> : null}
+
         {due.needsStaff ? (
-          <PaymentDueAlert booking={booking} />
+          <PaymentDueAlert booking={booking} nationalities={nationalities} />
         ) : (
           <div className="flex gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-3 text-sm text-emerald-950/80">
             <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
@@ -1599,6 +1691,7 @@ function DoneStep({
   paid,
   services,
   booking,
+  thaiCount,
   guestNames,
   sequenceLabel,
   boat,
@@ -1610,6 +1703,7 @@ function DoneStep({
   paid: boolean
   services: CheckInServiceLine[]
   booking: Booking | null
+  thaiCount: number
   guestNames: string[]
   sequenceLabel: string | null
   boat: number | null
@@ -1657,6 +1751,7 @@ function DoneStep({
             </p>
           </div>
           {booking ? <PaymentDueAlert booking={booking} /> : null}
+          {thaiCount > 0 ? <ThaiParkFeeNote count={thaiCount} /> : null}
           {boarding}
           {onEdit ? (
             <Button variant="outline" className="h-11 w-full" onClick={onEdit}>
@@ -1703,6 +1798,7 @@ function DoneStep({
           </p>
         ) : null}
       </div>
+      {thaiCount > 0 ? <ThaiParkFeeNote count={thaiCount} /> : null}
       {paid && booking ? <GuestMarinaReceipt booking={booking} /> : null}
       {boarding}
       {onEdit ? (
@@ -1831,7 +1927,10 @@ function BoardingSummary({
                   <span className="text-sm font-semibold text-teal-950">
                     {checkInServiceLabel(kind)}
                     {people > 1 ? (
-                      <span className="ml-1.5 font-medium text-teal-900/50">×{people}</span>
+                      <span className="ml-1.5 font-medium text-teal-900/50">
+                        ×{people}
+                        {servicePricedPerBoat(kind) ? ' boats' : ''}
+                      </span>
                     ) : null}
                   </span>
                 </li>

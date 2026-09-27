@@ -12,12 +12,14 @@ import {
   Handshake,
   Printer,
   Receipt,
+  Wallet,
 } from 'lucide-react'
 import {
   AdminDailyJobOrder,
 } from '@/components/admin/admin-daily-job-order'
 import { AdminCheckInReport } from '@/components/admin/admin-check-in-report'
 import { AdminVanUsageReport } from '@/components/admin/admin-van-usage-report'
+import { AdminAgentStatement } from '@/components/admin/admin-agent-statement'
 import { AdminSheetsBackup } from '@/components/admin/admin-sheets-backup'
 import { usePortal } from '@/components/portal-provider'
 import {
@@ -61,11 +63,12 @@ type ReportMode =
   | 'job-order-agent'
   | 'check-in'
   | 'van-usage'
+  | 'agent-statement'
   | 'sheets-backup'
 type ProgramFilter = 'all' | Program
 type SortKey = 'pickup' | 'zone' | 'agent' | 'code' | 'guest'
 
-type ReportTone = 'teal' | 'amber' | 'sky' | 'slate' | 'violet' | 'emerald'
+type ReportTone = 'teal' | 'amber' | 'sky' | 'slate' | 'violet' | 'emerald' | 'rose'
 
 const REPORT_TONES: Record<
   ReportTone,
@@ -133,6 +136,15 @@ const REPORT_TONES: Record<
     cta: 'text-emerald-800',
     wash: 'from-emerald-500/12 via-transparent to-transparent',
   },
+  rose: {
+    card: 'border-rose-900/10 bg-gradient-to-br from-rose-50/90 via-white to-orange-50/35 hover:border-rose-600/30 hover:shadow-lg hover:shadow-rose-900/8',
+    icon: 'bg-gradient-to-br from-rose-600 to-orange-700 text-white shadow-md shadow-rose-700/25',
+    meta: 'bg-rose-950/6 text-rose-900',
+    title: 'text-rose-950',
+    body: 'text-rose-950/55',
+    cta: 'text-rose-800',
+    wash: 'from-rose-500/12 via-transparent to-transparent',
+  },
 }
 
 const SORT_OPTIONS: { value: SortKey; label: string }[] = [
@@ -151,7 +163,7 @@ export function AdminReports() {
       <div className="w-full">
         <PageHeader
           title="Report"
-          description="Pick a sheet — booking export, driver vans, marina check-in, agent day order, van usage, or nightly Google Sheets backup."
+          description="Pick a sheet — booking export, driver vans, marina check-in, agent day order, van usage, monthly agent statement, or nightly Google Sheets backup."
         />
 
         <div className="grid gap-4 sm:grid-cols-2 sm:gap-5">
@@ -196,6 +208,14 @@ export function AdminReports() {
             onClick={() => setMode('van-usage')}
           />
           <ReportModeCard
+            tone="rose"
+            title="Agent statement"
+            subtitle="Monthly billed vs open bookings for one agency — paid, unpaid, and not yet invoiced."
+            meta="Accounts"
+            icon={<Wallet className="size-7" strokeWidth={1.75} />}
+            onClick={() => setMode('agent-statement')}
+          />
+          <ReportModeCard
             tone="emerald"
             title="Google Sheets backup"
             subtitle="Nightly 4:00 AM Thai time — all bookings, check-in guests, booked vs real merge, and a monthly filter."
@@ -222,6 +242,10 @@ export function AdminReports() {
 
   if (mode === 'van-usage') {
     return <AdminVanUsageReport onBack={() => setMode(null)} />
+  }
+
+  if (mode === 'agent-statement') {
+    return <AdminAgentStatement onBack={() => setMode(null)} />
   }
 
   if (mode === 'sheets-backup') {

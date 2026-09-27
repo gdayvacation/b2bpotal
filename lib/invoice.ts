@@ -1,5 +1,12 @@
 import { originalBookedPax, type BookedPaxSnapshot } from '@/lib/check-in-booked-pax'
+import {
+  checkInServiceLabel,
+  serviceLineTotal,
+  servicePricedPerBoat,
+  type CheckInServiceLine,
+} from '@/lib/check-in-services'
 import { parseCashOnTourAmount } from '@/lib/format'
+import { THAI_PARK_FEE_THB, thaiParkFeeTotal } from '@/lib/nationalities'
 import {
   isPrivateTransfer,
   type Booking,
@@ -34,6 +41,8 @@ export type InvoiceLineKind =
   | 'cancel'
   | 'private_transfer'
   | 'extra_zone'
+  | 'park_fee'
+  | 'service'
   | 'other'
 
 export type InvoiceSettings = {
@@ -346,7 +355,12 @@ export function noShowPaxForInvoice(
 export function buildInvoiceItemsForBooking(
   booking: Booking,
   rates: AgencyInvoiceRates,
-  options?: { includeOtherService?: boolean; attendance?: CheckInAttendance | null },
+  options?: {
+    includeOtherService?: boolean
+    attendance?: CheckInAttendance | null
+    thaiGuests?: number
+    services?: CheckInServiceLine[]
+  },
 ): Omit<InvoiceItem, 'invoiceId'>[] {
   const items: Omit<InvoiceItem, 'invoiceId'>[] = []
   const voucherNo = bookingVoucherNo(booking)
@@ -536,6 +550,59 @@ export function buildInvoiceItemsForBooking(
     })
   }
 
+  for (const line of options?.services ?? []) {
+    const amount = serviceLineTotal(line)
+    if (amount <= 0) continue
+    const qty = Math.max(1, Math.floor(line.people) || 1)
+    const unit = servicePricedPerBoat(line.kind)
+      ? qty === 1
+        ? '1 boat'
+        : `${qty} boats`
+      : `${qty} pax`
+    items.push({
+      id: moneyId(),
+      bookingCode: booking.code,
+      travelDate: booking.date,
+      voucherNo,
+      description: `${checkInServiceLabel(line.kind)} · ${unit}`,
+      adults: qty,
+      children: 0,
+      infants: 0,
+      tourLeaders: 0,
+      adultPrice: line.pricePerPerson,
+      childPrice: 0,
+      infantPrice: 0,
+      tourLeaderPrice: 0,
+      cot: 0,
+      amount,
+      lineKind: 'service',
+      sortOrder: items.length,
+    })
+  }
+
+  const thaiGuests = Math.max(0, Math.floor(options?.thaiGuests ?? 0))
+  if (thaiGuests > 0) {
+    items.push({
+      id: moneyId(),
+      bookingCode: booking.code,
+      travelDate: booking.date,
+      voucherNo,
+      description: 'Thai Nationality · Park Fee',
+      adults: thaiGuests,
+      children: 0,
+      infants: 0,
+      tourLeaders: 0,
+      adultPrice: THAI_PARK_FEE_THB,
+      childPrice: 0,
+      infantPrice: 0,
+      tourLeaderPrice: 0,
+      cot: 0,
+      amount: thaiParkFeeTotal(thaiGuests),
+      lineKind: 'park_fee',
+      sortOrder: items.length,
+    })
+  }
+
   if (options?.includeOtherService && rates.otherServiceCharge > 0) {
     items.push({
       id: moneyId(),
@@ -563,6 +630,20 @@ export function buildInvoiceItemsForBooking(
 
 export function itemsGrandTotal(items: Pick<InvoiceItem, 'amount'>[]) {
   return items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0)
+}
+
+export function invoiceAmountForBooking(doc: InvoiceDocument, bookingCode: string) {
+  return itemsGrandTotal(doc.items.filter((item) => item.bookingCode === bookingCode))
+}
+
+export function invoiceAutoAmountForBooking(doc: InvoiceDocument, bookingCode: string) {
+  return itemsGrandTotal(
+    doc.items.filter((item) => item.bookingCode === bookingCode && item.lineKind !== 'other'),
+  )
+}
+
+export function isInvoiceAmountStale(storedAmount: number, liveAmount: number) {
+  return Math.round(storedAmount) !== Math.round(liveAmount)
 }
 
 export function invoiceTravelRange(doc: InvoiceDocument) {

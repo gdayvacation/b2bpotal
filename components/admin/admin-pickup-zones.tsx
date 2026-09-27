@@ -1,8 +1,9 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { Building2, MapPin, Pencil, Plus, Trash2, Upload } from 'lucide-react'
+import { MapPin, Pencil, Plus, Trash2 } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
+import { SettingsSubnav } from '@/components/admin/admin-settings'
 import { PageHeader, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
 import {
@@ -24,6 +25,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { isCorePickupZone, type Hotel, type PickupZoneName } from '@/lib/types'
+import { cn } from '@/lib/utils'
 
 const UNASSIGNED = '__unassigned__'
 
@@ -37,7 +39,6 @@ export function AdminPickupZones() {
     addHotel,
     updateHotel,
     removeHotel,
-    importHotelCatalog,
   } = usePortal()
 
   const [newName, setNewName] = useState('')
@@ -50,7 +51,6 @@ export function AdminPickupZones() {
   const [hotelError, setHotelError] = useState('')
   const [hotelFilter, setHotelFilter] = useState('')
   const [zoneFilter, setZoneFilter] = useState<string>('all')
-  const [importMessage, setImportMessage] = useState('')
 
   const [editing, setEditing] = useState<Hotel | null>(null)
   const [editName, setEditName] = useState('')
@@ -141,64 +141,62 @@ export function AdminPickupZones() {
         title="Pickup Zones"
         description="Set zone pickup times and manage the hotel catalog. Hotels missing from booking search can be added here with the correct zone and time."
       />
+      <SettingsSubnav />
 
-      <Surface className="divide-y divide-teal-900/6">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {zones.map((zone) => {
           const custom = !isCorePickupZone(zone.name)
           const hotelCount = hotels.filter((hotel) => hotel.zoneName === zone.name).length
           return (
-            <div key={zone.name} className="flex flex-col gap-4 px-5 py-5 sm:flex-row sm:items-center">
-              <div className="flex min-w-0 flex-1 items-center gap-3">
-                <div className="flex size-10 items-center justify-center rounded-2xl bg-teal-950/[0.05] text-teal-800">
-                  <MapPin className="size-4" />
-                </div>
-                <div>
-                  <div className="font-semibold text-teal-950">{zone.name}</div>
-                  <div className="text-sm text-teal-900/50">
-                    {zone.pending
-                      ? 'Awaiting pickup time'
-                      : custom
-                        ? 'Custom pickup time'
-                        : 'Predefined pickup time'}
-                    <span className="text-teal-900/35"> · {hotelCount} hotels</span>
+            <Surface key={zone.name} className="p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <div className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-teal-950/[0.05] text-teal-800">
+                    <MapPin className="size-3.5" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="truncate font-semibold text-teal-950">{zone.name}</div>
+                    <div className="text-xs text-teal-900/45">
+                      {zone.pending ? 'Awaiting time' : custom ? 'Custom' : 'Predefined'}
+                      <span className="text-teal-900/30"> · {hotelCount} hotels</span>
+                    </div>
                   </div>
                 </div>
+                {custom && !zone.pending ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 shrink-0 text-teal-900/35 hover:text-red-600"
+                    aria-label={`Remove ${zone.name}`}
+                    onClick={() => removeZone(zone.name)}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                ) : null}
               </div>
               {zone.pending ? (
-                <div className="rounded-xl bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+                <div className="mt-3 rounded-xl bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-800">
                   Awaiting pickup time
                 </div>
               ) : (
-                <div className="flex items-end gap-2">
-                  <div className="w-full max-w-[140px] space-y-1.5">
-                    <Label htmlFor={`${zone.name}-time`} className="gday-soft-label">
-                      Pickup time
-                    </Label>
-                    <Input
-                      id={`${zone.name}-time`}
-                      type="time"
-                      value={zone.time}
-                      onChange={(event) => updateZoneTime(zone.name, event.target.value)}
-                    />
-                  </div>
-                  {custom ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon"
-                      className="size-11 text-teal-900/40 hover:text-red-600"
-                      aria-label={`Remove ${zone.name}`}
-                      onClick={() => removeZone(zone.name)}
-                    >
-                      <Trash2 />
-                    </Button>
-                  ) : null}
+                <div className="mt-3 space-y-1">
+                  <Label htmlFor={`${zone.name}-time`} className="gday-soft-label">
+                    Pickup time
+                  </Label>
+                  <Input
+                    id={`${zone.name}-time`}
+                    type="time"
+                    value={zone.time}
+                    onChange={(event) => updateZoneTime(zone.name, event.target.value)}
+                    className="h-9"
+                  />
                 </div>
               )}
-            </div>
+            </Surface>
           )
         })}
-      </Surface>
+      </div>
 
       <Surface className="p-5">
         <h2 className="font-semibold text-teal-950">Add pickup zone</h2>
@@ -246,95 +244,61 @@ export function AdminPickupZones() {
       </Surface>
 
       <Surface className="p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="font-semibold text-teal-950">Hotels</h2>
-            <p className="mt-1 text-sm text-teal-900/50">
-              Add hotels here for agent typeahead. If a booking used Other with a custom name, add
-              that hotel and assign zone (pickup time comes from the zone). Leave zone blank if
-              unsure — assign later. Extra Charge Transfer is optional.
-              {unassignedCount > 0 ? (
-                <span className="font-medium text-amber-800">
-                  {' '}
-                  {unassignedCount} unassigned.
-                </span>
-              ) : null}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              className="h-10"
-              onClick={() => {
-                const result = importHotelCatalog()
-                setImportMessage(
-                  result.added === 0 && result.updated === 0
-                    ? 'Catalog already up to date.'
-                    : `Imported: ${result.added} added, ${result.updated} zones updated.`,
-                )
-              }}
-            >
-              <Upload data-icon="inline-start" />
-              Import catalog
-            </Button>
-            <div className="flex size-10 items-center justify-center rounded-2xl bg-teal-950/[0.05] text-teal-800">
-              <Building2 className="size-4" />
-            </div>
-          </div>
-        </div>
-        {importMessage ? (
-          <p className="mt-3 text-sm text-teal-800">{importMessage}</p>
-        ) : null}
+        <h2 className="font-semibold text-teal-950">Hotels</h2>
+        <p className="mt-1 text-sm text-teal-900/50">
+          Add hotels here for agent typeahead. If a booking used Other with a custom name, add
+          that hotel and assign zone (pickup time comes from the zone). Leave zone blank if
+          unsure — assign later. Extra Charge Transfer is optional.
+          {unassignedCount > 0 ? (
+            <span className="font-medium text-amber-800">
+              {' '}
+              {unassignedCount} unassigned.
+            </span>
+          ) : null}
+        </p>
 
         <form
-          className="mt-4 space-y-3"
+          className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-end"
           onSubmit={(event) => {
             event.preventDefault()
             handleAddHotel()
           }}
         >
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <div className="min-w-0 flex-1 space-y-1.5">
-              <Label htmlFor="new-hotel-name" className="gday-soft-label">
-                Hotel name
-              </Label>
-              <Input
-                id="new-hotel-name"
-                value={hotelName}
-                onChange={(event) => {
-                  setHotelName(event.target.value)
-                  if (hotelError) setHotelError('')
-                }}
-              />
-            </div>
-            <div className="w-full sm:w-44 space-y-1.5">
-              <Label className="gday-soft-label">Zone</Label>
-              <Select
-                value={hotelZone}
-                onValueChange={(value) => setHotelZone(value ?? UNASSIGNED)}
-              >
-                <SelectTrigger className="h-10 w-full min-w-0">
-                  <SelectValue placeholder="Unassigned" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
-                  {assignableZones.map((zone) => (
-                    <SelectItem key={zone.name} value={zone.name}>
-                      {zone.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <Button type="submit" className="h-10">
-              <Plus data-icon="inline-start" />
-              Add hotel
-            </Button>
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <Label htmlFor="new-hotel-name" className="gday-soft-label">
+              Hotel name
+            </Label>
+            <Input
+              id="new-hotel-name"
+              value={hotelName}
+              onChange={(event) => {
+                setHotelName(event.target.value)
+                if (hotelError) setHotelError('')
+              }}
+            />
           </div>
-          <div className="max-w-xl space-y-1.5">
+          <div className="w-full space-y-1.5 lg:w-40">
+            <Label className="gday-soft-label">Zone</Label>
+            <Select
+              value={hotelZone}
+              onValueChange={(value) => setHotelZone(value ?? UNASSIGNED)}
+            >
+              <SelectTrigger className="h-10 w-full min-w-0">
+                <SelectValue placeholder="Unassigned" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
+                {assignableZones.map((zone) => (
+                  <SelectItem key={zone.name} value={zone.name}>
+                    {zone.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="w-full space-y-1.5 lg:w-56">
             <Label htmlFor="new-hotel-extra" className="gday-soft-label">
-              Extra Charge Transfer (price)
+              Extra charge
             </Label>
             <Input
               id="new-hotel-extra"
@@ -343,70 +307,84 @@ export function AdminPickupZones() {
                 setHotelExtraCharge(event.target.value)
                 if (hotelError) setHotelError('')
               }}
+              placeholder="฿500 / person"
             />
-            <p className="text-xs text-teal-900/45">
-              Optional — leave blank if none. e.g. ฿500 / person. Shown on the agent voucher.
-            </p>
           </div>
+          <Button type="submit" className="h-10 shrink-0">
+            <Plus data-icon="inline-start" />
+            Add hotel
+          </Button>
         </form>
         {hotelError ? <p className="mt-3 text-sm text-red-600">{hotelError}</p> : null}
 
-        <div className="mt-5 flex flex-col gap-2 sm:flex-row">
+        <div className="mt-5">
           <Input
             value={hotelFilter}
             onChange={(event) => setHotelFilter(event.target.value)}
             placeholder="Search hotels…"
             className="h-10"
           />
-          <Select value={zoneFilter} onValueChange={(value) => setZoneFilter(value ?? 'all')}>
-            <SelectTrigger className="h-10 w-full sm:w-44">
-              <SelectValue placeholder="All zones" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All zones</SelectItem>
-              <SelectItem value="unassigned">Unassigned</SelectItem>
-              {assignableZones.map((zone) => (
-                <SelectItem key={zone.name} value={zone.name}>
-                  {zone.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {[
+              { value: 'all', label: 'All', count: hotels.length },
+              { value: 'unassigned', label: 'Unassigned', count: unassignedCount },
+              ...assignableZones.map((zone) => ({
+                value: zone.name,
+                label: zone.name,
+                count: hotels.filter((hotel) => hotel.zoneName === zone.name).length,
+              })),
+            ].map((chip) => {
+              const active = zoneFilter === chip.value
+              return (
+                <button
+                  key={chip.value}
+                  type="button"
+                  onClick={() => setZoneFilter(chip.value)}
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-colors',
+                    active
+                      ? 'bg-teal-800 text-white shadow-sm'
+                      : 'bg-teal-950/[0.04] text-teal-900/65 hover:bg-teal-950/[0.08] hover:text-teal-950',
+                  )}
+                >
+                  {chip.label}
+                  <span className={cn('tabular-nums', active ? 'text-white/70' : 'text-teal-900/35')}>
+                    {chip.count}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
         </div>
 
-        <div className="mt-3 divide-y divide-teal-900/6 rounded-xl border border-teal-900/8">
-          {filteredHotels.length === 0 ? (
-            <p className="px-4 py-6 text-center text-sm text-teal-900/45">
-              {hotels.length === 0
-                ? 'No hotels yet — add one above or import a list.'
-                : 'No hotels match this filter.'}
-            </p>
-          ) : (
-            filteredHotels.map((hotel) => (
+        {filteredHotels.length === 0 ? (
+          <p className="mt-3 rounded-xl border border-teal-900/8 px-4 py-6 text-center text-sm text-teal-900/45">
+            {hotels.length === 0
+              ? 'No hotels yet — add one above.'
+              : 'No hotels match this filter.'}
+          </p>
+        ) : (
+          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {filteredHotels.map((hotel) => (
               <div
                 key={hotel.id}
-                className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+                className="flex items-start justify-between gap-2 rounded-xl border border-teal-900/8 bg-white/70 px-3.5 py-3"
               >
                 <div className="min-w-0">
                   <p className="truncate font-medium text-teal-950">{hotel.name}</p>
-                  <p className="text-sm text-teal-900/45">
-                    {hotel.zoneName ?? 'Unassigned zone'}
+                  <p className="text-xs text-teal-900/45">
+                    {hotel.zoneName ?? 'Unassigned'}
                     {hotel.extraChargeTransfer.trim() ? (
-                      <span className="text-amber-800"> · Extra Charge Transfer</span>
+                      <span className="text-amber-800"> · {hotel.extraChargeTransfer.trim()}</span>
                     ) : null}
                   </p>
-                  {hotel.extraChargeTransfer.trim() ? (
-                    <p className="mt-1 line-clamp-2 text-xs text-teal-900/50">
-                      {hotel.extraChargeTransfer.trim()}
-                    </p>
-                  ) : null}
                 </div>
-                <div className="flex shrink-0 gap-1.5">
+                <div className="flex shrink-0 gap-1">
                   <Button
                     type="button"
-                    variant="outline"
+                    variant="ghost"
                     size="icon"
-                    className="size-9"
+                    className="size-8"
                     aria-label={`Edit ${hotel.name}`}
                     onClick={() => openEdit(hotel)}
                   >
@@ -414,9 +392,9 @@ export function AdminPickupZones() {
                   </Button>
                   <Button
                     type="button"
-                    variant="outline"
+                    variant="ghost"
                     size="icon"
-                    className="size-9 text-teal-900/40 hover:text-red-600"
+                    className="size-8 text-teal-900/35 hover:text-red-600"
                     aria-label={`Remove ${hotel.name}`}
                     onClick={() => handleDeleteHotel(hotel)}
                   >
@@ -424,9 +402,9 @@ export function AdminPickupZones() {
                   </Button>
                 </div>
               </div>
-            ))
-          )}
-        </div>
+            ))}
+          </div>
+        )}
       </Surface>
 
       <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(null)}>

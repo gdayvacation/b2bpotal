@@ -870,6 +870,65 @@ export async function fetchBookings(): Promise<Booking[]> {
   return (data as BookingRow[]).map(mapBooking)
 }
 
+/** Reload seats, close dates, and cutoff times across devices. */
+export async function fetchAvailabilitySettings(): Promise<{
+  availability: Availability[]
+  bookingCutoffs: BookingCutoffSettings
+  bookingClosures: BookingClosure[]
+}> {
+  const supabase = getSupabaseBrowserClient()
+  const [availabilityRes, cutoffsRes, closuresRes] = await Promise.all([
+    supabase.from('availability').select('*').order('date'),
+    supabase.from('booking_cutoffs').select('*').eq('id', 'default').maybeSingle(),
+    supabase.from('booking_closures').select('*').order('date'),
+  ])
+  await assertOk('availability', availabilityRes.error, availabilityRes.data)
+
+  let bookingCutoffs = { ...DEFAULT_BOOKING_CUTOFFS }
+  if (cutoffsRes.error) {
+    console.warn(
+      '[supabase] booking_cutoffs table unavailable — run supabase/add-booking-cutoffs.sql',
+      cutoffsRes.error.message,
+    )
+  } else {
+    bookingCutoffs = mapBookingCutoffs(cutoffsRes.data as BookingCutoffRow | null)
+  }
+
+  let bookingClosures: BookingClosure[] = []
+  if (closuresRes.error) {
+    console.warn(
+      '[supabase] booking_closures table unavailable — run supabase/add-booking-closures.sql',
+      closuresRes.error.message,
+    )
+  } else {
+    bookingClosures = (closuresRes.data as BookingClosureRow[]).map(mapBookingClosure)
+  }
+
+  return {
+    availability: (availabilityRes.data as AvailabilityRow[]).map(mapAvailability),
+    bookingCutoffs,
+    bookingClosures,
+  }
+}
+
+/** Reload van assignments and meta across admins / marina tablets. */
+export async function fetchDayVehiclePlans(): Promise<Record<string, DayVehiclePlan>> {
+  const supabase = getSupabaseBrowserClient()
+  const [vehiclePlansRes, vanMetaRes, vanAssignRes] = await Promise.all([
+    supabase.from('day_vehicle_plans').select('*'),
+    supabase.from('van_meta').select('*'),
+    supabase.from('van_assignments').select('*'),
+  ])
+  await assertOk('day_vehicle_plans', vehiclePlansRes.error, vehiclePlansRes.data)
+  await assertOk('van_meta', vanMetaRes.error, vanMetaRes.data)
+  await assertOk('van_assignments', vanAssignRes.error, vanAssignRes.data)
+  return buildVehiclePlans(
+    vehiclePlansRes.data as VehiclePlanRow[],
+    vanMetaRes.data as VanMetaRow[],
+    vanAssignRes.data as VanAssignmentRow[],
+  )
+}
+
 /** Reload boat capacities, names, guides, and assignments (for live multi-admin sync). */
 export async function fetchDayBoatPlans(): Promise<Record<string, DayBoatPlan>> {
   const supabase = getSupabaseBrowserClient()
@@ -2070,6 +2129,60 @@ export async function deleteCheckInNoteRow(
     .eq('program', program)
     .eq('booking_code', bookingCode)
   if (error) throw new Error(`delete check-in note: ${error.message}`)
+}
+
+async function moveTableDate(
+  table: string,
+  oldDate: string,
+  newDate: string,
+  program: Program,
+  extra: Record<string, string>,
+) {
+  const supabase = getSupabaseBrowserClient()
+  let dest = supabase.from(table).delete().eq('date', newDate).eq('program', program)
+  let source = supabase.from(table).update({ date: newDate }).eq('date', oldDate).eq('program', program)
+  for (const [column, value] of Object.entries(extra)) {
+    dest = dest.eq(column, value)
+    source = source.eq(column, value)
+  }
+  const destError = (await dest).error
+  if (destError) throw new Error(`clear ${table} dest date: ${destError.message}`)
+  const { error } = await source
+  if (error) throw new Error(`move ${table} date: ${error.message}`)
+}
+
+/** Move every check-in row for a booking onto a new travel date. */
+export async function moveCheckInBookingDate(
+  oldDate: string,
+  newDate: string,
+  program: Program,
+  bookingCode: string,
+) {
+  if (oldDate === newDate) return
+  await moveTableDate('check_in_enrollments', oldDate, newDate, program, {
+    booking_code: bookingCode,
+  })
+  await moveTableDate('check_in_attendance', oldDate, newDate, program, {
+    booking_code: bookingCode,
+  })
+  await moveTableDate('check_in_services', oldDate, newDate, program, {
+    booking_code: bookingCode,
+  })
+  await moveTableDate('check_in_notes', oldDate, newDate, program, {
+    booking_code: bookingCode,
+  })
+  await moveTableDate('check_in_guest_edits', oldDate, newDate, program, {
+    booking_code: bookingCode,
+  })
+  await moveTableDate('check_in_sequences', oldDate, newDate, program, {
+    booking_code: bookingCode,
+  })
+  await moveTableDate('check_in_payments', oldDate, newDate, program, {
+    seat_key: bookingCode,
+  })
+  await moveTableDate('check_in_payments', oldDate, newDate, program, {
+    seat_key: checkInTicketSeatKey(bookingCode),
+  })
 }
 
 export function persistQuietly(label: string, task: Promise<unknown>) {

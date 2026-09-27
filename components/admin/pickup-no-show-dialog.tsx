@@ -13,7 +13,6 @@ import {
 } from '@/components/ui/dialog'
 import { enrolledSeatCount } from '@/lib/check-in-enrollment'
 import { formatGuestPaxParts, getOrCaptureBookedPaxSnapshot } from '@/lib/check-in-booked-pax'
-import { recordPickupNoShow } from '@/lib/pickup-marina-sync'
 import { totalPassengers, type Booking } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -32,7 +31,8 @@ export function PickupNoShowDialog({
   onWholeNoShow: (booking: Booking) => void
   onPickedUpAll: (booking: Booking, options?: { settle?: boolean }) => void
 }) {
-  const { updateBookingDetails, getCheckInEnrollments, trimCheckInEnrollments } = usePortal()
+  const { updateBookingDetails, getCheckInEnrollments, trimCheckInEnrollments, recordPickupNoShow } =
+    usePortal()
   const [nsAdults, setNsAdults] = useState(0)
   const [nsChildren, setNsChildren] = useState(0)
   const [nsInfants, setNsInfants] = useState(0)

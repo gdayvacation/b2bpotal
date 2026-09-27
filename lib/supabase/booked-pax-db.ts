@@ -64,6 +64,17 @@ export async function fetchCheckInBookedPax(): Promise<BookedPaxMap | null> {
   return next
 }
 
+export async function deleteCheckInBookedPax(date: string, program: Program, bookingCode: string) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase
+    .from('check_in_booked_pax')
+    .delete()
+    .eq('date', date)
+    .eq('program', program)
+    .eq('booking_code', bookingCode)
+  if (error) throw new Error(`delete check-in booked pax: ${error.message}`)
+}
+
 export async function upsertCheckInBookedPax(
   date: string,
   program: Program,

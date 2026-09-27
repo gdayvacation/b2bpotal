@@ -14,10 +14,14 @@ import {
 import {
   BOOKING_HEADERS,
   GUEST_HEADERS,
+  INVOICE_HEADERS,
+  INVOICE_LINE_HEADERS,
   MERGE_HEADERS,
   MONTHLY_SUMMARY_HEADERS,
   buildBookingRows,
   buildGuestRows,
+  buildInvoiceLineRows,
+  buildInvoiceRows,
   buildMergeRows,
   buildMonthlySummaryRows,
   currentThaiMonth,
@@ -31,6 +35,7 @@ export type SheetsBackupResult = {
   bookings: number
   guests: number
   merge: number
+  invoices: number
   months: number
 }
 
@@ -48,6 +53,8 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
   const bookingRows = withHeader(BOOKING_HEADERS, buildBookingRows(source))
   const guestRows = withHeader(GUEST_HEADERS, buildGuestRows(source))
   const mergeRows = withHeader(MERGE_HEADERS, buildMergeRows(source))
+  const invoiceRows = withHeader(INVOICE_HEADERS, buildInvoiceRows(source))
+  const invoiceLineRows = withHeader(INVOICE_LINE_HEADERS, buildInvoiceLineRows(source))
   const summaryRows = withHeader(MONTHLY_SUMMARY_HEADERS, buildMonthlySummaryRows(source))
   const months = uniqueMonths(source)
 
@@ -55,6 +62,8 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
   const bookingsId = sheetIdByTitle(sheets, SHEET_TITLES.bookings)
   const guestsId = sheetIdByTitle(sheets, SHEET_TITLES.guests)
   const mergeId = sheetIdByTitle(sheets, SHEET_TITLES.merge)
+  const invoicesId = sheetIdByTitle(sheets, SHEET_TITLES.invoices)
+  const invoiceLinesId = sheetIdByTitle(sheets, SHEET_TITLES.invoiceLines)
   const monthlyId = sheetIdByTitle(sheets, SHEET_TITLES.monthly)
   const monthsId = sheetIdByTitle(sheets, SHEET_TITLES.months)
   const selectedMonth =
@@ -65,6 +74,8 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
     expandGridRequests(bookingsId),
     expandGridRequests(guestsId),
     expandGridRequests(mergeId),
+    expandGridRequests(invoicesId),
+    expandGridRequests(invoiceLinesId),
     expandGridRequests(monthlyId, 10000, 80),
     expandGridRequests(monthsId, 200, 4),
   ])
@@ -73,6 +84,8 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
     clearRange(`${SHEET_TITLES.bookings}!A:ZZ`),
     clearRange(`${SHEET_TITLES.guests}!A:ZZ`),
     clearRange(`${SHEET_TITLES.merge}!A:ZZ`),
+    clearRange(`${SHEET_TITLES.invoices}!A:ZZ`),
+    clearRange(`${SHEET_TITLES.invoiceLines}!A:ZZ`),
     clearRange(`${SHEET_TITLES.monthly}!A:ZZ`),
     clearRange(`${SHEET_TITLES.months}!A:ZZ`),
   ])
@@ -85,10 +98,12 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
     writeValues(`${SHEET_TITLES.bookings}!A1`, bookingRows),
     writeValues(`${SHEET_TITLES.guests}!A1`, guestRows),
     writeValues(`${SHEET_TITLES.merge}!A1`, mergeRows),
+    writeValues(`${SHEET_TITLES.invoices}!A1`, invoiceRows),
+    writeValues(`${SHEET_TITLES.invoiceLines}!A1`, invoiceLineRows),
     writeValues(`${SHEET_TITLES.monthly}!A1`, [
       ['Pick a month', selectedMonth, 'Synced (Thai time)', source.syncedAt],
       [
-        'Use the dropdown in B1 to see that month. Bookings, check-in guests, and merge also have a Month column you can filter.',
+        'Use the dropdown in B1 to see that month. Bookings, check-in guests, merge, and invoices also have filterable columns.',
       ],
     ]),
     writeValues(`${SHEET_TITLES.monthly}!A${summaryStart}`, [['Month summary'], ...summaryRows]),
@@ -96,7 +111,7 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
       `${SHEET_TITLES.monthly}!A${bookingsQueryRow}`,
       [
         ['Bookings for selected month'],
-        [`=IF(B1="","Select a month",QUERY(Bookings!A:AA,"select * where Col1 = '"&B1&"'",1))`],
+        [`=IF(B1="","Select a month",QUERY(Bookings!A:AC,"select * where Col1 = '"&B1&"'",1))`],
       ],
       'USER_ENTERED',
     ),
@@ -104,7 +119,7 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
       `${SHEET_TITLES.monthly}!${mergeQueryCol}${summaryStart}`,
       [
         ['Merge for selected month — booked vs real check-in vs extra charge'],
-        [`=IF(B1="","Select a month",QUERY(Merge!A:AK,"select * where Col1 = '"&B1&"'",1))`],
+        [`=IF(B1="","Select a month",QUERY(Merge!A:AO,"select * where Col1 = '"&B1&"'",1))`],
       ],
       'USER_ENTERED',
     ),
@@ -115,6 +130,8 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
     ...freezeAndFilterRequests(bookingsId, BOOKING_HEADERS.length, bookingRows.length),
     ...freezeAndFilterRequests(guestsId, GUEST_HEADERS.length, guestRows.length),
     ...freezeAndFilterRequests(mergeId, MERGE_HEADERS.length, mergeRows.length),
+    ...freezeAndFilterRequests(invoicesId, INVOICE_HEADERS.length, invoiceRows.length),
+    ...freezeAndFilterRequests(invoiceLinesId, INVOICE_LINE_HEADERS.length, invoiceLineRows.length),
     hideSheetRequest(monthsId),
     monthDropdownRequest(monthlyId, months.length),
     {
@@ -134,6 +151,7 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
     bookings: source.bookings.length,
     guests: source.enrollments.length,
     merge: source.bookings.length,
+    invoices: source.invoices.length,
     months: months.length,
   }
 }

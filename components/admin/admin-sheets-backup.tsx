@@ -73,7 +73,7 @@ export function AdminSheetsBackup({ onBack }: { onBack: () => void }) {
       return
     }
     setMessage(
-      `Synced ${result.bookings} bookings and ${result.guests} check-in guests at ${result.syncedAt} Thai time.`,
+      `Synced ${result.bookings} bookings, ${result.guests} check-in guests, and ${result.invoices} invoices at ${result.syncedAt} Thai time.`,
     )
   }
 
@@ -87,7 +87,7 @@ export function AdminSheetsBackup({ onBack }: { onBack: () => void }) {
       </div>
       <PageHeader
         title="Google Sheets backup"
-        description="The API creates the workbook with four tabs. Nightly sync at 4:00 AM Thai time keeps it updated."
+        description="Backup writes Bookings, Check-in guests, Merge, Invoices, and Invoice lines. Nightly sync at 4:00 AM Thai time keeps it updated."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button

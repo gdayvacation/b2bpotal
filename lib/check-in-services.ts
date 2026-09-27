@@ -30,6 +30,28 @@ export function checkInServiceLabel(kind: CheckInServiceKind) {
   return 'Scuba'
 }
 
+export function servicePricedPerBoat(kind: CheckInServiceKind) {
+  return kind === 'private-longtail'
+}
+
+export function serviceQtyNoun(kind: CheckInServiceKind, qty: number) {
+  if (servicePricedPerBoat(kind)) return qty === 1 ? 'boat' : 'boats'
+  return qty === 1 ? 'pax' : 'pax'
+}
+
+export function serviceQtyLabel(kind: CheckInServiceKind, qty: number) {
+  return `${qty} ${serviceQtyNoun(kind, qty)}`
+}
+
+export function servicePriceUnitLabel(kind: CheckInServiceKind) {
+  return servicePricedPerBoat(kind) ? 'Price / boat (THB)' : 'Price / person (THB)'
+}
+
+export function formatServiceLineCharge(line: CheckInServiceLine) {
+  const unit = servicePricedPerBoat(line.kind) ? 'THB / boat' : 'THB each'
+  return `${serviceQtyLabel(line.kind, line.people)} · ${line.pricePerPerson.toLocaleString('en-US')} ${unit}`
+}
+
 export function isCheckInServiceKind(value: unknown): value is CheckInServiceKind {
   return (
     value === 'share-longtail' || value === 'private-longtail' || value === 'scuba'
@@ -153,7 +175,10 @@ export function formatCheckInServicesOption(services: CheckInServiceLine[]): str
     .map((line) => {
       const label = checkInServiceLabel(line.kind)
       const total = serviceLineTotal(line)
-      const head = line.people > 1 ? `${label} ×${line.people}` : label
+      const head =
+        line.people > 1
+          ? `${label} ×${line.people}${servicePricedPerBoat(line.kind) ? ' boats' : ''}`
+          : label
       if (total <= 0) return head
       return `${head} · ${total.toLocaleString('en-US')}`
     })

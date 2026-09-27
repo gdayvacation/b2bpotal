@@ -16,18 +16,19 @@ const nav = [
 export function AgentShell({ agent, children }: { agent: Agent; children: React.ReactNode }) {
   const pathname = usePathname()
   const base = `/agent/${agent.slug}`
+  const items = agent.status === 'Inactive' ? nav.filter((item) => item.href !== '') : nav
 
   return (
     <div className="gday-app relative">
       <header className="sticky top-0 z-40 border-b border-teal-900/8 bg-white/70 backdrop-blur-xl">
         <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-sky-400/50 via-teal-500/60 to-amber-400/40" />
         <div className="relative flex h-14 w-full items-center justify-between gap-3 px-4 sm:h-16 sm:px-6 lg:px-8 xl:px-10">
-          <Link href={base} className="min-w-0 shrink-0">
+          <Link href={agent.status === 'Inactive' ? `${base}/bookings` : base} className="min-w-0 shrink-0">
             <BrandMark />
           </Link>
 
           <nav className="hidden items-center gap-1 rounded-full border border-teal-900/8 bg-gradient-to-r from-teal-950/[0.04] via-sky-950/[0.03] to-amber-950/[0.03] p-1 md:flex">
-            {nav.map((item) => {
+            {items.map((item) => {
               const href = `${base}${item.href}`
               const active = isActive(pathname, base, item.href)
               return (
@@ -68,8 +69,13 @@ export function AgentShell({ agent, children }: { agent: Agent; children: React.
         data-mobile-nav
         className="fixed inset-x-0 bottom-0 z-40 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:hidden"
       >
-        <div className="mx-auto grid max-w-md grid-cols-3 gap-1 rounded-[1.4rem] border border-teal-900/8 bg-white/95 p-1.5 shadow-[0_12px_40px_-16px_rgba(11,36,34,0.45)] backdrop-blur-xl">
-          {nav.map((item) => {
+        <div
+          className={cn(
+            'mx-auto grid max-w-md gap-1 rounded-[1.4rem] border border-teal-900/8 bg-white/95 p-1.5 shadow-[0_12px_40px_-16px_rgba(11,36,34,0.45)] backdrop-blur-xl',
+            items.length === 2 ? 'grid-cols-2' : 'grid-cols-3',
+          )}
+        >
+          {items.map((item) => {
             const href = `${base}${item.href}`
             const Icon = item.icon
             const active = isActive(pathname, base, item.href)

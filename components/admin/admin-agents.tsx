@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { Check, Copy, ExternalLink, Pencil, Plus, Trash2 } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
+import { SettingsSubnav } from '@/components/admin/admin-settings'
 import { PageHeader, Surface } from '@/components/ui-primitives'
 import { Button, buttonVariants } from '@/components/ui/button'
 import {
@@ -90,6 +91,7 @@ export function AdminAgents() {
         title="Agents"
         description="Add partner agencies, edit their names, and copy each private booking link."
       />
+      <SettingsSubnav />
 
       <Surface className="mb-4 p-5">
         <h2 className="font-medium text-teal-950">Add agent</h2>

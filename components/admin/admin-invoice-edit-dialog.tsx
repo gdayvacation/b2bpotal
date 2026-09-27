@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -16,6 +16,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import {
   formatInvoiceMoney,
+  isInvoiceAmountStale,
   itemsGrandTotal,
   parseMoneyInput,
   type InvoiceDocument,
@@ -65,12 +66,14 @@ export function InvoiceEditDialog({
   open,
   onOpenChange,
   onSave,
+  liveItemsForCodes,
 }: {
   doc: InvoiceDocument | null
   isNew: boolean
   open: boolean
   onOpenChange: (open: boolean) => void
   onSave: (doc: InvoiceDocument) => Promise<void>
+  liveItemsForCodes?: (codes: string[]) => Omit<InvoiceItem, 'invoiceId'>[]
 }) {
   const [draft, setDraft] = useState<InvoiceDocument | null>(null)
   const [saving, setSaving] = useState(false)
@@ -92,6 +95,43 @@ export function InvoiceEditDialog({
   }, [doc, open])
 
   const total = useMemo(() => (draft ? itemsGrandTotal(draft.items) : 0), [draft])
+
+  const bookingCodes = useMemo(
+    () => [...new Set((draft?.items ?? []).map((item) => item.bookingCode).filter(Boolean))],
+    [draft],
+  )
+  const liveItems = useMemo(
+    () => (liveItemsForCodes && bookingCodes.length > 0 ? liveItemsForCodes(bookingCodes) : []),
+    [bookingCodes, liveItemsForCodes],
+  )
+  const liveTotal = useMemo(() => itemsGrandTotal(liveItems), [liveItems])
+  const amountStale = useMemo(() => {
+    if (liveItems.length === 0 || !draft) return false
+    const storedAuto = itemsGrandTotal(
+      draft.items.filter((item) => item.bookingCode && item.lineKind !== 'other'),
+    )
+    const liveAuto = itemsGrandTotal(liveItems.filter((item) => item.lineKind !== 'other'))
+    return isInvoiceAmountStale(storedAuto, liveAuto)
+  }, [draft, liveItems])
+
+  function refreshFromBookings() {
+    if (!draft || liveItems.length === 0) return
+    const extras = draft.items.filter((item) => !item.bookingCode)
+    setDraft({
+      ...draft,
+      items: [
+        ...liveItems.map((item, index) => ({
+          ...item,
+          invoiceId: draft.id,
+          sortOrder: index,
+        })),
+        ...extras.map((item, index) => ({
+          ...item,
+          sortOrder: liveItems.length + index,
+        })),
+      ],
+    })
+  }
 
   function patch(next: Partial<InvoiceDocument>) {
     setDraft((current) => (current ? { ...current, ...next } : current))
@@ -165,6 +205,26 @@ export function InvoiceEditDialog({
               This invoice is already paid. Changes stay on the same receipt
               {draft.receiptNo ? ` (${draft.receiptNo})` : ''}.
             </p>
+          ) : null}
+
+          {amountStale ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-950">
+              <p>
+                Booking totals changed after this invoice was issued — live amount is{' '}
+                {formatInvoiceMoney(liveTotal)} THB. The stored total stays until you update it.
+              </p>
+              {liveItemsForCodes ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-8 rounded-lg border-rose-300 bg-white"
+                  onClick={refreshFromBookings}
+                >
+                  <RotateCcw className="size-3.5" />
+                  Refresh from booking
+                </Button>
+              ) : null}
+            </div>
           ) : null}
 
           <div className="grid gap-3 sm:grid-cols-2">

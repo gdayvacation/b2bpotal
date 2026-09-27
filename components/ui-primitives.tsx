@@ -25,7 +25,9 @@ export function PageHeader({
           {title}
         </h1>
         {description ? (
-          <p className="mt-1.5 max-w-xl text-[15px] leading-relaxed text-teal-950/55">{description}</p>
+          <p className="mt-1.5 hidden max-w-xl text-[15px] leading-relaxed text-teal-950/55 sm:block">
+            {description}
+          </p>
         ) : null}
       </div>
       {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
@@ -102,7 +104,7 @@ export function Segment({
       type="button"
       onClick={onClick}
       className={cn(
-        'rounded-xl px-3.5 py-2 text-sm font-medium transition-all',
+        'inline-flex items-center justify-center rounded-xl px-3.5 py-2 text-sm font-medium transition-all',
         active
           ? 'bg-gradient-to-br from-teal-700 to-cyan-700 text-white shadow-md shadow-teal-700/20'
           : 'text-teal-900/55 hover:bg-white/70 hover:text-teal-950',

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, Minus, Plus } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
+import { SettingsSubnav } from '@/components/admin/admin-settings'
 import { PageHeader, Segment, SegmentedControl, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -178,6 +179,7 @@ export function AdminAvailability() {
   return (
     <div className="w-full">
       <PageHeader title="Availability" description={headerDescription} />
+      <SettingsSubnav />
 
       <SegmentedControl className="mb-4 w-full sm:w-auto">
         <Segment

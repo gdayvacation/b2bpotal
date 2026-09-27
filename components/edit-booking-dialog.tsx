@@ -20,6 +20,7 @@ import {
   AmendmentPolicyNotice,
   LateReduceNotice,
 } from '@/components/amendment-policy-notice'
+import { duplicateBookingMessage, findDuplicateBookings } from '@/lib/booking-duplicates'
 import { formatThbAmount } from '@/lib/booking-cutoffs'
 import { formatShortDate } from '@/lib/format'
 import {
@@ -67,6 +68,7 @@ export function EditBookingDialog({
   allowPrivateTransfer?: boolean
 }) {
   const {
+    bookings,
     updateBookingDetails,
     hotels,
     zones,
@@ -96,6 +98,8 @@ export function EditBookingDialog({
   const [canoe, setCanoe] = useState<IncludeOption>('Included')
   const [error, setError] = useState('')
   const [confirmLate, setConfirmLate] = useState(false)
+  const [confirmDuplicate, setConfirmDuplicate] = useState(false)
+  const [duplicateText, setDuplicateText] = useState('')
   const [adminFee, setAdminFee] = useState('0')
 
   const canUsePrivate = allowPrivateTransfer || bypassCutoff
@@ -156,12 +160,18 @@ export function EditBookingDialog({
     setCanoe(booking.canoe ?? 'Included')
     setError('')
     setConfirmLate(false)
+    setConfirmDuplicate(false)
+    setDuplicateText('')
     setAdminFee('0')
   }, [open, booking?.code, startWithTransfer, zones])
 
   useEffect(() => {
     setConfirmLate(false)
   }, [adults, children, infants, tourLeaders])
+
+  useEffect(() => {
+    setConfirmDuplicate(false)
+  }, [leadGuest])
 
   const lateFeeWindow = Boolean(booking) && isLateFeeTime(booking!.date)
   const removedAdults = Math.max(0, (booking?.adults ?? 0) - adults)
@@ -238,10 +248,6 @@ export function EditBookingDialog({
 
   function handleSave() {
     if (!booking) return
-    if (transferKind !== 'none' && !pickupHotel.trim()) {
-      setError('Enter the pickup hotel.')
-      return
-    }
     if (transferKind === 'private') {
       if (!privateVehicle) {
         setError('Choose Car (1,400 THB) or Van (1,600 THB).')
@@ -264,6 +270,18 @@ export function EditBookingDialog({
 
     if (reduceCharge && !confirmLate) {
       setConfirmLate(true)
+      return
+    }
+
+    const matches = findDuplicateBookings(bookings, {
+      leadGuest,
+      date: booking.date,
+      program: booking.program,
+      excludeCode: booking.code,
+    })
+    if (matches.length > 0 && !confirmDuplicate) {
+      setDuplicateText(duplicateBookingMessage(matches))
+      setConfirmDuplicate(true)
       return
     }
 
@@ -432,8 +450,8 @@ export function EditBookingDialog({
                   }}
                 />
                 <p className="text-xs text-teal-900/50">
-                  Use Other if the hotel is missing — admin can add it under Pickup Zones with zone
-                  and time.
+                  Optional. Use Other if the hotel is missing — admin can add it under Pickup Zones
+                  with zone and time.
                 </p>
               </div>
 
@@ -621,6 +639,12 @@ export function EditBookingDialog({
             <AmendmentPolicyNotice settings={bookingCutoffs} variant="compact" />
           ) : null}
 
+          {confirmDuplicate ? (
+            <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+              {duplicateText}
+            </p>
+          ) : null}
+
           {error ? <p className="text-sm text-red-600">{error}</p> : null}
         </div>
 
@@ -629,6 +653,10 @@ export function EditBookingDialog({
             type="button"
             variant="outline"
             onClick={() => {
+              if (confirmDuplicate) {
+                setConfirmDuplicate(false)
+                return
+              }
               if (confirmLate) {
                 setConfirmLate(false)
                 return
@@ -636,7 +664,7 @@ export function EditBookingDialog({
               onOpenChange(false)
             }}
           >
-            {confirmLate ? 'Back' : 'Cancel'}
+            {confirmLate || confirmDuplicate ? 'Back' : 'Cancel'}
           </Button>
           <Button
             type="button"
@@ -647,16 +675,20 @@ export function EditBookingDialog({
             }
           >
             {startWithTransfer
-              ? 'Save transfer'
-              : confirmLate
-                ? bypassCutoff
-                  ? parsedAdminFee > 0
-                    ? `Confirm +${formatThbAmount(parsedAdminFee)}`
-                    : 'Confirm — complimentary'
-                  : `Confirm +${formatThbAmount(suggestedReduceFee)}`
-                : reduceCharge
-                  ? 'Continue'
-                  : 'Save changes'}
+              ? confirmDuplicate
+                ? 'Save anyway'
+                : 'Save transfer'
+              : confirmDuplicate
+                ? 'Save anyway'
+                : confirmLate
+                  ? bypassCutoff
+                    ? parsedAdminFee > 0
+                      ? `Confirm +${formatThbAmount(parsedAdminFee)}`
+                      : 'Confirm — complimentary'
+                    : `Confirm +${formatThbAmount(suggestedReduceFee)}`
+                  : reduceCharge
+                    ? 'Continue'
+                    : 'Save changes'}
           </Button>
         </DialogFooter>
       </DialogContent>

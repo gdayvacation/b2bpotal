@@ -99,6 +99,8 @@ function isLineKind(value: unknown): value is InvoiceLineKind {
     value === 'cancel' ||
     value === 'private_transfer' ||
     value === 'extra_zone' ||
+    value === 'park_fee' ||
+    value === 'service' ||
     value === 'other'
   )
 }

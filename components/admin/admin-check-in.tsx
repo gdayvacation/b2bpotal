@@ -83,8 +83,11 @@ import {
 import {
   CHECK_IN_SERVICE_KINDS,
   checkInServiceLabel,
+  formatServiceLineCharge,
   newCheckInServiceId,
   serviceLineTotal,
+  servicePriceUnitLabel,
+  servicePricedPerBoat,
   summarizeCheckInServices,
   type CheckInServiceKind,
   type CheckInServiceKindSummary,
@@ -361,7 +364,7 @@ export function AdminCheckIn() {
           <h1 className="font-display mt-1 text-2xl font-semibold tracking-tight text-teal-950 sm:text-3xl">
             Guest check-in
           </h1>
-          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-teal-950/55">
+          <p className="mt-2 hidden max-w-2xl text-sm leading-relaxed text-teal-950/55 sm:block">
             Live board by day — one line per booking. Generate a QR for each booking when guests
             arrive so payment due is never mixed up.
           </p>
@@ -375,10 +378,12 @@ export function AdminCheckIn() {
           onClick={() => setTab('today')}
           icon={<Users className="size-3.5" />}
         >
-          Live board
+          <span className="sm:hidden">Board</span>
+          <span className="hidden sm:inline">Live board</span>
         </TabButton>
         <TabButton active={tab === 'qr'} onClick={() => setTab('qr')} icon={<QrCode className="size-3.5" />}>
-          QR code for Helper
+          <span className="sm:hidden">Helper QR</span>
+          <span className="hidden sm:inline">QR code for Helper</span>
         </TabButton>
         <TabButton
           active={tab === 'insurance'}
@@ -429,7 +434,7 @@ function TabButton({
       type="button"
       onClick={onClick}
       className={cn(
-        'inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-2.5 text-sm font-semibold transition-all',
+        'inline-flex items-center justify-center gap-1 rounded-xl px-2 py-2.5 text-[12px] font-semibold transition-all sm:gap-1.5 sm:px-3.5 sm:text-sm',
         active ? 'bg-white text-teal-950 shadow-sm' : 'text-teal-900/55 hover:text-teal-950',
       )}
     >
@@ -2959,7 +2964,10 @@ function BookingServicesDialog({
               <button
                 key={option}
                 type="button"
-                onClick={() => setKind(option)}
+                onClick={() => {
+                  setKind(option)
+                  if (servicePricedPerBoat(option)) setPeople('1')
+                }}
                 className={cn(
                   'flex flex-col items-center gap-2 rounded-2xl border px-2 py-3 text-center transition-all',
                   kind === option
@@ -2977,7 +2985,9 @@ function BookingServicesDialog({
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="service-people">People</Label>
+              <Label htmlFor="service-people">
+                {servicePricedPerBoat(kind) ? 'Boat' : 'People'}
+              </Label>
               <Input
                 id="service-people"
                 inputMode="numeric"
@@ -2987,7 +2997,7 @@ function BookingServicesDialog({
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="service-price">Price / person (THB)</Label>
+              <Label htmlFor="service-price">{servicePriceUnitLabel(kind)}</Label>
               <Input
                 id="service-price"
                 inputMode="numeric"
@@ -3028,7 +3038,7 @@ function BookingServicesDialog({
                       {checkInServiceLabel(line.kind)}
                     </p>
                     <p className="mt-0.5 text-[11px] tabular-nums text-teal-900/55">
-                      {line.people} pax · {line.pricePerPerson.toLocaleString('en-US')} THB each ·{' '}
+                      {formatServiceLineCharge(line)} ·{' '}
                       <PayableAmount
                         label={`${serviceLineTotal(line).toLocaleString('en-US')} THB`}
                         paid={line.paid}
@@ -3948,7 +3958,10 @@ function DayServicesDialog({
                         <ServiceKindIcon kind={row.kind} size="sm" />
                         {checkInServiceLabel(row.kind)}
                         {row.people > 1 ? (
-                          <span className="text-teal-900/45">×{row.people}</span>
+                          <span className="text-teal-900/45">
+                            ×{row.people}
+                            {servicePricedPerBoat(row.kind) ? ' boats' : ''}
+                          </span>
                         ) : null}
                       </span>
                     </TableCell>

@@ -119,19 +119,27 @@ export function AdminDashboard() {
       <PageHeader
         eyebrow={formatLongDate(today)}
         title="Dashboard"
-        description="Today’s partner departures, or browse any month by agent and program. Prototype data only — no pricing."
+        description="Today’s partner departures, or browse any month by agent and program."
       />
 
-      <Surface className="mb-5 p-4 sm:p-5">
+      <Surface className="mb-4 p-3.5 sm:mb-5 sm:p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             <SoftLabel>Period</SoftLabel>
-            <div className="flex flex-wrap items-center gap-2">
-              <SegmentedControl>
-                <Segment active={range === 'today'} onClick={() => setRangeMode('today')}>
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+              <SegmentedControl className="grid w-full grid-cols-2 sm:inline-flex sm:w-auto">
+                <Segment
+                  className="w-full justify-center"
+                  active={range === 'today'}
+                  onClick={() => setRangeMode('today')}
+                >
                   Today
                 </Segment>
-                <Segment active={range === 'month'} onClick={() => setRangeMode('month')}>
+                <Segment
+                  className="w-full justify-center"
+                  active={range === 'month'}
+                  onClick={() => setRangeMode('month')}
+                >
                   Month
                 </Segment>
               </SegmentedControl>
@@ -140,7 +148,7 @@ export function AdminDashboard() {
                   <Button type="button" variant="outline" size="icon-sm" onClick={() => changeMonth(-1)}>
                     <ChevronLeft />
                   </Button>
-                  <div className="min-w-[9.5rem] text-center text-sm font-semibold text-teal-950">
+                  <div className="min-w-0 flex-1 text-center text-sm font-semibold text-teal-950 sm:min-w-[9.5rem] sm:flex-none">
                     {monthLabel}
                   </div>
                   <Button type="button" variant="outline" size="icon-sm" onClick={() => changeMonth(1)}>
@@ -167,14 +175,26 @@ export function AdminDashboard() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
             <div className="space-y-2">
               <SoftLabel>Program</SoftLabel>
-              <SegmentedControl>
-                <Segment active={program === 'all'} onClick={() => setProgram('all')}>
+              <SegmentedControl className="grid w-full grid-cols-3 sm:inline-flex sm:w-auto">
+                <Segment
+                  className="w-full justify-center px-2"
+                  active={program === 'all'}
+                  onClick={() => setProgram('all')}
+                >
                   All
                 </Segment>
-                <Segment active={program === 'PP'} onClick={() => setProgram('PP')}>
+                <Segment
+                  className="w-full justify-center px-2"
+                  active={program === 'PP'}
+                  onClick={() => setProgram('PP')}
+                >
                   PP
                 </Segment>
-                <Segment active={program === 'James Bond'} onClick={() => setProgram('James Bond')}>
+                <Segment
+                  className="w-full justify-center px-2"
+                  active={program === 'James Bond'}
+                  onClick={() => setProgram('James Bond')}
+                >
                   James Bond
                 </Segment>
               </SegmentedControl>
@@ -185,7 +205,7 @@ export function AdminDashboard() {
                 id="dashboard-agent"
                 value={agentSlug}
                 onChange={(event) => setAgentSlug(event.target.value)}
-                className="h-10 w-full rounded-xl border border-teal-900/12 bg-white/80 px-3 text-sm text-teal-950 outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
+                className="h-11 w-full rounded-xl border border-teal-900/12 bg-white/80 px-3 text-sm text-teal-950 outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15 sm:h-10"
               >
                 <option value="all">All agents</option>
                 {agentOptions.map(([slug, name]) => (
@@ -201,8 +221,8 @@ export function AdminDashboard() {
 
       <div
         className={cn(
-          'grid gap-3 sm:grid-cols-2 sm:gap-4',
-          cards.length > 3 ? 'xl:grid-cols-4' : 'xl:grid-cols-3',
+          'grid grid-cols-2 gap-2.5 sm:gap-4',
+          cards.length > 3 ? 'xl:grid-cols-4' : 'sm:grid-cols-2 xl:grid-cols-3',
         )}
       >
         {cards.map((card, index) => {
@@ -237,14 +257,14 @@ export function AdminDashboard() {
             return (
               <div
                 key={card.label}
-                className="relative overflow-hidden rounded-[1.35rem] bg-gradient-to-br from-teal-600 via-teal-700 to-cyan-800 p-5 text-white shadow-[0_18px_40px_-28px_rgba(15,118,110,0.65)]"
+                className="relative overflow-hidden rounded-[1.15rem] bg-gradient-to-br from-teal-600 via-teal-700 to-cyan-800 p-3.5 text-white shadow-[0_18px_40px_-28px_rgba(15,118,110,0.65)] sm:rounded-[1.35rem] sm:p-5"
               >
                 <div className="pointer-events-none absolute -right-6 -top-6 size-28 rounded-full bg-sky-300/20 blur-2xl" />
                 <div className="pointer-events-none absolute -bottom-8 left-8 size-24 rounded-full bg-emerald-300/15 blur-2xl" />
                 <p className="relative text-[11px] font-semibold tracking-tight text-white/75">
                   {card.label}
                 </p>
-                <p className="relative mt-3 font-display text-3xl font-semibold tracking-tight text-white">
+                <p className="relative mt-2 font-display text-2xl font-semibold tracking-tight text-white sm:mt-3 sm:text-3xl">
                   {card.value}
                 </p>
                 <p className="relative mt-2 text-sm text-white/70">{card.detail}</p>
@@ -253,12 +273,12 @@ export function AdminDashboard() {
           }
 
           return (
-            <div key={card.label} className={cn('rounded-[1.35rem] p-5 shadow-[0_12px_36px_-28px_rgba(11,36,34,0.28)]', accent!.wrap)}>
+            <div key={card.label} className={cn('rounded-[1.15rem] p-3.5 shadow-[0_12px_36px_-28px_rgba(11,36,34,0.28)] sm:rounded-[1.35rem] sm:p-5', accent!.wrap)}>
               <div className={cn('mb-3 h-1 w-8 rounded-full bg-gradient-to-r', accent!.bar)} />
               <p className={cn('text-[11px] font-semibold tracking-tight', accent!.label)}>
                 {card.label}
               </p>
-              <p className={cn('mt-3 font-display text-3xl font-semibold tracking-tight', accent!.value)}>
+              <p className={cn('mt-2 font-display text-2xl font-semibold tracking-tight sm:mt-3 sm:text-3xl', accent!.value)}>
                 {card.value}
               </p>
               <p className={cn('mt-2 text-sm', accent!.detail)}>{card.detail}</p>
@@ -344,7 +364,7 @@ export function AdminDashboard() {
       ) : null}
 
       <Surface className="mt-6 overflow-hidden">
-        <div className="border-b border-teal-900/8 px-4 py-4 sm:px-5">
+        <div className="border-b border-teal-900/8 px-3.5 py-3 sm:px-5 sm:py-4">
           <h2 className="font-display font-semibold text-teal-950">
             {range === 'today' ? 'Today’s departures' : selectedDay ? 'Selected day' : 'Monthly departures'}
           </h2>
@@ -383,53 +403,94 @@ export function AdminDashboard() {
 function BookingRow({ booking }: { booking: Booking }) {
   const cancelled = booking.status === 'Cancelled'
   return (
-    <div
-      className={cn(
-        'grid items-center gap-x-3 px-4 py-2.5 sm:gap-x-4 sm:px-5',
-        // guest | program | code·agent | pax | pickup | status
-        'grid-cols-[minmax(0,1fr)_5.75rem_minmax(0,1.2fr)_3.75rem_auto] sm:grid-cols-[minmax(7rem,1fr)_5.75rem_minmax(0,1.5fr)_4.25rem_minmax(8rem,1fr)_7.75rem]',
-        cancelled && 'bg-rose-50/60',
-      )}
-    >
-      <span
-        className={cn(
-          'truncate text-sm font-medium',
-          cancelled ? 'text-rose-800 line-through decoration-rose-300' : 'text-teal-950',
-        )}
-      >
-        {booking.leadGuest}
-      </span>
-
-      <ProgramChip program={booking.program} />
-
-      <div className="min-w-0 truncate text-sm text-teal-900/45">
-        <span
-          className={cn(
-            'font-mono text-[13px]',
-            cancelled ? 'text-rose-700/80' : 'text-teal-900/65',
-          )}
-        >
-          {booking.code}
-        </span>
-        <span className="mx-1.5 text-teal-900/25">·</span>
-        {booking.agentName}
+    <div className={cn(cancelled && 'bg-rose-50/60')}>
+      <div className="space-y-2 px-3.5 py-3 sm:hidden">
+        <div className="flex items-start justify-between gap-2">
+          <p
+            className={cn(
+              'min-w-0 truncate text-[15px] font-semibold',
+              cancelled ? 'text-rose-800 line-through decoration-rose-300' : 'text-teal-950',
+            )}
+          >
+            {booking.leadGuest}
+          </p>
+          <StatusBadge status={booking.status} />
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <ProgramChip program={booking.program} />
+          <span
+            className={cn(
+              'font-mono text-[12px]',
+              cancelled ? 'text-rose-700/80' : 'text-teal-900/65',
+            )}
+          >
+            {booking.code}
+          </span>
+          <span className="text-teal-900/25">·</span>
+          <span
+            className={cn(
+              'text-sm font-medium tabular-nums',
+              cancelled ? 'text-rose-800/70' : 'text-teal-950',
+            )}
+          >
+            {totalPassengers(booking)} pax
+          </span>
+        </div>
+        <p className="truncate text-xs text-teal-900/50">
+          {booking.agentName}
+          {booking.pickupHotel.trim() || booking.pickupZone
+            ? ` · ${booking.pickupHotel.trim() || booking.pickupZone}`
+            : ''}
+          {booking.pickupTime ? ` · ${booking.pickupTime}` : ''}
+        </p>
       </div>
 
-      <span
+      <div
         className={cn(
-          'text-sm font-medium tabular-nums',
-          cancelled ? 'text-rose-800/70' : 'text-teal-950',
+          'hidden items-center gap-x-4 px-5 py-2.5 md:grid',
+          'grid-cols-[minmax(7rem,1fr)_5.75rem_minmax(0,1.5fr)_4.25rem_minmax(8rem,1fr)_7.75rem]',
         )}
       >
-        {totalPassengers(booking)} pax
-      </span>
+        <span
+          className={cn(
+            'truncate text-sm font-medium',
+            cancelled ? 'text-rose-800 line-through decoration-rose-300' : 'text-teal-950',
+          )}
+        >
+          {booking.leadGuest}
+        </span>
 
-      <span className="hidden truncate text-sm tabular-nums text-teal-900/50 sm:block">
-        {booking.pickupZone} · {booking.pickupTime}
-      </span>
+        <ProgramChip program={booking.program} />
 
-      <div className="justify-self-end">
-        <StatusBadge status={booking.status} />
+        <div className="min-w-0 truncate text-sm text-teal-900/45">
+          <span
+            className={cn(
+              'font-mono text-[13px]',
+              cancelled ? 'text-rose-700/80' : 'text-teal-900/65',
+            )}
+          >
+            {booking.code}
+          </span>
+          <span className="mx-1.5 text-teal-900/25">·</span>
+          {booking.agentName}
+        </div>
+
+        <span
+          className={cn(
+            'text-sm font-medium tabular-nums',
+            cancelled ? 'text-rose-800/70' : 'text-teal-950',
+          )}
+        >
+          {totalPassengers(booking)} pax
+        </span>
+
+        <span className="truncate text-sm tabular-nums text-teal-900/50">
+          {booking.pickupZone} · {booking.pickupTime}
+        </span>
+
+        <div className="justify-self-end">
+          <StatusBadge status={booking.status} />
+        </div>
       </div>
     </div>
   )

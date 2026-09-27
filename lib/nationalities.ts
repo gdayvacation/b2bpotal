@@ -94,6 +94,26 @@ export const NATIONALITIES = [
 
 export type Nationality = (typeof NATIONALITIES)[number]
 
+export const THAI_NATIONALITY = 'Thai'
+export const THAI_PARK_FEE_THB = 40
+
+export function isThaiNationality(value: string | null | undefined) {
+  return value?.trim().toLowerCase() === 'thai'
+}
+
+export function thaiGuestCount(
+  rows: Array<{ nationality?: string | null; seats?: number | null }>,
+) {
+  return rows.reduce((sum, row) => {
+    if (!isThaiNationality(row.nationality)) return sum
+    return sum + Math.max(1, Math.floor(Number(row.seats) || 1))
+  }, 0)
+}
+
+export function thaiParkFeeTotal(count: number) {
+  return Math.max(0, Math.floor(count)) * THAI_PARK_FEE_THB
+}
+
 /** Shown first in the typeahead — main guest markets. */
 const PRIORITY_NATIONALITIES: readonly Nationality[] = ['Indian']
 

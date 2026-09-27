@@ -45,7 +45,10 @@ import {
   checkInStatusLabel,
   formatInvoiceDate,
   formatInvoiceMoney,
+  invoiceAmountForBooking,
+  invoiceAutoAmountForBooking,
   invoicedBookingCodes,
+  isInvoiceAmountStale,
   PAYMENT_CHANNELS,
   itemsGrandTotal,
   majorityProgram,
@@ -63,6 +66,7 @@ import {
   type Program,
 } from '@/lib/types'
 import { addDaysISO, dateFromISO, formatShortDate, todayISO, toISODate } from '@/lib/format'
+import { thaiGuestCount } from '@/lib/nationalities'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 
 type Tab = 'bills' | 'dummy' | 'documents' | 'notes' | 'receipts'
@@ -99,6 +103,8 @@ type BillRow = {
   booking: Booking
   attendance: CheckInAttendance | null
   billTotal: number
+  liveTotal: number
+  amountStale: boolean
   hasRates: boolean
   hasNoShow: boolean
   hasExtra: boolean
@@ -106,7 +112,14 @@ type BillRow = {
   invoice?: InvoiceDocument
 }
 
-const EXTRA_LINE_KINDS = new Set(['change_date', 'private_transfer', 'extra_zone', 'other'])
+const EXTRA_LINE_KINDS = new Set([
+  'change_date',
+  'private_transfer',
+  'extra_zone',
+  'park_fee',
+  'service',
+  'other',
+])
 
 function BillFlag({ label, title }: { label: string; title: string }) {
   return (
@@ -269,7 +282,15 @@ function InvoicePayStatus({
 }
 
 export function AdminInvoices() {
-  const { agents, bookings, getCheckInAttendance, getDayBoatPlan, getDayVehiclePlan } = usePortal()
+  const {
+    agents,
+    bookings,
+    getCheckInAttendance,
+    getCheckInEnrollments,
+    getCheckInServices,
+    getDayBoatPlan,
+    getDayVehiclePlan,
+  } = usePortal()
   const store = useInvoiceStore()
   const router = useRouter()
   const pathname = usePathname()
@@ -361,6 +382,10 @@ export function AdminInvoices() {
     return buildInvoiceItemsForBooking(booking, ratesForAgent(store.rates, booking.agentSlug), {
       includeOtherService,
       attendance: getCheckInAttendance(booking.date, booking.program, booking.code),
+      thaiGuests: thaiGuestCount(
+        getCheckInEnrollments(booking.date, booking.program, booking.code),
+      ),
+      services: getCheckInServices(booking.date, booking.program, booking.code),
     })
   }
 
@@ -378,19 +403,27 @@ export function AdminInvoices() {
       .map((booking) => {
         const rates = ratesForAgent(store.rates, booking.agentSlug)
         const items = bookingInvoiceItems(booking)
+        const invoice = store.invoices.find(
+          (doc) =>
+            doc.kind === 'invoice' &&
+            doc.items.some((item) => item.bookingCode === booking.code),
+        )
+        const liveTotal = itemsGrandTotal(items)
+        const storedTotal = invoice ? invoiceAmountForBooking(invoice, booking.code) : liveTotal
+        const liveAuto = itemsGrandTotal(items.filter((item) => item.lineKind !== 'other'))
         return {
           booking,
           attendance: getCheckInAttendance(booking.date, booking.program, booking.code),
-          billTotal: itemsGrandTotal(items),
+          billTotal: invoice ? storedTotal : liveTotal,
+          liveTotal,
+          amountStale: Boolean(
+            invoice && isInvoiceAmountStale(invoiceAutoAmountForBooking(invoice, booking.code), liveAuto),
+          ),
           hasRates: agencyRatesReady(rates),
           hasNoShow: items.some((item) => item.lineKind === 'no_show'),
           hasExtra: items.some((item) => EXTRA_LINE_KINDS.has(item.lineKind)),
           sentOut: bookingOnPartnerBoat(getDayBoatPlan(booking.date, booking.program), booking.code),
-          invoice: store.invoices.find(
-            (doc) =>
-              doc.kind === 'invoice' &&
-              doc.items.some((item) => item.bookingCode === booking.code),
-          ),
+          invoice,
         }
       })
 
@@ -421,6 +454,8 @@ export function AdminInvoices() {
     bookings,
     fromDate,
     getCheckInAttendance,
+    getCheckInEnrollments,
+    getCheckInServices,
     getDayBoatPlan,
     groupBy,
     includeOtherService,
@@ -1136,7 +1171,15 @@ export function AdminInvoices() {
                           </TableCell>
                           <TableCell className="text-right font-medium text-teal-950">
                             {row.hasRates ? (
-                              formatInvoiceMoney(row.billTotal)
+                              <span className="inline-flex items-center justify-end gap-1.5">
+                                {row.amountStale ? (
+                                  <BillFlag
+                                    label="Changed"
+                                    title={`Booking now totals ${formatInvoiceMoney(row.liveTotal)} THB. Invoice still shows ${formatInvoiceMoney(row.billTotal)} THB — open the bill to update.`}
+                                  />
+                                ) : null}
+                                {formatInvoiceMoney(row.billTotal)}
+                              </span>
                             ) : (
                               <span className="text-xs text-rose-500" title="Set rates in Setup first">No rate</span>
                             )}
@@ -1516,6 +1559,20 @@ export function AdminInvoices() {
           }
         }}
         onSave={saveEditedInvoice}
+        liveItemsForCodes={(codes) =>
+          bookings
+            .filter((booking) => codes.includes(booking.code))
+            .flatMap((booking) =>
+              buildInvoiceItemsForBooking(booking, ratesForAgent(store.rates, booking.agentSlug), {
+                includeOtherService: false,
+                attendance: getCheckInAttendance(booking.date, booking.program, booking.code),
+                thaiGuests: thaiGuestCount(
+                  getCheckInEnrollments(booking.date, booking.program, booking.code),
+                ),
+                services: getCheckInServices(booking.date, booking.program, booking.code),
+              }),
+            )
+        }
       />
 
       <Dialog open={preview !== null} onOpenChange={(open) => { if (!open) closePreview() }}>

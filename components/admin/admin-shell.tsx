@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname, useSearchParams } from 'next/navigation'
 import {
   CalendarClock,
+  ChevronDown,
   ClipboardList,
   FileSpreadsheet,
   FileText,
@@ -13,6 +14,7 @@ import {
   MapPin,
   Menu,
   QrCode,
+  Settings,
   Ship,
   Users,
 } from 'lucide-react'
@@ -55,25 +57,51 @@ const nav = [
     icon: QrCode,
     tone: 'bg-violet-100 text-violet-700 group-hover:bg-violet-200/80',
   },
+] as const
+
+const settingsItems = [
   {
     href: '/admin/availability',
     label: 'Availability',
     icon: CalendarClock,
-    tone: 'bg-amber-100 text-amber-700 group-hover:bg-amber-200/80',
+    hint: 'Boat seats, close dates, and cutoffs',
+    tone: 'bg-amber-100 text-amber-700',
   },
   {
     href: '/admin/agents',
     label: 'Agents',
     icon: Users,
-    tone: 'bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200/80',
+    hint: 'Agent names and booking links',
+    tone: 'bg-emerald-100 text-emerald-700',
   },
   {
     href: '/admin/pickup-zones',
     label: 'Pickup Zones',
     icon: MapPin,
-    tone: 'bg-rose-100 text-rose-700 group-hover:bg-rose-200/80',
+    hint: 'Hotels, zones, and pickup times',
+    tone: 'bg-rose-100 text-rose-700',
   },
 ] as const
+
+function settingsActive(pathname: string) {
+  return (
+    pathname.startsWith('/admin/settings') ||
+    settingsItems.some((item) => pathname.startsWith(item.href))
+  )
+}
+
+function currentPageLabel(pathname: string) {
+  const billing = billingLabel(pathname)
+  if (billing) return billing
+  const setting = settingsItems.find((item) => pathname.startsWith(item.href))
+  if (setting) return setting.label
+  if (pathname.startsWith('/admin/settings')) return 'Settings'
+  return (
+    nav.find((item) =>
+      item.href === '/admin' ? pathname === '/admin' : pathname.startsWith(item.href),
+    )?.label ?? 'Admin'
+  )
+}
 
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
@@ -101,10 +129,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     return <AdminLogin onSuccess={signIn} />
   }
 
-  const current = billingLabel(pathname) ??
-    nav.find((item) =>
-      item.href === '/admin' ? pathname === '/admin' : pathname.startsWith(item.href),
-    )?.label ?? 'Admin'
+  const current = currentPageLabel(pathname)
 
   return (
     <div className="gday-app relative">
@@ -120,6 +145,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             <NavLink key={item.href} item={item} pathname={pathname} />
           ))}
           <InvoiceReceiptNav pathname={pathname} />
+          <SettingsNav pathname={pathname} />
         </nav>
         <div className="border-t border-teal-900/8 p-4">
           <div className="rounded-2xl bg-gradient-to-br from-teal-50 via-white to-sky-50 px-3.5 py-3 ring-1 ring-teal-900/6">
@@ -165,7 +191,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
         </header>
-        <main className="gday-admin-main relative px-4 py-5 sm:py-7 lg:px-8">{children}</main>
+        <main className="gday-admin-main relative px-3 py-4 sm:px-4 sm:py-7 lg:px-8">{children}</main>
       </div>
     </div>
   )
@@ -177,6 +203,68 @@ function billingLabel(pathname: string) {
     return 'Invoice / Receipt'
   }
   return null
+}
+
+function SettingsNav({ pathname }: { pathname: string }) {
+  const active = settingsActive(pathname)
+  const hubActive = pathname === '/admin/settings'
+
+  return (
+    <div>
+      <Link
+        href="/admin/settings"
+        className={cn(
+          'group flex items-center gap-3 rounded-2xl px-2.5 py-2 text-sm font-medium transition-all',
+          active
+            ? 'bg-gradient-to-r from-teal-700 to-cyan-700 text-white shadow-md shadow-teal-700/25'
+            : 'text-teal-900/65 hover:bg-white/70 hover:text-teal-950',
+        )}
+      >
+        <span
+          className={cn(
+            'flex size-8 shrink-0 items-center justify-center rounded-xl transition-colors',
+            active ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700 group-hover:bg-slate-200/80',
+          )}
+        >
+          <Settings className="size-4" strokeWidth={active ? 2.4 : 2} />
+        </span>
+        <span className="flex-1">Settings</span>
+        <ChevronDown
+          className={cn('size-4 shrink-0 transition-transform', active ? 'rotate-180 opacity-90' : 'opacity-50')}
+        />
+      </Link>
+      {active ? (
+        <div className="ml-4 mt-1 flex flex-col gap-0.5 border-l border-teal-900/10 pl-2">
+          {settingsItems.map((item) => {
+            const itemActive = pathname.startsWith(item.href)
+            const Icon = item.icon
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={cn(
+                  'flex items-center gap-2.5 rounded-xl px-2.5 py-2 text-sm font-medium transition-colors',
+                  itemActive
+                    ? 'bg-white text-teal-950 shadow-sm ring-1 ring-teal-900/8'
+                    : 'text-teal-900/70 hover:bg-white/80 hover:text-teal-950',
+                )}
+              >
+                <span
+                  className={cn(
+                    'flex size-7 shrink-0 items-center justify-center rounded-lg',
+                    itemActive ? item.tone : hubActive ? item.tone : 'bg-white/70 text-teal-800/60',
+                  )}
+                >
+                  <Icon className="size-3.5" strokeWidth={itemActive ? 2.4 : 2} />
+                </span>
+                {item.label}
+              </Link>
+            )
+          })}
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 function InvoiceReceiptNav({ pathname }: { pathname: string }) {
@@ -296,6 +384,7 @@ function MobileNav({ pathname, onSignOut }: { pathname: string; onSignOut: () =>
             <NavLink key={item.href} item={item} pathname={pathname} />
           ))}
           <InvoiceReceiptNav pathname={pathname} />
+          <SettingsNav pathname={pathname} />
         </div>
         <div className="mt-auto border-t border-teal-900/8 px-4 py-4">
           <p className="text-sm font-semibold text-teal-950">admin</p>

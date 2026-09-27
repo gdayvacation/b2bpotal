@@ -1,4 +1,4 @@
-import { upsertCheckInBookedPax } from '@/lib/supabase/booked-pax-db'
+import { deleteCheckInBookedPax, upsertCheckInBookedPax } from '@/lib/supabase/booked-pax-db'
 import { persistQuietly } from '@/lib/supabase/portal-db'
 import { dayBoatPlanKey, type Program } from '@/lib/types'
 
@@ -152,6 +152,30 @@ export function getOrCaptureBookedPaxSnapshot(
     return map[key]!
   }
   return existing
+}
+
+export function moveBookedPaxSnapshot(
+  oldDate: string,
+  newDate: string,
+  program: Program,
+  bookingCode: string,
+) {
+  if (oldDate === newDate) return
+  const map = loadMap()
+  const fromKey = bookingKey(oldDate, program, bookingCode)
+  const toKey = bookingKey(newDate, program, bookingCode)
+  const existing = map[fromKey]
+  if (!existing) return
+  delete map[fromKey]
+  map[toKey] = existing
+  saveMap(map)
+  persistQuietly(
+    'move check-in booked pax',
+    (async () => {
+      await deleteCheckInBookedPax(oldDate, program, bookingCode)
+      await upsertCheckInBookedPax(newDate, program, bookingCode, existing)
+    })(),
+  )
 }
 
 export function formatGuestPaxParts(row: BookedPaxSnapshot) {

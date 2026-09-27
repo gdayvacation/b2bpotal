@@ -1,3 +1,8 @@
+import {
+  deleteJobOrderActionRow,
+  upsertJobOrderActionRow,
+} from '@/lib/supabase/day-ops-db'
+import { persistQuietly } from '@/lib/supabase/portal-db'
 import { dayBoatPlanKey, type CheckInAttendance, type Program } from '@/lib/types'
 
 export const JOB_ORDER_ACTION_STORAGE_KEY = 'gday-job-order-action'
@@ -5,7 +10,7 @@ export const JOB_ORDER_ACTION_STORAGE_KEY = 'gday-job-order-action'
 export type JobOrderAction = 'stand-by' | 'picked-up' | 'no-show'
 export type DayJobOrderActionMap = Record<string, Record<string, JobOrderAction>>
 
-function isJobOrderAction(value: unknown): value is JobOrderAction {
+export function isJobOrderAction(value: unknown): value is JobOrderAction {
   return value === 'stand-by' || value === 'picked-up' || value === 'no-show'
 }
 
@@ -46,6 +51,48 @@ export function saveJobOrderActionMap(map: DayJobOrderActionMap) {
   } catch {
     // ignore quota / private mode
   }
+}
+
+export function persistJobOrderAction(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  status: JobOrderAction | null,
+) {
+  persistQuietly(
+    status ? 'upsert job-order action' : 'delete job-order action',
+    status
+      ? upsertJobOrderActionRow(date, program, bookingCode, status)
+      : deleteJobOrderActionRow(date, program, bookingCode),
+  )
+}
+
+export function moveJobOrderAction(
+  map: DayJobOrderActionMap,
+  oldDate: string,
+  newDate: string,
+  program: Program,
+  bookingCode: string,
+) {
+  if (oldDate === newDate) return map
+  const status = getJobOrderAction(map, oldDate, program, bookingCode)
+  if (!status) return map
+  const next = withJobOrderAction(
+    withJobOrderAction(map, oldDate, program, bookingCode, null),
+    newDate,
+    program,
+    bookingCode,
+    status,
+  )
+  saveJobOrderActionMap(next)
+  persistQuietly(
+    'move job-order action',
+    (async () => {
+      await deleteJobOrderActionRow(oldDate, program, bookingCode)
+      await upsertJobOrderActionRow(newDate, program, bookingCode, status)
+    })(),
+  )
+  return next
 }
 
 export function getJobOrderAction(

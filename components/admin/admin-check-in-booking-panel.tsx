@@ -33,14 +33,7 @@ import {
   getOrCaptureBookedPaxSnapshot,
   type BookedPaxSnapshot,
 } from '@/lib/check-in-booked-pax'
-import {
-  addPax,
-  formatPaxOrDash,
-  getOwnArrival,
-  getPickupNoShow,
-  paxTotal,
-  recordOwnArrival,
-} from '@/lib/pickup-marina-sync'
+import { addPax, formatPaxOrDash, paxTotal } from '@/lib/pickup-marina-sync'
 
 type PanelAction = 'ns-whole' | 'ns-some' | 'date' | 'own-arrival'
 
@@ -67,6 +60,9 @@ export function AdminCheckInBookingPanel({
     trimCheckInEnrollments,
     setCheckInAttendance,
     assignBookingToVan,
+    getPickupNoShow,
+    getOwnArrival,
+    recordOwnArrival,
   } = usePortal()
 
   const [original, setOriginal] = useState<BookedPaxSnapshot | null>(null)

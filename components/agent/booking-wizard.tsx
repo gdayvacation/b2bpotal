@@ -35,6 +35,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { dateFromISO, formatIncludeLabel, formatLongDate, slugifyAgentName, startOfToday, toISODate, todayISO } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { cn } from '@/lib/utils'
+import { duplicateBookingMessage, findDuplicateBookings } from '@/lib/booking-duplicates'
 import { formatPaxBreakdown, isNoTransfer, NO_TRANSFER_ZONE, type Agent, type Booking, type Hotel, type IncludeOption, type PickupZoneName, type Program } from '@/lib/types'
 
 const CORE_STEPS = [
@@ -73,6 +74,7 @@ export function BookingWizard({
   const {
     addBooking,
     agents,
+    bookings,
     bookedPaxFor,
     bookingCutoffs,
     earliestBookableDate,
@@ -104,6 +106,8 @@ export function BookingWizard({
   const [parkFee, setParkFee] = useState<IncludeOption>('Included')
   const [canoe, setCanoe] = useState<IncludeOption>('Included')
   const [optionsOpen, setOptionsOpen] = useState(false)
+  const [duplicateOpen, setDuplicateOpen] = useState(false)
+  const [duplicateText, setDuplicateText] = useState('')
   const [pendingProgram, setPendingProgram] = useState<Program | null>(null)
   const [draftParkFee, setDraftParkFee] = useState<IncludeOption>('Included')
   const [draftCanoe, setDraftCanoe] = useState<IncludeOption>('Included')
@@ -239,11 +243,7 @@ export function BookingWizard({
       )
     if (step === pickupStep) {
       if (noTransfer) return true
-      return (
-        pickupZone !== null &&
-        zones.some((zone) => zone.name === pickupZone) &&
-        pickupHotel.trim().length > 1
-      )
+      return pickupZone !== null && zones.some((zone) => zone.name === pickupZone)
     }
     if (step === reviewStep) return !overCapacity
     return true
@@ -265,7 +265,6 @@ export function BookingWizard({
     leadGuest,
     pickupStep,
     pickupZone,
-    pickupHotel,
     zones,
     noTransfer,
     reviewStep,
@@ -298,7 +297,7 @@ export function BookingWizard({
                   : overCapacity
                     ? `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left on this date.`
                     : 'Enter the guest name.'
-                : 'Select a pickup zone and hotel, or choose No Transfer.',
+                : 'Select a pickup zone, or choose No Transfer.',
       )
       return
     }
@@ -308,10 +307,29 @@ export function BookingWizard({
 
   function confirm() {
     if (!program || !date || !pickupZone || !resolvedAgent) return
+    if (!selectAgent && agent?.status === 'Inactive') {
+      setError('This agent is inactive and cannot create bookings.')
+      return
+    }
     if (overCapacity) {
       setError(`Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left on this date.`)
       return
     }
+    const matches = findDuplicateBookings(bookings, {
+      leadGuest: leadGuest.trim(),
+      date: isoDate,
+      program,
+    })
+    if (matches.length > 0) {
+      setDuplicateText(duplicateBookingMessage(matches))
+      setDuplicateOpen(true)
+      return
+    }
+    saveBooking()
+  }
+
+  function saveBooking() {
+    if (!program || !date || !pickupZone || !resolvedAgent) return
     const result = addBooking(
       {
         agentSlug: resolvedAgent.slug,
@@ -338,6 +356,7 @@ export function BookingWizard({
       setError(result.error)
       return
     }
+    setDuplicateOpen(false)
     if (onSuccess) {
       onSuccess(result.booking)
       return
@@ -1060,6 +1079,23 @@ export function BookingWizard({
             </Button>
             <Button type="button" onClick={confirmProgramOptions}>
               Continue
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={duplicateOpen} onOpenChange={setDuplicateOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Possible duplicate</DialogTitle>
+            <DialogDescription>{duplicateText}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setDuplicateOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={saveBooking}>
+              Save anyway
             </Button>
           </DialogFooter>
         </DialogContent>

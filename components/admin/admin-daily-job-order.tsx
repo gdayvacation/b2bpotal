@@ -23,16 +23,11 @@ import {
   originalBookedPax,
   replaceBookedPaxSnapshot,
 } from '@/lib/check-in-booked-pax'
-import { recordPickupNoShow } from '@/lib/pickup-marina-sync'
 import { formatIncludeLabel, formatCollectTotal, collectTotal, formatLongDate, formatShortDate, toISODate } from '@/lib/format'
 import {
-  getJobOrderAction,
   loadJobOrderActionMap,
   resolvePickupAction,
-  saveJobOrderActionMap,
   takeLocalPickupNoShows,
-  withJobOrderAction,
-  type DayJobOrderActionMap,
   type JobOrderAction,
 } from '@/lib/job-order-action'
 import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
@@ -167,6 +162,9 @@ export function AdminDailyJobOrder({
     resolveVanMeta,
     getCheckInAttendance,
     setCheckInAttendance,
+    getJobOrderAction,
+    setJobOrderAction,
+    recordPickupNoShow,
   } = usePortal()
   const [selectedDate, setSelectedDate, portalToday] = usePortalDefaultDateISO()
   const [program, setProgram] = useState<Program | null>(initialProgram ?? null)
@@ -179,7 +177,6 @@ export function AdminDailyJobOrder({
   const [pickupSortDir, setPickupSortDir] = useState<PickupSortDir>('asc')
   const [editVan, setEditVan] = useState<number | null>(null)
   const [agentFilter, setAgentFilter] = useState<string>('all')
-  const [jobOrderActions, setJobOrderActions] = useState<DayJobOrderActionMap>({})
   const [noShowBooking, setNoShowBooking] = useState<Booking | null>(null)
   const [paxRevision, setPaxRevision] = useState(0)
 
@@ -187,15 +184,12 @@ export function AdminDailyJobOrder({
   useEffect(() => {
     if (migratedPickupNoShows.current) return
     migratedPickupNoShows.current = true
-    const loaded = loadJobOrderActionMap()
-    const { next, noShows } = takeLocalPickupNoShows(loaded)
+    const { noShows } = takeLocalPickupNoShows(loadJobOrderActionMap())
     for (const item of noShows) {
       if (getCheckInAttendance(item.date, item.program, item.bookingCode) !== 'no-show') {
         setCheckInAttendance(item.date, item.program, item.bookingCode, 'no-show')
       }
     }
-    setJobOrderActions(next)
-    if (noShows.length > 0) saveJobOrderActionMap(next)
   }, [getCheckInAttendance, setCheckInAttendance])
 
   const selectedDateObj = new Date(`${selectedDate}T12:00:00`)
@@ -509,7 +503,7 @@ export function AdminDailyJobOrder({
                         isCheckInView && program
                           ? (code) =>
                               resolvePickupAction(
-                                getJobOrderAction(jobOrderActions, selectedDate, program, code),
+                                getJobOrderAction(selectedDate, program, code),
                                 getCheckInAttendance(selectedDate, program, code),
                               )
                           : undefined
@@ -535,17 +529,7 @@ export function AdminDailyJobOrder({
                               if (attendance === 'no-show') {
                                 setCheckInAttendance(selectedDate, program, code, null)
                               }
-                              setJobOrderActions((current) => {
-                                const next = withJobOrderAction(
-                                  current,
-                                  selectedDate,
-                                  program,
-                                  code,
-                                  status,
-                                )
-                                saveJobOrderActionMap(next)
-                                return next
-                              })
+                              setJobOrderAction(selectedDate, program, code, status)
                             }
                           : undefined
                       }
@@ -593,17 +577,7 @@ export function AdminDailyJobOrder({
                 if (getCheckInAttendance(selectedDate, booking.program, booking.code) !== 'no-show') {
                   setCheckInAttendance(selectedDate, booking.program, booking.code, 'no-show')
                 }
-                setJobOrderActions((current) => {
-                  const next = withJobOrderAction(
-                    current,
-                    selectedDate,
-                    booking.program,
-                    booking.code,
-                    null,
-                  )
-                  saveJobOrderActionMap(next)
-                  return next
-                })
+                setJobOrderAction(selectedDate, booking.program, booking.code, null)
               }}
               onPickedUpAll={(booking, options) => {
                 if (options?.settle) {
@@ -618,17 +592,7 @@ export function AdminDailyJobOrder({
                 if (getCheckInAttendance(selectedDate, booking.program, booking.code) === 'no-show') {
                   setCheckInAttendance(selectedDate, booking.program, booking.code, null)
                 }
-                setJobOrderActions((current) => {
-                  const next = withJobOrderAction(
-                    current,
-                    selectedDate,
-                    booking.program,
-                    booking.code,
-                    'picked-up',
-                  )
-                  saveJobOrderActionMap(next)
-                  return next
-                })
+                setJobOrderAction(selectedDate, booking.program, booking.code, 'picked-up')
               }}
             />
           </>
@@ -717,7 +681,7 @@ export function AdminDailyJobOrder({
             isCheckInView && program
               ? (code) =>
                   resolvePickupAction(
-                    getJobOrderAction(jobOrderActions, selectedDate, program, code),
+                    getJobOrderAction(selectedDate, program, code),
                     getCheckInAttendance(selectedDate, program, code),
                   )
               : undefined

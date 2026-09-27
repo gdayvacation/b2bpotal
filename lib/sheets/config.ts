@@ -4,6 +4,8 @@ export const SHEET_TITLES = {
   bookings: 'Bookings',
   guests: 'Check-in guests',
   merge: 'Merge',
+  invoices: 'Invoices',
+  invoiceLines: 'Invoice lines',
   monthly: 'Monthly',
   months: '_Months',
 } as const

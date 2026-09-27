@@ -6,6 +6,8 @@ import {
 import type { CheckInEnrollment } from '@/lib/check-in-enrollment'
 import { isCheckInServiceKind, type CheckInServiceLine } from '@/lib/check-in-services'
 import { PORTAL_TIMEZONE } from '@/lib/format'
+import type { InvoiceDocument, InvoiceItem, InvoiceKind, InvoiceLineKind, InvoiceStatus } from '@/lib/invoice'
+import { parsePaymentChannel } from '@/lib/invoice'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import {
   defaultBoatLabel,
@@ -32,9 +34,14 @@ export type SheetsBackupSource = {
   attendance: Record<string, CheckInAttendance>
   paidCodes: Set<string>
   services: SheetsServiceRow[]
+  notes: Record<string, string>
+  pickupNoShows: BookedPaxMap
+  ownArrivals: BookedPaxMap
+  jobOrderActions: Record<string, string>
   bookedPax: BookedPaxMap
   boats: Record<string, string>
   vans: Record<string, string>
+  invoices: InvoiceDocument[]
   syncedAt: string
 }
 
@@ -65,6 +72,8 @@ type BookingRow = {
   pickup_time: string
   status: Booking['status']
   late_change_fee?: number | null
+  late_cancel?: boolean | null
+  cancel_fee?: number | null
 }
 
 function isProgram(value: unknown): value is Program {
@@ -140,6 +149,9 @@ function mapBooking(row: BookingRow): Booking {
     pickupTime: row.pickup_time,
     status: row.status,
     lateChangeFee: Math.max(0, Math.floor(Number(row.late_change_fee) || 0)),
+    lateCancel: row.late_cancel === true,
+    cancelFee:
+      row.cancel_fee == null ? undefined : Math.max(0, Math.floor(Number(row.cancel_fee) || 0)),
   }
 }
 
@@ -162,18 +174,30 @@ export async function loadSheetsBackupSource(): Promise<SheetsBackupSource> {
     attendanceRows,
     paymentRows,
     serviceRows,
+    noteRows,
     bookedPaxRows,
+    pickupNsRows,
+    ownArrivalRows,
+    jobOrderRows,
     boatRows,
     vanRows,
+    invoiceRows,
+    invoiceItemRows,
   ] = await Promise.all([
     fetchAllRows<BookingRow>('bookings'),
     fetchOptionalRows<Record<string, unknown>>('check_in_enrollments'),
     fetchOptionalRows<Record<string, unknown>>('check_in_attendance'),
     fetchOptionalRows<Record<string, unknown>>('check_in_payments'),
     fetchOptionalRows<Record<string, unknown>>('check_in_services'),
+    fetchOptionalRows<Record<string, unknown>>('check_in_notes'),
     fetchOptionalRows<Record<string, unknown>>('check_in_booked_pax'),
+    fetchOptionalRows<Record<string, unknown>>('pickup_no_shows'),
+    fetchOptionalRows<Record<string, unknown>>('own_arrivals'),
+    fetchOptionalRows<Record<string, unknown>>('job_order_actions'),
     fetchOptionalRows<Record<string, unknown>>('boat_assignments'),
     fetchOptionalRows<Record<string, unknown>>('van_assignments'),
+    fetchOptionalRows<Record<string, unknown>>('invoices'),
+    fetchOptionalRows<Record<string, unknown>>('invoice_items'),
   ])
 
   const bookings = bookingRows.map(mapBooking).sort((a, b) => {
@@ -293,15 +317,114 @@ export async function loadSheetsBackupSource(): Promise<SheetsBackupSource> {
       .join(', ')
   }
 
+  const notes: Record<string, string> = {}
+  for (const row of noteRows ?? []) {
+    if (!isProgram(row.program)) continue
+    const bookingCode = String(row.booking_code ?? '').trim()
+    const note = String(row.note ?? '').trim()
+    if (!bookingCode || !note) continue
+    notes[assignmentKey(asDateString(String(row.date ?? '')), row.program, bookingCode)] = note
+  }
+
+  function paxMapFromRows(rows: Record<string, unknown>[] | null): BookedPaxMap {
+    const next: BookedPaxMap = {}
+    for (const row of rows ?? []) {
+      if (!isProgram(row.program)) continue
+      const bookingCode = String(row.booking_code ?? '').trim()
+      if (!bookingCode) continue
+      next[assignmentKey(asDateString(String(row.date ?? '')), row.program, bookingCode)] = {
+        adults: Math.max(0, Math.floor(Number(row.adults) || 0)),
+        children: Math.max(0, Math.floor(Number(row.children) || 0)),
+        infants: Math.max(0, Math.floor(Number(row.infants) || 0)),
+        tourLeaders: Math.max(0, Math.floor(Number(row.tour_leaders) || 0)),
+      }
+    }
+    return next
+  }
+
+  const jobOrderActions: Record<string, string> = {}
+  for (const row of jobOrderRows ?? []) {
+    if (!isProgram(row.program)) continue
+    const bookingCode = String(row.booking_code ?? '').trim()
+    const action = String(row.action ?? '').trim()
+    if (!bookingCode || !action) continue
+    jobOrderActions[assignmentKey(asDateString(String(row.date ?? '')), row.program, bookingCode)] =
+      action
+  }
+
+  const itemsByInvoice = new Map<string, InvoiceItem[]>()
+  for (const row of invoiceItemRows ?? []) {
+    const invoiceId = String(row.invoice_id ?? '').trim()
+    const id = String(row.id ?? '').trim()
+    if (!invoiceId || !id) continue
+    const lineKind = String(row.line_kind ?? '')
+    const item: InvoiceItem = {
+      id,
+      invoiceId,
+      bookingCode: String(row.booking_code ?? '').trim(),
+      travelDate: String(row.travel_date ?? '').slice(0, 10),
+      voucherNo: String(row.voucher_no ?? '').trim(),
+      description: String(row.description ?? '').trim(),
+      adults: Math.max(0, Math.floor(Number(row.adults) || 0)),
+      children: Math.max(0, Math.floor(Number(row.children) || 0)),
+      infants: Math.max(0, Math.floor(Number(row.infants) || 0)),
+      tourLeaders: Math.max(0, Math.floor(Number(row.tour_leaders) || 0)),
+      adultPrice: Number(row.adult_price) || 0,
+      childPrice: Number(row.child_price) || 0,
+      infantPrice: Number(row.infant_price) || 0,
+      tourLeaderPrice: Number(row.tour_leader_price) || 0,
+      cot: Number(row.cot) || 0,
+      amount: Number(row.amount) || 0,
+      lineKind: (lineKind as InvoiceLineKind) || 'tour',
+      sortOrder: Math.floor(Number(row.sort_order) || 0),
+    }
+    const list = itemsByInvoice.get(invoiceId) ?? []
+    list.push(item)
+    itemsByInvoice.set(invoiceId, list)
+  }
+
+  const invoices: InvoiceDocument[] = []
+  for (const row of invoiceRows ?? []) {
+    const id = String(row.id ?? '').trim()
+    const number = String(row.invoice_no ?? '').trim()
+    const kind = row.kind === 'billing_note' ? 'billing_note' : 'invoice'
+    const status = row.status === 'paid' ? 'paid' : 'unpaid'
+    if (!id || !number) continue
+    invoices.push({
+      id,
+      number,
+      kind: kind as InvoiceKind,
+      agentSlug: String(row.agent_slug ?? '').trim(),
+      agentName: String(row.agent_name ?? '').trim(),
+      issueDate: asDateString(String(row.issue_date ?? '')),
+      status: status as InvoiceStatus,
+      notes: String(row.notes ?? '').trim(),
+      grandTotal: Number(row.grand_total) || 0,
+      paidAt: row.paid_at ? String(row.paid_at) : null,
+      paymentChannel: parsePaymentChannel(row.payment_channel),
+      receiptNo: row.receipt_no ? String(row.receipt_no) : null,
+      linkedInvoiceIds: [],
+      items: (itemsByInvoice.get(id) ?? []).slice().sort((a, b) => a.sortOrder - b.sortOrder),
+      createdAt: String(row.created_at ?? ''),
+      sendToAgent: row.send_to_agent === true,
+    })
+  }
+  invoices.sort((a, b) => b.issueDate.localeCompare(a.issueDate) || a.number.localeCompare(b.number))
+
   return {
     bookings,
     enrollments,
     attendance,
     paidCodes,
     services,
+    notes,
+    pickupNoShows: paxMapFromRows(pickupNsRows),
+    ownArrivals: paxMapFromRows(ownArrivalRows),
+    jobOrderActions,
     bookedPax,
     boats,
     vans,
+    invoices,
     syncedAt: formatThaiStamp(),
   }
 }

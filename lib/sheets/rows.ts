@@ -7,6 +7,7 @@ import {
 import { guestDisplayName } from '@/lib/check-in-enrollment'
 import { formatCheckInServicesOption, serviceLineTotal } from '@/lib/check-in-services'
 import { collectTotal, formatIncludeLabel, formatMonthLabel } from '@/lib/format'
+import { formatPaymentChannel } from '@/lib/invoice'
 import { assignmentKey, type SheetsBackupSource } from '@/lib/sheets/source-data'
 import {
   formatPaxBreakdown,
@@ -41,6 +42,8 @@ export const BOOKING_HEADERS = [
   'Canoe',
   'Transfer extra',
   'Late change fee',
+  'Late cancel',
+  'Cancel fee',
   'Private transfer',
   'Note',
 ] as const
@@ -99,7 +102,41 @@ export const MERGE_HEADERS = [
   'Service total',
   'Boat',
   'Van',
+  'Marina note',
+  'Pickup NS',
+  'Own arrival',
+  'Job order',
   'Note',
+] as const
+
+export const INVOICE_HEADERS = [
+  'Invoice no',
+  'Kind',
+  'Status',
+  'Agent',
+  'Issue date',
+  'Paid at',
+  'Payment',
+  'Receipt',
+  'Send to agent',
+  'Grand total',
+  'Booking codes',
+  'Notes',
+] as const
+
+export const INVOICE_LINE_HEADERS = [
+  'Invoice no',
+  'Kind',
+  'Line',
+  'Booking',
+  'Travel date',
+  'Voucher',
+  'Description',
+  'Adults',
+  'Children',
+  'Infants',
+  'Tour leaders',
+  'Amount',
 ] as const
 
 export const MONTHLY_SUMMARY_HEADERS = [
@@ -197,6 +234,8 @@ export function buildBookingRows(source: SheetsBackupSource): SheetCell[][] {
     booking.canoe ? formatIncludeLabel(booking.canoe) : '',
     booking.transferExtraCharge,
     booking.lateChangeFee ?? 0,
+    booking.lateCancel ? 'Yes' : '',
+    booking.cancelFee ?? '',
     [booking.privateTransferVehicle, booking.privateTransferPrice].filter(Boolean).join(' · '),
     booking.note,
   ])
@@ -302,9 +341,53 @@ export function buildMergeRows(source: SheetsBackupSource): SheetCell[][] {
       services.reduce((sum, line) => sum + serviceLineTotal(line), 0),
       source.boats[key] ?? '',
       source.vans[key] ?? '',
+      source.notes[key] ?? '',
+      source.pickupNoShows[key] && snapshotPaxTotal(source.pickupNoShows[key]!) > 0
+        ? formatGuestPaxParts(source.pickupNoShows[key]!)
+        : '',
+      source.ownArrivals[key] && snapshotPaxTotal(source.ownArrivals[key]!) > 0
+        ? formatGuestPaxParts(source.ownArrivals[key]!)
+        : '',
+      source.jobOrderActions[key] ?? '',
       booking.note,
     ]
   })
+}
+
+export function buildInvoiceRows(source: SheetsBackupSource): SheetCell[][] {
+  return source.invoices.map((doc) => [
+    doc.number,
+    doc.kind,
+    doc.status,
+    doc.agentName,
+    doc.issueDate,
+    doc.paidAt ?? '',
+    formatPaymentChannel(doc.paymentChannel),
+    doc.receiptNo ?? '',
+    doc.sendToAgent ? 'Yes' : '',
+    doc.grandTotal,
+    [...new Set(doc.items.map((item) => item.bookingCode).filter(Boolean))].join(', '),
+    doc.notes,
+  ])
+}
+
+export function buildInvoiceLineRows(source: SheetsBackupSource): SheetCell[][] {
+  return source.invoices.flatMap((doc) =>
+    doc.items.map((item, index) => [
+      doc.number,
+      doc.kind,
+      index + 1,
+      item.bookingCode,
+      item.travelDate,
+      item.voucherNo,
+      item.description,
+      item.adults,
+      item.children,
+      item.infants,
+      item.tourLeaders,
+      item.amount,
+    ]),
+  )
 }
 
 export function buildMonthlySummaryRows(source: SheetsBackupSource): SheetCell[][] {
