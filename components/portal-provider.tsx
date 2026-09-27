@@ -90,6 +90,16 @@ import {
   type BookedPaxMap,
   type BookedPaxSnapshot,
 } from '@/lib/check-in-booked-pax'
+import {
+  CHECK_IN_ARRIVED_PAX_STORAGE_KEY,
+  hydrateArrivedPaxMap,
+  loadArrivedPaxMap,
+  moveArrivedPaxSnapshot,
+} from '@/lib/check-in-arrived-pax'
+import {
+  fetchCheckInArrivedPax,
+  pushCheckInArrivedPax,
+} from '@/lib/supabase/arrived-pax-db'
 import { moveDayBookingEntry } from '@/lib/day-booking-map'
 import {
   JOB_ORDER_ACTION_STORAGE_KEY,
@@ -1191,6 +1201,28 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           }
         }
 
+        const remoteArrived = await fetchCheckInArrivedPax()
+        if (cancelled || checkInWritePendingRef.current > 0) return
+        if (remoteArrived) {
+          const localArrived = loadArrivedPaxMap()
+          if (
+            allowMigrate &&
+            Object.keys(remoteArrived).length === 0 &&
+            Object.keys(localArrived).length > 0
+          ) {
+            checkInWritePendingRef.current += 1
+            try {
+              await pushCheckInArrivedPax(localArrived)
+            } catch (error) {
+              console.error('[supabase] migrate check-in arrived pax', error)
+            } finally {
+              checkInWritePendingRef.current = Math.max(0, checkInWritePendingRef.current - 1)
+            }
+          } else {
+            hydrateArrivedPaxMap(remoteArrived)
+          }
+        }
+
         if (cancelled || dayOpsWritePendingRef.current > 0) return
         const remoteOps = await fetchDayOpsMaps()
         if (cancelled || dayOpsWritePendingRef.current > 0) return
@@ -1240,6 +1272,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         event.key === CHECK_IN_GUEST_EDIT_STORAGE_KEY ||
         event.key === CHECK_IN_NOTE_STORAGE_KEY ||
         event.key === CHECK_IN_BOOKED_PAX_STORAGE_KEY ||
+        event.key === CHECK_IN_ARRIVED_PAX_STORAGE_KEY ||
         event.key === PICKUP_NS_STORAGE_KEY ||
         event.key === OWN_ARRIVAL_STORAGE_KEY ||
         event.key === JOB_ORDER_ACTION_STORAGE_KEY
@@ -1490,6 +1523,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         moveCheckInBookingDate(oldDate, newDate, program, bookingCode),
       )
       moveBookedPaxSnapshot(oldDate, newDate, program, bookingCode)
+      moveArrivedPaxSnapshot(oldDate, newDate, program, bookingCode)
       movePickupNoShow(oldDate, newDate, program, bookingCode)
       moveOwnArrival(oldDate, newDate, program, bookingCode)
       setPickupNoShowMap(loadPickupNoShowMap())

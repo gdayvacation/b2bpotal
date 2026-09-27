@@ -41,38 +41,40 @@ import {
 } from '@/components/ui/table'
 import {
   agencyRatesReady,
+  formatAgentBillingType,
   buildInvoiceItemsForBooking,
-  checkInStatusLabel,
   formatInvoiceDate,
   formatInvoiceMoney,
   invoiceAmountForBooking,
   invoiceAutoAmountForBooking,
+  invoiceGuestAmountForBooking,
   invoicedBookingCodes,
   isInvoiceAmountStale,
   PAYMENT_CHANNELS,
-  itemsGrandTotal,
+  itemsAgentTotal,
+  itemsGuestTotal,
   majorityProgram,
   newInvoiceDocument,
+  parseAgentBillingType,
   ratesForAgent,
+  type AgentBillingType,
   type InvoiceDocument,
   type PaymentChannel,
 } from '@/lib/invoice'
 import {
   bookingOnPartnerBoat,
   formatPaxBreakdown,
-  isActiveBooking,
   type Booking,
-  type CheckInAttendance,
   type Program,
 } from '@/lib/types'
-import { addDaysISO, dateFromISO, formatShortDate, todayISO, toISODate } from '@/lib/format'
-import { thaiGuestCount } from '@/lib/nationalities'
+import { bookingNotesForInvoice } from '@/lib/check-in-pax-edit'
+import { addDaysISO, dateFromISO, formatIncludeShort, formatShortDate, thaiParkSeatsFromGuests, todayISO, toISODate } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 
 type Tab = 'bills' | 'dummy' | 'documents' | 'notes' | 'receipts'
 type GroupBy = 'date' | 'agent'
 type PrintMode = 'invoice' | 'billing_note' | 'receipt'
-type BillSortKey = 'agent' | 'status'
+type BillSortKey = 'agent'
 type BillProgram = Program
 type SortDir = 'asc' | 'desc'
 
@@ -101,9 +103,13 @@ function formatDayMonth(iso: string) {
 
 type BillRow = {
   booking: Booking
-  attendance: CheckInAttendance | null
+  billingType: AgentBillingType
   billTotal: number
+  deductHeads: number
   liveTotal: number
+  guestCollect: number
+  parkCharge: number
+  extraCharge: number
   amountStale: boolean
   hasRates: boolean
   hasNoShow: boolean
@@ -117,9 +123,12 @@ const EXTRA_LINE_KINDS = new Set([
   'private_transfer',
   'extra_zone',
   'park_fee',
+  'park_guest',
   'service',
   'other',
 ])
+
+const EXTRA_CHARGE_KINDS = new Set(['change_date', 'private_transfer', 'extra_zone'])
 
 function BillFlag({ label, title }: { label: string; title: string }) {
   return (
@@ -130,18 +139,6 @@ function BillFlag({ label, title }: { label: string; title: string }) {
       {label}
     </span>
   )
-}
-
-function billStatusLabel(row: BillRow) {
-  if (!row.invoice) return 'Open'
-  if (row.invoice.status === 'paid') return 'Paid'
-  return row.invoice.number
-}
-
-function billStatusRank(row: BillRow) {
-  if (!row.invoice) return 0
-  if (row.invoice.status === 'paid') return 2
-  return 1
 }
 
 function BillSortHead({
@@ -165,8 +162,8 @@ function BillSortHead({
       <button
         type="button"
         className={cn(
-          'inline-flex items-center gap-1 rounded-md transition-colors hover:text-teal-900',
-          active && 'font-semibold text-teal-900',
+          'inline-flex items-center gap-1 rounded-md font-bold transition-colors hover:text-teal-900',
+          active && 'text-teal-900',
         )}
         onClick={() => onSort(column)}
         aria-label={`Sort by ${column}${active ? `, currently ${dir === 'asc' ? 'ascending' : 'descending'}` : ''}`}
@@ -287,7 +284,6 @@ export function AdminInvoices() {
     bookings,
     getCheckInAttendance,
     getCheckInEnrollments,
-    getCheckInServices,
     getDayBoatPlan,
     getDayVehiclePlan,
   } = usePortal()
@@ -382,10 +378,11 @@ export function AdminInvoices() {
     return buildInvoiceItemsForBooking(booking, ratesForAgent(store.rates, booking.agentSlug), {
       includeOtherService,
       attendance: getCheckInAttendance(booking.date, booking.program, booking.code),
-      thaiGuests: thaiGuestCount(
+      thaiGuests: thaiParkSeatsFromGuests(
+        booking.adults,
+        booking.children,
         getCheckInEnrollments(booking.date, booking.program, booking.code),
       ),
-      services: getCheckInServices(booking.date, booking.program, booking.code),
     })
   }
 
@@ -408,14 +405,25 @@ export function AdminInvoices() {
             doc.kind === 'invoice' &&
             doc.items.some((item) => item.bookingCode === booking.code),
         )
-        const liveTotal = itemsGrandTotal(items)
+        const liveTotal = itemsAgentTotal(items)
         const storedTotal = invoice ? invoiceAmountForBooking(invoice, booking.code) : liveTotal
-        const liveAuto = itemsGrandTotal(items.filter((item) => item.lineKind !== 'other'))
+        const liveAuto = itemsAgentTotal(items.filter((item) => item.lineKind !== 'other'))
+        const billedItems = (invoice?.items ?? items).filter(
+          (item) => !invoice || item.bookingCode === booking.code,
+        )
+        const extraItems = billedItems.filter((item) => EXTRA_CHARGE_KINDS.has(item.lineKind))
+        const parkItems = billedItems.filter((item) => item.lineKind === 'park_fee')
         return {
           booking,
-          attendance: getCheckInAttendance(booking.date, booking.program, booking.code),
+          billingType: parseAgentBillingType(rates.billingType),
           billTotal: invoice ? storedTotal : liveTotal,
+          deductHeads: booking.adults + booking.children,
           liveTotal,
+          guestCollect: invoice
+            ? invoiceGuestAmountForBooking(invoice, booking.code)
+            : itemsGuestTotal(items),
+          parkCharge: parkItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
+          extraCharge: extraItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
           amountStale: Boolean(
             invoice && isInvoiceAmountStale(invoiceAutoAmountForBooking(invoice, booking.code), liveAuto),
           ),
@@ -428,16 +436,11 @@ export function AdminInvoices() {
       })
 
     return list.sort((a, b) => {
+      const issuedCmp = Number(Boolean(a.invoice)) - Number(Boolean(b.invoice))
+      if (issuedCmp !== 0) return issuedCmp
       if (billSort) {
         const dir = billSort.dir === 'asc' ? 1 : -1
-        let cmp = 0
-        if (billSort.key === 'agent') {
-          cmp = a.booking.agentName.localeCompare(b.booking.agentName)
-        } else {
-          cmp =
-            billStatusRank(a) - billStatusRank(b) ||
-            billStatusLabel(a).localeCompare(billStatusLabel(b))
-        }
+        const cmp = a.booking.agentName.localeCompare(b.booking.agentName)
         return cmp * dir || a.booking.code.localeCompare(b.booking.code)
       }
       return groupBy === 'agent'
@@ -455,7 +458,6 @@ export function AdminInvoices() {
     fromDate,
     getCheckInAttendance,
     getCheckInEnrollments,
-    getCheckInServices,
     getDayBoatPlan,
     groupBy,
     includeOtherService,
@@ -507,10 +509,11 @@ export function AdminInvoices() {
 
   const selectedDocuments = store.invoices.filter((doc) => selectedDocs.includes(doc.id))
 
-  const selectedGuestTotal = rows
-    .filter((row) => selectedCodes.includes(row.booking.code))
-    .reduce((sum, row) => sum + row.billTotal, 0)
+  const selectedRows = rows.filter((row) => selectedCodes.includes(row.booking.code))
+  const selectedGuestTotal = selectedRows.reduce((sum, row) => sum + row.billTotal, 0)
+  const selectedHeads = selectedRows.reduce((sum, row) => sum + row.deductHeads, 0)
   const pageGuestTotal = rows.reduce((sum, row) => sum + row.billTotal, 0)
+  const pageHeads = rows.reduce((sum, row) => sum + row.deductHeads, 0)
 
   function toggleCode(code: string, locked = false) {
     setSelectedCodes((current) => {
@@ -573,6 +576,7 @@ export function AdminInvoices() {
         agentSlug: slug,
         agentName: agentBookings[0]!.agentName,
         issueDate: todayISO(),
+        notes: bookingNotesForInvoice(agentBookings),
         items,
         program: majorityProgram(agentBookings),
       })
@@ -757,6 +761,7 @@ export function AdminInvoices() {
         agentSlug: row.booking.agentSlug,
         agentName: row.booking.agentName,
         issueDate: todayISO(),
+        notes: bookingNotesForInvoice([row.booking]),
         items,
         program: row.booking.program,
       }),
@@ -841,7 +846,7 @@ export function AdminInvoices() {
       <div className="print:hidden">
       <PageHeader
         title="Invoice / Receipt"
-        description="Pick a date first. Bills invoice the agent as usual. Send to Partner is the sent-out list for checking partner invoices back to us."
+        description="Set each agent as Prebuy or Invoice in Setup. Prebuy deducts AD+CH heads and bills extras. Invoice bills the tour price. Not-included park is collected from the guest."
         actions={
           <Link href="/admin/invoices/setup">
             <Button type="button" variant="outline" className="h-10 rounded-xl">
@@ -1082,29 +1087,25 @@ export function AdminInvoices() {
                           title={openRows.length === 0 ? 'All bookings on this day already have an invoice' : undefined}
                         />
                       </TableHead>
-                      <TableHead className="w-24">Voucher</TableHead>
-                      <TableHead>Booking code</TableHead>
+                      <TableHead className="w-24 font-bold">Voucher</TableHead>
                       <BillSortHead
                         column="agent"
                         active={billSort?.key === 'agent'}
                         dir={billSort?.dir ?? 'asc'}
                         onSort={toggleBillSort}
+                        className="font-bold"
                       >
                         Agent
                       </BillSortHead>
-                      <TableHead className="min-w-[10rem]">Guest</TableHead>
-                      <TableHead>Pax</TableHead>
-                      <TableHead className="min-w-[14rem] w-[14rem]">Note</TableHead>
-                      <TableHead className="w-20">Check-in</TableHead>
-                      <BillSortHead
-                        column="status"
-                        active={billSort?.key === 'status'}
-                        dir={billSort?.dir ?? 'asc'}
-                        onSort={toggleBillSort}
-                      >
-                        Status
-                      </BillSortHead>
-                      <TableHead className="text-right">Total</TableHead>
+                      <TableHead className="w-20 font-bold">Type</TableHead>
+                      <TableHead className="min-w-[10rem] font-bold">Guest</TableHead>
+                      <TableHead className="font-bold">Pax</TableHead>
+                      <TableHead className="w-14 font-bold">Park</TableHead>
+                      <TableHead className="w-24 text-right font-bold">National Park</TableHead>
+                      <TableHead className="w-24 text-right font-bold">Extra charge</TableHead>
+                      <TableHead className="min-w-[14rem] w-[14rem] font-bold">Note</TableHead>
+                      <TableHead className="w-16 text-right font-bold">Deduct</TableHead>
+                      <TableHead className="text-right font-bold">Charge</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1114,7 +1115,17 @@ export function AdminInvoices() {
                       return (
                         <TableRow
                           key={booking.code}
-                          className="cursor-pointer"
+                          className={cn(
+                            'cursor-pointer',
+                            issued
+                              ? 'bg-neutral-50 text-neutral-400 hover:bg-neutral-100'
+                              : 'bg-amber-50/70 text-teal-950 hover:bg-amber-100/80',
+                          )}
+                          title={
+                            issued
+                              ? `Invoiced ${row.invoice?.number}`
+                              : 'Needs invoice'
+                          }
                           onClick={() => openBill(row)}
                         >
                           <TableCell
@@ -1129,21 +1140,31 @@ export function AdminInvoices() {
                               title={issued ? `Already invoiced as ${row.invoice?.number}` : undefined}
                             />
                           </TableCell>
-                          <TableCell className="w-24 max-w-24 truncate font-medium text-teal-950" title={booking.agentRef?.trim() || undefined}>
+                          <TableCell
+                            className={cn(
+                              'w-24 max-w-24 truncate font-medium',
+                              issued ? 'text-neutral-400' : 'text-teal-950',
+                            )}
+                            title={booking.agentRef?.trim() || undefined}
+                          >
                             {booking.agentRef?.trim() || '—'}
                           </TableCell>
-                          <TableCell className="whitespace-nowrap text-teal-950">
-                            {booking.code}
-                          </TableCell>
                           <TableCell>{booking.agentName}</TableCell>
+                          <TableCell
+                            className="w-20 text-xs"
+                            title={
+                              row.billingType === 'prebuy'
+                                ? 'Prebuy — deduct AD+CH heads, bill extras only'
+                                : 'Invoice — bill the tour price plus extras'
+                            }
+                          >
+                            {formatAgentBillingType(row.billingType)}
+                          </TableCell>
                           <TableCell className="min-w-[10rem]" title={booking.leadGuest}>
                             <span className="inline-flex min-w-0 items-center gap-1">
                               <span className="truncate">{booking.leadGuest}</span>
                               {row.hasNoShow ? (
                                 <BillFlag label="NS" title="This booking has a no-show guest" />
-                              ) : null}
-                              {row.hasExtra ? (
-                                <BillFlag label="Extra" title="This booking has an extra charge" />
                               ) : null}
                               {row.sentOut ? (
                                 <BillFlag label="Sent" title="Sent to another company on a partner boat" />
@@ -1151,25 +1172,59 @@ export function AdminInvoices() {
                             </span>
                           </TableCell>
                           <TableCell>{formatPaxBreakdown(booking)}</TableCell>
+                          <TableCell
+                            className="w-14 text-xs"
+                            title={
+                              booking.parkFee === 'Included'
+                                ? 'Included — billed to the agent'
+                                : 'Not included — collect from guest'
+                            }
+                          >
+                            {booking.parkFee === 'Included' ? 'Inc' : booking.parkFee === 'Not Included' ? 'Exc' : formatIncludeShort(booking.parkFee)}
+                          </TableCell>
+                          <TableCell
+                            className="w-24 text-right tabular-nums"
+                            title={
+                              row.parkCharge > 0
+                                ? 'Included park billed to the agent'
+                                : 'No included park on this bill'
+                            }
+                          >
+                            {row.parkCharge > 0 ? formatInvoiceMoney(row.parkCharge) : '—'}
+                          </TableCell>
+                          <TableCell className="w-24 text-right tabular-nums">
+                            {row.extraCharge > 0 ? formatInvoiceMoney(row.extraCharge) : '—'}
+                          </TableCell>
                           <TableCell className="min-w-[14rem] w-[14rem] whitespace-normal">
                             <div
-                              className="break-words text-xs leading-snug text-teal-900/70"
+                              className={cn(
+                                'break-words text-xs leading-snug',
+                                issued ? 'text-neutral-400' : 'text-teal-900/70',
+                              )}
                               title={booking.note.trim() || undefined}
                             >
                               {booking.note.trim() || '—'}
                             </div>
                           </TableCell>
-                          <TableCell className="w-20 text-xs">
-                            {checkInStatusLabel(row.attendance, !isActiveBooking(booking))}
-                          </TableCell>
-                          <TableCell>
-                            {row.invoice ? (
-                              billStatusLabel(row)
-                            ) : (
-                              <span className="text-teal-900/40">Open</span>
+                          <TableCell
+                            className={cn(
+                              'w-16 text-right font-medium tabular-nums',
+                              issued ? 'text-neutral-400' : 'text-teal-950',
                             )}
+                            title={
+                              row.billingType === 'prebuy'
+                                ? 'Heads deducted from the agent\'s pre-buy'
+                                : 'Pax count — this agent is billed the tour price'
+                            }
+                          >
+                            {row.billingType === 'prebuy' ? row.deductHeads : '—'}
                           </TableCell>
-                          <TableCell className="text-right font-medium text-teal-950">
+                          <TableCell
+                            className={cn(
+                              'text-right font-medium',
+                              issued ? 'text-neutral-400' : 'text-teal-950',
+                            )}
+                          >
                             {row.hasRates ? (
                               <span className="inline-flex items-center justify-end gap-1.5">
                                 {row.amountStale ? (
@@ -1190,8 +1245,11 @@ export function AdminInvoices() {
                   </TableBody>
                   <TableFooter>
                     <TableRow>
-                      <TableCell colSpan={8} />
+                      <TableCell colSpan={9} />
                       <TableCell>Sum</TableCell>
+                      <TableCell className="text-right tabular-nums text-teal-950">
+                        {selectedCodes.length > 0 ? selectedHeads : pageHeads}
+                      </TableCell>
                       <TableCell className="text-right text-teal-950">
                         {formatInvoiceMoney(
                           selectedCodes.length > 0 ? selectedGuestTotal : pageGuestTotal,
@@ -1566,10 +1624,11 @@ export function AdminInvoices() {
               buildInvoiceItemsForBooking(booking, ratesForAgent(store.rates, booking.agentSlug), {
                 includeOtherService: false,
                 attendance: getCheckInAttendance(booking.date, booking.program, booking.code),
-                thaiGuests: thaiGuestCount(
+                thaiGuests: thaiParkSeatsFromGuests(
+                  booking.adults,
+                  booking.children,
                   getCheckInEnrollments(booking.date, booking.program, booking.code),
                 ),
-                services: getCheckInServices(booking.date, booking.program, booking.code),
               }),
             )
         }

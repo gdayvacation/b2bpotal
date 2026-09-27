@@ -2,10 +2,14 @@
 
 import {
   COMPANY_LOGO_SRC,
+  chargeUnit,
   formatInvoiceDate,
   formatInvoiceMoney,
   formatPaymentChannel,
   invoiceTravelRange,
+  isGuestCollectLine,
+  itemsAgentTotal,
+  itemsGuestTotal,
   type InvoiceDocument,
   type InvoiceSettings,
 } from '@/lib/invoice'
@@ -148,8 +152,8 @@ function LineTable({
         <tr className={head}>
           <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">No.</th>
           <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">Date</th>
-          <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">Voucher No.</th>
           <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">Description</th>
+          <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">Unit</th>
           <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">AD</th>
           <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">CH</th>
           <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">AD price</th>
@@ -159,13 +163,13 @@ function LineTable({
       </thead>
       <tbody>
         {doc.items.map((item, index) => (
-          <tr key={item.id}>
+          <tr key={item.id} className={isGuestCollectLine(item) ? 'bg-orange-50/70 text-neutral-700' : undefined}>
             <td className="border border-neutral-300 px-1.5 py-1 text-center">{index + 1}</td>
             <td className="border border-neutral-300 px-1.5 py-1 whitespace-nowrap">
               {formatInvoiceDate(item.travelDate)}
             </td>
-            <td className="border border-neutral-300 px-1.5 py-1">{item.voucherNo}</td>
             <td className="border border-neutral-300 px-1.5 py-1">{item.description}</td>
+            <td className="border border-neutral-300 px-1.5 py-1">{chargeUnit(item)}</td>
             <td className="border border-neutral-300 px-1.5 py-1 text-center">
               {item.adults || ''}
             </td>
@@ -214,6 +218,9 @@ export function InvoicePrintSheet({
   const related = (linked ?? []).filter((item) => doc.linkedInvoiceIds.includes(item.id))
   const tone = mode === 'receipt' ? 'receipt' : 'invoice'
   const accent = tone === 'receipt' ? 'bg-[#c8ecd4] text-emerald-950' : 'bg-[#f3d4ff] text-neutral-900'
+  const prebuy =
+    doc.items.some((item) => item.lineKind === 'tour') &&
+    doc.items.every((item) => item.lineKind !== 'tour' || item.amount === 0)
 
   return (
     <article className="invoice-print-page relative overflow-hidden bg-white text-neutral-900 [print-color-adjust:exact]">
@@ -241,7 +248,8 @@ export function InvoicePrintSheet({
           {number}
         </p>
         <p>
-          <span className="inline-block w-24 text-neutral-500">Address</span>
+          <span className="inline-block w-24 text-neutral-500">Voucher</span>
+          {[...new Set(doc.items.map((item) => item.voucherNo.trim()).filter(Boolean))].join(', ') || '—'}
         </p>
         <p>
           <span className="inline-block w-14 text-neutral-500">Date</span>
@@ -283,6 +291,11 @@ export function InvoicePrintSheet({
       <div className="mt-3 grid grid-cols-[1fr_16rem] items-start gap-4">
         <div>
           <p className="text-[11px] text-neutral-500">Remarks:</p>
+          <p className="mt-1 text-[11px] text-neutral-600">
+            {prebuy
+              ? 'Tour and included park deduct the agent\'s pre-buy heads. Not-included park is collected from the guest at check-in and is not deducted.'
+              : 'Tour price and included park are billed to the agent. Not-included park is collected from the guest at check-in and is not deducted.'}
+          </p>
           {doc.notes ? <p className="mt-1 text-[11px]">{doc.notes}</p> : null}
           <div className="mt-3">
             <BankBlock settings={settings} />
@@ -290,8 +303,32 @@ export function InvoicePrintSheet({
         </div>
         <table className="w-full border-collapse text-[12px]">
           <tbody>
+            {itemsGuestTotal(doc.items) > 0 ? (
+              <tr>
+                <td className="border border-neutral-400 px-2 py-1.5 text-neutral-600">
+                  Guest collected at marina
+                </td>
+                <td className="border border-neutral-400 px-2 py-1.5 text-right text-neutral-600">
+                  {formatInvoiceMoney(itemsGuestTotal(doc.items))}
+                </td>
+              </tr>
+            ) : null}
+            <tr>
+              <td className="border border-neutral-400 px-2 py-1.5">
+                {prebuy ? 'Deduct deposit' : 'Amount due'}
+              </td>
+              <td className="border border-neutral-400 px-2 py-1.5 text-right">
+                {formatInvoiceMoney(
+                  related.length > 0
+                    ? related.reduce((sum, item) => sum + itemsAgentTotal(item.items), 0)
+                    : itemsAgentTotal(doc.items) || doc.grandTotal,
+                )}
+              </td>
+            </tr>
             <tr className={accent}>
-              <td className="border border-neutral-400 px-2 py-1.5 font-semibold">GRAND TOTAL</td>
+              <td className="border border-neutral-400 px-2 py-1.5 font-semibold">
+                {prebuy ? 'GRAND TOTAL · deduct' : 'GRAND TOTAL'}
+              </td>
               <td className="border border-neutral-400 px-2 py-1.5 text-right font-semibold">
                 {formatInvoiceMoney(
                   related.length > 0

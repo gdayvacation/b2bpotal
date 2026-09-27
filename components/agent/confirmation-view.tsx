@@ -68,7 +68,7 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
               value={formatThbAmount(booking.lateChangeFee ?? 0)}
             />
           ) : null}
-          {booking.note.trim() ? <Item label="Note" value={booking.note.trim()} /> : null}
+          <Item label="Guest remark" value={booking.note.trim() || '—'} />
           <Item label="Agent" value={booking.agentName} />
         </dl>
         <AmendmentPolicyNotice

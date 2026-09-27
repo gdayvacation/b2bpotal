@@ -29,6 +29,7 @@ for each row execute function public.set_updated_at();
 
 create table if not exists public.agency_invoice_rates (
   agent_slug text primary key,
+  billing_type text not null default 'invoice' check (billing_type in ('prebuy', 'invoice')),
   adult_price numeric not null default 0,
   child_price numeric not null default 0,
   infant_price numeric not null default 0,
@@ -42,6 +43,9 @@ create table if not exists public.agency_invoice_rates (
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );
+
+alter table public.agency_invoice_rates
+  add column if not exists billing_type text not null default 'invoice';
 
 drop trigger if exists agency_invoice_rates_set_updated_at on public.agency_invoice_rates;
 create trigger agency_invoice_rates_set_updated_at
@@ -95,8 +99,12 @@ create table if not exists public.invoice_items (
   amount numeric not null default 0,
   line_kind text not null default 'tour',
   sort_order int not null default 0,
+  unit text not null default '',
   created_at timestamptz not null default timezone('utc', now())
 );
+
+alter table public.invoice_items
+  add column if not exists unit text not null default '';
 
 create index if not exists invoice_items_invoice_idx on public.invoice_items (invoice_id);
 create index if not exists invoice_items_booking_idx on public.invoice_items (booking_code);

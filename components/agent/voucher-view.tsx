@@ -196,9 +196,11 @@ export function VoucherPreview({
                 value={live.cashOnTour.trim() || '—'}
                 wrap
               />
-              {live.note.trim() ? (
-                <DetailCell label="Note" value={live.note.trim()} wrap />
-              ) : null}
+              <DetailCell
+                label="Guest remark"
+                value={live.note.trim() || '—'}
+                wrap
+              />
               {(live.lateChangeFee ?? 0) > 0 ? (
                 <DetailCell
                   label="Late date-change fee"

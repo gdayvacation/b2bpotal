@@ -19,7 +19,8 @@ import {
   guestDisplayName,
 } from '@/lib/check-in-enrollment'
 import {
-  collectTotal,
+  collectTotalWithThai,
+  thaiParkSeatsFromGuests,
   formatIncludeShort,
   formatLongDate,
   formatShortDate,
@@ -179,12 +180,13 @@ export function AdminCheckInBookingPanel({
   const actor = { role: 'admin' as const, name: 'Marina check-in' }
 
   const pay = booking
-    ? collectTotal(
+    ? collectTotalWithThai(
         booking.parkFee,
         booking.program,
         booking.adults,
         booking.children,
         booking.cashOnTour,
+        thaiParkSeatsFromGuests(booking.adults, booking.children, enrollments),
       )
     : 0
   const cashNote = booking?.cashOnTour.trim() ?? ''

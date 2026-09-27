@@ -36,14 +36,14 @@ import { boatTheme } from '@/lib/boat-theme'
 import {
   isThaiNationality,
   matchNationality,
-  thaiGuestCount,
   thaiParkFeeTotal,
 } from '@/lib/nationalities'
 import {
   formatIncludeLabel,
   formatLongDate,
   parseCashOnTourAmount,
-  parkFeeTotal,
+  parkFeeTotalWithThai,
+  thaiParkSeatsFromGuests,
 } from '@/lib/format'
 import {
   englishPlural,
@@ -138,19 +138,17 @@ function programLabel(program: Program) {
 }
 
 function paymentDue(booking: Booking, nationalities: string[] = []) {
-  const thaiCount = thaiGuestCount(nationalities.map((nationality) => ({ nationality })))
-  const allThai = nationalities.length > 0 && thaiCount === nationalities.length
-  const thaiParkFeeAmount = thaiParkFeeTotal(thaiCount)
-  const foreignerPark = allThai
-    ? 0
-    : parkFeeTotal(
-        booking.parkFee,
-        booking.program,
-        booking.adults,
-        booking.children,
-      )
+  const guests = nationalities.map((nationality) => ({ nationality }))
+  const thaiSeats = thaiParkSeatsFromGuests(booking.adults, booking.children, guests)
+  const park = parkFeeTotalWithThai(
+    booking.parkFee,
+    booking.program,
+    booking.adults,
+    booking.children,
+    thaiSeats,
+  )
   const cashAmount = parseCashOnTourAmount(booking.cashOnTour)
-  const collect = foreignerPark + cashAmount
+  const collect = park.total + cashAmount
   const transferNote = booking.transferExtraCharge.trim()
   const cashNote = booking.cashOnTour.trim()
   const hasCashText = Boolean(cashNote) && cashAmount === 0
@@ -158,9 +156,9 @@ function paymentDue(booking: Booking, nationalities: string[] = []) {
     amount: collect,
     // Transfer extra is back-office only — do not drive guest payment UI.
     needsStaff: collect > 0 || hasCashText,
-    parkFeeAmount: foreignerPark,
-    thaiParkFeeAmount,
-    thaiCount,
+    parkFeeAmount: park.foreignerAmount,
+    thaiParkFeeAmount: park.thaiAmount,
+    thaiCount: park.thaiAdults + park.thaiChildren,
     cashAmount,
     cashNote,
     transferNote,
@@ -1363,22 +1361,44 @@ function GuestCheckInForm({
             paid={marinaPaid}
             services={marinaServices}
             booking={selectedBooking}
-            thaiCount={Math.max(
-              thaiGuestCount(
-                guests.map((guest) => ({
-                  nationality: matchNationality(guest.nationality) ?? guest.nationality,
-                })),
-              ),
+            thaiCount={
               selectedBooking
-                ? thaiGuestCount(
-                    getCheckInEnrollments(
+                ? thaiParkSeatsFromGuests(
+                    selectedBooking.adults,
+                    selectedBooking.children,
+                    (() => {
+                      const enrolled = getCheckInEnrollments(
+                        selectedBooking.date,
+                        selectedBooking.program,
+                        selectedBooking.code,
+                      )
+                      return enrolled.length > 0
+                        ? enrolled
+                        : guests.map((guest) => ({
+                            nationality:
+                              matchNationality(guest.nationality) ?? guest.nationality,
+                          }))
+                    })(),
+                  )
+                : 0
+            }
+            nationalities={
+              selectedBooking
+                ? (() => {
+                    const enrolled = getCheckInEnrollments(
                       selectedBooking.date,
                       selectedBooking.program,
                       selectedBooking.code,
-                    ),
-                  )
-                : 0,
-            )}
+                    )
+                    return enrolled.length > 0
+                      ? enrolled.map((item) => item.nationality)
+                      : guests.map(
+                          (guest) =>
+                            matchNationality(guest.nationality) ?? guest.nationality.trim(),
+                        )
+                  })()
+                : []
+            }
             guestNames={
               guests.some((guest) => guest.firstName.trim() || guest.lastName.trim())
                 ? guests.map((guest) => guestDisplayName(guest)).filter(Boolean)
@@ -1692,6 +1712,7 @@ function DoneStep({
   services,
   booking,
   thaiCount,
+  nationalities = [],
   guestNames,
   sequenceLabel,
   boat,
@@ -1704,6 +1725,7 @@ function DoneStep({
   services: CheckInServiceLine[]
   booking: Booking | null
   thaiCount: number
+  nationalities?: string[]
   guestNames: string[]
   sequenceLabel: string | null
   boat: number | null
@@ -1712,7 +1734,7 @@ function DoneStep({
   onEdit?: () => void
 }) {
   const { t } = useCheckInI18n()
-  const due = booking ? paymentDue(booking) : null
+  const due = booking ? paymentDue(booking, nationalities) : null
   const parkExcluded = Boolean(due && due.parkFeeAmount > 0)
   const showParkNote = parkExcluded && booking?.program === 'PP' && !paid
   const displayNames =
@@ -1750,7 +1772,7 @@ function DoneStep({
               {parkExcluded ? t('payPark') : t('payStaff')}
             </p>
           </div>
-          {booking ? <PaymentDueAlert booking={booking} /> : null}
+          {booking ? <PaymentDueAlert booking={booking} nationalities={nationalities} /> : null}
           {thaiCount > 0 ? <ThaiParkFeeNote count={thaiCount} /> : null}
           {boarding}
           {onEdit ? (

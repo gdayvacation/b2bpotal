@@ -21,6 +21,7 @@ import {
 } from 'lucide-react'
 import { BoatFleetBadge } from '@/components/boat-badge'
 import { AdminCheckInBookingPanel } from '@/components/admin/admin-check-in-booking-panel'
+import { AdminCheckInPaxDialog } from '@/components/admin/admin-check-in-pax-dialog'
 import { usePortal } from '@/components/portal-provider'
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
@@ -62,6 +63,7 @@ import {
   sequenceForSeatOffset,
   type GuestSequenceBlock,
 } from '@/lib/check-in-sequence'
+import { getArrivedPaxSnapshot } from '@/lib/check-in-arrived-pax'
 import { formatGuestPaxParts, hasPartialNoShow, originalBookedPax } from '@/lib/check-in-booked-pax'
 import {
   DEFAULT_HELPER_BOARD_HOURS,
@@ -94,7 +96,8 @@ import {
   type CheckInServiceLine,
 } from '@/lib/check-in-services'
 import {
-  collectTotal,
+  collectTotalWithThai,
+  thaiParkSeatsFromGuests,
   formatIncludeShort,
   formatLongDate,
   formatShortDate,
@@ -180,6 +183,7 @@ type BookingLine = {
   status: GuestLineStatus
   boat: number | null
   guests: CheckedGuest[]
+  arrivedOverride: boolean
 }
 
 type DriverGroup = {
@@ -267,9 +271,12 @@ function buildBookingLine(
   van: number | null,
   legs?: VanSplit[],
 ): BookingLine {
-  const bookingSeats = Math.max(1, totalPassengers(booking))
+  const arrived = getArrivedPaxSnapshot(today, booking.program, booking.code)
+  const bookingSeats = Math.max(1, arrived
+    ? arrived.adults + arrived.children + arrived.infants + arrived.tourLeaders
+    : totalPassengers(booking))
   const bookedFull = originalBookedPax(today, booking.program, booking)
-  const currentFull: PaxBreakdown = {
+  const currentFull: PaxBreakdown = arrived ?? {
     adults: booking.adults,
     children: booking.children,
     infants: booking.infants,
@@ -310,16 +317,27 @@ function buildBookingLine(
     status,
     boat,
     guests,
+    arrivedOverride: Boolean(arrived),
   }
 }
 
-function bookingPayment(booking: Booking) {
-  const amount = collectTotal(
+function linePaymentBooking(line: BookingLine, today: string) {
+  if (!line.arrivedOverride) return line.booking
+  const arrived = getArrivedPaxSnapshot(today, line.booking.program, line.booking.code)
+  return arrived ? { ...line.booking, ...arrived } : line.booking
+}
+
+function bookingPayment(
+  booking: Booking,
+  guests: Array<{ nationality?: string | null; seats?: number | null }> = [],
+) {
+  const amount = collectTotalWithThai(
     booking.parkFee,
     booking.program,
     booking.adults,
     booking.children,
     booking.cashOnTour,
+    thaiParkSeatsFromGuests(booking.adults, booking.children, guests),
   )
   const cashNote = booking.cashOnTour.trim()
   const hasCashText = Boolean(cashNote) && parseCashOnTourAmount(cashNote) === 0
@@ -330,6 +348,15 @@ function bookingPayment(booking: Booking) {
     return { kind: 'note' as const, label: cashNote }
   }
   return { kind: 'none' as const, label: '—' }
+}
+
+function isPaymentNeeded(
+  status: GuestLineStatus,
+  payment: ReturnType<typeof bookingPayment>,
+  paid: boolean,
+  showBookingMoney: boolean,
+) {
+  return status === 'checked' && showBookingMoney && !paid && payment.kind !== 'none'
 }
 
 function formatCheckInTime(iso: string) {
@@ -1098,6 +1125,7 @@ function TodayBoardTab({
   const [helperGroupId, setHelperGroupId] = useState<string | null>(null)
   const [boardQuery, setBoardQuery] = useState('')
   const [boardView, setBoardView] = useState<'check-in' | 'partner'>('check-in')
+  const [paxBoardRev, setPaxBoardRev] = useState(0)
   const boardDateObj = useMemo(() => new Date(`${boardDate}T12:00:00`), [boardDate])
   const portalTodayObj = useMemo(() => new Date(`${portalToday}T12:00:00`), [portalToday])
   const isToday = boardDate === portalToday
@@ -1260,6 +1288,7 @@ function TodayBoardTab({
     getCheckInEnrollments,
     getDayBoatPlan,
     getDayVehiclePlan,
+    paxBoardRev,
     programFilter,
     resolveVanMeta,
   ])
@@ -1577,6 +1606,7 @@ function TodayBoardTab({
                 onSelectBooking={(code) => {
                   if (!isHelper) setSelectedCode(code)
                 }}
+                onPaxApplied={() => setPaxBoardRev((current) => current + 1)}
               />
             ))
           )}
@@ -1864,6 +1894,7 @@ function DriverGroupCard({
   sequences,
   searchQuery,
   onSetBookingSequenceStart,
+  onPaxApplied,
 }: {
   group: DriverGroup
   showProgram: boolean
@@ -1874,10 +1905,12 @@ function DriverGroupCard({
   sequences: Record<string, GuestSequenceBlock>
   searchQuery: string
   onSetBookingSequenceStart?: (bookingCode: string, start: number | null) => void
+  onPaxApplied?: () => void
 }) {
   const isHelper = variant === 'helper'
   const {
     getDayBoatPlan,
+    getCheckInEnrollments,
     getCheckInPayment,
     setCheckInPayment,
     getCheckInTicket,
@@ -1894,6 +1927,7 @@ function DriverGroupCard({
   const [qrBooking, setQrBooking] = useState<Booking | null>(null)
   const [qrCopied, setQrCopied] = useState(false)
   const [editBooking, setEditBooking] = useState<Booking | null>(null)
+  const [paxEditBooking, setPaxEditBooking] = useState<Booking | null>(null)
   const [serviceBooking, setServiceBooking] = useState<Booking | null>(null)
   const title = driverGroupTitle(group, showProgram)
   const visibleLines = useMemo(() => {
@@ -1994,10 +2028,15 @@ function DriverGroupCard({
 
       <div className="divide-y divide-teal-900/8 md:hidden">
         {visibleLines.map((line) => {
-          const payment = bookingPayment(line.booking)
+          const payment = bookingPayment(
+            linePaymentBooking(line, today),
+            getCheckInEnrollments(today, line.booking.program, line.booking.code),
+          )
           const sequence = sequences[line.booking.code] ?? null
           const paid =
             getCheckInPayment(today, line.booking.program, line.booking.code) === 'paid'
+          const paymentNeeded =
+            !isHelper && isPaymentNeeded(line.status, payment, paid, line.showBookingMoney)
           const ticketed =
             getCheckInTicket(today, line.booking.program, line.booking.code) === 'issued'
           const hotel = line.booking.pickupHotel || line.booking.pickupZone || '—'
@@ -2010,7 +2049,8 @@ function DriverGroupCard({
             fullyChecked: line.status === 'checked',
             noShow: wholeNoShow,
           })
-          const partialNoShow = !wholeNoShow && hasPartialNoShow(booked, line.pax)
+          const partialNoShow =
+            !wholeNoShow && !line.arrivedOverride && hasPartialNoShow(booked, line.pax)
           const missingPax =
             Math.max(0, booked.adults - line.pax.adults) +
             Math.max(0, booked.children - line.pax.children) +
@@ -2024,7 +2064,9 @@ function DriverGroupCard({
             ? 'Tour partner · no check-in needed'
             : wholeNoShow
               ? 'Whole booking no-show'
-              : line.status === 'checked'
+              : paymentNeeded
+                ? 'Checked in · Payment needed'
+                : line.status === 'checked'
                 ? `In · ${progressLabel}`
                 : partialNoShow
                   ? `Wait · ${progressLabel} · NS ${missingPax}`
@@ -2035,10 +2077,11 @@ function DriverGroupCard({
               key={line.key}
               className={cn(
                 'px-3 py-2.5',
-                line.status === 'checked' && 'bg-emerald-50/40',
+                paymentNeeded && 'bg-orange-50/55',
+                line.status === 'checked' && !paymentNeeded && 'bg-emerald-50/40',
                 line.status === 'waiting' && 'bg-amber-50/25',
                 line.status === 'no-show' && 'bg-rose-50/40',
-                !isHelper && ticketed && 'bg-sky-50/40',
+                !isHelper && ticketed && !paymentNeeded && 'bg-sky-50/40',
               )}
             >
               <div className="flex items-start gap-2.5">
@@ -2052,11 +2095,16 @@ function DriverGroupCard({
                     <div className="flex items-start gap-2">
                       <span className="mt-0.5 flex min-w-10 shrink-0 flex-col items-start gap-0.5">
                         {sequenceLabel && line.status === 'checked' ? (
-                          <span className="text-[15px] font-bold tabular-nums text-emerald-700">
+                          <span
+                            className={cn(
+                              'text-[15px] font-bold tabular-nums',
+                              paymentNeeded ? 'text-orange-700' : 'text-emerald-700',
+                            )}
+                          >
                             {sequenceLabel}
                           </span>
                         ) : null}
-                        <StatusBadge status={line.status} compact />
+                        <StatusBadge status={line.status} compact paymentNeeded={paymentNeeded} />
                       </span>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-[15px] font-semibold text-teal-950" title={hotel}>
@@ -2074,9 +2122,20 @@ function DriverGroupCard({
                     </div>
                   </button>
                   <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 pl-12 text-[12px] text-teal-900/65">
-                    <span className="tabular-nums font-medium text-teal-950">
-                      {compactPaxLine(booked, line.pax, wholeNoShow)}
-                    </span>
+                    {isHelper || wholeNoShow ? (
+                      <span className="tabular-nums font-medium text-teal-950">
+                        {compactPaxLine(booked, line.pax, wholeNoShow)}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="tabular-nums font-medium text-teal-950 underline-offset-2 hover:underline"
+                        title="Edit guests"
+                        onClick={() => setPaxEditBooking(line.booking)}
+                      >
+                        {compactPaxLine(booked, line.pax, wholeNoShow)}
+                      </button>
+                    )}
                     <CheckInBoatPicker
                       booking={line.booking}
                       date={today}
@@ -2088,7 +2147,9 @@ function DriverGroupCard({
                   <p
                     className={cn(
                       'mt-1 pl-12 text-[12px] font-medium tabular-nums',
-                      line.status === 'checked'
+                      paymentNeeded
+                        ? 'text-orange-800/90'
+                        : line.status === 'checked'
                         ? 'text-emerald-800/80'
                         : line.status === 'no-show'
                           ? 'text-rose-800/80'
@@ -2302,10 +2363,15 @@ function DriverGroupCard({
         </TableHeader>
         <TableBody>
           {visibleLines.map((line) => {
-            const payment = bookingPayment(line.booking)
+            const payment = bookingPayment(
+              linePaymentBooking(line, today),
+              getCheckInEnrollments(today, line.booking.program, line.booking.code),
+            )
             const sequence = sequences[line.booking.code] ?? null
             const paid =
               getCheckInPayment(today, line.booking.program, line.booking.code) === 'paid'
+            const paymentNeeded =
+              !isHelper && isPaymentNeeded(line.status, payment, paid, line.showBookingMoney)
             const ticketed =
               getCheckInTicket(today, line.booking.program, line.booking.code) === 'issued'
             const hotel = line.booking.pickupHotel || line.booking.pickupZone || '—'
@@ -2318,7 +2384,8 @@ function DriverGroupCard({
               fullyChecked: line.status === 'checked',
               noShow: wholeNoShow,
             })
-            const partialNoShow = !wholeNoShow && hasPartialNoShow(booked, line.pax)
+            const partialNoShow =
+            !wholeNoShow && !line.arrivedOverride && hasPartialNoShow(booked, line.pax)
             const missingPax =
               Math.max(0, booked.adults - line.pax.adults) +
               Math.max(0, booked.children - line.pax.children) +
@@ -2338,10 +2405,11 @@ function DriverGroupCard({
               (Boolean(noteText) || Boolean(addingNote[line.key]))
 
             const rowTone = cn(
-              line.status === 'checked' && 'bg-emerald-50/40',
+              paymentNeeded && 'bg-orange-50/55',
+              line.status === 'checked' && !paymentNeeded && 'bg-emerald-50/40',
               line.status === 'waiting' && 'bg-amber-50/30',
               line.status === 'no-show' && 'bg-rose-50/40',
-              !isHelper && ticketed && 'bg-sky-50/40',
+              !isHelper && ticketed && !paymentNeeded && 'bg-sky-50/40',
             )
 
             return (
@@ -2368,6 +2436,7 @@ function DriverGroupCard({
                     label={sequenceLabel}
                     block={sequence}
                     status={line.status}
+                    paymentNeeded={paymentNeeded}
                     editable={Boolean(onSetBookingSequenceStart)}
                     onSetStart={(start) =>
                       onSetBookingSequenceStart?.(line.booking.code, start)
@@ -2436,7 +2505,9 @@ function DriverGroupCard({
                       <p
                         className={cn(
                           'mt-0.5 text-[11px] font-medium tabular-nums',
-                          line.status === 'checked'
+                          paymentNeeded
+                            ? 'text-orange-800/90'
+                            : line.status === 'checked'
                             ? 'text-emerald-800/80'
                             : line.status === 'no-show'
                               ? 'text-rose-800/80'
@@ -2445,7 +2516,9 @@ function DriverGroupCard({
                       >
                         {wholeNoShow
                           ? 'Whole booking no-show'
-                          : line.status === 'checked'
+                          : paymentNeeded
+                            ? 'Checked in · Payment needed'
+                            : line.status === 'checked'
                             ? `Checked in · ${progressLabel}`
                             : partialNoShow
                               ? `Waiting · ${progressLabel} · pickup NS ${missingPax}`
@@ -2557,29 +2630,63 @@ function DriverGroupCard({
                     </div>
                   </div>
                 </TableCell>
-                <TableCell className="w-[5.5rem] px-0.5 text-center align-top tabular-nums">
-                  <span className="grid grid-cols-4 gap-0.5">
-                    <PaxCount
-                      original={booked.adults}
-                      current={line.pax.adults}
-                      wholeNoShow={wholeNoShow}
-                    />
-                    <PaxCount
-                      original={booked.children}
-                      current={line.pax.children}
-                      wholeNoShow={wholeNoShow}
-                    />
-                    <PaxCount
-                      original={booked.infants}
-                      current={line.pax.infants}
-                      wholeNoShow={wholeNoShow}
-                    />
-                    <PaxCount
-                      original={booked.tourLeaders}
-                      current={line.pax.tourLeaders}
-                      wholeNoShow={wholeNoShow}
-                    />
-                  </span>
+                <TableCell
+                  className="w-[5.5rem] px-0.5 text-center align-top tabular-nums"
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
+                >
+                  {isHelper || wholeNoShow ? (
+                    <span className="grid grid-cols-4 gap-0.5">
+                      <PaxCount
+                        original={booked.adults}
+                        current={line.pax.adults}
+                        wholeNoShow={wholeNoShow}
+                      />
+                      <PaxCount
+                        original={booked.children}
+                        current={line.pax.children}
+                        wholeNoShow={wholeNoShow}
+                      />
+                      <PaxCount
+                        original={booked.infants}
+                        current={line.pax.infants}
+                        wholeNoShow={wholeNoShow}
+                      />
+                      <PaxCount
+                        original={booked.tourLeaders}
+                        current={line.pax.tourLeaders}
+                        wholeNoShow={wholeNoShow}
+                      />
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      title="Edit guests"
+                      className="grid w-full grid-cols-4 gap-0.5 rounded-md px-0.5 py-0.5 hover:bg-white/80"
+                      onClick={() => setPaxEditBooking(line.booking)}
+                    >
+                      <PaxCount
+                        original={booked.adults}
+                        current={line.pax.adults}
+                        wholeNoShow={wholeNoShow}
+                      />
+                      <PaxCount
+                        original={booked.children}
+                        current={line.pax.children}
+                        wholeNoShow={wholeNoShow}
+                      />
+                      <PaxCount
+                        original={booked.infants}
+                        current={line.pax.infants}
+                        wholeNoShow={wholeNoShow}
+                      />
+                      <PaxCount
+                        original={booked.tourLeaders}
+                        current={line.pax.tourLeaders}
+                        wholeNoShow={wholeNoShow}
+                      />
+                    </button>
+                  )}
                 </TableCell>
                 <TableCell
                   className="px-0.5 text-center align-top"
@@ -2803,6 +2910,17 @@ function DriverGroupCard({
           onOpenChange={(open) => {
             if (!open) setEditBooking(null)
           }}
+        />
+      )}
+
+      {isHelper ? null : (
+        <AdminCheckInPaxDialog
+          booking={paxEditBooking}
+          open={Boolean(paxEditBooking)}
+          onOpenChange={(open) => {
+            if (!open) setPaxEditBooking(null)
+          }}
+          onApplied={onPaxApplied}
         />
       )}
 
@@ -3606,19 +3724,26 @@ function PayableAmount({
 function SequenceStatusStack({
   label,
   status,
+  paymentNeeded = false,
 }: {
   label: string | null
   status: GuestLineStatus
+  paymentNeeded?: boolean
 }) {
   const showNumber = status === 'checked' && Boolean(label)
   return (
     <span className="flex flex-col items-start gap-0.5">
       {showNumber ? (
-        <span className="text-lg font-bold leading-tight tabular-nums text-emerald-700">
+        <span
+          className={cn(
+            'text-lg font-bold leading-tight tabular-nums',
+            paymentNeeded ? 'text-orange-700' : 'text-emerald-700',
+          )}
+        >
           {label}
         </span>
       ) : null}
-      <StatusBadge status={status} compact />
+      <StatusBadge status={status} compact paymentNeeded={paymentNeeded} />
     </span>
   )
 }
@@ -3627,12 +3752,14 @@ function SequenceCell({
   label,
   block,
   status,
+  paymentNeeded = false,
   editable,
   onSetStart,
 }: {
   label: string | null
   block: GuestSequenceBlock | null
   status: GuestLineStatus
+  paymentNeeded?: boolean
   editable: boolean
   onSetStart: (start: number | null) => void
 }) {
@@ -3649,7 +3776,7 @@ function SequenceCell({
   if (!editable) {
     return (
       <span title={block && status === 'checked' ? `Reserved ${planned}` : undefined}>
-        <SequenceStatusStack label={label} status={status} />
+        <SequenceStatusStack label={label} status={status} paymentNeeded={paymentNeeded} />
       </span>
     )
   }
@@ -3675,7 +3802,7 @@ function SequenceCell({
           />
         }
       >
-        <SequenceStatusStack label={label} status={status} />
+        <SequenceStatusStack label={label} status={status} paymentNeeded={paymentNeeded} />
       </PopoverTrigger>
       <PopoverContent align="start" className="w-56 space-y-3 p-3">
         <div>
@@ -3811,10 +3938,25 @@ function compactPaxLine(
   return parts.join(' · ') || '—'
 }
 
-function StatusBadge({ status, compact = false }: { status: GuestLineStatus; compact?: boolean }) {
+function StatusBadge({
+  status,
+  compact = false,
+  paymentNeeded = false,
+}: {
+  status: GuestLineStatus
+  compact?: boolean
+  paymentNeeded?: boolean
+}) {
   const size = compact
     ? 'px-2 py-0.5 text-[11px] font-bold'
     : 'px-2.5 py-1 text-sm font-bold'
+  if (status === 'checked' && paymentNeeded) {
+    return (
+      <span className={cn('inline-flex rounded-full bg-orange-100 text-orange-800', size)}>
+        Pay
+      </span>
+    )
+  }
   if (status === 'checked') {
     return (
       <span className={cn('inline-flex rounded-full bg-emerald-100 text-emerald-800', size)}>

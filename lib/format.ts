@@ -1,3 +1,5 @@
+import { THAI_PARK_FEE_THB, thaiGuestCount } from '@/lib/nationalities'
+
 export function formatLongDate(isoDate: string) {
   return new Date(`${isoDate}T12:00:00`).toLocaleDateString('en-GB', {
     day: 'numeric',
@@ -149,6 +151,58 @@ export function parkFeeTotal(
   if (parkFee !== 'Not Included') return 0
   const rates = parkFeeRates(program)
   return adults * rates.adult + children * rates.child
+}
+
+/** Thai AD + CH seats that pay 40 THB instead of the foreigner park rate. */
+export function thaiParkSeatsFromGuests(
+  adults: number,
+  children: number,
+  guests: Array<{ nationality?: string | null; seats?: number | null }>,
+) {
+  const chargeable = Math.max(0, Math.floor(adults)) + Math.max(0, Math.floor(children))
+  return Math.min(chargeable, thaiGuestCount(guests))
+}
+
+/**
+ * Park collect after nationality is known.
+ * Thai AD/CH always 40 THB each. Remaining AD/CH use 400/200 (PP) or 300/150 (JB)
+ * only when park is not included.
+ */
+export function parkFeeTotalWithThai(
+  parkFee: string,
+  program: 'PP' | 'James Bond',
+  adults: number,
+  children: number,
+  thaiChargeableSeats = 0,
+) {
+  const ad = Math.max(0, Math.floor(adults))
+  const ch = Math.max(0, Math.floor(children))
+  const thai = Math.min(ad + ch, Math.max(0, Math.floor(thaiChargeableSeats)))
+  const thaiAdults = Math.min(ad, thai)
+  const thaiChildren = Math.min(ch, thai - thaiAdults)
+  const thaiAmount = (thaiAdults + thaiChildren) * THAI_PARK_FEE_THB
+  const foreignerAmount = parkFeeTotal(parkFee, program, ad - thaiAdults, ch - thaiChildren)
+  return {
+    thaiAdults,
+    thaiChildren,
+    thaiAmount,
+    foreignAdults: ad - thaiAdults,
+    foreignChildren: ch - thaiChildren,
+    foreignerAmount,
+    total: thaiAmount + foreignerAmount,
+  }
+}
+
+export function collectTotalWithThai(
+  parkFee: string,
+  program: 'PP' | 'James Bond',
+  adults: number,
+  children: number,
+  cashOnTour: string | null | undefined,
+  thaiChargeableSeats = 0,
+) {
+  const park = parkFeeTotalWithThai(parkFee, program, adults, children, thaiChargeableSeats)
+  return park.thaiAmount + park.foreignerAmount + parseCashOnTourAmount(cashOnTour)
 }
 
 export function formatParkFeeTotal(

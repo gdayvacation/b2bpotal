@@ -1,12 +1,5 @@
 import { originalBookedPax, type BookedPaxSnapshot } from '@/lib/check-in-booked-pax'
-import {
-  checkInServiceLabel,
-  serviceLineTotal,
-  servicePricedPerBoat,
-  type CheckInServiceLine,
-} from '@/lib/check-in-services'
-import { parseCashOnTourAmount } from '@/lib/format'
-import { THAI_PARK_FEE_THB, thaiParkFeeTotal } from '@/lib/nationalities'
+import { parkFeeRates, parkFeeTotalWithThai, parseCashOnTourAmount } from '@/lib/format'
 import {
   isPrivateTransfer,
   type Booking,
@@ -42,6 +35,7 @@ export type InvoiceLineKind =
   | 'private_transfer'
   | 'extra_zone'
   | 'park_fee'
+  | 'park_guest'
   | 'service'
   | 'other'
 
@@ -59,8 +53,24 @@ export type InvoiceSettings = {
   signatureImage: string
 }
 
+export type AgentBillingType = 'prebuy' | 'invoice'
+
+export const AGENT_BILLING_TYPES: { value: AgentBillingType; label: string }[] = [
+  { value: 'prebuy', label: 'Prebuy' },
+  { value: 'invoice', label: 'Invoice' },
+]
+
+export function parseAgentBillingType(value: unknown): AgentBillingType {
+  return value === 'prebuy' ? 'prebuy' : 'invoice'
+}
+
+export function formatAgentBillingType(value: AgentBillingType | null | undefined) {
+  return value === 'prebuy' ? 'Prebuy' : 'Invoice'
+}
+
 export type AgencyInvoiceRates = {
   agentSlug: string
+  billingType: AgentBillingType
   adultPrice: number
   childPrice: number
   infantPrice: number
@@ -92,6 +102,19 @@ export type InvoiceItem = {
   amount: number
   lineKind: InvoiceLineKind
   sortOrder: number
+  /** Qty unit the agent can type, e.g. Pax, Box, Pcs, Van. */
+  unit?: string
+}
+
+export function defaultChargeUnit(kind: InvoiceLineKind) {
+  if (kind === 'tour' || kind === 'no_show' || kind === 'cancel' || kind === 'park_fee') return 'Pax'
+  if (kind === 'private_transfer') return 'Van'
+  return ''
+}
+
+export function chargeUnit(item: Pick<InvoiceItem, 'lineKind' | 'unit'>) {
+  const written = item.unit?.trim()
+  return written || defaultChargeUnit(item.lineKind)
 }
 
 export type InvoiceDocument = {
@@ -147,6 +170,7 @@ export const COMPANY_LOGO_SRC = '/goodday-logo.png'
 export function emptyAgencyRates(agentSlug: string): AgencyInvoiceRates {
   return {
     agentSlug,
+    billingType: 'invoice',
     adultPrice: 0,
     childPrice: 0,
     infantPrice: 0,
@@ -164,10 +188,17 @@ export function ratesForAgent(
   rates: AgencyInvoiceRates[],
   agentSlug: string,
 ): AgencyInvoiceRates {
-  return rates.find((row) => row.agentSlug === agentSlug) ?? emptyAgencyRates(agentSlug)
+  const found = rates.find((row) => row.agentSlug === agentSlug)
+  if (!found) return emptyAgencyRates(agentSlug)
+  return {
+    ...emptyAgencyRates(agentSlug),
+    ...found,
+    billingType: parseAgentBillingType(found.billingType),
+  }
 }
 
 export function agencyRatesReady(rates: AgencyInvoiceRates) {
+  if (parseAgentBillingType(rates.billingType) === 'prebuy') return true
   return (
     rates.adultPrice > 0 ||
     rates.childPrice > 0 ||
@@ -359,7 +390,6 @@ export function buildInvoiceItemsForBooking(
     includeOtherService?: boolean
     attendance?: CheckInAttendance | null
     thaiGuests?: number
-    services?: CheckInServiceLine[]
   },
 ): Omit<InvoiceItem, 'invoiceId'>[] {
   const items: Omit<InvoiceItem, 'invoiceId'>[] = []
@@ -429,24 +459,28 @@ export function buildInvoiceItemsForBooking(
           tourLeaders: booking.tourLeaders,
         }
     const tourAmount = snapshotAmount(tourPax, rates)
+    const prebuy = parseAgentBillingType(rates.billingType) === 'prebuy'
 
     if (snapshotTotal(tourPax) > 0 || tourAmount > 0) {
+      const heads = Math.max(0, tourPax.adults) + Math.max(0, tourPax.children)
       items.push({
         id: moneyId(),
         bookingCode: booking.code,
         travelDate: booking.date,
         voucherNo,
-        description: programLabel(booking.program),
+        description: prebuy
+          ? `${programLabel(booking.program)} · deduct ${heads} head${heads === 1 ? '' : 's'}`
+          : programLabel(booking.program),
         adults: tourPax.adults,
         children: tourPax.children,
         infants: tourPax.infants,
         tourLeaders: tourPax.tourLeaders,
-        adultPrice: rates.adultPrice,
-        childPrice: rates.childPrice,
-        infantPrice: rates.infantPrice,
-        tourLeaderPrice: rates.tourLeaderPrice,
+        adultPrice: prebuy ? 0 : rates.adultPrice,
+        childPrice: prebuy ? 0 : rates.childPrice,
+        infantPrice: prebuy ? 0 : rates.infantPrice,
+        tourLeaderPrice: prebuy ? 0 : rates.tourLeaderPrice,
         cot: 0,
-        amount: tourAmount,
+        amount: prebuy ? 0 : tourAmount,
         lineKind: 'tour',
         sortOrder: items.length,
       })
@@ -550,57 +584,42 @@ export function buildInvoiceItemsForBooking(
     })
   }
 
-  for (const line of options?.services ?? []) {
-    const amount = serviceLineTotal(line)
-    if (amount <= 0) continue
-    const qty = Math.max(1, Math.floor(line.people) || 1)
-    const unit = servicePricedPerBoat(line.kind)
-      ? qty === 1
-        ? '1 boat'
-        : `${qty} boats`
-      : `${qty} pax`
-    items.push({
-      id: moneyId(),
-      bookingCode: booking.code,
-      travelDate: booking.date,
-      voucherNo,
-      description: `${checkInServiceLabel(line.kind)} · ${unit}`,
-      adults: qty,
-      children: 0,
-      infants: 0,
-      tourLeaders: 0,
-      adultPrice: line.pricePerPerson,
-      childPrice: 0,
-      infantPrice: 0,
-      tourLeaderPrice: 0,
-      cot: 0,
-      amount,
-      lineKind: 'service',
-      sortOrder: items.length,
-    })
-  }
-
   const thaiGuests = Math.max(0, Math.floor(options?.thaiGuests ?? 0))
-  if (thaiGuests > 0) {
-    items.push({
-      id: moneyId(),
-      bookingCode: booking.code,
-      travelDate: booking.date,
-      voucherNo,
-      description: 'Thai Nationality · Park Fee',
-      adults: thaiGuests,
-      children: 0,
-      infants: 0,
-      tourLeaders: 0,
-      adultPrice: THAI_PARK_FEE_THB,
-      childPrice: 0,
-      infantPrice: 0,
-      tourLeaderPrice: 0,
-      cot: 0,
-      amount: thaiParkFeeTotal(thaiGuests),
-      lineKind: 'park_fee',
-      sortOrder: items.length,
-    })
+
+  if (
+    booking.status !== 'Cancelled' &&
+    booking.program === 'PP' &&
+    booking.parkFee === 'Included'
+  ) {
+    const ratesPP = parkFeeRates('PP')
+    const park = parkFeeTotalWithThai(
+      'Not Included',
+      'PP',
+      booking.adults,
+      booking.children,
+      thaiGuests,
+    )
+    if (park.foreignAdults + park.foreignChildren > 0) {
+      items.push({
+        id: moneyId(),
+        bookingCode: booking.code,
+        travelDate: booking.date,
+        voucherNo,
+        description: 'National Park Fee · Included · deduct deposit',
+        adults: park.foreignAdults,
+        children: park.foreignChildren,
+        infants: 0,
+        tourLeaders: 0,
+        adultPrice: ratesPP.adult,
+        childPrice: ratesPP.child,
+        infantPrice: 0,
+        tourLeaderPrice: 0,
+        cot: 0,
+        amount: park.foreignAdults * ratesPP.adult + park.foreignChildren * ratesPP.child,
+        lineKind: 'park_fee',
+        sortOrder: items.length,
+      })
+    }
   }
 
   if (options?.includeOtherService && rates.otherServiceCharge > 0) {
@@ -625,19 +644,35 @@ export function buildInvoiceItemsForBooking(
     })
   }
 
-  return items
+  return items.map((item) => ({ ...item, unit: chargeUnit(item) }))
 }
 
 export function itemsGrandTotal(items: Pick<InvoiceItem, 'amount'>[]) {
   return items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0)
 }
 
+export function isGuestCollectLine(item: Pick<InvoiceItem, 'lineKind'>) {
+  return item.lineKind === 'park_guest'
+}
+
+export function itemsAgentTotal(items: Pick<InvoiceItem, 'amount' | 'lineKind'>[]) {
+  return itemsGrandTotal(items.filter((item) => !isGuestCollectLine(item)))
+}
+
+export function itemsGuestTotal(items: Pick<InvoiceItem, 'amount' | 'lineKind'>[]) {
+  return itemsGrandTotal(items.filter(isGuestCollectLine))
+}
+
 export function invoiceAmountForBooking(doc: InvoiceDocument, bookingCode: string) {
-  return itemsGrandTotal(doc.items.filter((item) => item.bookingCode === bookingCode))
+  return itemsAgentTotal(doc.items.filter((item) => item.bookingCode === bookingCode))
+}
+
+export function invoiceGuestAmountForBooking(doc: InvoiceDocument, bookingCode: string) {
+  return itemsGuestTotal(doc.items.filter((item) => item.bookingCode === bookingCode))
 }
 
 export function invoiceAutoAmountForBooking(doc: InvoiceDocument, bookingCode: string) {
-  return itemsGrandTotal(
+  return itemsAgentTotal(
     doc.items.filter((item) => item.bookingCode === bookingCode && item.lineKind !== 'other'),
   )
 }
@@ -714,7 +749,7 @@ export function newInvoiceDocument(input: {
     issueDate: input.issueDate,
     status: 'unpaid',
     notes: input.notes ?? '',
-    grandTotal: itemsGrandTotal(items),
+    grandTotal: itemsAgentTotal(items),
     paidAt: null,
     paymentChannel: null,
     receiptNo: null,

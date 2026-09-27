@@ -377,6 +377,7 @@ export async function loadSheetsBackupSource(): Promise<SheetsBackupSource> {
       amount: Number(row.amount) || 0,
       lineKind: (lineKind as InvoiceLineKind) || 'tour',
       sortOrder: Math.floor(Number(row.sort_order) || 0),
+      unit: String(row.unit ?? '').trim(),
     }
     const list = itemsByInvoice.get(invoiceId) ?? []
     list.push(item)

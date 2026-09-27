@@ -18,10 +18,12 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import {
+  AGENT_BILLING_TYPES,
   DEFAULT_INVOICE_SETTINGS,
-  emptyAgencyRates,
   agencyRatesReady,
+  parseAgentBillingType,
   parseMoneyInput,
+  ratesForAgent,
   type AgencyInvoiceRates,
   type InvoiceSettings,
 } from '@/lib/invoice'
@@ -90,11 +92,7 @@ export function AdminInvoiceSetup() {
   )
 
   function ratesFor(slug: string) {
-    return (
-      rateDrafts[slug] ??
-      rates.find((row) => row.agentSlug === slug) ??
-      emptyAgencyRates(slug)
-    )
+    return rateDrafts[slug] ?? ratesForAgent(rates, slug)
   }
 
   function patchRates(slug: string, patch: Partial<AgencyInvoiceRates>) {
@@ -111,15 +109,24 @@ export function AdminInvoiceSetup() {
     window.setTimeout(() => setSaved(null), 1800)
   }
 
-  async function saveAgent(slug: string) {
-    await updateRates(ratesFor(slug))
+  async function persistAgent(next: AgencyInvoiceRates) {
+    setRateDrafts((current) => ({ ...current, [next.agentSlug]: next }))
+    await updateRates(next)
     setRateDrafts((current) => {
-      const next = { ...current }
-      delete next[slug]
-      return next
+      const draft = { ...current }
+      delete draft[next.agentSlug]
+      return draft
     })
-    setSaved(slug)
+    setSaved(next.agentSlug)
     window.setTimeout(() => setSaved(null), 1800)
+  }
+
+  async function saveAgent(slug: string) {
+    await persistAgent(ratesFor(slug))
+  }
+
+  async function changeBillingType(slug: string, billingType: AgencyInvoiceRates['billingType']) {
+    await persistAgent({ ...ratesFor(slug), billingType })
   }
 
   return (
@@ -302,9 +309,9 @@ export function AdminInvoiceSetup() {
         <div className="border-b border-teal-900/8 px-5 py-4">
           <h2 className="font-medium text-teal-950">Agency prices (THB)</h2>
           <p className="mt-1 text-sm text-teal-900/55">
-            AD / CH / IN / TL per person. Agencies with no prices show 0 and cannot be invoiced
-            until you enter rates. Private transfer and extra zone apply when the booking has
-            those charges.
+            Set Type per agent. Prebuy deducts AD+CH heads and bills extras only. Invoice bills
+            the tour price plus extras. AD / CH / IN / TL are per person. Invoice agents with no
+            prices show 0 and cannot be billed until you enter rates.
           </p>
         </div>
         <div className="overflow-x-auto">
@@ -312,6 +319,7 @@ export function AdminInvoiceSetup() {
             <TableHeader>
               <TableRow>
                 <TableHead>Agency</TableHead>
+                <TableHead>Type</TableHead>
                 <TableHead className="text-right">AD</TableHead>
                 <TableHead className="text-right">CH</TableHead>
                 <TableHead className="text-right">IN</TableHead>
@@ -339,6 +347,25 @@ export function AdminInvoiceSetup() {
                           </span>
                         ) : null}
                       </div>
+                    </TableCell>
+                    <TableCell>
+                      <select
+                        aria-label={`${agent.name} billing type`}
+                        value={parseAgentBillingType(row.billingType)}
+                        onChange={(event) =>
+                          void changeBillingType(
+                            agent.slug,
+                            parseAgentBillingType(event.target.value),
+                          )
+                        }
+                        className="h-9 min-w-[7.5rem] rounded-lg border border-teal-900/12 bg-white/80 px-2 text-sm text-teal-950 outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
+                      >
+                        {AGENT_BILLING_TYPES.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
                     </TableCell>
                     <TableCell>
                       <MoneyField

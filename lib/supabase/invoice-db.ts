@@ -4,6 +4,7 @@ import {
   emptyAgencyRates,
   migrateInvoiceDocumentNumbers,
   normalizeInvoiceSettings,
+  parseAgentBillingType,
   type AgencyInvoiceRates,
   type InvoiceDocument,
   type InvoiceItem,
@@ -35,6 +36,7 @@ type SettingsRow = {
 
 type RatesRow = {
   agent_slug: string
+  billing_type?: string | null
   adult_price: number | string
   child_price: number | string
   infant_price: number | string
@@ -84,6 +86,7 @@ type ItemRow = {
   amount: number | string | null
   line_kind: string | null
   sort_order: number | null
+  unit?: string | null
 }
 
 function num(value: unknown) {
@@ -100,6 +103,7 @@ function isLineKind(value: unknown): value is InvoiceLineKind {
     value === 'private_transfer' ||
     value === 'extra_zone' ||
     value === 'park_fee' ||
+    value === 'park_guest' ||
     value === 'service' ||
     value === 'other'
   )
@@ -141,6 +145,7 @@ function settingsToRow(settings: InvoiceSettings, includeSignature = true): Sett
 function mapRates(row: RatesRow): AgencyInvoiceRates {
   return {
     agentSlug: row.agent_slug,
+    billingType: parseAgentBillingType(row.billing_type),
     adultPrice: num(row.adult_price),
     childPrice: num(row.child_price),
     infantPrice: num(row.infant_price),
@@ -154,9 +159,40 @@ function mapRates(row: RatesRow): AgencyInvoiceRates {
   }
 }
 
-function ratesToRow(rates: AgencyInvoiceRates): RatesRow {
+function normalizeRates(rates: AgencyInvoiceRates[]): AgencyInvoiceRates[] {
+  return rates.map((row) => ({
+    ...emptyAgencyRates(row.agentSlug),
+    ...row,
+    billingType: parseAgentBillingType(row.billingType),
+  }))
+}
+
+function mergeRatesWithLocal(
+  cloudRates: AgencyInvoiceRates[],
+  localRates: AgencyInvoiceRates[],
+  rawRows: RatesRow[],
+): AgencyInvoiceRates[] {
+  const localBySlug = new Map(normalizeRates(localRates).map((row) => [row.agentSlug, row]))
+  const rawBySlug = new Map(rawRows.map((row) => [row.agent_slug, row]))
+  const merged = cloudRates.map((row) => {
+    const raw = rawBySlug.get(row.agentSlug)
+    const local = localBySlug.get(row.agentSlug)
+    if ((raw?.billing_type == null || raw.billing_type === '') && local?.billingType) {
+      return { ...row, billingType: local.billingType }
+    }
+    return row
+  })
+  const seen = new Set(merged.map((row) => row.agentSlug))
+  for (const row of localBySlug.values()) {
+    if (!seen.has(row.agentSlug)) merged.push(row)
+  }
+  return merged
+}
+
+function ratesToRow(rates: AgencyInvoiceRates, includeBillingType = true): RatesRow {
   return {
     agent_slug: rates.agentSlug,
+    ...(includeBillingType ? { billing_type: parseAgentBillingType(rates.billingType) } : {}),
     adult_price: rates.adultPrice,
     child_price: rates.childPrice,
     infant_price: rates.infantPrice,
@@ -190,10 +226,11 @@ function mapItem(row: ItemRow): InvoiceItem {
     amount: num(row.amount),
     lineKind: isLineKind(row.line_kind) ? row.line_kind : 'tour',
     sortOrder: num(row.sort_order),
+    unit: row.unit?.trim() || '',
   }
 }
 
-function itemToRow(item: InvoiceItem): ItemRow {
+function itemToRow(item: InvoiceItem, includeUnit = true): ItemRow {
   return {
     id: item.id,
     invoice_id: item.invoiceId,
@@ -213,6 +250,7 @@ function itemToRow(item: InvoiceItem): ItemRow {
     amount: item.amount,
     line_kind: item.lineKind,
     sort_order: item.sortOrder,
+    ...(includeUnit ? { unit: item.unit?.trim() || '' } : {}),
   }
 }
 
@@ -321,7 +359,7 @@ export async function loadInvoiceStore(): Promise<InvoiceStoreSnapshot> {
 
   const local: InvoiceStoreSnapshot = {
     settings: normalizeInvoiceSettings(readLocal<InvoiceSettings>(SETTINGS_KEY, DEFAULT_INVOICE_SETTINGS)),
-    rates: readLocal<AgencyInvoiceRates[]>(RATES_KEY, []),
+    rates: normalizeRates(readLocal<AgencyInvoiceRates[]>(RATES_KEY, [])),
     invoices: localDocs.invoices,
     cloud: false,
   }
@@ -369,11 +407,15 @@ export async function loadInvoiceStore(): Promise<InvoiceStoreSnapshot> {
       await saveInvoiceDocuments(cloudDocs.changed)
     }
 
+    const rawRates = (ratesRes.data ?? []) as RatesRow[]
+    const rates = mergeRatesWithLocal(rawRates.map(mapRates), local.rates, rawRates)
+    writeLocal(RATES_KEY, rates)
+
     return {
       settings: settingsRes.data
         ? mapSettings(settingsRes.data as SettingsRow)
         : local.settings,
-      rates: ((ratesRes.data ?? []) as RatesRow[]).map(mapRates),
+      rates,
       invoices: cloudDocs.invoices,
       cloud: true,
     }
@@ -421,6 +463,13 @@ export async function saveAgencyRates(rates: AgencyInvoiceRates): Promise<{ erro
     const supabase = getSupabaseBrowserClient()
     const { error } = await supabase.from('agency_invoice_rates').upsert(ratesToRow(rates))
     if (error) {
+      const missingColumn = /billing_type|schema cache|column/i.test(error.message)
+      if (missingColumn) {
+        const retry = await supabase.from('agency_invoice_rates').upsert(ratesToRow(rates, false))
+        if (!retry.error) return {}
+        console.warn('[supabase] agency invoice rates save failed', retry.error.message)
+        return { error: retry.error.message }
+      }
       console.warn('[supabase] agency invoice rates save failed', error.message)
       return { error: error.message }
     }
@@ -461,8 +510,17 @@ export async function saveInvoiceDocument(doc: InvoiceDocument): Promise<{ error
     }
     await supabase.from('invoice_items').delete().eq('invoice_id', doc.id)
     if (doc.items.length > 0) {
-      const { error: itemError } = await supabase.from('invoice_items').insert(doc.items.map(itemToRow))
+      const { error: itemError } = await supabase.from('invoice_items').insert(doc.items.map((item) => itemToRow(item)))
       if (itemError) {
+        const missingUnit = /unit|schema cache|column/i.test(itemError.message)
+        if (missingUnit) {
+          const retry = await supabase
+            .from('invoice_items')
+            .insert(doc.items.map((item) => itemToRow(item, false)))
+          if (!retry.error) return {}
+          console.warn('[supabase] invoice items save failed', retry.error.message)
+          return { error: retry.error.message }
+        }
         console.warn('[supabase] invoice items save failed', itemError.message)
         return { error: itemError.message }
       }
