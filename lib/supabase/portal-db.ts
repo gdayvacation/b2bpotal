@@ -72,6 +72,8 @@ import {
   normalizeBoatLabels,
   canonicalVanOutsourceCompany,
   normalizeChargeAmount,
+  compactBoatAssignment,
+  normalizeBoatAssignment,
   persistBoatNames,
 } from '@/lib/types'
 
@@ -153,6 +155,7 @@ type BoatAssignmentRow = {
   program: Program
   booking_code: string
   boat_number: number
+  pax?: number | null
 }
 
 type VehiclePlanRow = {
@@ -469,7 +472,24 @@ function buildBoatPlans(
     const key = dayBoatPlanKey(date, row.program)
     const plan = next[key] ?? emptyDayBoatPlan(date, row.program)
     const boat = Math.max(1, Math.floor(Number(row.boat_number) || 0))
-    if (boat >= 1) plan.assignments[row.booking_code] = boat
+    if (boat < 1) {
+      next[key] = plan
+      continue
+    }
+    const pax = Number(row.pax)
+    const amount = Number.isFinite(pax) && pax > 0 ? Math.floor(pax) : 0
+    const prev = plan.assignments[row.booking_code]
+    if (prev == null) {
+      plan.assignments[row.booking_code] = amount > 0 ? [{ boat, pax: amount }] : boat
+    } else {
+      const legs = normalizeBoatAssignment(prev)
+      const found = legs.find((leg) => leg.boat === boat)
+      if (found) found.pax = Math.max(found.pax, amount)
+      else legs.push({ boat, pax: amount })
+      const withPax = legs.filter((leg) => leg.pax > 0)
+      plan.assignments[row.booking_code] =
+        withPax.length > 0 ? (compactBoatAssignment(withPax) ?? boat) : compactBoatAssignment(legs) ?? boat
+    }
     next[key] = plan
   }
   return next
@@ -1110,17 +1130,51 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
   if (delError) throw new Error(`clear boat assignments: ${delError.message}`)
 
   const maxBoat = capacities.length
-  const rows = Object.entries(plan.assignments)
-    .map(([booking_code, boat_number]) => ({
-      date: plan.date,
-      program: plan.program,
-      booking_code,
-      boat_number: Math.max(1, Math.floor(Number(boat_number) || 0)),
-    }))
-    .filter((row) => row.boat_number >= 1 && row.boat_number <= maxBoat)
+  const rows: Array<{
+    date: string
+    program: Program
+    booking_code: string
+    boat_number: number
+    pax?: number
+  }> = []
+  for (const [booking_code, assignment] of Object.entries(plan.assignments ?? {})) {
+    const legs = normalizeBoatAssignment(assignment)
+    if (legs.length === 0) {
+      const boat = Math.max(1, Math.floor(Number(assignment) || 0))
+      if (boat >= 1 && boat <= maxBoat) {
+        rows.push({ date: plan.date, program: plan.program, booking_code, boat_number: boat })
+      }
+      continue
+    }
+    for (const leg of legs) {
+      if (leg.boat < 1 || leg.boat > maxBoat) continue
+      rows.push({
+        date: plan.date,
+        program: plan.program,
+        booking_code,
+        boat_number: leg.boat,
+        ...(leg.pax > 0 ? { pax: leg.pax } : {}),
+      })
+    }
+  }
   if (rows.length > 0) {
     const { error: insertError } = await supabase.from('boat_assignments').insert(rows)
-    if (insertError) throw new Error(`insert boat assignments: ${insertError.message}`)
+    if (insertError) {
+      const withoutPax = rows.map(({ pax: _pax, ...row }) => row)
+      const unique = new Map<string, (typeof withoutPax)[number]>()
+      for (const row of withoutPax) {
+        unique.set(`${row.booking_code}`, row)
+      }
+      const { error: retryError } = await supabase
+        .from('boat_assignments')
+        .insert([...unique.values()])
+      if (retryError) throw new Error(`insert boat assignments: ${retryError.message}`)
+      console.error(
+        '[supabase] boat assignment splits need a DB update — run supabase/add-boat-assignment-splits.sql Then save again.',
+        insertError.message,
+      )
+      warnings.push('Run supabase/add-boat-assignment-splits.sql in Supabase.')
+    }
   }
 
   if (warnings.length > 0) {

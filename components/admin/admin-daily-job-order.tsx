@@ -37,6 +37,7 @@ import {
   isNoTransfer,
   isNoTransferVan,
   isSpecialTransfer,
+  primaryBoatNumber,
   specialTransferKindLabel,
   totalPassengers,
   vanHasSavedMeta,
@@ -199,7 +200,12 @@ export function AdminDailyJobOrder({
 
   const boatAssignments = useMemo(() => {
     if (!program) return {} as Record<string, number>
-    return getDayBoatPlan(selectedDate, program).assignments
+    const next: Record<string, number> = {}
+    for (const [code, assigned] of Object.entries(getDayBoatPlan(selectedDate, program).assignments)) {
+      const boat = primaryBoatNumber(assigned)
+      if (boat) next[code] = boat
+    }
+    return next
   }, [getDayBoatPlan, program, selectedDate])
 
   const dayBookings = useMemo(

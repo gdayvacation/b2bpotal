@@ -133,10 +133,13 @@ import {
   isDummyVan,
   isPartnerBoat,
   isNoTransfer,
+  normalizeBoatAssignment,
+  primaryBoatNumber,
   totalPassengers,
   vanOutsourceLabel,
   vanTransferKind,
   type Booking,
+  type DayBoatPlan,
   type Program,
   type VanSplit,
 } from '@/lib/types'
@@ -1138,7 +1141,7 @@ function TodayBoardTab({
   const selectedBoat = useMemo(() => {
     if (!selectedBooking) return null
     const plan = getDayBoatPlan(boardDate, selectedBooking.program)
-    return plan.assignments[selectedBooking.code] ?? null
+    return primaryBoatNumber(plan.assignments[selectedBooking.code])
   }, [boardDate, getDayBoatPlan, selectedBooking])
 
   const dayBookings = useMemo(
@@ -1813,7 +1816,7 @@ function makeDriverGroup(
   phone: string,
   bookings: Booking[],
   today: string,
-  boatAssignments: Record<string, number>,
+  boatAssignments: DayBoatPlan['assignments'],
   vanAssignments: Record<string, VanSplit[]>,
   getEnrollments: ReturnType<typeof usePortal>['getCheckInEnrollments'],
   getAttendance: ReturnType<typeof usePortal>['getCheckInAttendance'],
@@ -1824,7 +1827,7 @@ function makeDriverGroup(
       booking,
       getEnrollments(today, booking.program, booking.code),
       getAttendance(today, booking.program, booking.code),
-      boatAssignments[booking.code] ?? null,
+      primaryBoatNumber(boatAssignments[booking.code]),
       today,
       van,
       vanAssignments[booking.code],
@@ -2114,7 +2117,13 @@ function DriverGroupCard({
                           {line.leaderName || line.booking.code}
                           {line.split ? (
                             <span className="ml-1.5 text-[10px] font-semibold text-teal-700/55">
-                              split
+                              van split
+                            </span>
+                          ) : null}
+                          {normalizeBoatAssignment(boatPlan.assignments[line.booking.code]).length >
+                          1 ? (
+                            <span className="ml-1.5 text-[10px] font-semibold text-teal-700/55">
+                              boat split
                             </span>
                           ) : null}
                         </p>
@@ -2498,7 +2507,13 @@ function DriverGroupCard({
                         {line.leaderName || line.booking.code}
                         {line.split ? (
                           <span className="ml-1.5 text-[10px] font-semibold text-teal-700/55">
-                            split
+                            van split
+                          </span>
+                        ) : null}
+                        {normalizeBoatAssignment(boatPlan.assignments[line.booking.code]).length >
+                        1 ? (
+                          <span className="ml-1.5 text-[10px] font-semibold text-teal-700/55">
+                            boat split
                           </span>
                         ) : null}
                       </p>

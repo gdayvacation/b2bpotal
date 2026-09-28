@@ -1,7 +1,11 @@
 import {
   DEFAULT_BOAT_CAPACITY,
+  bookingAssignedToBoat,
+  bookingPaxOnBoat,
   isDummyVan,
   isPartnerBoat,
+  moveBoatPax,
+  primaryBoatNumber,
   totalPassengers,
   type BoatNumber,
   type Booking,
@@ -10,17 +14,16 @@ import {
 } from '@/lib/types'
 import { bookingPaxOnVan, listVanNumbers } from '@/lib/vehicle-assign'
 
-/** Live pax already placed on this boat (one booking = one boat). */
+/** Live pax already placed on this boat (supports split bookings). */
 export function boatAssignedPax(
   bookings: Booking[],
-  assignments: Record<string, BoatNumber>,
+  assignments: DayBoatPlan['assignments'],
   boat: BoatNumber,
   excludeCode?: string,
 ): number {
   return bookings.reduce((sum, booking) => {
     if (excludeCode && booking.code === excludeCode) return sum
-    if (assignments[booking.code] !== boat) return sum
-    return sum + totalPassengers(booking)
+    return sum + bookingPaxOnBoat(booking, assignments[booking.code], boat)
   }, 0)
 }
 
@@ -54,24 +57,36 @@ export function canFitBookingOnBoat(
 export function adoptVanBookingsOntoSharedBoat(
   bookings: Booking[],
   vehicleAssignments: Record<string, VanSplit[]>,
-  boatAssignments: Record<string, BoatNumber>,
+  boatAssignments: DayBoatPlan['assignments'],
   van: number,
-): Record<string, BoatNumber> | null {
+): DayBoatPlan['assignments'] | null {
   const members = bookings.filter(
     (booking) => bookingPaxOnVan(booking, vehicleAssignments[booking.code], van) > 0,
   )
   if (members.length === 0) return null
   const boats = new Set<BoatNumber>()
   for (const booking of members) {
-    const boat = boatAssignments[booking.code]
+    const boat = primaryBoatNumber(boatAssignments[booking.code])
     if (boat) boats.add(boat)
   }
   if (boats.size !== 1) return null
   const boat = [...boats][0]!
   let changed = false
-  const next = { ...boatAssignments }
+  const next: DayBoatPlan['assignments'] = { ...boatAssignments }
   for (const booking of members) {
-    if (next[booking.code] !== boat) {
+    const vanPax = bookingPaxOnVan(booking, vehicleAssignments[booking.code], van)
+    const total = totalPassengers(booking)
+    const splitVan = (vehicleAssignments[booking.code]?.length ?? 0) > 1 && vanPax < total
+    if (splitVan) {
+      const moved = moveBoatPax(next[booking.code], boat, vanPax, total)
+      if (moved !== next[booking.code]) {
+        if (moved) next[booking.code] = moved
+        else delete next[booking.code]
+        changed = true
+      }
+      continue
+    }
+    if (!bookingAssignedToBoat(next[booking.code], boat) || Array.isArray(next[booking.code])) {
       next[booking.code] = boat
       changed = true
     }
@@ -82,8 +97,8 @@ export function adoptVanBookingsOntoSharedBoat(
 export function adoptAllVansOntoSharedBoats(
   bookings: Booking[],
   vehicleAssignments: Record<string, VanSplit[]>,
-  boatAssignments: Record<string, BoatNumber>,
-): Record<string, BoatNumber> | null {
+  boatAssignments: DayBoatPlan['assignments'],
+): DayBoatPlan['assignments'] | null {
   let assignments = boatAssignments
   let changed = false
   for (const van of listVanNumbers(vehicleAssignments).filter((item) => !isDummyVan(item))) {

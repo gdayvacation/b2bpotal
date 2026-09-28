@@ -272,12 +272,17 @@ import {
   NO_TRANSFER_VAN_NUMBER,
   NO_TRANSFER_VAN_LABEL,
   bookingOnPartnerBoat,
+  bookingPaxOnBoat,
   bookingTransferKind,
   canonicalVanOutsourceCompany,
+  compactBoatAssignment,
   isDummyVan,
   isNoTransferVan,
   isVirtualVan,
+  moveBoatPax,
   noTransferVanMeta,
+  normalizeBoatAssignment,
+  primaryBoatNumber,
   vanTransferKind,
   isActiveBooking,
   isCorePickupZone,
@@ -669,6 +674,12 @@ type PortalContextValue = {
     program: Program,
     bookingCode: string,
     legs: VanSplit[],
+  ) => void
+  setBookingBoatSplits: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    legs: Array<{ boat: BoatNumber; pax: number }>,
   ) => void
   reorderVanBookings: (
     date: string,
@@ -1707,7 +1718,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     const syncDummyVans = (
       date: string,
       program: Program,
-      boatAssignments: Record<string, BoatNumber>,
+      boatAssignments: DayBoatPlan['assignments'],
     ) => {
       const boatPlan = { ...getDayBoatPlan(date, program), assignments: boatAssignments }
       const vehicle = getDayVehiclePlan(date, program)
@@ -3455,11 +3466,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         if (current.capacities.length <= 1) return
         const index = boat - 1
         if (index < 0 || index >= current.capacities.length) return
-        const assignments: Record<string, BoatNumber> = {}
+        const assignments: DayBoatPlan['assignments'] = {}
         for (const [code, assigned] of Object.entries(current.assignments)) {
-          if (assigned === boat) continue
-          if (assigned > boat) assignments[code] = assigned - 1
-          else assignments[code] = assigned
+          const nextLegs = normalizeBoatAssignment(assigned)
+            .filter((leg) => leg.boat !== boat)
+            .map((leg) => ({
+              boat: leg.boat > boat ? leg.boat - 1 : leg.boat,
+              pax: leg.pax,
+            }))
+          const compact = compactBoatAssignment(nextLegs)
+          if (compact) assignments[code] = compact
         }
         upsertPlan(
           date,
@@ -3523,11 +3539,13 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           program,
           (plan) => {
             const capacities = defaultBoatCapacities()
-            const assignments: Record<string, BoatNumber> = {}
+            const assignments: DayBoatPlan['assignments'] = {}
             for (const [code, assigned] of Object.entries(plan.assignments)) {
-              if (assigned >= 1 && assigned <= capacities.length) {
-                assignments[code] = assigned
-              }
+              const legs = normalizeBoatAssignment(assigned).filter(
+                (leg) => leg.boat >= 1 && leg.boat <= capacities.length,
+              )
+              const compact = compactBoatAssignment(legs)
+              if (compact) assignments[code] = compact
             }
             return {
               ...plan,
@@ -3635,19 +3653,39 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           (plan) => {
             const assignments = { ...plan.assignments }
             for (const code of codes) {
-              if (boat === null) delete assignments[code]
-              else assignments[code] = boat
+              const booking = dayBookings.find((row) => row.code === code)
+              const vanPax = booking
+                ? bookingPaxOnVan(booking, vehiclePlan.assignments[code], van)
+                : 0
+              const total = booking ? totalPassengers(booking) : 0
+              const splitVan =
+                Boolean(booking) &&
+                (vehiclePlan.assignments[code]?.length ?? 0) > 1 &&
+                vanPax > 0 &&
+                vanPax < total
+              if (boat === null) {
+                if (splitVan) {
+                  const next = moveBoatPax(assignments[code], null, vanPax, total)
+                  if (next) assignments[code] = next
+                  else delete assignments[code]
+                } else {
+                  delete assignments[code]
+                }
+                continue
+              }
+              if (splitVan) {
+                const next = moveBoatPax(assignments[code], boat, vanPax, total)
+                if (next) assignments[code] = next
+                else assignments[code] = boat
+              } else {
+                assignments[code] = boat
+              }
             }
             return { ...plan, assignments }
           },
           options,
         )
-        const nextBoatAssignments = { ...getDayBoatPlan(date, program).assignments }
-        for (const code of codes) {
-          if (boat === null) delete nextBoatAssignments[code]
-          else nextBoatAssignments[code] = boat
-        }
-        syncDummyVans(date, program, nextBoatAssignments)
+        syncDummyVans(date, program, getDayBoatPlan(date, program).assignments)
       },
       assignVanToPartnerBoat: (date, program, van) => {
         const vehiclePlan = getDayVehiclePlan(date, program)
@@ -3831,6 +3869,55 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         for (const van of [...new Set(cleaned.map((leg) => leg.van))]) {
           followVanOntoBoat(date, program, van, assignments)
         }
+        const booking = bookings.find((item) => item.code === bookingCode)
+        if (booking && cleaned.length > 0) {
+          const boatPlan = getDayBoatPlan(date, program)
+          const byBoat = new Map<number, number>()
+          for (const leg of cleaned) {
+            const vanBoat = primaryBoatNumber(
+              boatPlan.assignments[
+                activeDayBookings(date, program).find(
+                  (item) =>
+                    item.code !== bookingCode &&
+                    bookingPaxOnVan(item, assignments[item.code], leg.van) > 0,
+                )?.code ?? ''
+              ],
+            )
+            const own = primaryBoatNumber(boatPlan.assignments[bookingCode])
+            const boat = vanBoat ?? own
+            if (!boat) continue
+            byBoat.set(boat, (byBoat.get(boat) ?? 0) + leg.pax)
+          }
+          if (byBoat.size > 0) {
+            const boatLegs = [...byBoat.entries()].map(([boat, pax]) => ({ boat, pax }))
+            upsertPlan(date, program, (plan) => {
+              const next = { ...plan.assignments }
+              const compact = compactBoatAssignment(boatLegs)
+              if (compact) next[bookingCode] = compact
+              else delete next[bookingCode]
+              return { ...plan, assignments: next }
+            })
+          }
+        }
+      },
+      setBookingBoatSplits: (date, program, bookingCode, legs) => {
+        const booking = bookings.find((item) => item.code === bookingCode)
+        const total = booking ? totalPassengers(booking) : 0
+        const cleaned = normalizeBoatAssignment(legs, total)
+        const sum = cleaned.reduce((s, leg) => s + leg.pax, 0)
+        if (booking && sum > total) return
+        upsertPlan(date, program, (plan) => {
+          const assignments = { ...plan.assignments }
+          const compact = compactBoatAssignment(cleaned)
+          if (!compact) delete assignments[bookingCode]
+          else assignments[bookingCode] = compact
+          return { ...plan, assignments }
+        })
+        const nextBoat = { ...getDayBoatPlan(date, program).assignments }
+        const compact = compactBoatAssignment(cleaned)
+        if (!compact) delete nextBoat[bookingCode]
+        else nextBoat[bookingCode] = compact
+        syncDummyVans(date, program, nextBoat)
       },
       reorderVanBookings: (date, program, van, orderedCodes) => {
         if (orderedCodes.length === 0) return
@@ -3960,19 +4047,26 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           const keepIdx = next.capacities
             .map((_, index) => index)
             .filter((index) => next.kinds[index] !== 'partner')
-          const assignments: Record<string, BoatNumber> = {}
+          const assignments: DayBoatPlan['assignments'] = {}
           if (keepIdx.length === 0 || keepIdx.length === next.capacities.length) {
-            for (const [code, boat] of Object.entries(next.assignments)) {
+            for (const [code, assigned] of Object.entries(next.assignments)) {
               if (returning.includes(code)) continue
-              assignments[code] = boat
+              assignments[code] = assigned
             }
             return { ...next, assignments }
           }
           const oldToNew = new Map<number, number>()
           keepIdx.forEach((oldIndex, newIndex) => oldToNew.set(oldIndex + 1, newIndex + 1))
-          for (const [code, boat] of Object.entries(next.assignments)) {
+          for (const [code, assigned] of Object.entries(next.assignments)) {
             if (returning.includes(code)) continue
-            const mapped = oldToNew.get(boat)
+            const mapped = compactBoatAssignment(
+              normalizeBoatAssignment(assigned)
+                .map((leg) => {
+                  const boat = oldToNew.get(leg.boat)
+                  return boat ? { boat, pax: leg.pax } : null
+                })
+                .filter((leg): leg is { boat: number; pax: number } => leg !== null),
+            )
             if (mapped) assignments[code] = mapped
           }
           return {
@@ -4052,10 +4146,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             if (index < 0 || index >= next.capacities.length || next.capacities.length <= 1) {
               return next
             }
-            const kept: Record<string, BoatNumber> = {}
+            const kept: DayBoatPlan['assignments'] = {}
             for (const [code, assigned] of Object.entries(next.assignments)) {
-              if (assigned === linkedBoat) continue
-              kept[code] = assigned > linkedBoat ? assigned - 1 : assigned
+              const mapped = compactBoatAssignment(
+                normalizeBoatAssignment(assigned)
+                  .filter((leg) => leg.boat !== linkedBoat)
+                  .map((leg) => ({
+                    boat: leg.boat > linkedBoat ? leg.boat - 1 : leg.boat,
+                    pax: leg.pax,
+                  })),
+              )
+              if (mapped) kept[code] = mapped
             }
             return {
               ...next,

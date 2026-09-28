@@ -28,7 +28,8 @@ import {
   DUMMY_VAN_LABEL,
   DUMMY_VAN_NUMBER,
   isDummyVan,
-  isPartnerBoat,
+  bookingOnPartnerBoat,
+  primaryBoatNumber,
   type Booking,
   type CheckInAttendance,
   type DayBoatPlan,
@@ -195,8 +196,8 @@ export function InvoiceDummyVanPanel({
         const boatPlan = getDayBoatPlan(booking.date, booking.program)
         const legs = vehicle.assignments[booking.code]
         const dummyVan = Boolean(legs?.some((leg) => isDummyVan(leg.van)))
-        const boat = boatPlan.assignments[booking.code] ?? null
-        const partnerBoat = Boolean(boat && isPartnerBoat(boatPlan, boat))
+        const boat = primaryBoatNumber(boatPlan.assignments[booking.code])
+        const partnerBoat = bookingOnPartnerBoat(boatPlan, booking.code)
         if (!dummyVan && !partnerBoat) return []
 
         const pax = dummyVan

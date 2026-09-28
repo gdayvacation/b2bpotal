@@ -63,6 +63,7 @@ import {
   vanTransferKind,
   isNoTransfer,
   boatDisplayName,
+  primaryBoatNumber,
   totalPassengers,
   type Booking,
   type Program,
@@ -1445,9 +1446,11 @@ function GuestCheckInForm({
             }
             boat={
               selectedBooking
-                ? (getDayBoatPlan(selectedBooking.date, selectedBooking.program).assignments[
-                    selectedBooking.code
-                  ] ?? null)
+                ? primaryBoatNumber(
+                    getDayBoatPlan(selectedBooking.date, selectedBooking.program).assignments[
+                      selectedBooking.code
+                    ],
+                  )
                 : null
             }
             boatPlan={

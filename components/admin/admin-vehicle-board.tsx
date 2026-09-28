@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type HTMLAttributes } from 'react'
 import {
   ArrowLeft,
   Bus,
@@ -11,6 +11,7 @@ import {
   Plus,
   Printer,
   Search,
+  Ship,
   Sparkles,
   SplitSquareVertical,
   Trash2,
@@ -52,8 +53,10 @@ import {
   boatNumbersForPlan,
   canonicalVanOutsourceCompany,
   clampVanCapacity,
-  bookingTransferKind,
-  isPartnerBoat,
+    bookingAssignedToBoat,
+    bookingPaxOnBoat,
+    bookingTransferKind,
+    isPartnerBoat,
   isVirtualVan,
   emptyBoatGuide,
   emptyVanMeta,
@@ -68,7 +71,9 @@ import {
   DUMMY_VAN_NUMBER,
   TRANSFER_KIND_LABELS,
   normalizeChargeAmount,
-  specialTransferDirectionLabel,
+    normalizeBoatAssignment,
+    primaryBoatNumber,
+    specialTransferDirectionLabel,
   specialTransferKindLabel,
   totalPassengers,
   vanOutsourceLabel,
@@ -77,6 +82,7 @@ import {
   type BookingTransferKind,
   type TransferKind,
   type BoatNumber,
+  type BoatSplit,
   type Booking,
   type DayBoatPlan,
   type DayVehiclePlan,
@@ -114,6 +120,86 @@ function insertCodeInList(codes: string[], fromIndex: number, insertAt: number) 
   next.splice(at, 0, moved)
   if (next.every((code, index) => code === codes[index])) return null
   return next
+}
+
+function LongPressCard({
+  onLongPress,
+  children,
+  className,
+  ...rest
+}: HTMLAttributes<HTMLDivElement> & { onLongPress: () => void }) {
+  const timerRef = useRef<number | null>(null)
+  const armedRef = useRef(false)
+  const ignoreClickRef = useRef(false)
+  const startRef = useRef({ x: 0, y: 0 })
+  const [holding, setHolding] = useState(false)
+
+  function clearTimer() {
+    if (timerRef.current) window.clearTimeout(timerRef.current)
+    timerRef.current = null
+  }
+
+  function disarm() {
+    clearTimer()
+    armedRef.current = false
+    setHolding(false)
+  }
+
+  return (
+    <div
+      {...rest}
+      title={
+        rest.title
+          ? `${rest.title} · Long-press to separate van or boat`
+          : 'Long-press to separate van or boat'
+      }
+      className={cn(className, holding && 'ring-2 ring-teal-600/40')}
+      onPointerDown={(event) => {
+        rest.onPointerDown?.(event)
+        if (event.button !== 0) return
+        disarm()
+        ignoreClickRef.current = false
+        startRef.current = { x: event.clientX, y: event.clientY }
+        timerRef.current = window.setTimeout(() => {
+          timerRef.current = null
+          armedRef.current = true
+          setHolding(true)
+        }, 480)
+      }}
+      onPointerMove={(event) => {
+        rest.onPointerMove?.(event)
+        if (!timerRef.current && !armedRef.current) return
+        const dx = event.clientX - startRef.current.x
+        const dy = event.clientY - startRef.current.y
+        if (dx * dx + dy * dy > 64) disarm()
+      }}
+      onPointerUp={(event) => {
+        const open = armedRef.current
+        rest.onPointerUp?.(event)
+        disarm()
+        if (!open) return
+        ignoreClickRef.current = true
+        event.preventDefault()
+        event.stopPropagation()
+        onLongPress()
+      }}
+      onPointerCancel={(event) => {
+        rest.onPointerCancel?.(event)
+        disarm()
+      }}
+      onClick={(event) => {
+        if (ignoreClickRef.current) {
+          event.preventDefault()
+          event.stopPropagation()
+          ignoreClickRef.current = false
+          return
+        }
+        rest.onClick?.(event)
+      }}
+    >
+      {children}
+    </div>
+  )
 }
 
 function bookingWaitingForVan(
@@ -224,6 +310,7 @@ export function VehicleDailyBoard({ onBack }: { onBack?: () => void }) {
     autoAssignDayBoats,
     clearDayBoatAssignments,
     setBookingVanSplits,
+    setBookingBoatSplits,
     setVanMeta,
     reorderVanBookings,
     autoAssignDayVans,
@@ -400,6 +487,9 @@ export function VehicleDailyBoard({ onBack }: { onBack?: () => void }) {
           onAutoAssignBoats={() => autoAssignDayBoats(selectedDate, program)}
           onClearBoats={() => clearDayBoatAssignments(selectedDate, program)}
           onSaveSplits={(code, legs) => setBookingVanSplits(selectedDate, program, code, legs)}
+          onSaveBoatSplits={(code, legs) =>
+            setBookingBoatSplits(selectedDate, program, code, legs)
+          }
           onVanMeta={(van, meta) => setVanMeta(selectedDate, program, van, meta)}
           onReorderVan={(van, orderedCodes) =>
             reorderVanBookings(selectedDate, program, van, orderedCodes)
@@ -927,6 +1017,7 @@ function VehicleBoard({
   onAutoAssignBoats,
   onClearBoats,
   onSaveSplits,
+  onSaveBoatSplits,
   onVanMeta,
   onReorderVan,
   onAutoAssign,
@@ -949,6 +1040,7 @@ function VehicleBoard({
   onAutoAssignBoats: () => void
   onClearBoats: () => void
   onSaveSplits: (code: string, legs: VanSplit[]) => void
+  onSaveBoatSplits: (code: string, legs: Array<{ boat: BoatNumber; pax: number }>) => void
   onVanMeta: (
     van: number,
     meta: Omit<Partial<VanMeta>, 'capacity' | 'specialKind'> & {
@@ -1028,7 +1120,7 @@ function VehicleBoard({
 
   useEffect(() => {
     for (const booking of bookings) {
-      const boat = boatPlan.assignments[booking.code]
+      const boat = primaryBoatNumber(boatPlan.assignments[booking.code])
       if (!boat || !isPartnerBoat(boatPlan, boat)) continue
       if (isNoTransfer(booking.pickupZone)) continue
       if (plan.assignments[booking.code]?.length) continue
@@ -1340,8 +1432,9 @@ function VehicleBoard({
           : 'Drop guests here'
     const boatVotes = new Map<BoatNumber, number>()
     for (const item of items) {
-      const boat = boatPlan.assignments[item.booking.code]
-      if (boat) boatVotes.set(boat, (boatVotes.get(boat) ?? 0) + 1)
+      for (const leg of normalizeBoatAssignment(boatPlan.assignments[item.booking.code])) {
+        boatVotes.set(leg.boat, (boatVotes.get(leg.boat) ?? 0) + 1)
+      }
     }
     let assignedBoat: BoatNumber | null = null
     if (boatVotes.size === 1) {
@@ -1390,15 +1483,20 @@ function VehicleBoard({
   const boatNumbers = boatNumbersForPlan(boatPlan)
   const byBoat = boatNumbers.map((boat) => {
     const capacityBoat = boatPlan.capacities[boat - 1] || DEFAULT_BOAT_CAPACITY
-    const items = bookings.filter((booking) => boatPlan.assignments[booking.code] === boat)
-    const pax = items.reduce((sum, b) => sum + totalPassengers(b), 0)
+    const items = bookings.filter((booking) =>
+      bookingAssignedToBoat(boatPlan.assignments[booking.code], boat),
+    )
+    const pax = items.reduce(
+      (sum, booking) => sum + bookingPaxOnBoat(booking, boatPlan.assignments[booking.code], boat),
+      0,
+    )
     const groupMap = new Map<number | 'loose', { van: number | null; items: Booking[]; pax: number }>()
     for (const booking of items) {
       const van = primaryVan(plan.assignments[booking.code])
       const key = van ?? 'loose'
       const current = groupMap.get(key) ?? { van, items: [], pax: 0 }
       current.items.push(booking)
-      current.pax += totalPassengers(booking)
+      current.pax += bookingPaxOnBoat(booking, boatPlan.assignments[booking.code], boat)
       groupMap.set(key, current)
     }
     const groups = [...groupMap.values()].sort((a, b) => {
@@ -1410,9 +1508,14 @@ function VehicleBoard({
     return { boat, capacity: capacityBoat, items, pax, over: pax > capacityBoat, groups }
   })
   const boatAssignedCount = bookings.filter((b) => boatPlan.assignments[b.code]).length
-  const boatUnassignedPax = bookings
-    .filter((b) => !boatPlan.assignments[b.code])
-    .reduce((sum, b) => sum + totalPassengers(b), 0)
+  const boatUnassignedPax = bookings.reduce((sum, booking) => {
+    const total = totalPassengers(booking)
+    const assigned = boatPlan.assignments[booking.code]
+    if (assigned == null) return sum + total
+    if (typeof assigned === 'number') return sum
+    const placed = normalizeBoatAssignment(assigned).reduce((acc, leg) => acc + leg.pax, 0)
+    return sum + Math.max(0, total - placed)
+  }, 0)
 
   const openDetail = openVan !== null ? byVan.find((item) => item.van === openVan) : null
   const openMeta =
@@ -1447,7 +1550,8 @@ function VehicleBoard({
                 : ''}
             </p>
             <p className="mt-1 text-sm text-teal-900/45">
-              Step 1 · set every guest’s van type. Step 2 · arrange boats. Step 3 · assign guides.
+              Step 1 · set every guest’s van type. Long-press a hotel card to separate vans or boats.
+              Step 2 · arrange boats. Step 3 · assign guides.
             </p>
           </div>
         </div>
@@ -1460,7 +1564,8 @@ function VehicleBoard({
             {needsSeparate.length === 1 ? '' : 's'} over {capacity} pax
           </p>
           <p className="mt-1 text-sm text-amber-900/70">
-            Keep everyone on the same van or bus (raise seats), or split across vans.
+            Long-press the hotel card, or tap below. Keep everyone on one van or bus, or split van
+            numbers and boat numbers.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             {needsSeparate.map((booking) => (
@@ -1825,9 +1930,10 @@ function VehicleBoard({
                       const transferKind = bookingTransferKind(booking, plan, boatPlan)
 
                       return (
-                        <div
+                        <LongPressCard
                           key={booking.code}
                           draggable
+                          onLongPress={() => setSplitCode(booking.code)}
                           onDragStart={(event) => {
                             beginDrag(event, codesForDrag(booking.code))
                           }}
@@ -1905,7 +2011,7 @@ function VehicleBoard({
                             </div>
                             <GripVertical className="size-3.5 shrink-0 text-teal-800/30" />
                           </div>
-                        </div>
+                        </LongPressCard>
                       )
                     })}
                   </div>
@@ -2177,6 +2283,8 @@ function VehicleBoard({
                           ) : (
                             items.map(({ booking, paxOnVan: legPax, legs }, index) => {
                               const split = (legs?.length ?? 0) > 1
+                              const boatSplit =
+                                normalizeBoatAssignment(boatPlan.assignments[booking.code]).length > 1
                               const isDragging = dragCodes?.includes(booking.code)
                               const hotel = booking.pickupHotel.trim()
                               const mix = allocatePaxBreakdown(booking, legs, van)
@@ -2189,10 +2297,11 @@ function VehicleBoard({
                                 dragOverCode === booking.code &&
                                 !dragCodes.includes(booking.code)
                               return (
-                                <div
+                                <LongPressCard
                                   key={`${van}-${booking.code}`}
                                   draggable
                                   title="Drag to change pickup order"
+                                  onLongPress={() => setSplitCode(booking.code)}
                                   onDragStart={(event) => {
                                     event.stopPropagation()
                                     beginDrag(event, [booking.code])
@@ -2249,7 +2358,10 @@ function VehicleBoard({
                                     {hotel || booking.pickupZone || 'Hotel TBA'}
                                     {booking.roomNumber ? ` · Rm ${booking.roomNumber}` : ''}
                                     {split ? (
-                                      <span className="ml-1 font-normal text-teal-900/40">split</span>
+                                      <span className="ml-1 font-normal text-teal-900/40">van split</span>
+                                    ) : null}
+                                    {boatSplit ? (
+                                      <span className="ml-1 font-normal text-teal-900/40">boat split</span>
                                     ) : null}
                                   </p>
                                   <div className="mt-0.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[11px] leading-tight">
@@ -2260,7 +2372,7 @@ function VehicleBoard({
                                       {formatVanPaxMix(mix)}
                                     </span>
                                   </div>
-                                </div>
+                                </LongPressCard>
                               )
                             })
                           )}
@@ -2520,27 +2632,47 @@ function VehicleBoard({
                                   </span>
                                 </p>
                                 <ul className="mt-1 space-y-0.5">
-                                  {group.items.map((booking) => (
-                                    <li
-                                      key={booking.code}
-                                      className="flex items-center justify-between gap-2 text-xs text-neutral-800"
-                                    >
+                                  {group.items.map((booking) => {
+                                    const onBoat = bookingPaxOnBoat(
+                                      booking,
+                                      boatPlan.assignments[booking.code],
+                                      boat,
+                                    )
+                                    const boatSplit =
+                                      normalizeBoatAssignment(
+                                        boatPlan.assignments[booking.code],
+                                      ).length > 1
+                                    return (
+                                    <li key={booking.code}>
+                                      <LongPressCard
+                                        className="flex items-center justify-between gap-2 text-xs text-neutral-800"
+                                        onLongPress={() => setSplitCode(booking.code)}
+                                      >
                                       <span className="min-w-0 truncate">
-                                        {booking.pickupHotel || booking.leadGuest} ·{' '}
-                                        {totalPassengers(booking)}
+                                        {booking.pickupHotel || booking.leadGuest} · {onBoat}
+                                        {boatSplit ? ' split' : ''}
                                       </span>
                                       <button
                                         type="button"
                                         className="shrink-0 text-neutral-400 hover:text-rose-700"
                                         title="Return to guest list"
-                                        onClick={() =>
-                                          assignBookingToBoat(date, program, booking.code, null)
-                                        }
+                                        onClick={() => {
+                                          const remaining = normalizeBoatAssignment(
+                                            boatPlan.assignments[booking.code],
+                                          ).filter((leg) => leg.boat !== boat)
+                                          if (remaining.length === 0) {
+                                            assignBookingToBoat(date, program, booking.code, null)
+                                            return
+                                          }
+                                          onSaveBoatSplits(booking.code, remaining)
+                                        }}
                                       >
                                         ×
                                       </button>
+                                      </LongPressCard>
                                     </li>
-                                  ))}
+                                    )
+                                  })}
                                 </ul>
                               </li>
                             ))}
@@ -2602,14 +2734,24 @@ function VehicleBoard({
                               </span>
                             </p>
                             <ul className="mt-1 space-y-0.5">
-                              {group.items.map((booking) => (
-                                <li
-                                  key={booking.code}
-                                  className="flex items-center justify-between gap-2 text-xs text-teal-950"
-                                >
+                              {group.items.map((booking) => {
+                                const onBoat = bookingPaxOnBoat(
+                                  booking,
+                                  boatPlan.assignments[booking.code],
+                                  boat,
+                                )
+                                const boatSplit =
+                                  normalizeBoatAssignment(boatPlan.assignments[booking.code])
+                                    .length > 1
+                                return (
+                                <li key={booking.code}>
+                                  <LongPressCard
+                                    className="flex items-center justify-between gap-2 text-xs text-teal-950"
+                                    onLongPress={() => setSplitCode(booking.code)}
+                                  >
                                   <span className="min-w-0 truncate">
-                                    {booking.pickupHotel || booking.leadGuest} ·{' '}
-                                    {totalPassengers(booking)}
+                                    {booking.pickupHotel || booking.leadGuest} · {onBoat}
+                                    {boatSplit ? ' split' : ''}
                                   </span>
                                   <button
                                     type="button"
@@ -2617,13 +2759,22 @@ function VehicleBoard({
                                     title="Remove from boat"
                                     onClick={(event) => {
                                       event.stopPropagation()
-                                      assignBookingToBoat(date, program, booking.code, null)
+                                      const remaining = normalizeBoatAssignment(
+                                        boatPlan.assignments[booking.code],
+                                      ).filter((leg) => leg.boat !== boat)
+                                      if (remaining.length === 0) {
+                                        assignBookingToBoat(date, program, booking.code, null)
+                                        return
+                                      }
+                                      onSaveBoatSplits(booking.code, remaining)
                                     }}
                                   >
                                     ×
                                   </button>
+                                  </LongPressCard>
                                 </li>
-                              ))}
+                                )
+                              })}
                             </ul>
                           </li>
                         ))}
@@ -2975,8 +3126,17 @@ function VehicleBoard({
         booking={splitBooking}
         capacity={capacity}
         vehiclePlan={plan}
+        boatPlan={boatPlan}
         boardVans={boardVans.filter((van) => !isNoTransferVan(van))}
         existingLegs={splitBooking ? plan.assignments[splitBooking.code] : undefined}
+        existingBoatLegs={
+          splitBooking
+            ? normalizeBoatAssignment(
+                boatPlan.assignments[splitBooking.code],
+                totalPassengers(splitBooking),
+              )
+            : undefined
+        }
         nextVanHint={nextEmptyVan}
         open={splitCode !== null}
         onOpenChange={(open) => {
@@ -2991,6 +3151,11 @@ function VehicleBoard({
             })
           }
           onSaveSplits(splitBooking.code, legs)
+          setSplitCode(null)
+        }}
+        onSaveBoats={(legs) => {
+          if (!splitBooking) return
+          onSaveBoatSplits(splitBooking.code, legs)
           setSplitCode(null)
         }}
       />
@@ -3321,22 +3486,45 @@ function VehicleBoard({
   )
 }
 
+function suggestBoatSplit(
+  pax: number,
+  fleet: BoatNumber[],
+  startBoat: BoatNumber,
+): BoatSplit[] {
+  if (pax <= 0) return []
+  const first = fleet.includes(startBoat) ? startBoat : (fleet[0] ?? 1)
+  const second =
+    fleet.find((boat) => boat !== first) ??
+    (fleet[1] ?? (first + 1 <= MAX_DAY_BOATS ? ((first + 1) as BoatNumber) : first))
+  if (second === first) return [{ boat: first, pax }]
+  const left = Math.max(1, Math.ceil(pax / 2))
+  return [
+    { boat: first, pax: left },
+    { boat: second, pax: pax - left },
+  ]
+}
+
 function SeparateVanDialog({
   booking,
   capacity,
   vehiclePlan,
+  boatPlan,
   boardVans,
   existingLegs,
+  existingBoatLegs,
   nextVanHint,
   open,
   onOpenChange,
   onSave,
+  onSaveBoats,
 }: {
   booking: Booking | null
   capacity: number
   vehiclePlan: DayVehiclePlan
+  boatPlan: DayBoatPlan
   boardVans: number[]
   existingLegs?: VanSplit[]
+  existingBoatLegs?: BoatSplit[]
   nextVanHint: number
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -3344,13 +3532,20 @@ function SeparateVanDialog({
     legs: VanSplit[],
     vehicle?: { van: number; seats: number; label?: string },
   ) => void
+  onSaveBoats: (legs: BoatSplit[]) => void
 }) {
   const total = booking ? totalPassengers(booking) : 0
   const bookingCode = booking?.code ?? null
+  const fleetBoats = boatNumbersForPlan(boatPlan)
+  const boats = fleetBoats.length > 0 ? fleetBoats : ([1, 2, 3] as BoatNumber[])
+  const [section, setSection] = useState<'van' | 'boat'>('van')
   const [mode, setMode] = useState<'same' | 'split'>('same')
   const [sameVan, setSameVan] = useState(1)
   const [sameSeats, setSameSeats] = useState(capacity)
   const [legs, setLegs] = useState<VanSplit[]>([])
+  const [boatMode, setBoatMode] = useState<'same' | 'split'>('same')
+  const [sameBoat, setSameBoat] = useState<BoatNumber>(1)
+  const [boatLegs, setBoatLegs] = useState<BoatSplit[]>([])
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -3375,6 +3570,19 @@ function SeparateVanDialog({
       setMode('same')
       setLegs(suggestVanSplit(totalPassengers(booking), capacity, start))
     }
+
+    const existingBoats = existingBoatLegs?.filter((leg) => leg.boat >= 1 && leg.pax > 0) ?? []
+    const firstBoat = (existingBoats[0]?.boat ?? boats[0] ?? 1) as BoatNumber
+    setSameBoat(firstBoat)
+    if (existingBoats.length > 1) {
+      setSection('boat')
+      setBoatMode('split')
+      setBoatLegs(existingBoats)
+    } else {
+      setSection('van')
+      setBoatMode('same')
+      setBoatLegs(suggestBoatSplit(totalPassengers(booking), boats, firstBoat))
+    }
     setError('')
   }, [open, bookingCode])
 
@@ -3389,6 +3597,8 @@ function SeparateVanDialog({
 
   const assigned = legs.reduce((sum, leg) => sum + (Number(leg.pax) || 0), 0)
   const remaining = total - assigned
+  const boatAssigned = boatLegs.reduce((sum, leg) => sum + (Number(leg.pax) || 0), 0)
+  const boatRemaining = total - boatAssigned
 
   function updateLeg(index: number, patch: Partial<VanSplit>) {
     setLegs((current) =>
@@ -3397,7 +3607,14 @@ function SeparateVanDialog({
     setError('')
   }
 
-  function handleSave() {
+  function updateBoatLeg(index: number, patch: Partial<BoatSplit>) {
+    setBoatLegs((current) =>
+      current.map((leg, i) => (i === index ? { ...leg, ...patch } : leg)),
+    )
+    setError('')
+  }
+
+  function handleSaveVan() {
     if (!booking) return
     if (mode === 'same') {
       const van = Math.max(1, Math.floor(Number(sameVan) || 0))
@@ -3435,6 +3652,47 @@ function SeparateVanDialog({
     onSave(cleaned)
   }
 
+  function handleSaveBoat() {
+    if (!booking) return
+    if (boatMode === 'same') {
+      const boat = Math.max(1, Math.floor(Number(sameBoat) || 0)) as BoatNumber
+      if (!boats.includes(boat)) {
+        setError(`Boat ${boat} is not on this day. Pick a boat from the list.`)
+        return
+      }
+      onSaveBoats([{ boat, pax: total }])
+      return
+    }
+
+    const cleaned = boatLegs
+      .map((leg) => ({
+        boat: Math.max(1, Math.floor(Number(leg.boat) || 0)) as BoatNumber,
+        pax: Math.max(0, Math.floor(Number(leg.pax) || 0)),
+      }))
+      .filter((leg) => leg.boat >= 1 && leg.pax > 0)
+
+    const unknown = cleaned.find((leg) => !boats.includes(leg.boat))
+    if (unknown) {
+      setError(`Boat ${unknown.boat} is not on this day. Pick a boat from the list.`)
+      return
+    }
+    const byBoat = new Map<BoatNumber, number>()
+    for (const leg of cleaned) {
+      byBoat.set(leg.boat, (byBoat.get(leg.boat) ?? 0) + leg.pax)
+    }
+    const merged = [...byBoat.entries()].map(([boat, pax]) => ({ boat, pax }))
+    const sum = merged.reduce((s, leg) => s + leg.pax, 0)
+    if (merged.length < 2) {
+      setError('Add at least two boats to separate this booking.')
+      return
+    }
+    if (sum !== total) {
+      setError(`Pax on boats must total ${total} (now ${sum}).`)
+      return
+    }
+    onSaveBoats(merged)
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md" showCloseButton>
@@ -3442,15 +3700,48 @@ function SeparateVanDialog({
           <>
             <DialogHeader>
               <DialogTitle className="pr-8 font-display text-lg font-semibold text-teal-950">
-                Same van or split
+                Separate guests
               </DialogTitle>
               <DialogDescription className="text-sm text-teal-900/55">
-                {booking.leadGuest} · {total} pax. Keep the group together (van or bus) or split
-                across vans.
+                {booking.leadGuest} · {total} pax. Split onto vans and/or boats. Counts sync to
+                pickup, boat load, check-in, and the guide job order.
               </DialogDescription>
             </DialogHeader>
 
-            <div className="mt-1 grid grid-cols-2 gap-1 rounded-xl bg-teal-950/[0.05] p-1">
+            <div className="mt-1 grid grid-cols-2 gap-1 rounded-xl bg-teal-950/[0.08] p-1">
+              <button
+                type="button"
+                className={cn(
+                  'inline-flex items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-xs font-semibold',
+                  section === 'van' ? 'bg-white text-teal-950 shadow-sm' : 'text-teal-900/60',
+                )}
+                onClick={() => {
+                  setSection('van')
+                  setError('')
+                }}
+              >
+                <Bus className="size-3.5" />
+                Van
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  'inline-flex items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-xs font-semibold',
+                  section === 'boat' ? 'bg-white text-teal-950 shadow-sm' : 'text-teal-900/60',
+                )}
+                onClick={() => {
+                  setSection('boat')
+                  setError('')
+                }}
+              >
+                <Ship className="size-3.5" />
+                Boat
+              </button>
+            </div>
+
+            {section === 'van' ? (
+              <>
+            <div className="mt-2 grid grid-cols-2 gap-1 rounded-xl bg-teal-950/[0.05] p-1">
               <button
                 type="button"
                 className={cn(
@@ -3632,13 +3923,221 @@ function SeparateVanDialog({
                 {error ? <p className="text-sm text-red-600">{error}</p> : null}
               </div>
             )}
+              </>
+            ) : (
+              <>
+            <div className="mt-2 grid grid-cols-2 gap-1 rounded-xl bg-teal-950/[0.05] p-1">
+              <button
+                type="button"
+                className={cn(
+                  'rounded-lg px-2 py-1.5 text-xs font-semibold',
+                  boatMode === 'same' ? 'bg-white text-teal-950 shadow-sm' : 'text-teal-900/60',
+                )}
+                onClick={() => {
+                  setBoatMode('same')
+                  setError('')
+                }}
+              >
+                Same boat
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  'rounded-lg px-2 py-1.5 text-xs font-semibold',
+                  boatMode === 'split' ? 'bg-white text-teal-950 shadow-sm' : 'text-teal-900/60',
+                )}
+                onClick={() => {
+                  setBoatMode('split')
+                  setError('')
+                }}
+              >
+                Separate boats
+              </button>
+            </div>
+
+            {boatMode === 'same' ? (
+              <div className="mt-3 space-y-3">
+                <div className="space-y-1.5">
+                  <Label>Put this group on</Label>
+                  <div className="flex flex-wrap gap-1">
+                    {boats.map((boat) => {
+                      const theme = boatThemeFor(boatPlan, boat)
+                      return (
+                        <button
+                          key={boat}
+                          type="button"
+                          className={cn(
+                            'rounded-md px-2 py-1 text-[11px] font-semibold',
+                            sameBoat === boat ? theme.badge : theme.softBadge,
+                          )}
+                          onClick={() => {
+                            setSameBoat(boat)
+                            setError('')
+                          }}
+                        >
+                          {boatDisplayName(boatPlan, boat)}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="same-boat">Boat #</Label>
+                  <Input
+                    id="same-boat"
+                    type="number"
+                    min={1}
+                    max={boats.length}
+                    value={sameBoat}
+                    onChange={(event) => {
+                      setSameBoat(Math.max(1, Number(event.target.value) || 1) as BoatNumber)
+                      setError('')
+                    }}
+                    className="h-10"
+                  />
+                </div>
+                <p className="text-[12px] leading-relaxed text-teal-900/55">
+                  All {total} guests stay on one boat.
+                </p>
+                {error ? <p className="text-sm text-red-600">{error}</p> : null}
+              </div>
+            ) : (
+              <div className="mt-3 space-y-3">
+                {boatLegs.map((leg, index) => (
+                  <div
+                    key={`boat-leg-${index}`}
+                    className="grid grid-cols-[1fr_1fr_auto] items-end gap-2"
+                  >
+                    <div className="space-y-1">
+                      <Label htmlFor={`split-boat-${index}`}>Boat #</Label>
+                      <Input
+                        id={`split-boat-${index}`}
+                        type="number"
+                        min={1}
+                        max={boats.length}
+                        value={leg.boat}
+                        onChange={(event) =>
+                          updateBoatLeg(index, {
+                            boat: Math.max(1, Number(event.target.value) || 1) as BoatNumber,
+                          })
+                        }
+                        className="h-10"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor={`split-boat-pax-${index}`}>Pax</Label>
+                      <Input
+                        id={`split-boat-pax-${index}`}
+                        type="number"
+                        min={1}
+                        value={leg.pax}
+                        onChange={(event) =>
+                          updateBoatLeg(index, { pax: Number(event.target.value) || 0 })
+                        }
+                        className="h-10"
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="h-10 w-10"
+                      disabled={boatLegs.length <= 2}
+                      onClick={() =>
+                        setBoatLegs((current) => current.filter((_, i) => i !== index))
+                      }
+                      aria-label="Remove boat leg"
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
+                ))}
+
+                <div className="flex flex-wrap gap-1">
+                  {boats.map((boat) => {
+                    const theme = boatThemeFor(boatPlan, boat)
+                    const used = boatLegs.some((leg) => Number(leg.boat) === boat)
+                    return (
+                      <button
+                        key={`hint-${boat}`}
+                        type="button"
+                        className={cn(
+                          'rounded-md px-2 py-1 text-[11px] font-semibold',
+                          used ? theme.badge : theme.softBadge,
+                        )}
+                        onClick={() => {
+                          const index = boatLegs.findIndex((leg) => Number(leg.boat) === 0)
+                          if (index >= 0) {
+                            updateBoatLeg(index, { boat })
+                            return
+                          }
+                          setBoatLegs((current) => [
+                            ...current,
+                            { boat, pax: Math.max(0, boatRemaining) || 1 },
+                          ])
+                          setError('')
+                        }}
+                      >
+                        {boatDisplayName(boatPlan, boat)}
+                      </button>
+                    )
+                  })}
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  disabled={boatLegs.length >= boats.length}
+                  onClick={() => {
+                    const used = new Set(boatLegs.map((leg) => Number(leg.boat)))
+                    const boat = boats.find((item) => !used.has(item))
+                    if (!boat) return
+                    setBoatLegs((current) => [
+                      ...current,
+                      { boat, pax: Math.max(0, boatRemaining) || 1 },
+                    ])
+                    setError('')
+                  }}
+                >
+                  <Plus data-icon="inline-start" />
+                  Add boat
+                </Button>
+
+                <div
+                  className={cn(
+                    'rounded-xl px-3 py-2 text-sm',
+                    boatRemaining === 0 ? 'bg-teal-50 text-teal-800' : 'bg-amber-50 text-amber-900',
+                  )}
+                >
+                  Assigned {boatAssigned} / {total} pax
+                  {boatRemaining === 0
+                    ? ' · ready to save'
+                    : boatRemaining > 0
+                      ? ` · ${boatRemaining} still to place`
+                      : ` · ${Math.abs(boatRemaining)} over`}
+                </div>
+                {error ? <p className="text-sm text-red-600">{error}</p> : null}
+              </div>
+            )}
+              </>
+            )}
 
             <DialogFooter className="mt-4">
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
                 Cancel
               </Button>
-              <Button type="button" onClick={handleSave}>
-                {mode === 'same' ? 'Keep together' : 'Save split'}
+              <Button
+                type="button"
+                onClick={section === 'van' ? handleSaveVan : handleSaveBoat}
+              >
+                {section === 'van'
+                  ? mode === 'same'
+                    ? 'Save van'
+                    : 'Save van split'
+                  : boatMode === 'same'
+                    ? 'Save boat'
+                    : 'Save boat split'}
               </Button>
             </DialogFooter>
           </>

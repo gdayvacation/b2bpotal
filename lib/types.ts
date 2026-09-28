@@ -233,8 +233,104 @@ export type DayBoatPlan = {
   kinds: BoatKind[]
   /** Guide + assistant contact per boat (parallel to capacities). */
   guides: BoatGuide[]
-  /** booking code → boat number (1-based index into capacities) */
-  assignments: Record<string, BoatNumber>
+  /** booking code → boat number, or split legs when a group sits on more than one boat */
+  assignments: Record<string, BoatNumber | BoatSplit[]>
+}
+
+/** One booking split onto a boat (pax on that boat). */
+export type BoatSplit = {
+  boat: BoatNumber
+  pax: number
+}
+
+export function normalizeBoatAssignment(
+  value: BoatNumber | BoatSplit[] | undefined,
+  totalPax = 0,
+): BoatSplit[] {
+  if (value == null) return []
+  if (typeof value === 'number') {
+    const boat = Math.floor(value)
+    return boat >= 1 ? [{ boat, pax: Math.max(0, Math.floor(totalPax)) }] : []
+  }
+  const byBoat = new Map<number, number>()
+  for (const leg of value) {
+    const boat = Math.max(1, Math.floor(Number(leg.boat) || 0))
+    const pax = Math.max(0, Math.floor(Number(leg.pax) || 0))
+    if (boat < 1 || pax <= 0) continue
+    byBoat.set(boat, (byBoat.get(boat) ?? 0) + pax)
+  }
+  return [...byBoat.entries()].map(([boat, pax]) => ({ boat, pax }))
+}
+
+export function compactBoatAssignment(
+  legs: BoatSplit[],
+): BoatNumber | BoatSplit[] | undefined {
+  const cleaned = normalizeBoatAssignment(legs)
+  if (cleaned.length === 0) return undefined
+  if (cleaned.length === 1) return cleaned[0]!.boat
+  return cleaned
+}
+
+export function primaryBoatNumber(
+  value: BoatNumber | BoatSplit[] | undefined,
+): BoatNumber | null {
+  if (value == null) return null
+  if (typeof value === 'number') return value >= 1 ? value : null
+  const boat = value[0]?.boat
+  return boat && boat >= 1 ? boat : null
+}
+
+export function bookingAssignedToBoat(
+  value: BoatNumber | BoatSplit[] | undefined,
+  boat: BoatNumber,
+): boolean {
+  return normalizeBoatAssignment(value).some((leg) => leg.boat === boat)
+}
+
+export function bookingPaxOnBoat(
+  booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>,
+  value: BoatNumber | BoatSplit[] | undefined,
+  boat: BoatNumber,
+): number {
+  const total =
+    booking.adults + booking.children + booking.infants + booking.tourLeaders
+  const legs = normalizeBoatAssignment(value, total)
+  if (legs.length === 0) return 0
+  return legs.filter((leg) => leg.boat === boat).reduce((sum, leg) => sum + leg.pax, 0)
+}
+
+/** Place `pax` of a booking onto destBoat, keeping leftover pax on other boats. */
+export function moveBoatPax(
+  current: BoatNumber | BoatSplit[] | undefined,
+  destBoat: BoatNumber | null,
+  pax: number,
+  totalPax: number,
+): BoatNumber | BoatSplit[] | undefined {
+  const amount = Math.max(0, Math.min(totalPax, Math.floor(pax)))
+  if (destBoat === null || destBoat < 1 || amount <= 0) {
+    const remaining = totalPax - amount
+    const others = normalizeBoatAssignment(current, totalPax).filter((leg) => true)
+    if (remaining <= 0) return undefined
+    const next: BoatSplit[] = []
+    let leftover = remaining
+    for (const leg of others) {
+      if (leftover <= 0) break
+      const take = Math.min(leg.pax, leftover)
+      next.push({ boat: leg.boat, pax: take })
+      leftover -= take
+    }
+    return compactBoatAssignment(next)
+  }
+  const others = normalizeBoatAssignment(current, totalPax).filter((leg) => leg.boat !== destBoat)
+  let leftover = Math.max(0, totalPax - amount)
+  const next: BoatSplit[] = [{ boat: destBoat, pax: amount }]
+  for (const leg of others) {
+    if (leftover <= 0) break
+    const take = Math.min(leg.pax, leftover)
+    next.push({ boat: leg.boat, pax: take })
+    leftover -= take
+  }
+  return compactBoatAssignment(next)
 }
 
 /** Guide job-order contacts for one boat on a day. */
@@ -710,8 +806,9 @@ export function bookingOnPartnerBoat(
   plan: Pick<DayBoatPlan, 'capacities' | 'kinds' | 'names' | 'assignments'>,
   bookingCode: string,
 ) {
-  const boat = plan.assignments[bookingCode]
-  return Boolean(boat && isPartnerBoat(plan, boat))
+  return normalizeBoatAssignment(plan.assignments[bookingCode]).some((leg) =>
+    isPartnerBoat(plan, leg.boat),
+  )
 }
 
 export function clampVanCapacity(value: number) {
