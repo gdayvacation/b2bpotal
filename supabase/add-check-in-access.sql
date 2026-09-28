@@ -231,19 +231,15 @@ begin
     v_key := private.new_access_key();
   end if;
 
-  insert into private.helper_day_keys (tour_date, access_key, open_time, close_time, updated_at)
+  insert into private.helper_day_keys as k (tour_date, access_key, open_time, close_time, updated_at)
   values (p_date, v_key, v_open, v_close, timezone('utc', now()))
-  on conflict (tour_date) do update
+  on conflict on constraint helper_day_keys_pkey do update
     set access_key = excluded.access_key,
         open_time = excluded.open_time,
         close_time = excluded.close_time,
         updated_at = excluded.updated_at;
 
-  tour_date := p_date;
-  access_key := v_key;
-  open_time := v_open;
-  close_time := v_close;
-  return next;
+  return query select p_date, v_key, v_open, v_close;
 end;
 $$;
 
@@ -268,23 +264,18 @@ begin
     raise exception 'This helper QR is not valid.';
   end if;
 
-  select * into v_row
-  from private.helper_day_keys
-  where tour_date = p_date;
+  select k.* into v_row
+  from private.helper_day_keys k
+  where k.tour_date = p_date;
 
   if v_row.tour_date is null or v_row.access_key is distinct from v_key then
     raise exception 'This helper QR is not valid.';
   end if;
 
   v_state := private.helper_board_state(v_row.tour_date, v_row.open_time, v_row.close_time);
-  tour_date := v_row.tour_date;
-  open_time := v_row.open_time;
-  close_time := v_row.close_time;
-  board_state := v_state;
 
   if v_state is distinct from 'ok' then
-    auth_email := null;
-    return next;
+    return query select v_row.tour_date, null::text, v_row.open_time, v_row.close_time, v_state;
     return;
   end if;
 
@@ -294,8 +285,13 @@ begin
     jsonb_build_object('role', 'helper', 'helper_date', v_row.tour_date::text)
   );
 
-  auth_email := private.helper_auth_email(v_row.tour_date);
-  return next;
+  return query
+    select
+      v_row.tour_date,
+      private.helper_auth_email(v_row.tour_date),
+      v_row.open_time,
+      v_row.close_time,
+      v_state;
 end;
 $$;
 

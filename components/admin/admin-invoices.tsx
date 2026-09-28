@@ -1073,11 +1073,11 @@ export function AdminInvoices() {
                 .
               </EmptyState>
             ) : (
-              <div className="overflow-x-auto">
-                <Table>
+              <div>
+                <Table className="table-fixed text-xs" containerClassName="overflow-x-hidden">
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-10">
+                      <TableHead className="w-8 px-1.5">
                         <input
                           type="checkbox"
                           checked={allOpenSelected}
@@ -1087,25 +1087,27 @@ export function AdminInvoices() {
                           title={openRows.length === 0 ? 'All bookings on this day already have an invoice' : undefined}
                         />
                       </TableHead>
-                      <TableHead className="w-24 font-bold">Voucher</TableHead>
+                      <TableHead className="w-[7rem] px-1.5 font-bold">Voucher</TableHead>
                       <BillSortHead
                         column="agent"
                         active={billSort?.key === 'agent'}
                         dir={billSort?.dir ?? 'asc'}
                         onSort={toggleBillSort}
-                        className="font-bold"
+                        className="w-[11rem] px-1.5 font-bold"
                       >
                         Agent
                       </BillSortHead>
-                      <TableHead className="w-20 font-bold">Type</TableHead>
-                      <TableHead className="min-w-[10rem] font-bold">Guest</TableHead>
-                      <TableHead className="font-bold">Pax</TableHead>
-                      <TableHead className="w-14 font-bold">Park</TableHead>
-                      <TableHead className="w-24 text-right font-bold">National Park</TableHead>
-                      <TableHead className="w-24 text-right font-bold">Extra charge</TableHead>
-                      <TableHead className="min-w-[14rem] w-[14rem] font-bold">Note</TableHead>
-                      <TableHead className="w-16 text-right font-bold">Deduct</TableHead>
-                      <TableHead className="text-right font-bold">Charge</TableHead>
+                      <TableHead className="w-14 px-1.5 font-bold">Type</TableHead>
+                      <TableHead className="w-[7.5rem] px-1.5 font-bold">Guest</TableHead>
+                      <TableHead className="w-[7rem] px-1.5 font-bold">Pax</TableHead>
+                      <TableHead className="w-10 px-1.5 font-bold">Park</TableHead>
+                      <TableHead className="w-[4.75rem] px-1.5 text-right font-bold" title="National Park">
+                        N.Park
+                      </TableHead>
+                      <TableHead className="w-[4.75rem] px-1.5 text-right font-bold">Extra</TableHead>
+                      <TableHead className="w-[6.5rem] px-1.5 font-bold">Note</TableHead>
+                      <TableHead className="w-12 px-1.5 text-right font-bold">Deduct</TableHead>
+                      <TableHead className="w-[5rem] px-1.5 text-right font-bold">Charge</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1129,6 +1131,7 @@ export function AdminInvoices() {
                           onClick={() => openBill(row)}
                         >
                           <TableCell
+                            className="px-1.5"
                             onClick={(event) => event.stopPropagation()}
                           >
                             <input
@@ -1142,16 +1145,18 @@ export function AdminInvoices() {
                           </TableCell>
                           <TableCell
                             className={cn(
-                              'w-24 max-w-24 truncate font-medium',
+                              'truncate px-1.5 font-medium',
                               issued ? 'text-neutral-400' : 'text-teal-950',
                             )}
                             title={booking.agentRef?.trim() || undefined}
                           >
                             {booking.agentRef?.trim() || '—'}
                           </TableCell>
-                          <TableCell>{booking.agentName}</TableCell>
+                          <TableCell className="truncate px-1.5" title={booking.agentName}>
+                            {booking.agentName}
+                          </TableCell>
                           <TableCell
-                            className="w-20 text-xs"
+                            className="w-14 truncate px-1.5 text-[11px]"
                             title={
                               row.billingType === 'prebuy'
                                 ? 'Prebuy — deduct AD+CH heads, bill extras only'
@@ -1160,8 +1165,8 @@ export function AdminInvoices() {
                           >
                             {formatAgentBillingType(row.billingType)}
                           </TableCell>
-                          <TableCell className="min-w-[10rem]" title={booking.leadGuest}>
-                            <span className="inline-flex min-w-0 items-center gap-1">
+                          <TableCell className="w-[7.5rem] max-w-[7.5rem] px-1.5" title={booking.leadGuest}>
+                            <span className="inline-flex min-w-0 max-w-full items-center gap-1">
                               <span className="truncate">{booking.leadGuest}</span>
                               {row.hasNoShow ? (
                                 <BillFlag label="NS" title="This booking has a no-show guest" />
@@ -1171,9 +1176,9 @@ export function AdminInvoices() {
                               ) : null}
                             </span>
                           </TableCell>
-                          <TableCell>{formatPaxBreakdown(booking)}</TableCell>
+                          <TableCell className="truncate px-1.5 tabular-nums" title={formatPaxBreakdown(booking)}>{formatPaxBreakdown(booking)}</TableCell>
                           <TableCell
-                            className="w-14 text-xs"
+                            className="w-10 px-1.5 text-[11px]"
                             title={
                               booking.parkFee === 'Included'
                                 ? 'Included — billed to the agent'
@@ -1183,7 +1188,7 @@ export function AdminInvoices() {
                             {booking.parkFee === 'Included' ? 'Inc' : booking.parkFee === 'Not Included' ? 'Exc' : formatIncludeShort(booking.parkFee)}
                           </TableCell>
                           <TableCell
-                            className="w-24 text-right tabular-nums"
+                            className="px-1.5 text-right tabular-nums"
                             title={
                               row.parkCharge > 0
                                 ? 'Included park billed to the agent'
@@ -1192,23 +1197,21 @@ export function AdminInvoices() {
                           >
                             {row.parkCharge > 0 ? formatInvoiceMoney(row.parkCharge) : '—'}
                           </TableCell>
-                          <TableCell className="w-24 text-right tabular-nums">
+                          <TableCell className="px-1.5 text-right tabular-nums">
                             {row.extraCharge > 0 ? formatInvoiceMoney(row.extraCharge) : '—'}
                           </TableCell>
-                          <TableCell className="min-w-[14rem] w-[14rem] whitespace-normal">
-                            <div
+                          <TableCell className="truncate px-1.5" title={booking.note.trim() || undefined}>
+                            <span
                               className={cn(
-                                'break-words text-xs leading-snug',
                                 issued ? 'text-neutral-400' : 'text-teal-900/70',
                               )}
-                              title={booking.note.trim() || undefined}
                             >
                               {booking.note.trim() || '—'}
-                            </div>
+                            </span>
                           </TableCell>
                           <TableCell
                             className={cn(
-                              'w-16 text-right font-medium tabular-nums',
+                              'px-1.5 text-right font-medium tabular-nums',
                               issued ? 'text-neutral-400' : 'text-teal-950',
                             )}
                             title={
@@ -1221,7 +1224,7 @@ export function AdminInvoices() {
                           </TableCell>
                           <TableCell
                             className={cn(
-                              'text-right font-medium',
+                              'px-1.5 text-right font-medium',
                               issued ? 'text-neutral-400' : 'text-teal-950',
                             )}
                           >
