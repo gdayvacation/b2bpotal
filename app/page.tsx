@@ -1,6 +1,5 @@
-import Link from 'next/link'
-import { ArrowRight, Link2, Shield } from 'lucide-react'
 import { BrandMark } from '@/components/brand-mark'
+import { HomePortal } from '@/components/home-portal'
 import { BRAND_LEGAL, BRAND_SHORT } from '@/lib/brand'
 
 export default function HomePage() {
@@ -24,34 +23,7 @@ export default function HomePage() {
           </p>
         </div>
 
-        <div className="gday-fade-up mt-8 grid gap-3 delay-100 sm:mt-10 sm:grid-cols-2 sm:gap-4">
-          <section className="gday-sheet rounded-[1.5rem] p-5 sm:p-6">
-            <div className="mb-4 flex size-11 items-center justify-center rounded-2xl bg-teal-950/[0.05] text-teal-800">
-              <Link2 className="size-5" />
-            </div>
-            <h2 className="font-display text-lg font-semibold text-teal-950">Agent</h2>
-            <p className="mt-1.5 text-sm leading-relaxed text-teal-950/55">
-              Open the private booking link from {BRAND_SHORT} admin. Each agency has its own URL.
-            </p>
-          </section>
-
-          <Link
-            href="/admin"
-            className="gday-scale-in group flex flex-col justify-between rounded-[1.5rem] bg-gradient-to-br from-teal-700 via-teal-800 to-cyan-900 p-5 text-white shadow-[0_20px_50px_-28px_rgba(15,118,110,0.75)] transition-transform active:scale-[0.99] sm:p-6"
-          >
-            <div>
-              <div className="mb-4 flex size-11 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/15">
-                <Shield className="size-5" />
-              </div>
-              <h2 className="font-display text-lg font-semibold">Admin</h2>
-              <p className="mt-1 text-sm text-teal-50/70">Operations dashboard</p>
-            </div>
-            <div className="mt-8 inline-flex items-center gap-2 text-sm font-semibold">
-              Open Admin
-              <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" />
-            </div>
-          </Link>
-        </div>
+        <HomePortal />
       </main>
     </div>
   )

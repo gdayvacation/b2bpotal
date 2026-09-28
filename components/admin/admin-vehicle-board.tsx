@@ -617,7 +617,7 @@ function vanCardTitle(van: number, crew: VanMeta, flags?: { empty?: boolean; noT
   const named = vanDisplayName(crew)
   if (named) return named
   if (flags?.empty) return `New van ${van}`
-  if (crew.specialKind === 'private' || crew.specialKind === 'outsource') {
+  if (crew.specialKind === 'private') {
     return `${specialTransferKindLabel(crew.specialKind)} ${van}`
   }
   if (crew.specialKind === 'partner') return 'Tour partner'
@@ -629,7 +629,7 @@ function vanNamePatch(crew: VanMeta, name: string): Partial<VanMeta> {
   if (crew.specialKind === 'partner') {
     return { outsourceCompany: trimmed, label: trimmed, plate: crew.plate.trim() ? crew.plate : trimmed }
   }
-  if (crew.specialKind === 'outsource' || crew.outsourced) {
+  if (crew.outsourced) {
     return { outsourceCompany: trimmed, label: trimmed, outsourced: true }
   }
   return { label: trimmed }
@@ -763,14 +763,14 @@ function VanCrewDetails({
         </p>
         <div className="space-y-1.5">
           <Label htmlFor={`card-name-${van}`}>
-            {crew.specialKind === 'partner' || crew.specialKind === 'outsource' || crew.outsourced
+            {crew.specialKind === 'partner' || crew.outsourced
               ? 'Company name'
               : 'Van name'}
           </Label>
           <Input
             id={`card-name-${van}`}
             value={
-              crew.specialKind === 'partner' || crew.specialKind === 'outsource' || crew.outsourced
+              crew.specialKind === 'partner' || crew.outsourced
                 ? crew.outsourceCompany || crew.label || ''
                 : crew.label || ''
             }
@@ -3178,7 +3178,7 @@ function VehicleBoard({
               <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="space-y-1.5">
                   <Label htmlFor={`van-name-${openVan}`}>
-                    {openMeta.specialKind === 'partner' || openMeta.specialKind === 'outsource' || openMeta.outsourced
+                    {openMeta.specialKind === 'partner' || openMeta.outsourced
                       ? 'Company name'
                       : 'Van name'}
                   </Label>

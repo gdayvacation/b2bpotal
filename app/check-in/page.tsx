@@ -1,3 +1,4 @@
+import { GuestAccessGate } from '@/components/check-in/guest-access-gate'
 import { GuestCheckIn } from '@/components/check-in/guest-check-in'
 
 export default async function CheckInPage({
@@ -7,5 +8,9 @@ export default async function CheckInPage({
 }) {
   const params = await searchParams
   const lockedBookingCode = String(params.b ?? params.booking ?? '').trim()
-  return <GuestCheckIn lockedBookingCode={lockedBookingCode || null} />
+  return (
+    <GuestAccessGate bookingCode={lockedBookingCode}>
+      <GuestCheckIn lockedBookingCode={lockedBookingCode || null} />
+    </GuestAccessGate>
+  )
 }

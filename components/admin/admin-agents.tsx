@@ -1,8 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { Check, Copy, ExternalLink, Pencil, Plus, Trash2 } from 'lucide-react'
+import { Check, Copy, ExternalLink, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
 import { SettingsSubnav } from '@/components/admin/admin-settings'
@@ -26,26 +26,75 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { agentBookingPath, agentBookingUrl } from '@/lib/agent-access'
+import { listAgentAccessKeys, rotateAgentAccessKey } from '@/lib/supabase/agent-links-db'
 import { cn } from '@/lib/utils'
 import type { Agent } from '@/lib/types'
 
 export function AdminAgents() {
   const { agents, bookings, setAgentStatus, addAgent, updateAgent, removeAgent } = usePortal()
   const [copied, setCopied] = useState<string | null>(null)
+  const [keys, setKeys] = useState<Record<string, string>>({})
   const [newName, setNewName] = useState('')
   const [addError, setAddError] = useState('')
   const [editing, setEditing] = useState<Agent | null>(null)
   const [editName, setEditName] = useState('')
   const [editError, setEditError] = useState('')
 
+  async function refreshKeys() {
+    try {
+      const rows = await listAgentAccessKeys()
+      const next: Record<string, string> = {}
+      for (const row of rows) {
+        if (row.accessKey) next[row.slug] = row.accessKey
+      }
+      setKeys(next)
+    } catch (caught) {
+      console.warn('[agents] could not load private links', caught)
+    }
+  }
+
+  useEffect(() => {
+    void refreshKeys()
+  }, [agents.length])
+
   async function copyLink(slug: string) {
-    const url = `${window.location.origin}/agent/${slug}`
+    const key = keys[slug]
+    if (!key) {
+      window.alert('The private link is not ready yet. Refresh the page and try again.')
+      return
+    }
+    const url = agentBookingUrl(window.location.origin, slug, key)
     try {
       await navigator.clipboard.writeText(url)
       setCopied(slug)
       window.setTimeout(() => setCopied(null), 1800)
     } catch {
       window.prompt('Copy this agent link', url)
+    }
+  }
+
+  async function rotateLink(agent: Agent) {
+    if (
+      !window.confirm(
+        `Replace the booking link for ${agent.name}? The old link will stop working. Send them the new one.`,
+      )
+    ) {
+      return
+    }
+    try {
+      const next = await rotateAgentAccessKey(agent.slug)
+      setKeys((current) => ({ ...current, [agent.slug]: next }))
+      const url = agentBookingUrl(window.location.origin, agent.slug, next)
+      try {
+        await navigator.clipboard.writeText(url)
+        setCopied(agent.slug)
+        window.setTimeout(() => setCopied(null), 1800)
+      } catch {
+        window.prompt('Copy this agent link', url)
+      }
+    } catch (caught) {
+      window.alert(caught instanceof Error ? caught.message : 'Could not replace that link.')
     }
   }
 
@@ -57,6 +106,9 @@ export function AdminAgents() {
     }
     setNewName('')
     setAddError('')
+    window.setTimeout(() => {
+      void refreshKeys()
+    }, 400)
   }
 
   function openEdit(agent: Agent) {
@@ -89,14 +141,15 @@ export function AdminAgents() {
     <div className="w-full">
       <PageHeader
         title="Agents"
-        description="Add partner agencies, edit their names, and copy each private booking link."
+        description="Add partner agencies and copy each private booking link. Agents open it with no login — the secret in the URL is the key."
       />
       <SettingsSubnav />
 
       <Surface className="mb-4 p-5">
         <h2 className="font-medium text-teal-950">Add agent</h2>
         <p className="mt-1 text-sm text-neutral-500">
-          Creates a private booking URL you can send to the partner.
+          Creates a private booking URL you can send to the partner. The old /agent/name URL will not
+          open without this secret.
         </p>
         <form
           className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end"
@@ -139,10 +192,12 @@ export function AdminAgents() {
                 </div>
                 <StatusBadge status={agent.status} />
               </div>
-              <p className="mt-3 font-mono text-xs text-teal-800/70">/agent/{agent.slug}</p>
+              <p className="mt-3 font-mono text-xs text-teal-800/70">
+                {agentBookingPath(agent.slug, keys[agent.slug] || undefined)}
+              </p>
               <p className="mt-1 text-sm text-teal-900/55">{count} bookings</p>
               <div className="mt-4 flex flex-wrap gap-2">
-                <Button size="sm" className="h-9" onClick={() => copyLink(agent.slug)}>
+                <Button size="sm" className="h-9" onClick={() => void copyLink(agent.slug)}>
                   {copied === agent.slug ? (
                     <>
                       <Check data-icon="inline-start" />
@@ -156,12 +211,21 @@ export function AdminAgents() {
                   )}
                 </Button>
                 <Link
-                  href={`/agent/${agent.slug}`}
+                  href={agentBookingPath(agent.slug, keys[agent.slug] || undefined)}
                   className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'h-9')}
                 >
                   <ExternalLink data-icon="inline-start" />
                   Open
                 </Link>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-9"
+                  onClick={() => void rotateLink(agent)}
+                >
+                  <RefreshCw data-icon="inline-start" />
+                  New link
+                </Button>
                 <Button variant="outline" size="sm" className="h-9" onClick={() => openEdit(agent)}>
                   <Pencil data-icon="inline-start" />
                   Edit
@@ -211,16 +275,16 @@ export function AdminAgents() {
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <Link
-                        href={`/agent/${agent.slug}`}
+                        href={agentBookingPath(agent.slug, keys[agent.slug] || undefined)}
                         className="font-mono text-[13px] text-teal-800 hover:underline"
                       >
-                        /agent/{agent.slug}
+                        /agent/{agent.slug}?k=…
                       </Link>
                       <Button
                         variant="outline"
                         size="sm"
                         className="h-8"
-                        onClick={() => copyLink(agent.slug)}
+                        onClick={() => void copyLink(agent.slug)}
                       >
                         {copied === agent.slug ? (
                           <>
@@ -245,6 +309,14 @@ export function AdminAgents() {
                       <Button variant="outline" size="sm" onClick={() => openEdit(agent)}>
                         <Pencil data-icon="inline-start" />
                         Edit
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void rotateLink(agent)}
+                      >
+                        <RefreshCw data-icon="inline-start" />
+                        New link
                       </Button>
                       <Button
                         variant="outline"
@@ -286,7 +358,8 @@ export function AdminAgents() {
           <DialogHeader>
             <DialogTitle>Edit agent</DialogTitle>
             <DialogDescription>
-              Update the partner name. The booking URL stays the same.
+              Update the partner name. The private booking URL stays the same unless you make a new
+              link.
             </DialogDescription>
           </DialogHeader>
           <form
@@ -309,7 +382,9 @@ export function AdminAgents() {
               />
             </div>
             {editing ? (
-              <p className="font-mono text-xs text-teal-800/60">/agent/{editing.slug}</p>
+              <p className="font-mono text-xs text-teal-800/60">
+                {agentBookingPath(editing.slug, keys[editing.slug] || undefined)}
+              </p>
             ) : null}
             {editError ? <p className="text-sm text-red-600">{editError}</p> : null}
             <DialogFooter>

@@ -479,14 +479,18 @@ function QrTab() {
   const [now, setNow] = useState(() => new Date())
   const [copied, setCopied] = useState(false)
   const [hours, setHours] = useState<HelperBoardHours>(DEFAULT_HELPER_BOARD_HOURS)
+  const [helperKey, setHelperKey] = useState('')
+  const [helperError, setHelperError] = useState('')
   const hoursOk = helperBoardHoursValid(hours)
   const issueDate = helperBoardIssueDate(now, hours)
   const today = todayISO(now)
   const todayClosed = isHelperBoardClosed(today, now, hours)
   const todayNotOpen = isHelperBoardNotYetOpen(today, now, hours)
   const todayOpen = isHelperBoardOpen(today, now, hours)
-  const helperUrl = origin && hoursOk ? helperBoardUrl(origin, issueDate, hours) : ''
-  const qrSrc = origin && hoursOk ? helperBoardQrImageUrl(origin, issueDate, 512, hours) : ''
+  const helperUrl =
+    origin && hoursOk && helperKey ? helperBoardUrl(origin, issueDate, hours, helperKey) : ''
+  const qrSrc =
+    origin && hoursOk && helperKey ? helperBoardQrImageUrl(origin, issueDate, 512, hours, helperKey) : ''
 
   useEffect(() => {
     setOrigin(window.location.origin)
@@ -494,6 +498,36 @@ function QrTab() {
     const id = window.setInterval(() => setNow(new Date()), 15_000)
     return () => window.clearInterval(id)
   }, [])
+
+  useEffect(() => {
+    if (!hoursOk) {
+      setHelperKey('')
+      return
+    }
+    let cancelled = false
+    setHelperKey('')
+    setHelperError('')
+    ;(async () => {
+      const response = await fetch('/api/check-in/helper/link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: issueDate, open: hours.open, close: hours.close }),
+      })
+      const payload = (await response.json().catch(() => ({}))) as {
+        key?: string
+        error?: string
+      }
+      if (cancelled) return
+      if (!response.ok || !payload.key) {
+        setHelperError(payload.error || 'Could not create helper QR.')
+        return
+      }
+      setHelperKey(payload.key)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [hours.close, hours.open, hoursOk, issueDate])
 
   function updateHours(patch: Partial<HelperBoardHours>) {
     setHours((current) => saveHelperBoardHours({ ...current, ...patch }))
@@ -577,8 +611,8 @@ function QrTab() {
               className="aspect-square h-auto w-full object-contain"
             />
           ) : (
-            <div className="flex aspect-square items-center justify-center text-sm text-teal-900/40">
-              Preparing QR…
+            <div className="flex aspect-square items-center justify-center px-4 text-sm text-teal-900/40">
+              {helperError || 'Preparing QR…'}
             </div>
           )}
         </div>

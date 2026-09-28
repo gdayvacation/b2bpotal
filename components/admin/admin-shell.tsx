@@ -9,6 +9,7 @@ import {
   ClipboardList,
   FileSpreadsheet,
   FileText,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   MapPin,
@@ -24,7 +25,7 @@ import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 
-const ADMIN_AUTH_KEY = 'gday-admin-auth'
+import { logoutStaff, readStaffSession } from '@/lib/staff-auth'
 
 const nav = [
   {
@@ -75,6 +76,13 @@ const settingsItems = [
     tone: 'bg-emerald-100 text-emerald-700',
   },
   {
+    href: '/admin/users',
+    label: 'Users',
+    icon: KeyRound,
+    hint: 'Partner User IDs and passwords',
+    tone: 'bg-sky-100 text-sky-700',
+  },
+  {
     href: '/admin/pickup-zones',
     label: 'Pickup Zones',
     icon: MapPin,
@@ -108,17 +116,21 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   const [authed, setAuthed] = useState<boolean | null>(null)
 
   useEffect(() => {
-    setAuthed(sessionStorage.getItem(ADMIN_AUTH_KEY) === 'admin')
+    let cancelled = false
+    void readStaffSession().then((role) => {
+      if (!cancelled) setAuthed(role === 'admin')
+    })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   function signIn() {
-    sessionStorage.setItem(ADMIN_AUTH_KEY, 'admin')
     setAuthed(true)
   }
 
   function signOut() {
-    sessionStorage.removeItem(ADMIN_AUTH_KEY)
-    setAuthed(false)
+    void logoutStaff().then(() => setAuthed(false))
   }
 
   if (authed === null) {

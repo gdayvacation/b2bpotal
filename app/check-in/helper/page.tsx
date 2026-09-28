@@ -1,3 +1,4 @@
+import { HelperAccessGate } from '@/components/check-in/helper-access-gate'
 import { HelperCheckIn } from '@/components/check-in/helper-check-in'
 
 export default async function HelperCheckInPage({
@@ -6,12 +7,13 @@ export default async function HelperCheckInPage({
   searchParams: Promise<{ d?: string; t?: string; o?: string; c?: string }>
 }) {
   const params = await searchParams
+  const date = String(params.d ?? '').trim()
+  const token = String(params.t ?? '').trim()
+  const openTime = String(params.o ?? '').trim()
+  const closeTime = String(params.c ?? '').trim()
   return (
-    <HelperCheckIn
-      date={String(params.d ?? '').trim()}
-      token={String(params.t ?? '').trim()}
-      openTime={String(params.o ?? '').trim()}
-      closeTime={String(params.c ?? '').trim()}
-    />
+    <HelperAccessGate date={date} token={token}>
+      <HelperCheckIn date={date} openTime={openTime} closeTime={closeTime} />
+    </HelperAccessGate>
   )
 }

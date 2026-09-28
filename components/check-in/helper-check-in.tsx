@@ -7,19 +7,16 @@ import { BrandMark } from '@/components/brand-mark'
 import {
   isHelperBoardClosed,
   isHelperBoardNotYetOpen,
-  isValidHelperBoardToken,
   normalizeHelperBoardHours,
 } from '@/lib/check-in-helper'
 import { formatLongDate, formatShortDate } from '@/lib/format'
 
 export function HelperCheckIn({
   date,
-  token,
   openTime,
   closeTime,
 }: {
   date: string
-  token: string
   openTime?: string
   closeTime?: string
 }) {
@@ -44,9 +41,9 @@ export function HelperCheckIn({
   }, [])
 
   const validDate = /^\d{4}-\d{2}-\d{2}$/.test(date)
-  const allowed = validDate && isValidHelperBoardToken(date, token, hours)
-  const expired = allowed && isHelperBoardClosed(date, now, hours)
-  const tooEarly = allowed && isHelperBoardNotYetOpen(date, now, hours)
+  const hoursReady = Boolean(hours.open && hours.close)
+  const expired = validDate && hoursReady && isHelperBoardClosed(date, now, hours)
+  const tooEarly = validDate && hoursReady && isHelperBoardNotYetOpen(date, now, hours)
 
   return (
     <div className="gday-app min-h-dvh">
@@ -60,9 +57,9 @@ export function HelperCheckIn({
       </header>
 
       <main className="mx-auto max-w-6xl px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6 sm:py-7">
-        {!allowed || expired || tooEarly ? (
+        {expired || tooEarly ? (
           <LockedHelperBoard
-            date={allowed ? date : ''}
+            date={date}
             openTime={hours.open}
             closeTime={hours.close}
             tooEarly={tooEarly}
@@ -96,7 +93,7 @@ export function HelperCheckIn({
   )
 }
 
-function LockedHelperBoard({
+export function LockedHelperBoard({
   date,
   openTime,
   closeTime,

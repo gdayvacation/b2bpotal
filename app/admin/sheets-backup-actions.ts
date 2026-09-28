@@ -39,8 +39,7 @@ export async function createSheetsBackupWorkbook(email: string) {
 
 export async function runSheetsBackupNow() {
   try {
-    const result = await runSheetsBackup()
-    return { ok: true as const, ...result }
+    return await runSheetsBackup()
   } catch (error) {
     return {
       ok: false as const,

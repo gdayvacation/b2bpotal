@@ -82,7 +82,7 @@ export function AdminCheckInBookingPanel({
   const [dateError, setDateError] = useState('')
   const [saving, setSaving] = useState(false)
   const [dateSaving, setDateSaving] = useState(false)
-  const [action, setAction] = useState<PanelAction>(null)
+  const [action, setAction] = useState<PanelAction | null>(null)
   const [arrAdults, setArrAdults] = useState(0)
   const [arrChildren, setArrChildren] = useState(0)
   const [arrInfants, setArrInfants] = useState(0)

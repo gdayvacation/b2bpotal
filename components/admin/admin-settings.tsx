@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { CalendarClock, ChevronRight, MapPin, Users } from 'lucide-react'
+import { CalendarClock, ChevronRight, KeyRound, MapPin, Users } from 'lucide-react'
 import { PageHeader, Surface } from '@/components/ui-primitives'
 import { cn } from '@/lib/utils'
 
@@ -20,6 +20,13 @@ export const SETTINGS_PAGES = [
     hint: 'Agent names and booking links',
     icon: Users,
     tone: 'bg-emerald-100 text-emerald-700',
+  },
+  {
+    href: '/admin/users',
+    label: 'Users',
+    hint: 'Partner User IDs and passwords',
+    icon: KeyRound,
+    tone: 'bg-sky-100 text-sky-700',
   },
   {
     href: '/admin/pickup-zones',
@@ -60,10 +67,10 @@ export function AdminSettings() {
     <div className="w-full">
       <PageHeader
         title="Settings"
-        description="Tap a section to manage availability, agents, or pickup zones."
+        description="Tap a section to manage availability, agents, users, or pickup zones."
       />
 
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {SETTINGS_PAGES.map((item) => {
           const Icon = item.icon
           return (

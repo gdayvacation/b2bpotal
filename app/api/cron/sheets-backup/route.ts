@@ -8,9 +8,8 @@ function authorized(request: NextRequest) {
   const secret = process.env.CRON_SECRET?.trim()
   const header = request.headers.get('authorization') ?? ''
   const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
-  if (secret && bearer === secret) return true
-  if (request.headers.has('x-vercel-cron')) return true
-  return false
+  if (secret) return bearer === secret
+  return request.headers.has('x-vercel-cron')
 }
 
 export async function GET(request: NextRequest) {

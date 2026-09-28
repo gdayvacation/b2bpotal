@@ -848,7 +848,7 @@ export function AdminInvoices() {
         title="Invoice / Receipt"
         description="Set each agent as Prebuy or Invoice in Setup. Prebuy deducts AD+CH heads and bills extras. Invoice bills the tour price. Not-included park is collected from the guest."
         actions={
-          <Link href="/admin/invoices/setup">
+          <Link href={pathname.startsWith('/accounting') ? '/accounting/setup' : '/admin/invoices/setup'}>
             <Button type="button" variant="outline" className="h-10 rounded-xl">
               <Settings2 className="size-3.5" />
               Setup

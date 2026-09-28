@@ -1,0 +1,132 @@
+'use client'
+
+import { useEffect, useRef, useState, type FormEvent } from 'react'
+import Link from 'next/link'
+import { ArrowLeft, Landmark } from 'lucide-react'
+import { BrandMark } from '@/components/brand-mark'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { ACCOUNTING_AUTH_VALUE, loginStaff } from '@/lib/staff-auth'
+
+export function AccountingLogin({ onSuccess }: { onSuccess: () => void }) {
+  const [username, setUsername] = useState(ACCOUNTING_AUTH_VALUE)
+  const [pin, setPin] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const pinRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    pinRef.current?.focus()
+  }, [])
+
+  async function trySignIn(nextUsername: string, nextPin: string) {
+    const nameOk = nextUsername.trim().toLowerCase() === ACCOUNTING_AUTH_VALUE
+    if (!nameOk || !nextPin) {
+      setError('PIN is incorrect.')
+      setPin('')
+      requestAnimationFrame(() => pinRef.current?.focus())
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      await loginStaff('accounting', nextPin)
+      window.location.reload()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'PIN is incorrect.')
+      setPin('')
+      requestAnimationFrame(() => pinRef.current?.focus())
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (busy) return
+    void trySignIn(username, pin)
+  }
+
+  function handlePinChange(value: string) {
+    const nextPin = value.replace(/\D/g, '').slice(0, 4)
+    setPin(nextPin)
+    if (error) setError('')
+    if (nextPin.length === 4 && !busy) {
+      void trySignIn(username, nextPin)
+    }
+  }
+
+  return (
+    <div className="gday-app relative flex flex-col overflow-hidden">
+      <div className="gday-grid pointer-events-none absolute inset-0 opacity-45" />
+
+      <header className="relative mx-auto flex h-16 w-full max-w-md items-center px-4 sm:px-6">
+        <BrandMark />
+      </header>
+
+      <main className="relative mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-4 pb-16 sm:px-6">
+        <form onSubmit={handleSubmit} className="gday-fade-up gday-sheet rounded-[1.6rem] p-6 sm:p-8">
+          <div className="mb-5 flex size-12 items-center justify-center rounded-2xl bg-gradient-to-br from-amber-500 to-orange-700 text-white shadow-md shadow-orange-800/25">
+            <Landmark className="size-5" />
+          </div>
+          <h1 className="font-display text-2xl font-semibold tracking-tight text-teal-950">
+            Accounting sign in
+          </h1>
+          <p className="mt-1 text-sm font-medium text-teal-900/45">บัญชี</p>
+          <p className="mt-1.5 text-[15px] leading-relaxed text-teal-950/55">
+            Enter the 4-digit PIN to open invoices, receipts, and billing.
+          </p>
+
+          <div className="mt-6 space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="accounting-username">Username</Label>
+              <Input
+                id="accounting-username"
+                autoComplete="username"
+                value={username}
+                readOnly
+                onChange={(event) => setUsername(event.target.value)}
+                className="bg-teal-950/[0.03] text-teal-900/70"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="accounting-pin">PIN</Label>
+              <Input
+                ref={pinRef}
+                id="accounting-pin"
+                type="password"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                autoFocus
+                maxLength={4}
+                value={pin}
+                onChange={(event) => handlePinChange(event.target.value)}
+                placeholder="••••"
+                className="tracking-[0.4em]"
+              />
+            </div>
+          </div>
+
+          {error ? (
+            <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-800">
+              {error}
+            </p>
+          ) : null}
+
+          <Button type="submit" disabled={busy} className="mt-6 h-12 w-full rounded-xl text-base">
+            {busy ? 'Signing in…' : 'Sign in'}
+          </Button>
+        </form>
+
+        <Link
+          href="/"
+          className="gday-fade-up delay-100 mt-6 inline-flex items-center gap-2 self-start text-sm font-medium text-teal-800/70 transition-colors hover:text-teal-950"
+        >
+          <ArrowLeft className="size-4" />
+          Back to portal
+        </Link>
+      </main>
+    </div>
+  )
+}

@@ -94,6 +94,31 @@ export type Agent = {
   status: AgentStatus
 }
 
+export type PortalUserStatus = 'pending' | 'active' | 'inactive'
+
+export type PortalUser = {
+  id: string
+  email: string | null
+  name: string
+  company: string
+  userId: string | null
+  agentSlug: string | null
+  status: PortalUserStatus
+  createdAt: string
+  updatedAt: string
+  hasPassword: boolean
+}
+
+export type PortalSession = {
+  id: string
+  email: string | null
+  name: string
+  company: string
+  userId: string
+  agentSlug: string | null
+  status: PortalUserStatus
+}
+
 export type PickupZone = {
   name: PickupZoneName
   time: string

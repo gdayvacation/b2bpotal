@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { ArrowLeft, Check, Save, Trash2, Upload } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
 import { useInvoiceStore } from '@/components/admin/use-invoice-store'
@@ -79,6 +80,8 @@ function MoneyField({
 }
 
 export function AdminInvoiceSetup() {
+  const pathname = usePathname()
+  const invoicesHref = pathname.startsWith('/accounting') ? '/accounting' : '/admin/invoices'
   const { agents } = usePortal()
   const { settings, rates, loading, cloud, error: storeError, updateSettings, updateRates } = useInvoiceStore()
   const [draftSettings, setDraftSettings] = useState<InvoiceSettings | null>(null)
@@ -135,7 +138,7 @@ export function AdminInvoiceSetup() {
         title="Invoice setup"
         description="Set agency tour prices, bank details, and the signature printed on invoices, billing notes, and receipts."
         actions={
-          <Link href="/admin/invoices">
+          <Link href={invoicesHref}>
             <Button type="button" variant="outline" className="h-10 rounded-xl">
               <ArrowLeft className="size-3.5" />
               Back to invoices

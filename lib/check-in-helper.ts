@@ -1,7 +1,6 @@
 import { PORTAL_TIMEZONE, addDaysISO, todayISO } from '@/lib/format'
 import { guestCheckInQrImageUrl } from '@/lib/check-in-qr'
 
-const HELPER_BOARD_SALT = 'gday-helper-board-v1'
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/
 
 export const HELPER_BOARD_HOURS_STORAGE_KEY = 'gday-helper-board-hours'
@@ -64,53 +63,32 @@ export function saveHelperBoardHours(hours: Partial<HelperBoardHours>) {
   return next
 }
 
-function hashToken(input: string) {
-  let a = 2166136261
-  let b = 0x811c9dc5
-  for (let i = 0; i < input.length; i += 1) {
-    const code = input.charCodeAt(i)
-    a ^= code
-    a = Math.imul(a, 16777619)
-    b = Math.imul(b ^ code, 0x01000193)
-  }
-  return `${(a >>> 0).toString(36).padStart(7, '0')}${(b >>> 0).toString(36).padStart(7, '0')}`
-}
-
-export function helperBoardToken(date: string, hours?: Partial<HelperBoardHours>) {
-  const normalized = normalizeHelperBoardHours(hours)
-  return hashToken(`${HELPER_BOARD_SALT}|${date}|helper|${normalized.open}|${normalized.close}`)
-}
-
-function helperBoardTokenLegacy(date: string) {
-  return hashToken(`${HELPER_BOARD_SALT}|${date}|helper`)
-}
-
-export function isValidHelperBoardToken(
+export function helperBoardPath(
   date: string,
-  token: string,
   hours?: Partial<HelperBoardHours>,
+  token?: string,
 ) {
-  if (!date || !token.trim()) return false
-  const trimmed = token.trim()
-  return (
-    trimmed === helperBoardToken(date, hours) || trimmed === helperBoardTokenLegacy(date)
-  )
-}
-
-export function helperBoardPath(date: string, hours?: Partial<HelperBoardHours>) {
   const normalized = normalizeHelperBoardHours(hours)
-  const token = helperBoardToken(date, normalized)
+  const accessKey = token?.trim() ?? ''
+  if (!accessKey) return ''
   const params = new URLSearchParams({
     d: date,
-    t: token,
+    t: accessKey,
     o: normalized.open,
     c: normalized.close,
   })
   return `/check-in/helper?${params.toString()}`
 }
 
-export function helperBoardUrl(origin: string, date: string, hours?: Partial<HelperBoardHours>) {
-  return `${origin.replace(/\/$/, '')}${helperBoardPath(date, hours)}`
+export function helperBoardUrl(
+  origin: string,
+  date: string,
+  hours?: Partial<HelperBoardHours>,
+  token?: string,
+) {
+  const path = helperBoardPath(date, hours, token)
+  if (!path) return ''
+  return `${origin.replace(/\/$/, '')}${path}`
 }
 
 export function helperBoardQrImageUrl(
@@ -118,8 +96,11 @@ export function helperBoardQrImageUrl(
   date: string,
   size = 512,
   hours?: Partial<HelperBoardHours>,
+  token?: string,
 ) {
-  return guestCheckInQrImageUrl(helperBoardUrl(origin, date, hours), size)
+  const url = helperBoardUrl(origin, date, hours, token)
+  if (!url) return ''
+  return guestCheckInQrImageUrl(url, size)
 }
 
 function bangkokClock(now: Date) {

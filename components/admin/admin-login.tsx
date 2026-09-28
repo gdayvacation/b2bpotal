@@ -7,44 +7,53 @@ import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-
-const ADMIN_USERNAME = 'admin'
-const ADMIN_PIN = '1234'
+import { ADMIN_AUTH_VALUE, loginStaff } from '@/lib/staff-auth'
 
 export function AdminLogin({ onSuccess }: { onSuccess: () => void }) {
-  const [username, setUsername] = useState(ADMIN_USERNAME)
+  const [username, setUsername] = useState(ADMIN_AUTH_VALUE)
   const [pin, setPin] = useState('')
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
   const pinRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     pinRef.current?.focus()
   }, [])
 
-  function trySignIn(nextUsername: string, nextPin: string) {
-    const nameOk = nextUsername.trim().toLowerCase() === ADMIN_USERNAME
-    const pinOk = nextPin === ADMIN_PIN
-    if (!nameOk || !pinOk) {
+  async function trySignIn(nextUsername: string, nextPin: string) {
+    const nameOk = nextUsername.trim().toLowerCase() === ADMIN_AUTH_VALUE
+    if (!nameOk || !nextPin) {
       setError('PIN is incorrect.')
       setPin('')
       requestAnimationFrame(() => pinRef.current?.focus())
       return
     }
+    setBusy(true)
     setError('')
-    onSuccess()
+    try {
+      await loginStaff('admin', nextPin)
+      window.location.reload()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'PIN is incorrect.')
+      setPin('')
+      requestAnimationFrame(() => pinRef.current?.focus())
+    } finally {
+      setBusy(false)
+    }
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    trySignIn(username, pin)
+    if (busy) return
+    void trySignIn(username, pin)
   }
 
   function handlePinChange(value: string) {
     const nextPin = value.replace(/\D/g, '').slice(0, 4)
     setPin(nextPin)
     if (error) setError('')
-    if (nextPin.length === 4) {
-      trySignIn(username, nextPin)
+    if (nextPin.length === 4 && !busy) {
+      void trySignIn(username, nextPin)
     }
   }
 
@@ -104,8 +113,8 @@ export function AdminLogin({ onSuccess }: { onSuccess: () => void }) {
             </p>
           ) : null}
 
-          <Button type="submit" className="mt-6 h-12 w-full rounded-xl text-base">
-            Sign in
+          <Button type="submit" disabled={busy} className="mt-6 h-12 w-full rounded-xl text-base">
+            {busy ? 'Signing in…' : 'Sign in'}
           </Button>
         </form>
 
