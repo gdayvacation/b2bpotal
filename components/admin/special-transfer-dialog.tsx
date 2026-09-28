@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Segment, SegmentedControl } from '@/components/ui-primitives'
 import {
+  canonicalVanOutsourceCompany,
   isSpecialTransfer,
   isSpecialTransferKind,
   normalizeChargeAmount,
@@ -57,7 +58,7 @@ export function specialTransferToMeta(draft: SpecialTransferDraft): Partial<VanM
     phone: draft.phone.trim(),
     plate: draft.plate.trim(),
     outsourced: company.length > 0,
-    outsourceCompany: company,
+    outsourceCompany: canonicalVanOutsourceCompany(company),
     chargeAmount: normalizeChargeAmount(draft.chargeAmount),
   }
 }

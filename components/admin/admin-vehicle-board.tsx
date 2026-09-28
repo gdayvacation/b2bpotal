@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   Bus,
@@ -50,6 +50,7 @@ import {
   MAX_DAY_BOATS,
   boatDisplayName,
   boatNumbersForPlan,
+  canonicalVanOutsourceCompany,
   clampVanCapacity,
   bookingTransferKind,
   isPartnerBoat,
@@ -66,6 +67,7 @@ import {
   NO_TRANSFER_VAN_NUMBER,
   DUMMY_VAN_NUMBER,
   TRANSFER_KIND_LABELS,
+  normalizeChargeAmount,
   specialTransferDirectionLabel,
   specialTransferKindLabel,
   totalPassengers,
@@ -97,6 +99,34 @@ const DRAG_MIME = 'application/x-gday-van-codes'
 /** Always show this many van cards ready to receive guests. */
 const DEFAULT_DAY_VAN_COUNT = 3
 const SEAT_PRESETS = [12, 20, 24, 30, 40] as const
+
+function formatVanPaxMix(pax: { adults: number; children: number; infants: number; tourLeaders: number }) {
+  return `${pax.adults}A ${pax.children}C ${pax.infants}I ${pax.tourLeaders}T`
+}
+
+function insertCodeInList(codes: string[], fromIndex: number, insertAt: number) {
+  if (fromIndex < 0 || fromIndex >= codes.length) return null
+  const next = [...codes]
+  const [moved] = next.splice(fromIndex, 1)
+  if (!moved) return null
+  let at = Math.max(0, Math.min(next.length, insertAt))
+  if (fromIndex < insertAt) at = Math.max(0, at - 1)
+  next.splice(at, 0, moved)
+  if (next.every((code, index) => code === codes[index])) return null
+  return next
+}
+
+function bookingWaitingForVan(
+  booking: Pick<Booking, 'code' | 'pickupZone' | 'privateTransferVehicle'>,
+  plan: Pick<DayVehiclePlan, 'assignments' | 'vanMeta'>,
+  boatPlan: Pick<DayBoatPlan, 'capacities' | 'kinds' | 'names' | 'assignments'>,
+) {
+  const kind = bookingTransferKind(booking, plan, boatPlan)
+  if (kind === 'no_transfer') return false
+  if ((plan.assignments[booking.code]?.length ?? 0) > 0) return false
+  if (boatPlan.assignments[booking.code]) return false
+  return true
+}
 
 function bookingNeedsPlacement(
   booking: Booking,
@@ -429,6 +459,60 @@ function ProgramPickCard({
   )
 }
 
+function ChargeAmountField({
+  id,
+  value,
+  onCommit,
+  size = 'sm',
+}: {
+  id: string
+  value: number
+  onCommit: (amount: number) => void
+  size?: 'sm' | 'default'
+}) {
+  const focusedRef = useRef(false)
+  const [draft, setDraft] = useState(value > 0 ? String(value) : '')
+
+  useEffect(() => {
+    if (focusedRef.current) return
+    setDraft(value > 0 ? String(value) : '')
+  }, [value])
+
+  function commit() {
+    focusedRef.current = false
+    const parsed = draft.trim() === '' ? 0 : Number(draft)
+    const amount = Number.isFinite(parsed) ? Math.round(parsed) : 0
+    setDraft(amount > 0 ? String(amount) : '')
+    if (normalizeChargeAmount(amount) === normalizeChargeAmount(value)) return
+    onCommit(amount)
+  }
+
+  return (
+    <div className="relative">
+      <Input
+        id={id}
+        type="number"
+        min={0}
+        step={100}
+        value={draft}
+        onFocus={() => {
+          focusedRef.current = true
+        }}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') (event.currentTarget as HTMLInputElement).blur()
+        }}
+        placeholder="e.g. 2500"
+        className={`${size === 'sm' ? 'h-9' : 'h-10'} pr-12`}
+      />
+      <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[11px] font-semibold text-teal-800/55">
+        THB
+      </span>
+    </div>
+  )
+}
+
 function vanDisplayName(crew: VanMeta) {
   if (crew.specialKind === 'partner') {
     return (crew.outsourceCompany || crew.label || '').trim()
@@ -451,7 +535,7 @@ function vanCardTitle(van: number, crew: VanMeta, flags?: { empty?: boolean; noT
 }
 
 function vanNamePatch(crew: VanMeta, name: string): Partial<VanMeta> {
-  const trimmed = name.trim()
+  const trimmed = canonicalVanOutsourceCompany(name)
   if (crew.specialKind === 'partner') {
     return { outsourceCompany: trimmed, label: trimmed, plate: crew.plate.trim() ? crew.plate : trimmed }
   }
@@ -533,7 +617,7 @@ function VanNameField({
         startEditing()
       }}
     >
-      <p className="truncate text-sm font-semibold text-teal-950">{title}</p>
+      <p className="truncate text-[13px] font-semibold text-teal-950">{title}</p>
       <Pencil className="size-3 shrink-0 text-teal-900/35" />
     </button>
   )
@@ -559,7 +643,7 @@ function VanCrewDetails({
         render={
           <button
             type="button"
-            className="mt-2 flex w-full items-start justify-between gap-2 rounded-lg px-0.5 py-0.5 text-left hover:bg-teal-50/80"
+            className="mt-1 flex w-full items-start justify-between gap-2 rounded-lg px-0.5 py-0.5 text-left hover:bg-teal-50/80"
             onClick={(event) => event.stopPropagation()}
           />
         }
@@ -576,24 +660,6 @@ function VanCrewDetails({
           <p className="mt-0.5 truncate text-[11px] leading-tight text-teal-900/55">
             {contact || 'Plate · Tel'}
           </p>
-          {isSpecialTransfer(crew) ? (
-            <p className="mt-1 truncate text-[10px] font-semibold tracking-wide text-sky-800 uppercase">
-              {specialTransferKindLabel(crew.specialKind)}
-              {specialTransferDirectionLabel(crew)
-                ? ` · ${specialTransferDirectionLabel(crew)}`
-                : ''}
-              {formatThb(crew.chargeAmount ?? 0) ? ` · ${formatThb(crew.chargeAmount ?? 0)}` : ''}
-            </p>
-          ) : crew.outsourced ? (
-            <p className="mt-1 truncate text-[10px] font-semibold tracking-wide text-violet-800 uppercase">
-              {vanOutsourceLabel(crew)}
-              {formatThb(crew.chargeAmount ?? 0) ? ` · ${formatThb(crew.chargeAmount ?? 0)}` : ''}
-            </p>
-          ) : formatThb(crew.chargeAmount ?? 0) ? (
-            <p className="mt-1 truncate text-[10px] font-semibold tracking-wide text-teal-800 uppercase">
-              {formatThb(crew.chargeAmount ?? 0)}
-            </p>
-          ) : null}
         </div>
         <Pencil className="mt-0.5 size-3 shrink-0 text-teal-800/35" />
       </PopoverTrigger>
@@ -614,7 +680,7 @@ function VanCrewDetails({
           <Input
             id={`card-name-${van}`}
             value={
-              crew.specialKind === 'partner'
+              crew.specialKind === 'partner' || crew.specialKind === 'outsource' || crew.outsourced
                 ? crew.outsourceCompany || crew.label || ''
                 : crew.label || ''
             }
@@ -680,23 +746,11 @@ function VanCrewDetails({
           <Label htmlFor={`card-charge-${van}`}>
             {crew.outsourced ? 'Company price (invoice check & pay)' : 'Charge amount'}
           </Label>
-          <div className="relative">
-            <Input
-              id={`card-charge-${van}`}
-              type="number"
-              min={0}
-              step={100}
-              value={crew.chargeAmount && crew.chargeAmount > 0 ? String(crew.chargeAmount) : ''}
-              onChange={(event) =>
-                onChange({ chargeAmount: event.target.value === '' ? 0 : Number(event.target.value) })
-              }
-              placeholder="e.g. 2500"
-              className="h-9 pr-12"
-            />
-            <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[11px] font-semibold text-teal-800/55">
-              THB
-            </span>
-          </div>
+          <ChargeAmountField
+            id={`card-charge-${van}`}
+            value={crew.chargeAmount ?? 0}
+            onCommit={(chargeAmount) => onChange({ chargeAmount })}
+          />
         </div>
         <p className="text-[11px] leading-relaxed text-teal-800/55">
           {crew.outsourced
@@ -732,7 +786,7 @@ function VanCapacityButton({
           <button
             type="button"
             className={cn(
-              'rounded-lg px-2 py-1 text-xs font-semibold tabular-nums',
+              'rounded-md px-1.5 py-0.5 text-[11px] font-semibold tabular-nums',
               over ? 'bg-amber-50 text-amber-900' : 'bg-teal-50 text-teal-800',
             )}
             onClick={(event) => event.stopPropagation()}
@@ -933,12 +987,13 @@ function VehicleBoard({
   const [sheetQuery, setSheetQuery] = useState('')
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(() => new Set())
   const [dragCodes, setDragCodes] = useState<string[] | null>(null)
-  const [kindFilter, setKindFilter] = useState<'all' | 'no_transfer'>('all')
+  const [kindFilter, setKindFilter] = useState<'all' | TransferKind>('all')
   const [dropTarget, setDropTarget] = useState<
     'pool' | TransferKind | number | `boat-${number}` | null
   >(null)
   const [dragCode, setDragCode] = useState<string | null>(null)
   const [dragOverCode, setDragOverCode] = useState<string | null>(null)
+  const [dragOverBefore, setDragOverBefore] = useState(true)
 
   const capacity = plan.vanCapacity || DEFAULT_VAN_CAPACITY
   const listedVans = listedDayVans(plan)
@@ -1058,13 +1113,10 @@ function VehicleBoard({
     }
     for (const booking of listBookings) {
       const kind = bookingTransferKind(booking, plan, boatPlan)
-      const waiting =
-        (plan.assignments[booking.code]?.length ?? 0) === 0 && !boatPlan.assignments[booking.code]
-      if (kind === 'unassigned' || kind === 'no_transfer') {
-        if (waiting) {
-          counts[kind] += 1
-          counts.all += 1
-        }
+      const waiting = bookingWaitingForVan(booking, plan, boatPlan)
+      if (waiting) counts.all += 1
+      if (kind === 'unassigned') {
+        if (waiting) counts[kind] += 1
       } else {
         counts[kind] += 1
       }
@@ -1072,23 +1124,28 @@ function VehicleBoard({
     return counts
   }, [listBookings, plan, boatPlan])
 
-  const sheetRows = useMemo(() => {
-    let rows = listBookings
-    const waiting = (booking: Booking) =>
-      (plan.assignments[booking.code]?.length ?? 0) === 0 && !boatPlan.assignments[booking.code]
-    if (kindFilter === 'no_transfer') {
-      rows = rows.filter(
-        (booking) =>
-          waiting(booking) && bookingTransferKind(booking, plan, boatPlan) === 'no_transfer',
-      )
-    } else {
-      rows = rows.filter(
-        (booking) =>
-          waiting(booking) &&
-          (bookingTransferKind(booking, plan, boatPlan) === 'unassigned' ||
-            bookingTransferKind(booking, plan, boatPlan) === 'no_transfer'),
-      )
+  const kindGuestNames = useMemo(() => {
+    const names: Record<TransferKind, string[]> = {
+      company: [],
+      outsource: [],
+      no_transfer: [],
+      private: [],
+      partner: [],
     }
+    for (const booking of listBookings) {
+      const kind = bookingTransferKind(booking, plan, boatPlan)
+      if (kind === 'unassigned') continue
+      names[kind].push(booking.leadGuest.trim() || booking.pickupHotel.trim() || booking.code)
+    }
+    return names
+  }, [listBookings, plan, boatPlan])
+
+  const sheetRows = useMemo(() => {
+    let rows = listBookings.filter((booking) => {
+      if (!bookingWaitingForVan(booking, plan, boatPlan)) return false
+      if (kindFilter === 'all') return true
+      return bookingTransferKind(booking, plan, boatPlan) === kindFilter
+    })
     const q = sheetQuery.trim().toLowerCase()
     if (!q) return rows
     return rows.filter((booking) => {
@@ -1164,6 +1221,7 @@ function VehicleBoard({
     if (unique.length === 0) return
     onAssignMany(unique, van)
     setSelectedCodes(new Set())
+    setKindFilter('all')
   }
 
   function assignToKind(codes: string[], kind: TransferKind) {
@@ -1427,17 +1485,208 @@ function VehicleBoard({
         </Surface>
       ) : (
         <div className="flex flex-col gap-5 print:hidden">
-          <div className="grid gap-4 xl:grid-cols-[minmax(280px,22rem)_minmax(0,1fr)]">
+          <div className="space-y-3">
+            <div className="flex flex-col gap-2 px-0.5 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h3 className="text-base font-semibold text-teal-950">Transfer types</h3>
+                <p className="mt-0.5 text-xs text-teal-900/55">
+                  Drop onto a type, or onto a specific van card
+                  {dragCodes?.length
+                    ? ` · dragging ${dragCodes.length} · ${draggingPax} pax`
+                    : ''}
+                  {selectedList.length > 0
+                    ? ` · tap a type or van to seat ${selectedList.length}`
+                    : ''}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-[11px]"
+                  onClick={() => onSpecialVan(nextEmptyVan)}
+                >
+                  <Car className="size-3" />
+                  Special Transfers
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-[11px]"
+                  onClick={onOpenJobOrder}
+                >
+                  <Printer className="size-3" />
+                  Driver Job Order
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-[11px]"
+                  onClick={() => {
+                    if (
+                      !window.confirm(
+                        'Clear all vans? Guests go back to the waiting list, including partner, private, and outsource vans.',
+                      )
+                    ) {
+                      return
+                    }
+                    onClear()
+                  }}
+                >
+                  Clear vans
+                </Button>
+                <Button type="button" size="sm" className="h-7 px-2 text-[11px]" onClick={onAutoAssign}>
+                  <Sparkles className="size-3" />
+                  Auto-assign vans
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-[11px]"
+                  onClick={() => setAddVanOpen(true)}
+                >
+                  <Plus className="size-3" />
+                  Add van
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+              {(
+                [
+                  {
+                    kind: 'company' as const,
+                    count: kindCounts.company,
+                    hint: 'Our company van',
+                  },
+                  {
+                    kind: 'outsource' as const,
+                    count: kindCounts.outsource,
+                    hint: 'Hired van company',
+                  },
+                  {
+                    kind: 'no_transfer' as const,
+                    count: kindCounts.no_transfer,
+                    hint: 'Guest goes to pier',
+                  },
+                  {
+                    kind: 'private' as const,
+                    count: kindCounts.private,
+                    hint: 'Charge syncs to invoice',
+                  },
+                  {
+                    kind: 'partner' as const,
+                    count: kindCounts.partner,
+                    hint: 'Partner picks guests up',
+                  },
+                ] as const
+              ).map(({ kind, count, hint }) => {
+                const isDrop =
+                  (dropTarget === kind ||
+                    (kind === 'no_transfer' && dropTarget === 'no_transfer') ||
+                    (kind === 'partner' && dropTarget === 'partner')) &&
+                  !!dragCodes?.length
+                const names = kindGuestNames[kind]
+                const namePreview =
+                  names.length === 0
+                    ? ''
+                    : names.length <= 2
+                      ? names.join(', ')
+                      : `${names.slice(0, 2).join(', ')} +${names.length - 2}`
+                const filtered = kindFilter === kind
+                return (
+                  <button
+                    key={kind}
+                    type="button"
+                    onDragOver={(event) => {
+                      if (!dragCodes?.length) return
+                      event.preventDefault()
+                      event.dataTransfer.dropEffect = 'move'
+                      if (dropTarget !== kind) setDropTarget(kind)
+                    }}
+                    onDragLeave={() => {
+                      if (
+                        dropTarget === kind ||
+                        dropTarget === 'no_transfer' ||
+                        dropTarget === 'partner'
+                      ) {
+                        if (kind === dropTarget) setDropTarget(null)
+                      }
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault()
+                      const codes = readDragCodes(event, dragCodes)
+                      setDragCodes(null)
+                      setDropTarget(null)
+                      assignToKind(codes, kind)
+                    }}
+                    onClick={() => {
+                      if (selectedList.length > 0) {
+                        assignToKind(selectedList, kind)
+                        return
+                      }
+                      const waitingHere = listBookings.some(
+                        (booking) =>
+                          bookingWaitingForVan(booking, plan, boatPlan) &&
+                          bookingTransferKind(booking, plan, boatPlan) === kind,
+                      )
+                      if (!waitingHere) {
+                        setKindFilter('all')
+                        return
+                      }
+                      setKindFilter((current) => (current === kind ? 'all' : kind))
+                      setSelectedCodes(new Set())
+                    }}
+                    className={cn(
+                      'rounded-2xl border px-3 py-3 text-left transition-all',
+                      isDrop
+                        ? 'border-teal-600/50 bg-teal-50 ring-2 ring-teal-600/20'
+                        : filtered
+                          ? 'ring-2 ring-teal-700/25'
+                          : kind === 'partner'
+                          ? 'border-neutral-200 bg-white'
+                          : kind === 'private'
+                            ? 'border-sky-200 bg-sky-50/40'
+                            : kind === 'outsource'
+                              ? 'border-violet-200 bg-violet-50/40'
+                              : kind === 'no_transfer'
+                                ? 'border-stone-200 bg-stone-50'
+                                : 'border-teal-900/10 bg-white',
+                      selectedList.length > 0 && 'hover:border-teal-700/35',
+                      'cursor-pointer',
+                    )}
+                  >
+                    <TransferKindBadge kind={kind} />
+                    <p className="mt-2 font-display text-2xl font-semibold tabular-nums text-teal-950">
+                      {count}
+                    </p>
+                    {namePreview ? (
+                      <p className="mt-0.5 truncate text-[11px] font-medium text-teal-900/70" title={names.join(', ')}>
+                        {namePreview}
+                      </p>
+                    ) : null}
+                    <p className="mt-0.5 text-[11px] leading-snug text-teal-900/50">{hint}</p>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          <div className="grid items-start gap-4 xl:grid-cols-[minmax(32rem,1.4fr)_minmax(20rem,1fr)]">
             {/* Left — guest pool */}
             <Surface className="flex max-h-[min(78vh,52rem)] flex-col overflow-hidden">
-              <div className="border-b border-teal-900/8 px-4 py-3 sm:px-4">
+              <div className="border-b border-teal-900/8 px-3 py-2.5 sm:px-3.5">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <h3 className="text-base font-semibold text-teal-950">All bookings</h3>
+                    <h3 className="text-base font-semibold text-teal-950">Waiting</h3>
                     <p className="mt-0.5 text-xs text-teal-900/55">
-                      {kindFilter === 'no_transfer'
-                        ? `${sheetRows.length} no transfers`
-                        : `${sheetRows.length} waiting — drag onto a van`}
+                      {kindFilter === 'all'
+                        ? `${sheetRows.length} not on a van yet`
+                        : `${sheetRows.length} ${TRANSFER_KIND_LABELS[kindFilter].toLowerCase()} waiting`}
                     </p>
                   </div>
                   <label className="flex items-center gap-1.5 text-xs text-teal-900/60">
@@ -1457,15 +1706,17 @@ function VehicleBoard({
                   </label>
                 </div>
 
-                <div
-                  className="mt-2.5 -mx-1 flex gap-1.5 overflow-x-auto px-1 pb-0.5"
-                  role="tablist"
-                  aria-label="Filter by transfer type"
-                >
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <div
+                    className="-mx-1 flex min-w-0 flex-1 gap-1.5 overflow-x-auto px-1 pb-0.5"
+                    role="tablist"
+                    aria-label="Filter by transfer type"
+                  >
                   {(
                     [
                       ['all', 'All'],
-                      ['no_transfer', 'No Transfers'],
+                      ['private', 'Private'],
+                      ['partner', 'Partner'],
                     ] as const
                   ).map(([key, label]) => (
                     <button
@@ -1495,17 +1746,18 @@ function VehicleBoard({
                       </span>
                     </button>
                   ))}
-                </div>
+                  </div>
 
-                <div className="relative mt-2.5">
-                  <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-teal-900/35" />
-                  <Input
-                    value={sheetQuery}
-                    onChange={(event) => setSheetQuery(event.target.value)}
-                    placeholder="Search guest, hotel…"
-                    className="h-9 pl-8 text-sm"
-                    aria-label="Search bookings"
-                  />
+                  <div className="relative min-w-[12rem] flex-1">
+                    <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-teal-900/35" />
+                    <Input
+                      value={sheetQuery}
+                      onChange={(event) => setSheetQuery(event.target.value)}
+                      placeholder="Search guest, hotel…"
+                      className="h-8 pl-8 text-sm"
+                      aria-label="Search bookings"
+                    />
+                  </div>
                 </div>
                 {selectedList.length > 0 ? (
                   <div className="mt-2.5 flex items-center justify-between gap-2 rounded-xl border border-teal-700/20 bg-teal-50/80 px-2.5 py-2">
@@ -1553,14 +1805,18 @@ function VehicleBoard({
                   <div className="rounded-xl border border-dashed border-teal-900/12 px-3 py-10 text-center text-sm text-teal-900/45">
                     {sheetQuery.trim()
                       ? `No guests match “${sheetQuery.trim()}”.`
-                      : kindFilter === 'no_transfer'
-                        ? 'No no-transfer bookings.'
+                      : kindFilter === 'private'
+                          ? 'No waiting private transfers. If the count is still 1, look for a sky-bordered private van card.'
+                          : kindFilter === 'partner'
+                            ? 'No waiting tour-partner bookings.'
+                        : kindFilter !== 'all'
+                          ? 'No guests of this type are waiting — they are already on a van.'
                         : bookings.length === 0
                           ? 'No bookings for this day.'
-                          : 'No bookings match this filter.'}
+                          : 'Everyone is on a van. Waiting is empty.'}
                   </div>
                 ) : (
-                  <div className="space-y-1">
+                  <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
                     {sheetRows.map((booking) => {
                       const pax = totalPassengers(booking)
                       const largeGroup = pax > capacity
@@ -1605,47 +1861,30 @@ function VehicleBoard({
                               aria-label={`Select ${booking.leadGuest}`}
                             />
                             <div className="min-w-0 flex-1">
-                              <div className="flex items-center justify-between gap-2">
-                                <p className="truncate text-[13px] leading-tight font-semibold text-teal-950">
-                                  {booking.pickupHotel.trim() || booking.leadGuest}
-                                  {booking.roomNumber ? (
-                                    <span className="font-medium text-teal-900/55">
-                                      {' '}
-                                      · Rm {booking.roomNumber}
-                                    </span>
-                                  ) : null}
-                                </p>
-                                <span
-                                  className={cn(
-                                    'shrink-0 rounded px-1 py-px text-[10px] font-semibold tabular-nums',
-                                    largeGroup
-                                      ? 'bg-amber-200/80 text-amber-950'
-                                      : 'bg-teal-950/[0.06] text-teal-900',
-                                  )}
-                                >
-                                  {pax}
-                                </span>
-                              </div>
-                              <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] leading-tight text-teal-900/65">
-                                <span className="min-w-0 truncate">
-                                  {booking.pickupHotel.trim()
-                                    ? booking.leadGuest
-                                    : formatPaxBreakdown(booking)}
-                                  {booking.pickupHotel.trim() ? (
-                                    <span className="text-teal-900/40">
-                                      {' '}
-                                      · {formatPaxBreakdown(booking)}
-                                    </span>
-                                  ) : null}
-                                </span>
-                                <TransferKindBadge kind={transferKind} />
-                                <span className="shrink-0 tabular-nums text-teal-900/50">
+                              <p className="text-sm leading-snug font-semibold text-teal-950">
+                                {booking.pickupHotel.trim() || 'Hotel TBA'}
+                                {booking.roomNumber ? (
+                                  <span className="font-medium text-teal-900/50">
+                                    {' '}
+                                    · Rm {booking.roomNumber}
+                                  </span>
+                                ) : null}
+                              </p>
+                              <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] leading-snug">
+                                <span className="shrink-0 tabular-nums text-teal-900/55">
                                   {booking.pickupTime}
                                 </span>
+                                <span
+                                  className={cn(
+                                    'tabular-nums font-medium',
+                                    largeGroup ? 'text-amber-950' : 'text-teal-900',
+                                  )}
+                                >
+                                  {formatVanPaxMix(booking)}
+                                </span>
+                                <TransferKindBadge kind={transferKind} />
                                 {booking.note ? (
-                                  <span className="min-w-0 truncate text-teal-900/45">
-                                    · {booking.note}
-                                  </span>
+                                  <span className="min-w-0 text-teal-900/45">· {booking.note}</span>
                                 ) : null}
                               </div>
                               {largeGroup ? (
@@ -1675,174 +1914,8 @@ function VehicleBoard({
             </Surface>
 
             {/* Right — van cards */}
-            <div className="min-w-0 space-y-3">
-              <div className="flex flex-col gap-2 px-0.5 sm:flex-row sm:items-end sm:justify-between">
-                <div>
-                  <h3 className="text-base font-semibold text-teal-950">Transfer types</h3>
-                  <p className="mt-0.5 text-xs text-teal-900/55">
-                    Drop onto a type, or onto a specific van card
-                    {dragCodes?.length
-                      ? ` · dragging ${dragCodes.length} · ${draggingPax} pax`
-                      : ''}
-                    {selectedList.length > 0
-                      ? ` · tap a type or van to seat ${selectedList.length}`
-                      : ''}
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 px-2 text-[11px]"
-                    onClick={() => onSpecialVan(nextEmptyVan)}
-                  >
-                    <Car className="size-3" />
-                    Special Transfers
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 px-2 text-[11px]"
-                    onClick={onOpenJobOrder}
-                  >
-                    <Printer className="size-3" />
-                    Driver Job Order
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 px-2 text-[11px]"
-                    onClick={() => {
-                      if (
-                        !window.confirm(
-                          'Clear all vans? Guests go back to the waiting list, including partner, private, and outsource vans.',
-                        )
-                      ) {
-                        return
-                      }
-                      onClear()
-                    }}
-                  >
-                    Clear vans
-                  </Button>
-                  <Button type="button" size="sm" className="h-7 px-2 text-[11px]" onClick={onAutoAssign}>
-                    <Sparkles className="size-3" />
-                    Auto-assign vans
-                  </Button>
-                </div>
-              </div>
-
-              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-                {(
-                  [
-                    {
-                      kind: 'company' as const,
-                      count: kindCounts.company,
-                      hint: 'Our company van',
-                    },
-                    {
-                      kind: 'outsource' as const,
-                      count: kindCounts.outsource,
-                      hint: 'Hired van company',
-                    },
-                    {
-                      kind: 'no_transfer' as const,
-                      count: kindCounts.no_transfer,
-                      hint: 'Guest goes to pier',
-                    },
-                    {
-                      kind: 'private' as const,
-                      count: kindCounts.private,
-                      hint: 'Charge syncs to invoice',
-                    },
-                    {
-                      kind: 'partner' as const,
-                      count: kindCounts.partner,
-                      hint: 'Partner picks guests up',
-                    },
-                  ] as const
-                ).map(({ kind, count, hint }) => {
-                  const isDrop =
-                    (dropTarget === kind ||
-                      (kind === 'no_transfer' && dropTarget === 'no_transfer') ||
-                      (kind === 'partner' && dropTarget === 'partner')) &&
-                    !!dragCodes?.length
-                  return (
-                    <button
-                      key={kind}
-                      type="button"
-                      onDragOver={(event) => {
-                        if (!dragCodes?.length) return
-                        event.preventDefault()
-                        event.dataTransfer.dropEffect = 'move'
-                        if (dropTarget !== kind) setDropTarget(kind)
-                      }}
-                      onDragLeave={() => {
-                        if (
-                          dropTarget === kind ||
-                          dropTarget === 'no_transfer' ||
-                          dropTarget === 'partner'
-                        ) {
-                          if (kind === dropTarget) setDropTarget(null)
-                        }
-                      }}
-                      onDrop={(event) => {
-                        event.preventDefault()
-                        const codes = readDragCodes(event, dragCodes)
-                        setDragCodes(null)
-                        setDropTarget(null)
-                        assignToKind(codes, kind)
-                      }}
-                      onClick={() => {
-                        if (selectedList.length === 0) return
-                        assignToKind(selectedList, kind)
-                      }}
-                      className={cn(
-                        'rounded-2xl border px-3 py-3 text-left transition-all',
-                        isDrop
-                          ? 'border-teal-600/50 bg-teal-50 ring-2 ring-teal-600/20'
-                          : kind === 'partner'
-                            ? 'border-neutral-200 bg-white'
-                            : kind === 'private'
-                              ? 'border-sky-200 bg-sky-50/40'
-                              : kind === 'outsource'
-                                ? 'border-violet-200 bg-violet-50/40'
-                                : kind === 'no_transfer'
-                                  ? 'border-stone-200 bg-stone-50'
-                                  : 'border-teal-900/10 bg-white',
-                        selectedList.length > 0 && 'cursor-pointer hover:border-teal-700/35',
-                      )}
-                    >
-                      <TransferKindBadge kind={kind} />
-                      <p className="mt-2 font-display text-2xl font-semibold tabular-nums text-teal-950">
-                        {count}
-                      </p>
-                      <p className="mt-0.5 text-[11px] leading-snug text-teal-900/50">{hint}</p>
-                    </button>
-                  )
-                })}
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-2 px-0.5 pt-1">
-                <h3 className="text-base font-semibold text-teal-950">Step 1 · Van cards</h3>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 px-2 text-[11px]"
-                    onClick={() => setAddVanOpen(true)}
-                  >
-                    <Plus className="size-3" />
-                    Add van
-                  </Button>
-                </div>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+            <div className="min-w-0">
+              <div className="grid gap-2 sm:grid-cols-2">
                 {byVan.map(
                   ({
                     van,
@@ -1863,14 +1936,20 @@ function VehicleBoard({
                     const projected = isDrop ? pax + draggingPax : pax
                     const projectedOver = !isNoTransferCard && projected > seats
                     const isVacant = items.length === 0
+                    const cardKind = vanTransferKind(van, crew)
+                    const kindMatch = kindFilter !== 'all' && cardKind === kindFilter
 
                     return (
                       <div
                         key={van}
                         onDragOver={(event) => {
                           if (!dragCodes?.length) return
+                          const alreadyHere = dragCodes.every((code) =>
+                            items.some((item) => item.booking.code === code),
+                          )
                           event.preventDefault()
                           event.dataTransfer.dropEffect = 'move'
+                          if (alreadyHere) return
                           if (dropTarget !== van) setDropTarget(van)
                         }}
                         onDragLeave={() => {
@@ -1879,16 +1958,23 @@ function VehicleBoard({
                         onDrop={(event) => {
                           event.preventDefault()
                           const codes = readDragCodes(event, dragCodes)
+                          const alreadyHere = codes.every((code) =>
+                            items.some((item) => item.booking.code === code),
+                          )
                           setDragCodes(null)
                           setDropTarget(null)
+                          setDragOverCode(null)
+                          if (alreadyHere) return
                           assignDropped(codes, van)
                         }}
                         className={cn(
-                          'flex min-h-[14rem] flex-col rounded-2xl border bg-white/95 shadow-[0_12px_40px_-28px_rgba(15,118,110,0.35)] transition-all',
+                          'flex min-h-[11rem] flex-col rounded-xl border bg-white/95 shadow-[0_12px_40px_-28px_rgba(15,118,110,0.35)] transition-all',
                           over || projectedOver
                             ? 'border-amber-500/45'
                             : isDrop
                               ? 'border-teal-600/50 ring-2 ring-teal-600/25'
+                              : kindMatch
+                                ? 'ring-2 ring-sky-500/30'
                               : isNoTransferCard
                                 ? 'border-stone-300 bg-stone-50/70'
                               : isSpecial
@@ -1908,12 +1994,12 @@ function VehicleBoard({
                           assignDropped(selectedList, van)
                         }}
                       >
-                        <div className="border-b border-teal-900/6 px-3.5 py-3">
+                        <div className="border-b border-teal-900/6 px-2.5 py-2">
                           <div className="flex items-start justify-between gap-2">
-                            <div className="flex min-w-0 items-start gap-2">
+                            <div className="flex min-w-0 items-start gap-1.5">
                               <span
                                 className={cn(
-                                  'flex size-9 shrink-0 items-center justify-center rounded-xl text-sm font-bold',
+                                  'flex size-7 shrink-0 items-center justify-center rounded-lg text-xs font-bold',
                                   isEmptySlot
                                     ? 'bg-teal-950/[0.04] text-teal-800/50'
                                     : isNoTransferCard
@@ -1925,7 +2011,7 @@ function VehicleBoard({
                                       : 'bg-teal-800 text-white',
                                 )}
                               >
-                                {isEmptySlot ? <Plus className="size-4" /> : isNoTransferCard ? 'NT' : van}
+                                {isEmptySlot ? <Plus className="size-3.5" /> : isNoTransferCard ? 'NT' : van}
                               </span>
                               <div className="min-w-0">
                                 <VanNameField
@@ -1951,15 +2037,15 @@ function VehicleBoard({
                                           : 'Ready'}
                                 </p>
                                 {isNoTransferCard ? (
-                                  <span className="mt-1 inline-flex rounded-md bg-stone-200 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-stone-800 uppercase">
+                                  <span className="mt-0.5 inline-flex rounded-md bg-stone-200 px-1.5 py-px text-[10px] font-semibold tracking-wide text-stone-800 uppercase">
                                     {items.length} · {pax} pax
                                   </span>
                                 ) : crew.specialKind === 'partner' ? (
-                                  <span className="mt-1 inline-flex rounded-md bg-neutral-200 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-neutral-800 uppercase">
+                                  <span className="mt-0.5 inline-flex rounded-md bg-neutral-200 px-1.5 py-px text-[10px] font-semibold tracking-wide text-neutral-800 uppercase">
                                     Tour partner
                                   </span>
                                 ) : isSpecial ? (
-                                  <span className="mt-1 inline-flex rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-sky-900 uppercase">
+                                  <span className="mt-0.5 inline-flex rounded-md bg-sky-100 px-1.5 py-px text-[10px] font-semibold tracking-wide text-sky-900 uppercase">
                                     {crew.label || specialTransferKindLabel(crew.specialKind)}
                                     {crew.plate ? ` · ${crew.plate}` : ''}
                                     {formatThb(crew.chargeAmount ?? 0)
@@ -1967,7 +2053,7 @@ function VehicleBoard({
                                       : ''}
                                   </span>
                                 ) : crew.outsourced ? (
-                                  <span className="mt-1 inline-flex rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-violet-900 uppercase">
+                                  <span className="mt-0.5 inline-flex rounded-md bg-violet-100 px-1.5 py-px text-[10px] font-semibold tracking-wide text-violet-900 uppercase">
                                     {vanOutsourceLabel(crew)}
                                     {formatThb(crew.chargeAmount ?? 0)
                                       ? ` · ${formatThb(crew.chargeAmount ?? 0)}`
@@ -1999,14 +2085,14 @@ function VehicleBoard({
                               onChange={(patch) => onVanMeta(van, patch)}
                             />
                           )}
-                          <div className="mt-2 flex items-center gap-1.5">
-                            <div className="flex min-w-0 flex-wrap gap-1.5">
+                          <div className="mt-1.5 flex items-center gap-1">
+                            <div className="flex min-w-0 flex-wrap gap-1">
                               {!isNoTransferCard && (isEmptySlot || isPreparedEmpty || isSpecial) ? (
                                 <Button
                                   type="button"
                                   variant="outline"
                                   size="sm"
-                                  className="h-7 px-2 text-[11px]"
+                                  className="h-6 px-1.5 text-[10px]"
                                   onClick={(event) => {
                                     event.stopPropagation()
                                     onSpecialVan(van)
@@ -2020,7 +2106,7 @@ function VehicleBoard({
                                   type="button"
                                   variant="outline"
                                   size="sm"
-                                  className="h-7 px-2 text-[11px]"
+                                  className="h-6 px-1.5 text-[10px]"
                                   onClick={(event) => {
                                     event.stopPropagation()
                                     setOpenVan(van)
@@ -2036,7 +2122,7 @@ function VehicleBoard({
                                   type="button"
                                   variant="outline"
                                   size="sm"
-                                  className="h-7 px-2 text-[11px]"
+                                  className="h-6 px-1.5 text-[10px]"
                                   onClick={(event) => {
                                     event.stopPropagation()
                                     const oversized = items.find(
@@ -2054,7 +2140,7 @@ function VehicleBoard({
                               type="button"
                               variant="ghost"
                               size="sm"
-                              className="ml-auto h-7 shrink-0 px-2 text-[11px] text-rose-800 hover:bg-rose-50 hover:text-rose-900"
+                              className="ml-auto h-6 shrink-0 px-1.5 text-[10px] text-rose-800 hover:bg-rose-50 hover:text-rose-900"
                               onClick={(event) => {
                                 event.stopPropagation()
                                 onRemoveVan(van)
@@ -2067,17 +2153,17 @@ function VehicleBoard({
                           </div>
                         </div>
 
-                        <div className="flex min-h-0 flex-1 flex-col gap-1.5 p-2.5">
+                        <div className="flex min-h-0 flex-1 flex-col gap-1 p-2">
                           {items.length === 0 ? (
                             <div
                               className={cn(
-                                'flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed px-3 py-6 text-center',
+                                'flex flex-1 flex-col items-center justify-center rounded-lg border border-dashed px-2 py-4 text-center',
                                 isDrop
                                   ? 'border-teal-600/40 bg-teal-50/60 text-teal-800'
                                   : 'border-teal-900/10 text-teal-900/40',
                               )}
                             >
-                              <Users className="mb-2 size-5 opacity-50" />
+                              <Users className="mb-1 size-4 opacity-50" />
                               <p className="text-xs font-medium">
                                 {isDrop
                                   ? 'Drop to seat here'
@@ -2089,58 +2175,90 @@ function VehicleBoard({
                               </p>
                             </div>
                           ) : (
-                            items.map(({ booking, paxOnVan: legPax, legs }) => {
+                            items.map(({ booking, paxOnVan: legPax, legs }, index) => {
                               const split = (legs?.length ?? 0) > 1
                               const isDragging = dragCodes?.includes(booking.code)
+                              const hotel = booking.pickupHotel.trim()
+                              const mix = allocatePaxBreakdown(booking, legs, van)
+                              const vanCodes = items.map((item) => item.booking.code)
+                              const draggingOnThisVan =
+                                !!dragCodes?.length &&
+                                dragCodes.every((code) => vanCodes.includes(code))
+                              const isReorderOver =
+                                draggingOnThisVan &&
+                                dragOverCode === booking.code &&
+                                !dragCodes.includes(booking.code)
                               return (
                                 <div
                                   key={`${van}-${booking.code}`}
                                   draggable
+                                  title="Drag to change pickup order"
                                   onDragStart={(event) => {
                                     event.stopPropagation()
                                     beginDrag(event, [booking.code])
                                   }}
+                                  onDragOver={(event) => {
+                                    if (!draggingOnThisVan) return
+                                    event.preventDefault()
+                                    event.stopPropagation()
+                                    event.dataTransfer.dropEffect = 'move'
+                                    const rect = event.currentTarget.getBoundingClientRect()
+                                    const before = event.clientY < rect.top + rect.height / 2
+                                    if (dragOverCode !== booking.code) setDragOverCode(booking.code)
+                                    setDragOverBefore(before)
+                                  }}
+                                  onDragLeave={() => {
+                                    if (dragOverCode === booking.code) setDragOverCode(null)
+                                  }}
+                                  onDrop={(event) => {
+                                    if (!draggingOnThisVan) return
+                                    event.preventDefault()
+                                    event.stopPropagation()
+                                    const fromCode = dragCodes?.[0]
+                                    const before = dragOverBefore
+                                    setDragCodes(null)
+                                    setDropTarget(null)
+                                    setDragOverCode(null)
+                                    if (!fromCode || fromCode === booking.code) return
+                                    const fromIndex = vanCodes.indexOf(fromCode)
+                                    const insertAt = index + (before ? 0 : 1)
+                                    const next = insertCodeInList(vanCodes, fromIndex, insertAt)
+                                    if (next) onReorderVan(van, next)
+                                  }}
                                   onDragEnd={() => {
                                     setDragCodes(null)
                                     setDropTarget(null)
+                                    setDragOverCode(null)
                                   }}
                                   onClick={(event) => event.stopPropagation()}
                                   className={cn(
-                                    'cursor-grab rounded-lg border border-teal-900/8 bg-teal-950/[0.02] px-2.5 py-2 active:cursor-grabbing',
+                                    'relative cursor-grab rounded-md border border-teal-900/8 bg-teal-950/[0.02] px-2 py-1.5 active:cursor-grabbing',
                                     isDragging && 'opacity-40',
+                                    isReorderOver && 'border-teal-600/30 bg-teal-50/70',
                                   )}
                                 >
-                                  <div className="flex items-start justify-between gap-2">
-                                    <div className="min-w-0">
-                                      <p className="truncate text-sm font-medium text-teal-950">
-                                        {booking.pickupHotel.trim() || booking.leadGuest}
-                                        {booking.roomNumber ? ` · ${booking.roomNumber}` : ''}
-                                      </p>
-                                      {booking.pickupHotel.trim() ? (
-                                        <p className="mt-0.5 truncate text-[11px] text-teal-900/55">
-                                          {booking.leadGuest}
-                                        </p>
-                                      ) : (
-                                        <p className="mt-0.5 truncate text-[11px] text-teal-900/55">
-                                          {isNoTransfer(booking.pickupZone)
-                                            ? 'No transfer'
-                                            : booking.pickupZone || booking.pickupTime}
-                                        </p>
+                                  {isReorderOver ? (
+                                    <span
+                                      className={cn(
+                                        'pointer-events-none absolute inset-x-1 h-0.5 rounded-full bg-teal-600',
+                                        dragOverBefore ? '-top-0.5' : '-bottom-0.5',
                                       )}
-                                    </div>
-                                    <div className="shrink-0 text-right">
-                                      <p className="text-xs font-semibold tabular-nums text-teal-900">
-                                        {legPax}
-                                        {split ? (
-                                          <span className="ml-1 font-normal text-teal-900/45">
-                                            split
-                                          </span>
-                                        ) : null}
-                                      </p>
-                                      <p className="text-[10px] tabular-nums text-teal-900/45">
-                                        {booking.pickupTime}
-                                      </p>
-                                    </div>
+                                    />
+                                  ) : null}
+                                  <p className="text-[13px] leading-snug font-semibold text-teal-950">
+                                    {hotel || booking.pickupZone || 'Hotel TBA'}
+                                    {booking.roomNumber ? ` · Rm ${booking.roomNumber}` : ''}
+                                    {split ? (
+                                      <span className="ml-1 font-normal text-teal-900/40">split</span>
+                                    ) : null}
+                                  </p>
+                                  <div className="mt-0.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[11px] leading-tight">
+                                    <span className="tabular-nums text-teal-900/60">
+                                      {booking.pickupTime}
+                                    </span>
+                                    <span className="tabular-nums font-medium text-teal-900" title={`${legPax} pax on this van`}>
+                                      {formatVanPaxMix(mix)}
+                                    </span>
                                   </div>
                                 </div>
                               )

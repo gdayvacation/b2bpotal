@@ -10,13 +10,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { isVanOutsourceCompany, VAN_OUTSOURCE_COMPANIES } from '@/lib/types'
+import { matchVanOutsourceCompany, VAN_OUTSOURCE_COMPANIES } from '@/lib/types'
 
 const OTHER_VALUE = '__other__'
 
 function isCustomCompany(value: string) {
   const trimmed = value.trim()
-  return trimmed.length > 0 && !isVanOutsourceCompany(trimmed)
+  return trimmed.length > 0 && !matchVanOutsourceCompany(trimmed)
 }
 
 export function OutsourceCompanyField({
@@ -34,15 +34,12 @@ export function OutsourceCompanyField({
 }) {
   const [otherMode, setOtherMode] = useState(() => isCustomCompany(value))
   const trimmed = value.trim()
-  const selectValue = otherMode
-    ? OTHER_VALUE
-    : isVanOutsourceCompany(trimmed)
-      ? trimmed
-      : undefined
+  const matched = matchVanOutsourceCompany(trimmed)
+  const selectValue = otherMode ? OTHER_VALUE : matched || undefined
   const inputClass = size === 'sm' ? 'h-9' : 'h-10'
 
   useEffect(() => {
-    if (isVanOutsourceCompany(value.trim())) {
+    if (matchVanOutsourceCompany(value)) {
       setOtherMode(false)
       return
     }
@@ -57,7 +54,7 @@ export function OutsourceCompanyField({
         onValueChange={(next) => {
           if (!next || next === OTHER_VALUE) {
             setOtherMode(true)
-            if (isVanOutsourceCompany(trimmed)) onChange('')
+            if (matched) onChange('')
             return
           }
           setOtherMode(false)
@@ -79,7 +76,7 @@ export function OutsourceCompanyField({
       {otherMode ? (
         <Input
           id={`${id}-other`}
-          value={isVanOutsourceCompany(trimmed) ? '' : value}
+          value={matched ? '' : value}
           onChange={(event) => onChange(event.target.value)}
           placeholder="Type company name"
           className={inputClass}

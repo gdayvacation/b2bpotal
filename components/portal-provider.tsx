@@ -273,6 +273,7 @@ import {
   NO_TRANSFER_VAN_LABEL,
   bookingOnPartnerBoat,
   bookingTransferKind,
+  canonicalVanOutsourceCompany,
   isDummyVan,
   isNoTransferVan,
   isVirtualVan,
@@ -751,6 +752,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const boatPlanWritePendingRef = useRef(0)
   const boatPlanSaveChainRef = useRef(Promise.resolve())
   const vehiclePlanWritePendingRef = useRef(0)
+  const vehiclePlanSaveChainRef = useRef(Promise.resolve())
+  const vehiclePlanLatestRef = useRef<Record<string, DayVehiclePlan>>({})
+  const vehiclePlanSaveGenerationRef = useRef(0)
   const settingsWritePendingRef = useRef(0)
   const dayOpsCloudEnabledRef = useRef(false)
   const dayOpsWritePendingRef = useRef(0)
@@ -790,10 +794,21 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   }
 
   function persistVehiclePlanWrite(plan: DayVehiclePlan) {
+    const key = dayVehiclePlanKey(plan.date, plan.program)
+    vehiclePlanLatestRef.current[key] = plan
+    vehiclePlanSaveGenerationRef.current += 1
     vehiclePlanWritePendingRef.current += 1
+    const run = vehiclePlanSaveChainRef.current.then(
+      () => saveDayVehiclePlan(vehiclePlanLatestRef.current[key] ?? plan),
+      () => saveDayVehiclePlan(vehiclePlanLatestRef.current[key] ?? plan),
+    )
+    vehiclePlanSaveChainRef.current = run.then(
+      () => undefined,
+      () => undefined,
+    )
     persistQuietly(
       'saveDayVehiclePlan',
-      saveDayVehiclePlan(plan).finally(() => {
+      run.finally(() => {
         vehiclePlanWritePendingRef.current = Math.max(0, vehiclePlanWritePendingRef.current - 1)
       }),
     )
@@ -1045,9 +1060,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (cancelled || busy || vehiclePlanWritePendingRef.current > 0) return
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       busy = true
+      const generation = vehiclePlanSaveGenerationRef.current
       try {
         const next = await fetchDayVehiclePlans()
         if (cancelled || vehiclePlanWritePendingRef.current > 0) return
+        if (vehiclePlanSaveGenerationRef.current !== generation) return
         setDayVehiclePlans(next)
       } catch (error) {
         console.error('[portal] day vehicle plans refresh failed', error)
@@ -3823,69 +3840,83 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }))
       },
       setVanMeta: (date, program, van, meta) => {
-        const planKey = dayVehiclePlanKey(date, program)
-        const plan = dayVehiclePlans[planKey] ?? emptyDayVehiclePlan(date, program)
-        const prev = plan.vanMeta[String(van)] ?? emptyVanMeta()
-        const nextCapacity =
-          meta.capacity === null
-            ? undefined
-            : meta.capacity !== undefined
-              ? clampVanCapacity(meta.capacity)
-              : prev.capacity
-        const outsourced =
-          meta.outsourced !== undefined ? meta.outsourced : prev.outsourced === true
-        const specialKind =
-          meta.specialKind !== undefined
-            ? isSpecialTransferKind(meta.specialKind)
-              ? meta.specialKind
-              : undefined
-            : isSpecialTransferKind(prev.specialKind)
-              ? prev.specialKind
-              : undefined
-        const label =
-          meta.label !== undefined ? meta.label.trim() : prev.label?.trim() || ''
-        const plateRaw = meta.plate !== undefined ? meta.plate.trim() : unpackVanPlate(prev.plate).plate
-        const next: VanMeta = {
-          plate: packVanPlate(label, plateRaw),
-          label,
-          driver: meta.driver !== undefined ? meta.driver.trim() : prev.driver.trim(),
-          phone: meta.phone !== undefined ? meta.phone.trim() : prev.phone.trim(),
-          outsourced,
-          outsourceCompany:
+        let prevMeta = emptyVanMeta()
+        let nextMeta = emptyVanMeta()
+        let assignedCodes: string[] = []
+        let assignments: DayVehiclePlan['assignments'] = {}
+        upsertVehiclePlan(date, program, (current) => {
+          const prev = current.vanMeta[String(van)] ?? emptyVanMeta()
+          prevMeta = prev
+          const nextCapacity =
+            meta.capacity === null
+              ? undefined
+              : meta.capacity !== undefined
+                ? clampVanCapacity(meta.capacity)
+                : prev.capacity
+          const outsourced =
+            meta.outsourced !== undefined ? meta.outsourced : prev.outsourced === true
+          const specialKind =
+            meta.specialKind !== undefined
+              ? isSpecialTransferKind(meta.specialKind)
+                ? meta.specialKind
+                : undefined
+              : isSpecialTransferKind(prev.specialKind)
+                ? prev.specialKind
+                : undefined
+          const company = canonicalVanOutsourceCompany(
             outsourced || specialKind === 'partner'
               ? meta.outsourceCompany !== undefined
-                ? meta.outsourceCompany.trim()
-                : prev.outsourceCompany?.trim() || ''
+                ? meta.outsourceCompany
+                : prev.outsourceCompany ?? ''
               : '',
-          ...(nextCapacity !== undefined ? { capacity: nextCapacity } : {}),
-          ...(specialKind ? { specialKind } : {}),
-          transferIn:
-            meta.transferIn !== undefined ? meta.transferIn === true : prev.transferIn === true,
-          transferOut:
-            meta.transferOut !== undefined ? meta.transferOut === true : prev.transferOut === true,
-          chargeAmount:
-            meta.chargeAmount !== undefined
-              ? normalizeChargeAmount(meta.chargeAmount)
-              : normalizeChargeAmount(prev.chargeAmount),
-        }
-
-        upsertVehiclePlan(date, program, (current) => ({
-          ...current,
-          vanMeta: {
-            ...current.vanMeta,
-            [String(van)]: next,
-          },
-        }))
-        if (vanTransferKind(van, next) === 'private') {
-          const codes = Object.entries(plan.assignments)
+          )
+          const label =
+            meta.label !== undefined
+              ? meta.label.trim()
+              : prev.label?.trim() ||
+                (outsourced || specialKind === 'partner' ? company : '')
+          const plateRaw = meta.plate !== undefined ? meta.plate.trim() : unpackVanPlate(prev.plate).plate
+          const next: VanMeta = {
+            plate: packVanPlate(label, plateRaw),
+            label,
+            driver: meta.driver !== undefined ? meta.driver.trim() : prev.driver.trim(),
+            phone: meta.phone !== undefined ? meta.phone.trim() : prev.phone.trim(),
+            outsourced,
+            outsourceCompany: company,
+            ...(nextCapacity !== undefined ? { capacity: nextCapacity } : {}),
+            ...(specialKind ? { specialKind } : {}),
+            transferIn:
+              meta.transferIn !== undefined ? meta.transferIn === true : prev.transferIn === true,
+            transferOut:
+              meta.transferOut !== undefined ? meta.transferOut === true : prev.transferOut === true,
+            chargeAmount:
+              meta.chargeAmount !== undefined
+                ? normalizeChargeAmount(meta.chargeAmount)
+                : normalizeChargeAmount(prev.chargeAmount),
+          }
+          nextMeta = next
+          assignments = current.assignments
+          assignedCodes = Object.entries(current.assignments)
             .filter(([, legs]) => legs.some((leg) => leg.van === van))
             .map(([code]) => code)
-          persistPrivateTransferInvoice(codes, next.chargeAmount ?? 0, 'apply')
+          return {
+            ...current,
+            vanMeta: {
+              ...current.vanMeta,
+              [String(van)]: next,
+            },
+          }
+        })
+        if (vanTransferKind(van, nextMeta) === 'private') {
+          persistPrivateTransferInvoice(assignedCodes, nextMeta.chargeAmount ?? 0, 'apply')
         }
-        if (vanTransferKind(van, next) === 'partner') {
+        if (vanTransferKind(van, nextMeta) === 'partner') {
           const prevCompany =
-            prev.outsourceCompany?.trim() || prev.label?.trim() || unpackVanPlate(prev.plate).plate || ''
-          syncPartnerVanToBoat(date, program, van, plan.assignments, prevCompany, next)
+            prevMeta.outsourceCompany?.trim() ||
+            prevMeta.label?.trim() ||
+            unpackVanPlate(prevMeta.plate).plate ||
+            ''
+          syncPartnerVanToBoat(date, program, van, assignments, prevCompany, nextMeta)
         }
       },
       autoAssignDayVans: (date, program) => {

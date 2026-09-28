@@ -70,6 +70,7 @@ import {
   normalizeBoatGuides,
   normalizeBoatKinds,
   normalizeBoatLabels,
+  canonicalVanOutsourceCompany,
   normalizeChargeAmount,
   persistBoatNames,
 } from '@/lib/types'
@@ -504,10 +505,10 @@ function buildVehiclePlans(
       driver: meta.driver ?? '',
       phone: meta.phone ?? '',
       ...(Number.isFinite(capacity) && capacity >= 1 ? { capacity: Math.floor(capacity) } : {}),
-      ...(meta.outsourced === true
+      ...(meta.outsourced === true || String(meta.outsource_company ?? '').trim()
         ? {
             outsourced: true,
-            outsourceCompany: String(meta.outsource_company ?? '').trim(),
+            outsourceCompany: canonicalVanOutsourceCompany(String(meta.outsource_company ?? '')),
           }
         : {}),
       ...(isSpecialTransferKind(meta.special_kind) ? { specialKind: meta.special_kind } : {}),
@@ -1129,6 +1130,52 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
   }
 }
 
+function vanMetaColumnsFromError(message: string) {
+  const msg = message.toLowerCase()
+  const columns: Array<keyof VanMetaRow> = []
+  if (msg.includes('special_kind')) columns.push('special_kind')
+  if (msg.includes('transfer_in')) columns.push('transfer_in')
+  if (msg.includes('transfer_out')) columns.push('transfer_out')
+  if (msg.includes('charge_amount')) columns.push('charge_amount')
+  if (msg.includes('outsourced')) columns.push('outsourced')
+  if (msg.includes('outsource_company')) columns.push('outsource_company')
+  if (/\bcapacity\b/.test(msg)) columns.push('capacity')
+  return columns
+}
+
+function omitVanMetaColumns(rows: VanMetaRow[], columns: Array<keyof VanMetaRow>) {
+  if (columns.length === 0) return rows
+  return rows.map((row) => {
+    const next = { ...row }
+    for (const column of columns) delete next[column]
+    return next
+  })
+}
+
+async function insertVanMetaRows(rows: VanMetaRow[]) {
+  const supabase = getSupabaseBrowserClient()
+  let current = rows
+  let { error } = await supabase.from('van_meta').insert(current)
+  if (!error) return
+
+  const attempts: Array<Array<keyof VanMetaRow>> = [
+    vanMetaColumnsFromError(error.message),
+    ['special_kind', 'transfer_in', 'transfer_out'],
+    ['capacity'],
+  ]
+  const seen = new Set<string>()
+  for (const columns of attempts) {
+    const key = columns.join(',')
+    if (columns.length === 0 || seen.has(key)) continue
+    seen.add(key)
+    current = omitVanMetaColumns(current, columns)
+    const retry = await supabase.from('van_meta').insert(current)
+    if (!retry.error) return
+    error = retry.error
+  }
+  throw new Error(`insert van meta: ${error.message}`)
+}
+
 export async function saveDayVehiclePlan(plan: DayVehiclePlan) {
   const supabase = getSupabaseBrowserClient()
   const { error: planError } = await supabase.from('day_vehicle_plans').upsert({
@@ -1162,7 +1209,8 @@ export async function saveDayVehiclePlan(plan: DayVehiclePlan) {
       driver: typed.driver ?? '',
       phone: typed.phone ?? '',
       outsourced: typed.outsourced === true,
-      outsource_company: typed.outsourced === true ? (typed.outsourceCompany ?? '').trim() : '',
+      outsource_company:
+        typed.outsourced === true ? canonicalVanOutsourceCompany(typed.outsourceCompany ?? '') : '',
       special_kind: isSpecialTransferKind(typed.specialKind) ? typed.specialKind : '',
       transfer_in: typed.transferIn === true,
       transfer_out: typed.transferOut === true,
@@ -1173,30 +1221,7 @@ export async function saveDayVehiclePlan(plan: DayVehiclePlan) {
     return row
   })
   if (metaRows.length > 0) {
-    const { error } = await supabase.from('van_meta').insert(metaRows)
-    if (error) {
-      const withoutSpecial = metaRows.map(
-        ({
-          special_kind: _kind,
-          transfer_in: _in,
-          transfer_out: _out,
-          charge_amount: _charge,
-          ...row
-        }) => row,
-      )
-      const { error: specialError } = await supabase.from('van_meta').insert(withoutSpecial)
-      if (specialError) {
-        const withoutOutsource = withoutSpecial.map(
-          ({ outsourced: _outsourced, outsource_company: _company, ...row }) => row,
-        )
-        const { error: retryError } = await supabase.from('van_meta').insert(withoutOutsource)
-        if (retryError) {
-          const fallback = withoutOutsource.map(({ capacity: _capacity, ...row }) => row)
-          const { error: lastError } = await supabase.from('van_meta').insert(fallback)
-          if (lastError) throw new Error(`insert van meta: ${lastError.message}`)
-        }
-      }
-    }
+    await insertVanMetaRows(metaRows)
   }
 
   const assignRows: Array<{

@@ -20,6 +20,7 @@ import {
   DEFAULT_VAN_CAPACITY,
   MAX_VAN_CAPACITY,
   MIN_VAN_CAPACITY,
+  canonicalVanOutsourceCompany,
   clampVanCapacity,
   isSpecialTransfer,
   isSpecialTransferKind,
@@ -80,17 +81,20 @@ export function EditVanDetailsDialog({
 
   function handleSave() {
     if (van === null) return
+    const existingCharge = normalizeChargeAmount(
+      getDayVehiclePlan(date, program).vanMeta[String(van)]?.chargeAmount,
+    )
     setVanMeta(date, program, van, {
       driver: driver.trim(),
       phone: phone.trim(),
       plate: plate.trim(),
       capacity: clampVanCapacity(seats),
       outsourced,
-      outsourceCompany: outsourced ? outsourceCompany.trim() : '',
+      outsourceCompany: outsourced ? canonicalVanOutsourceCompany(outsourceCompany) : '',
       specialKind: special ? specialKind : null,
       transferIn: special ? transferIn : false,
       transferOut: special ? transferOut : false,
-      chargeAmount: special ? normalizeChargeAmount(charge) : 0,
+      chargeAmount: special || outsourced ? normalizeChargeAmount(charge) : existingCharge,
     })
     onOpenChange(false)
   }
