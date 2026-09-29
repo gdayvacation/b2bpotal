@@ -18,12 +18,14 @@ import {
   Pencil,
   Plus,
   Search,
+  Sparkles,
   Ticket,
   X,
 } from 'lucide-react'
 import { VoucherPreview } from '@/components/agent/voucher-view'
 import { CancelConditionNotice } from '@/components/amendment-policy-notice'
 import { BookingHistoryDialog } from '@/components/booking-history-dialog'
+import { BookingFromChatDialog } from '@/components/admin/booking-from-chat-dialog'
 import { useInvoiceStore } from '@/components/admin/use-invoice-store'
 import { ChangeBookingDateDialog } from '@/components/change-booking-date-dialog'
 import { EditBookingDialog } from '@/components/edit-booking-dialog'
@@ -400,6 +402,7 @@ export function AdminBookings() {
   const [cancelTarget, setCancelTarget] = useState<Booking | null>(null)
   const [cancelCharge, setCancelCharge] = useState('0')
   const [cancelError, setCancelError] = useState('')
+  const [chatOpen, setChatOpen] = useState(false)
 
   const adminActor = { role: 'admin' as const, name: 'Admin' }
 
@@ -601,10 +604,21 @@ export function AdminBookings() {
         title="Booking"
         description="Partner reservations — default view shows the latest 200. Use filters or search for older trips."
         actions={
-          <Link href="/admin/bookings/new" className={cn(buttonVariants(), 'h-10 gap-1.5')}>
-            <Plus data-icon="inline-start" />
-            Add booking
-          </Link>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-10 gap-1.5"
+              onClick={() => setChatOpen(true)}
+            >
+              <Sparkles data-icon="inline-start" />
+              From chat photo
+            </Button>
+            <Link href="/admin/bookings/new" className={cn(buttonVariants(), 'h-10 gap-1.5')}>
+              <Plus data-icon="inline-start" />
+              Add booking
+            </Link>
+          </div>
         }
       />
 
@@ -1114,6 +1128,8 @@ export function AdminBookings() {
           if (!open) setHistoryTarget(null)
         }}
       />
+
+      <BookingFromChatDialog open={chatOpen} onOpenChange={setChatOpen} />
     </div>
   )
 }
