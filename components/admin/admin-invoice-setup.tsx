@@ -313,8 +313,8 @@ export function AdminInvoiceSetup() {
           <h2 className="font-medium text-teal-950">Agency prices (THB)</h2>
           <p className="mt-1 text-sm text-teal-900/55">
             Set Type per agent. Prebuy deducts AD+CH heads and bills extras only. Invoice bills
-            the tour price plus extras. AD / CH / IN / TL are per person. Invoice agents with no
-            prices show 0 and cannot be billed until you enter rates.
+            the tour price plus extras. Change date is automatic: free before 8:00 Thailand time;
+            after 8:00 Invoice agents pay full tour price, Prebuy deducts heads like a no-show.
           </p>
         </div>
         <div className="overflow-x-auto">
@@ -327,7 +327,9 @@ export function AdminInvoiceSetup() {
                 <TableHead className="text-right">CH</TableHead>
                 <TableHead className="text-right">IN</TableHead>
                 <TableHead className="text-right">TL</TableHead>
-                <TableHead className="text-right">Change date</TableHead>
+                <TableHead className="text-right" title="After 8:00 Thailand time — full tour price (Invoice) or head deduct like no-show (Prebuy)">
+                  Change date
+                </TableHead>
                 <TableHead className="text-right">Cancel</TableHead>
                 <TableHead className="text-right">Private transfer</TableHead>
                 <TableHead className="text-right">Extra zone</TableHead>
@@ -395,10 +397,12 @@ export function AdminInvoiceSetup() {
                       />
                     </TableCell>
                     <TableCell>
-                      <MoneyField
-                        value={row.changeDatePrice}
-                        onChange={(value) => patchRates(agent.slug, { changeDatePrice: value })}
-                      />
+                      <span
+                        className="inline-flex h-9 min-w-[6.5rem] items-center justify-end rounded-lg px-2 text-xs font-medium text-teal-800/80"
+                        title="Auto: free before 8:00 Thailand time · after 8:00 Invoice = full AD/CH/IN/TL price · Prebuy = deduct heads (like no-show)"
+                      >
+                        Auto · full
+                      </span>
                     </TableCell>
                     <TableCell>
                       <MoneyField

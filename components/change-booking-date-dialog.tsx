@@ -17,7 +17,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { dateChangeFeeAmount, formatThbAmount } from '@/lib/booking-cutoffs'
+import { formatThbAmount } from '@/lib/booking-cutoffs'
+import { bookingTourAmount, parseAgentBillingType, ratesForAgent } from '@/lib/invoice'
+import { useInvoiceStore } from '@/components/admin/use-invoice-store'
 import { dateFromISO, formatLongDate, startOfToday, toISODate, todayISO } from '@/lib/format'
 import { totalPassengers, type Booking, type BookingActor } from '@/lib/types'
 
@@ -47,6 +49,7 @@ export function ChangeBookingDateDialog({
     isLateAmendment,
     isProgramClosed,
   } = usePortal()
+  const invoiceStore = useInvoiceStore()
   const [selected, setSelected] = useState<Date | undefined>()
   const [error, setError] = useState('')
   const [confirmLate, setConfirmLate] = useState(false)
@@ -55,14 +58,24 @@ export function ChangeBookingDateDialog({
   const today = startOfToday()
   const todayIso = todayISO()
   const pax = booking ? totalPassengers(booking) : 0
+  const agentRates = booking
+    ? ratesForAgent(invoiceStore.rates, booking.agentSlug)
+    : null
+  const prebuy = agentRates ? parseAgentBillingType(agentRates.billingType) === 'prebuy' : false
+  const fullTourFee = booking && agentRates ? bookingTourAmount(booking, agentRates) : 0
+  /** Same auto rule as Add Booking policy: after lateFeeFromTime → charge. */
+  const autoLate =
+    !isRebook && Boolean(booking) && isLateAmendment(booking!.date)
+  const autoFee = autoLate ? fullTourFee : 0
 
   useEffect(() => {
     if (!open || !booking) return
     setSelected(dateFromISO(booking.date))
     setError('')
     setConfirmLate(false)
-    setAdminFee(String(dateChangeFeeAmount(bookingCutoffs, booking)))
-  }, [open, booking?.code])
+    // Admin starts on the same auto amount agents get — waive with Free if needed.
+    setAdminFee(String(autoFee))
+  }, [open, booking?.code, autoFee])
 
   function seatsLeftOn(iso: string) {
     if (!booking) return 0
@@ -83,12 +96,9 @@ export function ChangeBookingDateDialog({
     return false
   }
 
-  const lateChange =
-    !bypassCutoff && !isRebook && Boolean(booking) && isLateAmendment(booking!.date)
-  const suggestedFee = booking ? dateChangeFeeAmount(bookingCutoffs, booking) : 0
-  const lateFee = booking && lateChange ? suggestedFee : 0
+  const lateChange = !bypassCutoff && autoLate
   const parsedAdminFee = Math.max(0, Math.floor(Number(adminFee.replace(/,/g, '')) || 0))
-  const needsAdminConfirm = bypassCutoff && !isRebook && Boolean(booking)
+  const needsAdminConfirm = bypassCutoff && !isRebook && Boolean(booking) && autoLate
   const selectedIso = selected ? toISODate(selected) : null
   const selectedInfo = useMemo(() => {
     if (!booking || !selectedIso) return null
@@ -134,6 +144,8 @@ export function ChangeBookingDateDialog({
       : changeBookingDate(booking.code, nextIso, {
           bypassCutoff,
           actor,
+          // Keep in sync with Add Booking cutoff policy (auto after 8:00 Thailand).
+          lateDateChange: needsAdminConfirm ? parsedAdminFee > 0 : lateChange ? true : undefined,
           lateChangeFee: needsAdminConfirm ? parsedAdminFee : undefined,
         })
     if (!result.ok) {
@@ -148,10 +160,25 @@ export function ChangeBookingDateDialog({
       ? `${booking.code} · ${pax} pax · was ${formatLongDate(booking.date)}. Grey days are closed or do not have enough seats.`
       : `${booking.code} · ${pax} pax · currently ${formatLongDate(booking.date)}. ${
           bypassCutoff
-            ? 'Admin can move any date, including closed or past days, if seats are left.'
+            ? 'Admin can move any date, including closed or past days, if seats are left. Charge follows the same Add Booking rule (auto after 8:00 Thailand).'
             : 'Grey days are closed or do not have enough seats.'
         }`
     : null
+
+  const confirmLabel = (() => {
+    if (isRebook) return 'Confirm rebook'
+    if (!confirmLate) {
+      return lateChange || needsAdminConfirm ? 'Continue' : 'Save new date'
+    }
+    if (needsAdminConfirm) {
+      if (parsedAdminFee <= 0) return 'Confirm — complimentary'
+      return prebuy
+        ? 'Confirm · Prebuy head deduct'
+        : `Confirm +${formatThbAmount(parsedAdminFee)}`
+    }
+    if (prebuy) return 'Confirm · Prebuy head deduct'
+    return `Confirm +${formatThbAmount(autoFee)}`
+  })()
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -190,19 +217,24 @@ export function ChangeBookingDateDialog({
               </p>
             )
           ) : null}
-          {bypassCutoff && !isRebook && booking ? (
+          {bypassCutoff && !isRebook && booking && autoLate ? (
             <AdminExtraChargeField
-              suggested={suggestedFee}
+              suggested={autoFee}
               value={adminFee}
               onChange={setAdminFee}
-              alreadyCharged={booking.lateChangeFee ?? 0}
+              alreadyCharged={booking.lateDateChange ? fullTourFee : 0}
               adults={booking.adults}
               childrenCount={booking.children}
-              perPerson={bookingCutoffs.dateChangeFeePerPerson}
+              mode="full-price"
             />
           ) : !bypassCutoff ? (
             lateChange && booking ? (
-              <LateDateChangeNotice settings={bookingCutoffs} booking={booking} className="w-full" />
+              <LateDateChangeNotice
+                settings={bookingCutoffs}
+                booking={booking}
+                fullPriceThb={prebuy ? undefined : fullTourFee}
+                className="w-full"
+              />
             ) : (
               <AmendmentPolicyNotice
                 settings={bookingCutoffs}
@@ -210,6 +242,16 @@ export function ChangeBookingDateDialog({
                 className="w-full"
               />
             )
+          ) : bypassCutoff && !isRebook && booking && !autoLate ? (
+            <p className="w-full rounded-xl border border-teal-200 bg-teal-50/80 px-3 py-2 text-sm text-teal-900/75">
+              Before {bookingCutoffs.lateFeeFromTime} Thailand — change date is free (same as Add
+              Booking).
+            </p>
+          ) : null}
+          {lateChange && prebuy ? (
+            <p className="w-full text-xs leading-relaxed text-amber-950/80">
+              Prebuy agent: late change deducts AD+CH heads like a no-show (no money line).
+            </p>
           ) : null}
         </div>
         {error ? <p className="text-sm text-red-600">{error}</p> : null}
@@ -236,17 +278,7 @@ export function ChangeBookingDateDialog({
               selectedIso === booking?.date
             }
           >
-            {isRebook
-              ? 'Confirm rebook'
-              : confirmLate
-                ? needsAdminConfirm
-                  ? parsedAdminFee > 0
-                    ? `Confirm +${formatThbAmount(parsedAdminFee)}`
-                    : 'Confirm — complimentary'
-                  : `Confirm +${formatThbAmount(lateFee)}`
-                : lateChange || needsAdminConfirm
-                  ? 'Continue'
-                  : 'Save new date'}
+            {confirmLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

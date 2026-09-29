@@ -435,8 +435,6 @@ export function BookingWizard({
                   setPickupZone(null)
                 } else {
                   setPickupZone(NO_TRANSFER_ZONE)
-                  setPickupHotel('')
-                  setRoomNumber('')
                 }
                 setError('')
               }}
@@ -794,9 +792,40 @@ export function BookingWizard({
         {step === pickupStep && (
           <div className="space-y-5">
             {noTransfer ? (
-              <div className="rounded-xl border border-teal-200 bg-teal-50/80 px-4 py-3 text-sm text-teal-900/75">
-                This booking has <span className="font-semibold text-teal-950">No Transfer</span> —
-                the guest will arrange their own transport. Hotel and room are not required.
+              <div className="space-y-4">
+                <div className="rounded-xl border border-teal-200 bg-teal-50/80 px-4 py-3 text-sm text-teal-900/75">
+                  This booking has <span className="font-semibold text-teal-950">No Transfer</span> —
+                  the guest will arrange their own transport. Hotel is optional but shown on the van
+                  board when set.
+                </div>
+                <div className="flex max-w-md gap-3">
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <Label htmlFor="hotel-no-transfer">Hotel (optional)</Label>
+                    <HotelCombobox
+                      id="hotel-no-transfer"
+                      hotels={hotels}
+                      value={pickupHotel}
+                      onChange={(next) => {
+                        setPickupHotel(next)
+                        setError('')
+                      }}
+                      onSelectHotel={(hotel) => {
+                        setPickupHotel(hotel.name)
+                        setError('')
+                      }}
+                      onSelectOther={() => setError('')}
+                    />
+                  </div>
+                  <div className="w-[7.5rem] shrink-0 space-y-2 sm:w-32">
+                    <Label htmlFor="room-number-no-transfer">Room</Label>
+                    <Input
+                      id="room-number-no-transfer"
+                      value={roomNumber}
+                      onChange={(event) => setRoomNumber(event.target.value)}
+                      className="h-11"
+                    />
+                  </div>
+                </div>
               </div>
             ) : (
               <>

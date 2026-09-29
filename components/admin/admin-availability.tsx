@@ -330,9 +330,10 @@ export function AdminAvailability() {
               </div>
             </div>
             <p className="mt-3 text-xs text-teal-800/65">
-              Reduce AD / CH or change date: +{formatThbAmount(bookingCutoffs.dateChangeFeePerPerson)}{' '}
-              per AD / CH (forced for agents). Adding guests is free. Infant and TL are free. Cancel
-              the whole booking: full price (no refund).
+              Change date after {bookingCutoffs.lateFeeFromTime}: full tour price (Invoice) or head
+              deduct like no-show (Prebuy) — same auto rule as Add Booking / Change date. Reduce AD /
+              CH: +{formatThbAmount(bookingCutoffs.dateChangeFeePerPerson)} per AD / CH. Adding guests
+              is free. Infant and TL are free. Cancel the whole booking: full price (no refund).
             </p>
           </Surface>
 

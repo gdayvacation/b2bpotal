@@ -53,12 +53,14 @@ export function LateDateChangeNotice({
   settings,
   booking,
   className,
+  fullPriceThb,
 }: {
   settings: BookingCutoffSettings
   booking: Pick<Booking, 'adults' | 'children'>
   className?: string
+  /** Full tour amount from agency rates (Invoice). Omit to show policy text only. */
+  fullPriceThb?: number
 }) {
-  const count = chargeablePax(booking)
   return (
     <div
       className={cn(
@@ -70,11 +72,11 @@ export function LateDateChangeNotice({
         Extra charge applies
       </p>
       <p className="mt-1 text-xs leading-relaxed">
-        {lateDateChangeNotice(settings, booking)}
+        {lateDateChangeNotice(settings, booking, fullPriceThb)}
       </p>
-      <p className="mt-2 text-sm font-semibold">
-        {formatThbAmount(count * settings.dateChangeFeePerPerson)}
-      </p>
+      {typeof fullPriceThb === 'number' ? (
+        <p className="mt-2 text-sm font-semibold">{formatThbAmount(fullPriceThb)}</p>
+      ) : null}
     </div>
   )
 }
@@ -169,6 +171,7 @@ export function AdminExtraChargeField({
   childrenCount = 0,
   perPerson,
   className,
+  mode = 'per-person',
 }: {
   suggested: number
   value: string
@@ -178,6 +181,8 @@ export function AdminExtraChargeField({
   childrenCount?: number
   perPerson?: number
   className?: string
+  /** Date change uses full tour price; reduce guests uses per AD/CH. */
+  mode?: 'per-person' | 'full-price'
 }) {
   const parsed = Math.max(0, Math.floor(Number(value.replace(/,/g, '')) || 0))
   const rate = perPerson ?? 300
@@ -193,15 +198,29 @@ export function AdminExtraChargeField({
         Extra charge (admin)
       </p>
       <p className="mt-1 text-xs leading-relaxed text-amber-950/80">
-        +{formatThbAmount(rate)} per AD / CH. Infant and TL are free and not counted.
-        {chargeable > 0 ? (
+        {mode === 'full-price' ? (
           <>
-            {' '}
-            This change: {adults} AD + {childrenCount} CH × {rate.toLocaleString('en-US')} ={' '}
-            <span className="font-semibold">{formatThbAmount(suggested)}</span>.
+            Late date change (after 8:00 Thailand time) is full tour price
+            {suggested > 0 ? (
+              <>
+                : <span className="font-semibold">{formatThbAmount(suggested)}</span>
+              </>
+            ) : null}
+            . Prebuy deducts heads like a no-show. Set 0 if complimentary.
           </>
-        ) : null}{' '}
-        Set 0 if complimentary, or type another total.
+        ) : (
+          <>
+            +{formatThbAmount(rate)} per AD / CH. Infant and TL are free and not counted.
+            {chargeable > 0 ? (
+              <>
+                {' '}
+                This change: {adults} AD + {childrenCount} CH × {rate.toLocaleString('en-US')} ={' '}
+                <span className="font-semibold">{formatThbAmount(suggested)}</span>.
+              </>
+            ) : null}{' '}
+            Set 0 if complimentary, or type another total.
+          </>
+        )}
       </p>
       <div className="mt-2.5 flex flex-wrap gap-1.5">
         <button

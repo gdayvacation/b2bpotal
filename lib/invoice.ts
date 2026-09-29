@@ -1,5 +1,7 @@
 import { originalBookedPax, type BookedPaxSnapshot } from '@/lib/check-in-booked-pax'
+import { DEFAULT_BOOKING_CUTOFFS } from '@/lib/booking-cutoffs'
 import { parkFeeRates, parkFeeTotalWithThai, parseCashOnTourAmount } from '@/lib/format'
+import { THAI_PARK_FEE_THB } from '@/lib/nationalities'
 import {
   isPrivateTransfer,
   type Booking,
@@ -8,13 +10,14 @@ import {
 } from '@/lib/types'
 
 export type InvoiceKind = 'invoice' | 'billing_note'
-export type InvoiceStatus = 'unpaid' | 'paid'
-export type PaymentChannel = 'bank_transfer' | 'deduct_deposit' | 'payment_link'
+export type InvoiceStatus = 'unpaid' | 'partial' | 'paid'
+export type PaymentChannel = 'bank_transfer' | 'deduct_deposit' | 'payment_link' | 'cash'
 
 export const PAYMENT_CHANNELS: { value: PaymentChannel; label: string }[] = [
   { value: 'deduct_deposit', label: 'Deduct Deposit' },
   { value: 'bank_transfer', label: 'Bank Transfer' },
   { value: 'payment_link', label: 'Payment Link' },
+  { value: 'cash', label: 'Cash' },
 ]
 
 export function formatPaymentChannel(channel: PaymentChannel | null | undefined) {
@@ -22,7 +25,12 @@ export function formatPaymentChannel(channel: PaymentChannel | null | undefined)
 }
 
 export function parsePaymentChannel(value: unknown): PaymentChannel | null {
-  if (value === 'bank_transfer' || value === 'deduct_deposit' || value === 'payment_link') {
+  if (
+    value === 'bank_transfer' ||
+    value === 'deduct_deposit' ||
+    value === 'payment_link' ||
+    value === 'cash'
+  ) {
     return value
   }
   return null
@@ -108,8 +116,34 @@ export type InvoiceItem = {
 
 export function defaultChargeUnit(kind: InvoiceLineKind) {
   if (kind === 'tour' || kind === 'no_show' || kind === 'cancel' || kind === 'park_fee') return 'Pax'
+  if (kind === 'change_date') return 'Pax'
   if (kind === 'private_transfer') return 'Van'
   return ''
+}
+
+export function invoiceLineKindLabel(kind: InvoiceLineKind) {
+  switch (kind) {
+    case 'tour':
+      return 'Tour'
+    case 'no_show':
+      return 'No show'
+    case 'change_date':
+      return 'Change date'
+    case 'cancel':
+      return 'Cancel'
+    case 'private_transfer':
+      return 'Private transfer'
+    case 'extra_zone':
+      return 'Extra zone'
+    case 'park_fee':
+      return 'Park fee'
+    case 'park_guest':
+      return 'Park (guest)'
+    case 'service':
+      return 'Service'
+    default:
+      return 'Other'
+  }
 }
 
 export function chargeUnit(item: Pick<InvoiceItem, 'lineKind' | 'unit'>) {
@@ -132,9 +166,21 @@ export type InvoiceDocument = {
   receiptNo: string | null
   linkedInvoiceIds: string[]
   items: InvoiceItem[]
+  /** Payment ledger — one invoice can be paid in several instalments. */
+  payments?: InvoicePayment[]
   createdAt: string
   /** Admin marked this invoice to send to the agent. */
   sendToAgent?: boolean
+}
+
+export type InvoicePayment = {
+  id: string
+  amount: number
+  /** Travel / payment calendar date YYYY-MM-DD */
+  paidDate: string
+  channel: PaymentChannel
+  /** Each instalment gets its own receipt number. */
+  receiptNo: string
 }
 
 export const DEFAULT_INVOICE_SETTINGS: InvoiceSettings = {
@@ -210,6 +256,23 @@ export function agencyRatesReady(rates: AgencyInvoiceRates) {
   )
 }
 
+/** AD+CH heads that count against prebuy (tour + no-show + late change date). */
+export function prebuyDeductHeads(
+  items: Pick<InvoiceItem, 'lineKind' | 'adults' | 'children'>[],
+) {
+  return items
+    .filter(
+      (item) =>
+        item.lineKind === 'tour' ||
+        item.lineKind === 'no_show' ||
+        item.lineKind === 'change_date',
+    )
+    .reduce(
+      (sum, item) => sum + Math.max(0, item.adults) + Math.max(0, item.children),
+      0,
+    )
+}
+
 export function programLabel(program: Program) {
   return program === 'PP' ? 'Phi Phi Speedboat' : 'James Bond Speedboat'
 }
@@ -223,6 +286,197 @@ export function formatInvoiceMoney(amount: number) {
   return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+export function parseInvoiceStatus(value: unknown): InvoiceStatus {
+  if (value === 'paid' || value === 'partial' || value === 'unpaid') return value
+  return 'unpaid'
+}
+
+export function invoicePayments(
+  doc: Pick<
+    InvoiceDocument,
+    'payments' | 'status' | 'paidAt' | 'paymentChannel' | 'grandTotal' | 'receiptNo'
+  >,
+): InvoicePayment[] {
+  const listed = (doc.payments ?? [])
+    .map((row) => ({
+      ...row,
+      amount: Math.max(0, Number(row.amount) || 0),
+      receiptNo: String(row.receiptNo ?? '').trim(),
+    }))
+    .filter((row) => row.amount > 0)
+  if (listed.length > 0) {
+    return listed.map((row, index) => ({
+      ...row,
+      // Older rows may lack receiptNo — keep usable for history.
+      receiptNo: row.receiptNo || (index === 0 ? doc.receiptNo ?? '' : ''),
+    }))
+  }
+  // Legacy single paid flag → one synthetic payment for balance math.
+  if (doc.status === 'paid' && doc.paidAt) {
+    return [
+      {
+        id: 'legacy-full',
+        amount: Math.max(0, Number(doc.grandTotal) || 0),
+        paidDate: doc.paidAt.slice(0, 10),
+        channel: doc.paymentChannel ?? 'deduct_deposit',
+        receiptNo: doc.receiptNo ?? '',
+      },
+    ]
+  }
+  return []
+}
+
+export function invoicePaidTotal(
+  doc: Pick<
+    InvoiceDocument,
+    'payments' | 'status' | 'paidAt' | 'paymentChannel' | 'grandTotal' | 'receiptNo'
+  >,
+) {
+  return invoicePayments(doc).reduce((sum, row) => sum + Math.max(0, Number(row.amount) || 0), 0)
+}
+
+export function invoiceBalance(
+  doc: Pick<
+    InvoiceDocument,
+    'grandTotal' | 'payments' | 'status' | 'paidAt' | 'paymentChannel' | 'receiptNo'
+  >,
+) {
+  return Math.max(0, Math.round((Number(doc.grandTotal) || 0) * 100) / 100 - invoicePaidTotal(doc))
+}
+
+export function deriveInvoiceStatus(grandTotal: number, paidTotal: number): InvoiceStatus {
+  const due = Math.max(0, Number(grandTotal) || 0)
+  const paid = Math.max(0, Number(paidTotal) || 0)
+  if (paid <= 0.009) return 'unpaid'
+  if (paid + 0.009 >= due) return 'paid'
+  return 'partial'
+}
+
+export function withInvoicePayments(
+  doc: InvoiceDocument,
+  payments: InvoicePayment[],
+): InvoiceDocument {
+  const paidTotal = payments.reduce((sum, row) => sum + Math.max(0, Number(row.amount) || 0), 0)
+  const status = deriveInvoiceStatus(doc.grandTotal, paidTotal)
+  const latest = payments[payments.length - 1]
+  return {
+    ...doc,
+    payments,
+    status,
+    paidAt: latest ? `${latest.paidDate}T12:00:00.000Z` : null,
+    paymentChannel: latest?.channel ?? null,
+    // Latest receipt on the invoice header (list column); each payment still keeps its own.
+    receiptNo: status === 'unpaid' ? null : latest?.receiptNo || doc.receiptNo,
+  }
+}
+
+export function lateReduceFeeDescription(input: {
+  amount: number
+  adults?: number
+  children?: number
+  adultPrice?: number
+}) {
+  const perPerson = Math.max(
+    0,
+    Number(input.adultPrice) || DEFAULT_BOOKING_CUTOFFS.dateChangeFeePerPerson,
+  )
+  const amount = Math.max(0, Number(input.amount) || 0)
+  const storedHeads = Math.max(0, Number(input.adults) || 0) + Math.max(0, Number(input.children) || 0)
+  const heads =
+    storedHeads > 0
+      ? storedHeads
+      : perPerson > 0 && amount % perPerson === 0
+        ? Math.floor(amount / perPerson)
+        : 0
+  if (heads > 0) return `Late Reduce, ${heads}Pax, not cancel`
+  return `Late Reduce, not cancel`
+}
+
+export function lateChangeDateDescription(input: { heads: number; prebuy: boolean }) {
+  const heads = Math.max(0, Math.floor(input.heads))
+  if (input.prebuy) {
+    return heads > 0
+      ? `Late Change Date, ${heads}Pax, deduct heads`
+      : 'Late Change Date, deduct heads'
+  }
+  return heads > 0 ? `Late Change Date, ${heads}Pax, full price` : 'Late Change Date, full price'
+}
+
+export function lateCancelDescription(program: Program, fullPrice: boolean) {
+  return fullPrice
+    ? `Late Cancel, full price · ${programLabel(program)}`
+    : `Late Cancel · ${programLabel(program)}`
+}
+
+/** Normalize older vague labels on print / edit. */
+export function formatInvoiceLineDescription(
+  item: Pick<InvoiceItem, 'description' | 'amount' | 'adults' | 'children' | 'adultPrice' | 'lineKind'>,
+) {
+  const text = item.description.trim()
+  if (
+    /^Reduce guests · late fee$/i.test(text) ||
+    /^Late reduce/i.test(text) ||
+    (item.lineKind === 'other' && /late reduce|reduce guests.*late/i.test(text))
+  ) {
+    return lateReduceFeeDescription(item)
+  }
+  if (item.lineKind === 'change_date' || /^Change date/i.test(text) || /^Late Change Date/i.test(text)) {
+    const heads = Math.max(0, item.adults) + Math.max(0, item.children)
+    const prebuy = /deduct/i.test(text) || item.amount === 0
+    return lateChangeDateDescription({ heads, prebuy })
+  }
+  if (item.lineKind === 'cancel' || /^Cancel ·/i.test(text)) {
+    const fullPrice = /full price/i.test(text)
+    const programMatch = text.match(/·\s*(Phi Phi Speedboat|James Bond Speedboat)\s*$/i)
+    const program: Program = /james bond/i.test(programMatch?.[1] ?? '') ? 'James Bond' : 'PP'
+    return lateCancelDescription(program, fullPrice || item.amount > 0)
+  }
+  return item.description
+}
+
+export function isLateReduceFeeLine(
+  item: Pick<InvoiceItem, 'description' | 'lineKind'>,
+) {
+  const text = item.description.trim()
+  return (
+    /^Reduce guests · late fee$/i.test(text) ||
+    /^Late [Rr]educe/i.test(text) ||
+    (item.lineKind === 'other' && /late reduce|reduce guests.*late/i.test(text))
+  )
+}
+
+export function lateReduceFeeDisplay(item: Pick<InvoiceItem, 'amount' | 'adults' | 'children' | 'adultPrice'>) {
+  const perPerson = Math.max(
+    0,
+    Number(item.adultPrice) || DEFAULT_BOOKING_CUTOFFS.dateChangeFeePerPerson,
+  )
+  const amount = Math.max(0, Number(item.amount) || 0)
+  const storedHeads = Math.max(0, Number(item.adults) || 0) + Math.max(0, Number(item.children) || 0)
+  const heads =
+    storedHeads > 0
+      ? storedHeads
+      : perPerson > 0 && amount % perPerson === 0
+        ? Math.floor(amount / perPerson)
+        : 0
+  return { heads, perPerson, amount }
+}
+
+export function formatInvoicePayStatus(doc: InvoiceDocument) {
+  const status = deriveInvoiceStatus(doc.grandTotal, invoicePaidTotal(doc))
+  if (status === 'paid') return 'PAID'
+  if (status === 'partial') return 'Partial'
+  return 'Unpaid'
+}
+
+/** Flatten every payment receipt for the Receipts tab / numbering. */
+export function invoiceReceiptRows(docs: InvoiceDocument[]) {
+  return docs.flatMap((doc) =>
+    invoicePayments(doc)
+      .filter((payment) => payment.receiptNo)
+      .map((payment) => ({ doc, payment })),
+  )
+}
+
 export function formatInvoiceDate(isoDate: string) {
   if (!isoDate) return ''
   const [year, month, day] = isoDate.split('-')
@@ -234,6 +488,14 @@ export function parseMoneyInput(value: string) {
   if (!cleaned) return 0
   const amount = Number(cleaned)
   return Number.isFinite(amount) && amount >= 0 ? amount : 0
+}
+
+/** Allows minus amounts (e.g. agent cash-on-tour deduct on the invoice). */
+export function parseSignedMoneyInput(value: string) {
+  const cleaned = value.replace(/,/g, '').trim()
+  if (!cleaned || cleaned === '-' || cleaned === '.' || cleaned === '-.') return 0
+  const amount = Number(cleaned)
+  return Number.isFinite(amount) ? amount : 0
 }
 
 function documentKindPrefix(kind: InvoiceKind | 'receipt') {
@@ -268,8 +530,19 @@ export function nextDocumentNumber(
   const yy = (year ?? '').slice(2)
   const mm = (month ?? '01').padStart(2, '0')
   const seq = existing.reduce((max, doc) => {
-    const source =
-      kind === 'receipt' ? (doc.receiptNo ?? '') : doc.kind === kind ? doc.number : ''
+    if (kind === 'receipt') {
+      const sources = [
+        doc.receiptNo ?? '',
+        ...invoicePayments(doc).map((payment) => payment.receiptNo),
+      ]
+      let localMax = max
+      for (const source of sources) {
+        const n = sequenceFromDocumentNumber(source, kind, yy, mm)
+        if (n != null && Number.isFinite(n)) localMax = Math.max(localMax, n)
+      }
+      return localMax
+    }
+    const source = doc.kind === kind ? doc.number : ''
     const n = sequenceFromDocumentNumber(source, kind, yy, mm)
     return n != null && Number.isFinite(n) ? Math.max(max, n) : max
   }, 0)
@@ -394,6 +667,7 @@ export function buildInvoiceItemsForBooking(
 ): Omit<InvoiceItem, 'invoiceId'>[] {
   const items: Omit<InvoiceItem, 'invoiceId'>[] = []
   const voucherNo = bookingVoucherNo(booking)
+  const prebuy = parseAgentBillingType(rates.billingType) === 'prebuy'
 
   if (booking.status === 'Cancelled') {
     const adminFee = booking.cancelFee
@@ -404,7 +678,7 @@ export function buildInvoiceItemsForBooking(
         bookingCode: booking.code,
         travelDate: booking.date,
         voucherNo,
-        description: `Cancel · ${programLabel(booking.program)}`,
+        description: lateCancelDescription(booking.program, false),
         adults: booking.adults,
         children: booking.children,
         infants: booking.infants,
@@ -431,7 +705,7 @@ export function buildInvoiceItemsForBooking(
         bookingCode: booking.code,
         travelDate: booking.date,
         voucherNo,
-        description: `Cancel · full price · ${programLabel(booking.program)}`,
+        description: lateCancelDescription(booking.program, true),
         adults: pax.adults,
         children: pax.children,
         infants: pax.infants,
@@ -459,7 +733,6 @@ export function buildInvoiceItemsForBooking(
           tourLeaders: booking.tourLeaders,
         }
     const tourAmount = snapshotAmount(tourPax, rates)
-    const prebuy = parseAgentBillingType(rates.billingType) === 'prebuy'
 
     if (snapshotTotal(tourPax) > 0 || tourAmount > 0) {
       const heads = Math.max(0, tourPax.adults) + Math.max(0, tourPax.children)
@@ -488,47 +761,96 @@ export function buildInvoiceItemsForBooking(
 
     const noShowAmount = snapshotAmount(noShow, rates)
     if (snapshotTotal(noShow) > 0) {
+      const noShowHeads = Math.max(0, noShow.adults) + Math.max(0, noShow.children)
       items.push({
         id: moneyId(),
         bookingCode: booking.code,
         travelDate: booking.date,
         voucherNo,
-        description: `No show ${snapshotTotal(noShow)}`,
+        description: prebuy
+          ? `No show · deduct ${noShowHeads} head${noShowHeads === 1 ? '' : 's'}`
+          : `No show · ${snapshotTotal(noShow)} pax`,
         adults: noShow.adults,
         children: noShow.children,
         infants: noShow.infants,
         tourLeaders: noShow.tourLeaders,
-        adultPrice: rates.adultPrice,
-        childPrice: rates.childPrice,
-        infantPrice: rates.infantPrice,
-        tourLeaderPrice: rates.tourLeaderPrice,
+        adultPrice: prebuy ? 0 : rates.adultPrice,
+        childPrice: prebuy ? 0 : rates.childPrice,
+        infantPrice: prebuy ? 0 : rates.infantPrice,
+        tourLeaderPrice: prebuy ? 0 : rates.tourLeaderPrice,
         cot: 0,
-        amount: noShowAmount,
+        // Prebuy: no-show only deducts heads — no money on the bill.
+        amount: prebuy ? 0 : noShowAmount,
         lineKind: 'no_show',
         sortOrder: items.length,
       })
     }
   }
 
-  const lateFee = Math.max(0, booking.lateChangeFee ?? 0)
-  if (lateFee > 0) {
+  // Separate Change date line (not cancel / not no-show). Sticky flag from Change date action.
+  // Legacy: bookings that only have lateChangeFee (pre-flag) still get a Change date line.
+  const reduceFee = Math.max(0, booking.lateChangeFee ?? 0)
+  const lateDateFlagged = booking.lateDateChange === true
+  const lateDateLegacy = booking.lateDateChange == null && reduceFee > 0
+
+  if (lateDateFlagged || lateDateLegacy) {
+    const changePax = {
+      adults: booking.adults,
+      children: booking.children,
+      infants: booking.infants,
+      tourLeaders: booking.tourLeaders,
+    }
+    const fullAmount = snapshotAmount(changePax, rates)
+    const changeHeads = Math.max(0, changePax.adults) + Math.max(0, changePax.children)
+    // After 8pm Thai: Invoice = full tour price. Prebuy = head deduct only (like no-show).
     items.push({
       id: moneyId(),
       bookingCode: booking.code,
       travelDate: booking.date,
       voucherNo,
-      description: 'Change date',
-      adults: booking.adults,
-      children: booking.children,
+      description: lateChangeDateDescription({ heads: changeHeads, prebuy }),
+      adults: changePax.adults,
+      children: changePax.children,
+      infants: changePax.infants,
+      tourLeaders: changePax.tourLeaders,
+      adultPrice: prebuy ? 0 : rates.adultPrice,
+      childPrice: prebuy ? 0 : rates.childPrice,
+      infantPrice: prebuy ? 0 : rates.infantPrice,
+      tourLeaderPrice: prebuy ? 0 : rates.tourLeaderPrice,
+      cot: 0,
+      amount: prebuy ? 0 : fullAmount,
+      lineKind: 'change_date',
+      sortOrder: items.length,
+    })
+  }
+
+  // Late reduce AD/CH after lateFeeFromTime (not late cancel, not late date change).
+  if (reduceFee > 0 && booking.lateDateChange != null) {
+    const perPerson = Math.max(0, DEFAULT_BOOKING_CUTOFFS.dateChangeFeePerPerson)
+    const heads =
+      perPerson > 0 && reduceFee % perPerson === 0 ? Math.floor(reduceFee / perPerson) : 0
+    items.push({
+      id: moneyId(),
+      bookingCode: booking.code,
+      travelDate: booking.date,
+      voucherNo,
+      description: lateReduceFeeDescription({
+        amount: reduceFee,
+        adults: heads,
+        adultPrice: perPerson,
+      }),
+      adults: heads,
+      children: 0,
       infants: 0,
       tourLeaders: 0,
-      adultPrice: rates.changeDatePrice,
-      childPrice: rates.changeDatePrice,
+      adultPrice: heads > 0 ? perPerson : 0,
+      childPrice: 0,
       infantPrice: 0,
       tourLeaderPrice: 0,
       cot: 0,
-      amount: lateFee,
-      lineKind: 'change_date',
+      amount: reduceFee,
+      lineKind: 'other',
+      unit: heads > 0 ? 'Pax' : 'Fee',
       sortOrder: items.length,
     })
   }
@@ -586,6 +908,9 @@ export function buildInvoiceItemsForBooking(
 
   const thaiGuests = Math.max(0, Math.floor(options?.thaiGuests ?? 0))
 
+  // Agent-billed park (PP + Included only). Sync Thai seats from check-in nationality.
+  // Foreigners → full park rate line. Thai → separate 40 THB/AD·CH line.
+  // Not Included: guest pays at marina — do not bill the agent.
   if (
     booking.status !== 'Cancelled' &&
     booking.program === 'PP' &&
@@ -605,7 +930,7 @@ export function buildInvoiceItemsForBooking(
         bookingCode: booking.code,
         travelDate: booking.date,
         voucherNo,
-        description: 'National Park Fee · Included · deduct deposit',
+        description: 'National Park Fee · Included',
         adults: park.foreignAdults,
         children: park.foreignChildren,
         infants: 0,
@@ -616,6 +941,27 @@ export function buildInvoiceItemsForBooking(
         tourLeaderPrice: 0,
         cot: 0,
         amount: park.foreignAdults * ratesPP.adult + park.foreignChildren * ratesPP.child,
+        lineKind: 'park_fee',
+        sortOrder: items.length,
+      })
+    }
+    if (park.thaiAdults + park.thaiChildren > 0 && park.thaiAmount > 0) {
+      items.push({
+        id: moneyId(),
+        bookingCode: booking.code,
+        travelDate: booking.date,
+        voucherNo,
+        description: 'Thai nationality · National Park',
+        adults: park.thaiAdults,
+        children: park.thaiChildren,
+        infants: 0,
+        tourLeaders: 0,
+        adultPrice: THAI_PARK_FEE_THB,
+        childPrice: THAI_PARK_FEE_THB,
+        infantPrice: 0,
+        tourLeaderPrice: 0,
+        cot: 0,
+        amount: park.thaiAmount,
         lineKind: 'park_fee',
         sortOrder: items.length,
       })
@@ -755,6 +1101,7 @@ export function newInvoiceDocument(input: {
     receiptNo: null,
     linkedInvoiceIds: input.linkedInvoiceIds ?? [],
     items,
+    payments: [],
     createdAt: new Date().toISOString(),
     sendToAgent: false,
   }

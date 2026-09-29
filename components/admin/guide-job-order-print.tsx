@@ -5,6 +5,7 @@ import { usePortal } from '@/components/portal-provider'
 import { boatThemeFor } from '@/lib/boat-theme'
 import { formatCheckInServicesOption, type CheckInServiceLine } from '@/lib/check-in-services'
 import { formatLongDate } from '@/lib/format'
+import { bookingPaxOnVanAndBoat } from '@/lib/boat-load'
 import {
   DEFAULT_BOAT_CAPACITY,
   boatDisplayName,
@@ -23,7 +24,11 @@ import {
   type DayVehiclePlan,
   type Program,
 } from '@/lib/types'
-import { allocatePaxBreakdown, bookingPaxOnVan, primaryVan } from '@/lib/vehicle-assign'
+import {
+  allocatePaxBreakdown,
+  primaryVan,
+  sortOrderOnVan,
+} from '@/lib/vehicle-assign'
 import { cn } from '@/lib/utils'
 
 type GuidePassengerRow = {
@@ -80,19 +85,38 @@ export function GuideJobOrderPrint({
           const noTransfer: Booking[] = []
           const loose: Booking[] = []
           for (const booking of onBoat) {
-            const van = primaryVan(vehiclePlan.assignments[booking.code])
-            if (van && isNoTransferVan(van)) {
+            const legs = vehiclePlan.assignments[booking.code]
+            const vansOnBoat = [
+              ...new Set((legs ?? []).map((leg) => leg.van).filter((n) => n > 0)),
+            ]
+              .filter(
+                (van) =>
+                  bookingPaxOnVanAndBoat(
+                    booking,
+                    legs,
+                    boatPlan.assignments[booking.code],
+                    van,
+                    boat,
+                  ) > 0,
+              )
+              .sort((a, b) => a - b)
+
+            if (vansOnBoat.some((van) => isNoTransferVan(van))) {
               noTransfer.push(booking)
               continue
             }
-            if (!van && isNoTransfer(booking.pickupZone)) {
+            if (vansOnBoat.length === 0 && isNoTransfer(booking.pickupZone)) {
               noTransfer.push(booking)
               continue
             }
-            if (van && !isDummyVan(van)) {
-              const list = vanMap.get(van) ?? []
-              list.push(booking)
-              vanMap.set(van, list)
+
+            const realVans = vansOnBoat.filter((van) => !isDummyVan(van))
+            if (realVans.length > 0) {
+              for (const van of realVans) {
+                const list = vanMap.get(van) ?? []
+                list.push(booking)
+                vanMap.set(van, list)
+              }
               continue
             }
             loose.push(booking)
@@ -103,17 +127,26 @@ export function GuideJobOrderPrint({
           }
 
           function vanPaxOnThisBoat(booking: Booking, van: number) {
-            const boatPax = paxOnThisBoat(booking)
-            const vanPax = bookingPaxOnVan(booking, vehiclePlan.assignments[booking.code], van)
-            if (vanPax <= 0) return boatPax
-            return Math.min(vanPax, boatPax)
+            return bookingPaxOnVanAndBoat(
+              booking,
+              vehiclePlan.assignments[booking.code],
+              boatPlan.assignments[booking.code],
+              van,
+              boat,
+            )
           }
 
           const vanSections = [...vanMap.entries()]
             .sort(([a], [b]) => a - b)
             .map(([van, items]) => {
               const meta = resolveVanMeta(van, vehiclePlan.vanMeta[String(van)])
-              const pax = items.reduce(
+              const ordered = items.slice().sort((a, b) => {
+                const orderA = sortOrderOnVan(vehiclePlan.assignments[a.code], van)
+                const orderB = sortOrderOnVan(vehiclePlan.assignments[b.code], van)
+                if (orderA !== orderB) return orderA - orderB
+                return a.code.localeCompare(b.code)
+              })
+              const pax = ordered.reduce(
                 (sum, booking) => sum + vanPaxOnThisBoat(booking, van),
                 0,
               )
@@ -129,7 +162,7 @@ export function GuideJobOrderPrint({
               return {
                 key: `print-van-${boat}-${van}`,
                 title: titleBits.join(' · '),
-                rows: items.map((booking) => {
+                rows: ordered.map((booking) => {
                   const legs = vehiclePlan.assignments[booking.code]
                   const split = (legs?.length ?? 0) > 1
                   const showExtras = !split || primaryVan(legs) === van

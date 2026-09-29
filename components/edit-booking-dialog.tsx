@@ -136,8 +136,8 @@ export function EditBookingDialog({
     } else if (isNoTransfer(booking.pickupZone)) {
       setTransferKind('none')
       setPickupZone(NO_TRANSFER_ZONE)
-      setPickupHotel('')
-      setRoomNumber('')
+      setPickupHotel(booking.pickupHotel)
+      setRoomNumber(booking.roomNumber)
       setPrivatePickupTime('')
       setPrivateVehicle('')
       setPrivateDriverName('')
@@ -224,8 +224,6 @@ export function EditBookingDialog({
     setError('')
     if (kind === 'none') {
       setPickupZone(NO_TRANSFER_ZONE)
-      setPickupHotel('')
-      setRoomNumber('')
       setPrivatePickupTime('')
       setPrivateVehicle('')
       setPrivateDriverName('')
@@ -299,8 +297,8 @@ export function EditBookingDialog({
             : transferKind === 'private'
               ? PRIVATE_TRANSFER_ZONE
               : pickupZone,
-        pickupHotel: transferKind === 'none' ? '' : pickupHotel,
-        roomNumber: transferKind === 'none' ? '' : roomNumber,
+        pickupHotel: pickupHotel,
+        roomNumber: roomNumber,
         pickupTime: transferKind === 'private' ? privatePickupTime : undefined,
         privateTransferVehicle: transferKind === 'private' ? privateVehicle : '',
         privateTransferPrice:

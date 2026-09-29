@@ -16,14 +16,33 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   chargeUnit,
   formatInvoiceDate,
+  formatInvoiceLineDescription,
   formatInvoiceMoney,
+  invoiceLineKindLabel,
   isInvoiceAmountStale,
+  isLateReduceFeeLine,
   itemsAgentTotal,
   itemsGuestTotal,
-  parseMoneyInput,
+  lateReduceFeeDisplay,
+  parseSignedMoneyInput,
   type InvoiceDocument,
   type InvoiceItem,
+  type InvoiceLineKind,
 } from '@/lib/invoice'
+import { cn } from '@/lib/utils'
+
+const LINE_KIND_TONE: Record<InvoiceLineKind, string> = {
+  tour: 'bg-teal-900/8 text-teal-900/70',
+  no_show: 'bg-rose-100 text-rose-800',
+  change_date: 'bg-amber-100 text-amber-900',
+  cancel: 'bg-slate-200/80 text-slate-800',
+  private_transfer: 'bg-sky-100 text-sky-900',
+  extra_zone: 'bg-orange-100 text-orange-900',
+  park_fee: 'bg-emerald-100 text-emerald-900',
+  park_guest: 'bg-emerald-50 text-emerald-800',
+  service: 'bg-violet-100 text-violet-900',
+  other: 'bg-teal-900/6 text-teal-900/55',
+}
 
 function emptyLine(
   invoiceId: string,
@@ -58,12 +77,14 @@ function emptyLine(
 function countInput(value: number, onChange: (value: number) => void, ariaLabel: string) {
   return (
     <Input
-      type="number"
-      min={0}
-      step={1}
+      type="text"
+      inputMode="numeric"
       aria-label={ariaLabel}
       value={value || ''}
-      onChange={(event) => onChange(Math.max(0, Math.round(Number(event.target.value) || 0)))}
+      onChange={(event) => {
+        const raw = event.target.value.replace(/[^\d]/g, '')
+        onChange(Math.max(0, Math.round(Number(raw) || 0)))
+      }}
       className="h-8 border-transparent bg-transparent px-1 text-right tabular-nums shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
     />
   )
@@ -93,32 +114,68 @@ export function InvoiceEditDialog({
   const [draft, setDraft] = useState<InvoiceDocument | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [amountDrafts, setAmountDrafts] = useState<Record<string, string>>({})
 
   useEffect(() => {
     if (!open || !doc) {
       setDraft(null)
       setError('')
       setSaving(false)
+      setAmountDrafts({})
       return
     }
     setDraft({
       ...doc,
-      items: doc.items.map((item) => ({ ...item, unit: chargeUnit(item) })),
+      items: doc.items.map((item) => {
+        if (!isLateReduceFeeLine(item)) {
+          return { ...item, unit: chargeUnit(item) }
+        }
+        const display = lateReduceFeeDisplay(item)
+        return {
+          ...item,
+          description: formatInvoiceLineDescription(item),
+          adults: display.heads || item.adults,
+          adultPrice: display.perPerson || item.adultPrice,
+          unit: display.heads > 0 ? 'Pax' : 'Fee',
+        }
+      }),
     })
     setError('')
     setSaving(false)
+    setAmountDrafts({})
   }, [doc, open])
 
   const total = useMemo(() => (draft ? itemsAgentTotal(draft.items) : 0), [draft])
   const guestTotal = useMemo(() => (draft ? itemsGuestTotal(draft.items) : 0), [draft])
-  const prebuy = useMemo(
-    () =>
-      Boolean(
-        draft?.items.some((item) => item.lineKind === 'tour') &&
-          draft.items.every((item) => item.lineKind !== 'tour' || item.amount === 0),
-      ),
-    [draft],
-  )
+  const prebuy = useMemo(() => {
+    if (!draft) return false
+    const hasTour = draft.items.some((item) => item.lineKind === 'tour')
+    const tourIsDeduct =
+      hasTour && draft.items.every((item) => item.lineKind !== 'tour' || item.amount === 0)
+    const hasNoShowDeduct = draft.items.some(
+      (item) =>
+        item.lineKind === 'no_show' && /deduct \d+ heads?/i.test(item.description),
+    )
+    const hasChangeDateDeduct = draft.items.some(
+      (item) =>
+        item.lineKind === 'change_date' && /deduct \d+ heads?/i.test(item.description),
+    )
+    return tourIsDeduct || hasNoShowDeduct || hasChangeDateDeduct
+  }, [draft])
+  const deductHeads = useMemo(() => {
+    if (!draft || !prebuy) return 0
+    return draft.items
+      .filter(
+        (item) =>
+          item.lineKind === 'tour' ||
+          item.lineKind === 'no_show' ||
+          item.lineKind === 'change_date',
+      )
+      .reduce(
+        (sum, item) => sum + Math.max(0, item.adults) + Math.max(0, item.children),
+        0,
+      )
+  }, [draft, prebuy])
 
   const bookingCodes = useMemo(
     () => [...new Set((draft?.items ?? []).map((item) => item.bookingCode).filter(Boolean))],
@@ -333,11 +390,11 @@ export function InvoiceEditDialog({
                   <tr className="border-b border-teal-900/10 bg-teal-950/[0.04] text-left text-xs font-bold text-teal-950">
                     <th className="w-8 px-2 py-2.5 text-center font-bold text-teal-900/40">#</th>
                     <th className="px-2 py-2.5 font-bold">Description</th>
+                    <th className="w-24 px-2 py-2.5 font-bold" title="Pax, Box, Pcs, Van">Unit</th>
                     <th className="w-14 px-1 py-2.5 text-right font-bold" title="Adults">AD</th>
                     <th className="w-14 px-1 py-2.5 text-right font-bold" title="Children">CH</th>
                     <th className="w-14 px-1 py-2.5 text-right font-bold" title="Infants">IN</th>
                     <th className="w-14 px-1 py-2.5 text-right font-bold" title="Tour leaders">TL</th>
-                    <th className="w-24 px-2 py-2.5 font-bold" title="Pax, Box, Pcs, Van">Unit</th>
                     <th className="w-32 px-2 py-2.5 text-right font-bold">Amount (THB)</th>
                     <th className="w-10 px-2 py-2.5" />
                   </tr>
@@ -349,13 +406,32 @@ export function InvoiceEditDialog({
                         {index + 1}
                       </td>
                       <td className="px-2 py-1.5">
+                        <div className="space-y-1">
+                          <span
+                            className={cn(
+                              'inline-flex rounded-md px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase',
+                              LINE_KIND_TONE[item.lineKind],
+                            )}
+                          >
+                            {invoiceLineKindLabel(item.lineKind)}
+                          </span>
+                          <Input
+                            value={item.description}
+                            onChange={(event) =>
+                              patchItem(item.id, { description: event.target.value })
+                            }
+                            className="h-8 border-transparent bg-transparent px-1.5 shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
+                            placeholder="Description"
+                          />
+                        </div>
+                      </td>
+                      <td className="px-2 py-1.5">
                         <Input
-                          value={item.description}
-                          onChange={(event) =>
-                            patchItem(item.id, { description: event.target.value })
-                          }
+                          value={item.unit ?? ''}
+                          onChange={(event) => patchItem(item.id, { unit: event.target.value })}
                           className="h-8 border-transparent bg-transparent px-1.5 shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
-                          placeholder="Description"
+                          placeholder="Box, Pcs, Van"
+                          list="invoice-unit-suggestions"
                         />
                       </td>
                       <td className="px-1 py-1.5">
@@ -376,23 +452,35 @@ export function InvoiceEditDialog({
                       </td>
                       <td className="px-2 py-1.5">
                         <Input
-                          value={item.unit ?? ''}
-                          onChange={(event) => patchItem(item.id, { unit: event.target.value })}
-                          className="h-8 border-transparent bg-transparent px-1.5 shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
-                          placeholder="Box, Pcs, Van"
-                          list="invoice-unit-suggestions"
-                        />
-                      </td>
-                      <td className="px-2 py-1.5">
-                        <Input
-                          type="number"
-                          min={0}
-                          step="0.01"
-                          value={item.amount || ''}
-                          onChange={(event) =>
-                            patchItem(item.id, { amount: parseMoneyInput(event.target.value) })
+                          type="text"
+                          inputMode="decimal"
+                          value={
+                            amountDrafts[item.id] ??
+                            (item.amount === 0 ? '' : String(item.amount))
                           }
-                          className="h-8 border-transparent bg-transparent px-1.5 text-right font-medium tabular-nums shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
+                          onChange={(event) => {
+                            const raw = event.target.value.replace(/,/g, '')
+                            if (raw !== '' && !/^-?\d*\.?\d*$/.test(raw)) return
+                            setAmountDrafts((current) => ({ ...current, [item.id]: raw }))
+                            if (raw === '' || raw === '-' || raw === '.' || raw === '-.') return
+                            patchItem(item.id, { amount: parseSignedMoneyInput(raw) })
+                          }}
+                          onBlur={() => {
+                            const raw = amountDrafts[item.id]
+                            if (raw !== undefined) {
+                              patchItem(item.id, { amount: parseSignedMoneyInput(raw) })
+                              setAmountDrafts((current) => {
+                                const next = { ...current }
+                                delete next[item.id]
+                                return next
+                              })
+                            }
+                          }}
+                          className={cn(
+                            'h-8 border-transparent bg-transparent px-1.5 text-right font-medium tabular-nums shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white',
+                            item.amount < 0 && 'text-rose-700',
+                          )}
+                          title="Type freely — use minus for agent cash-on-tour deduct. Prebuy no-show has no amount."
                         />
                       </td>
                       <td className="px-2 py-1.5">
@@ -477,17 +565,35 @@ export function InvoiceEditDialog({
             <div className="rounded-xl border border-teal-900/12 bg-teal-950/[0.03] px-4 py-3">
               <div className="flex items-baseline justify-between gap-3">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-teal-900/45">
-                  {prebuy ? 'Deduct deposit' : 'Amount due'}
+                  {prebuy ? 'To pay' : 'Due'}
                 </p>
-                <p className="text-xl font-semibold tabular-nums text-teal-950">
+                <p
+                  className={cn(
+                    'text-xl font-semibold tabular-nums',
+                    total < 0 ? 'text-rose-700' : 'text-teal-950',
+                  )}
+                >
                   {formatInvoiceMoney(total)}
+                  <span className="ml-1 text-xs font-medium text-teal-900/45">THB</span>
                 </p>
               </div>
-              <p className="mt-1 text-right text-xs text-teal-900/45">THB · billed to agent</p>
+              {prebuy && deductHeads > 0 ? (
+                <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-teal-900/8 pt-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-teal-900/45">
+                    Heads
+                  </p>
+                  <p className="text-base font-semibold tabular-nums text-teal-950">{deductHeads}</p>
+                </div>
+              ) : null}
               {guestTotal > 0 ? (
-                <p className="mt-2 border-t border-teal-900/8 pt-2 text-xs text-teal-900/50">
-                  Guest marina collect {formatInvoiceMoney(guestTotal)} THB is not on this bill.
-                </p>
+                <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-teal-900/8 pt-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-teal-900/45">
+                    Guest
+                  </p>
+                  <p className="text-xs font-medium tabular-nums text-teal-900/55">
+                    {formatInvoiceMoney(guestTotal)} THB
+                  </p>
+                </div>
               ) : null}
             </div>
           </div>

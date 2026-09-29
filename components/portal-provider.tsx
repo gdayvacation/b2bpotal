@@ -252,8 +252,10 @@ import type {
   VanSplit,
 } from '@/lib/types'
 import { HOTEL_CATALOG } from '@/lib/hotel-catalog'
+import { packOwnBoatLabel } from '@/lib/boat-theme'
 import {
   DEFAULT_BOAT_CAPACITY,
+  DEFAULT_BOAT_LABEL_START,
   replaceLegacyBoatCapacity,
   DEFAULT_JB_CAPACITY,
   DEFAULT_PP_CAPACITY,
@@ -626,7 +628,7 @@ type PortalContextValue = {
     guide: Partial<BoatGuide>,
     options?: { persist?: boolean },
   ) => void
-  /** Append a boat for this day (default capacity 50, or a custom rental size/name/color). */
+  /** Append a boat for this day (default capacity 50, or a custom rental size/no/name/color). */
   addDayBoat: (
     date: string,
     program: Program,
@@ -634,7 +636,9 @@ type PortalContextValue = {
     options?: {
       persist?: boolean
       name?: string
-      /** Own-boat color key stored in labels (orange, green, …). */
+      /** Required own-boat number shown on van assign chips. */
+      boatNo?: string
+      /** Own-boat color key packed with boatNo in labels (orange, green, …). */
       color?: string
     },
   ) => void
@@ -2565,6 +2569,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           pickupTime,
           status: pending ? 'Pending Pickup Time' : 'Confirmed',
           lateChangeFee: 0,
+          lateDateChange: false,
         }
         setBookings((current) => [booking, ...current])
         persistBookingWrite(
@@ -2693,32 +2698,40 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
         const oldDate = existing.date
         const program = existing.program
-        const extraFee =
-          options?.lateChangeFee !== undefined
-            ? Math.max(0, Math.floor(options.lateChangeFee))
-            : !options?.bypassCutoff && isLateAmendmentForDate(bookingCutoffs, existing.date)
-              ? dateChangeFeeAmount(bookingCutoffs, existing)
-              : 0
-        const nextLateFee = (existing.lateChangeFee ?? 0) + extraFee
+        const autoLateDateChange =
+          !options?.bypassCutoff && isLateAmendmentForDate(bookingCutoffs, existing.date)
+        const chargeLateDateChange =
+          options?.lateDateChange !== undefined
+            ? options.lateDateChange
+            : options?.lateChangeFee !== undefined
+              ? options.lateChangeFee > 0
+              : autoLateDateChange
+        const nextLateDateChange = existing.lateDateChange === true || chargeLateDateChange
 
         setBookings((current) =>
           current.map((booking) =>
             booking.code === code
-              ? { ...booking, date: trimmedDate, lateChangeFee: nextLateFee }
+              ? {
+                  ...booking,
+                  date: trimmedDate,
+                  lateDateChange: nextLateDateChange,
+                }
               : booking,
           ),
         )
         persistBookingWrite(
           'updateBookingDate',
-          updateBookingDate(code, trimmedDate, { lateChangeFee: nextLateFee }),
+          updateBookingDate(code, trimmedDate, {
+            lateDateChange: nextLateDateChange,
+          }),
         )
         logBookingEvent(
           code,
           'date_changed',
-          extraFee > 0
-            ? `Date changed ${oldDate} → ${trimmedDate} · extra charge ${formatThbAmount(extraFee)}`
-            : options?.lateChangeFee === 0
-              ? `Date changed ${oldDate} → ${trimmedDate} · extra charge waived`
+          chargeLateDateChange
+            ? `Date changed ${oldDate} → ${trimmedDate} · late change · full charge (Invoice) / head deduct (Prebuy)`
+            : options?.lateDateChange === false || options?.lateChangeFee === 0
+              ? `Date changed ${oldDate} → ${trimmedDate} · late change waived`
               : `Date changed ${oldDate} → ${trimmedDate}`,
           options?.actor,
         )
@@ -2890,8 +2903,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const privateTransfer = isPrivateTransfer(next)
 
         if (noTransfer) {
-          next.pickupHotel = ''
-          next.roomNumber = ''
+          // Keep hotel/room when set — van board shows hotel name on No Transfer cards.
           next.pickupTime = NO_TRANSFER_TIME
           next.transferExtraCharge = ''
           Object.assign(next, emptyPrivateTransferFields())
@@ -3022,6 +3034,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               : 0
         if (extraFee > 0) {
           next.lateChangeFee = (existing.lateChangeFee ?? 0) + extraFee
+          // Keep reduce-fee distinct from Change date (sticky flag stays as-is, never undefined).
+          next.lateDateChange = existing.lateDateChange === true
           changes.push(
             `extra charge ${formatThbAmount(extraFee)} (reduce ${removedAdults} AD + ${removedChildren} CH × ${formatThbAmount(bookingCutoffs.dateChangeFeePerPerson)})`,
           )
@@ -3462,7 +3476,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             const next = hydrateDayBoatPlan(plan)
             const index = boat - 1
             if (index < 0 || index >= next.labels.length) return plan
-            next.labels[index] = label.trim().slice(0, 20)
+            next.labels[index] = label.trim().slice(0, 28)
             return next
           },
           options,
@@ -3511,14 +3525,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               1,
               Math.floor(capacity ?? DEFAULT_BOAT_CAPACITY) || DEFAULT_BOAT_CAPACITY,
             )
+            const nextIndex = next.capacities.length
             const color = String(options?.color ?? '')
               .trim()
               .toLowerCase()
+            const boatNo =
+              String(options?.boatNo ?? '').trim() ||
+              String(DEFAULT_BOAT_LABEL_START + nextIndex)
             return {
               ...next,
               capacities: [...next.capacities, nextCap],
               names: [...next.names, String(options?.name ?? '').trim().slice(0, 40)],
-              labels: [...next.labels, color.slice(0, 20)],
+              labels: [...next.labels, packOwnBoatLabel(boatNo, color).slice(0, 28)],
               kinds: [...next.kinds, 'own'],
               guides: [...next.guides, emptyBoatGuide()],
             }

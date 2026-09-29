@@ -45,9 +45,15 @@ import {
   buildInvoiceItemsForBooking,
   formatInvoiceDate,
   formatInvoiceMoney,
+  formatInvoicePayStatus,
+  formatPaymentChannel,
   invoiceAmountForBooking,
   invoiceAutoAmountForBooking,
+  invoiceBalance,
   invoiceGuestAmountForBooking,
+  invoicePaidTotal,
+  invoicePayments,
+  invoiceReceiptRows,
   invoicedBookingCodes,
   isInvoiceAmountStale,
   PAYMENT_CHANNELS,
@@ -56,6 +62,7 @@ import {
   majorityProgram,
   newInvoiceDocument,
   parseAgentBillingType,
+  prebuyDeductHeads,
   ratesForAgent,
   type AgentBillingType,
   type InvoiceDocument,
@@ -72,7 +79,6 @@ import { addDaysISO, dateFromISO, formatIncludeShort, formatShortDate, thaiParkS
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 
 type Tab = 'bills' | 'dummy' | 'documents' | 'notes' | 'receipts'
-type GroupBy = 'date' | 'agent'
 type PrintMode = 'invoice' | 'billing_note' | 'receipt'
 type BillSortKey = 'agent'
 type BillProgram = Program
@@ -179,23 +185,42 @@ function InvoicePayStatus({
   doc,
   today,
   onConfirm,
-  onUndoPaid,
+  onUndoLast,
+  onClearAll,
+  onOpenReceipt,
 }: {
   doc: InvoiceDocument
   today: string
-  onConfirm: (doc: InvoiceDocument, details: { paidDate: string; channel: PaymentChannel }) => void
-  onUndoPaid: (doc: InvoiceDocument) => void
+  onConfirm: (
+    doc: InvoiceDocument,
+    details: { paidDate: string; channel: PaymentChannel; amount: number; mode: 'full' | 'partial' },
+  ) => void
+  onUndoLast: (doc: InvoiceDocument) => void
+  onClearAll: (doc: InvoiceDocument) => void
+  onOpenReceipt: (doc: InvoiceDocument, paymentId: string) => void
 }) {
+  const balance = invoiceBalance(doc)
+  const paidTotal = invoicePaidTotal(doc)
+  const payments = invoicePayments(doc)
+  const statusLabel = formatInvoicePayStatus(doc)
+  const fullyPaid = balance <= 0.009 && paidTotal > 0
   const [open, setOpen] = useState(false)
+  const [mode, setMode] = useState<'full' | 'partial'>('full')
   const [paidDate, setPaidDate] = useState(today)
   const [channel, setChannel] = useState<PaymentChannel>('deduct_deposit')
-  const paid = doc.status === 'paid'
+  const [amount, setAmount] = useState(String(balance || doc.grandTotal || 0))
 
   useEffect(() => {
     if (!open) return
-    setPaidDate(doc.paidAt ? doc.paidAt.slice(0, 10) : today)
+    const due = invoiceBalance(doc)
+    setPaidDate(today)
     setChannel(doc.paymentChannel ?? 'deduct_deposit')
+    setMode(due > 0 && due < doc.grandTotal - 0.009 ? 'partial' : 'full')
+    setAmount(String(due > 0 ? due : doc.grandTotal))
   }, [doc, open, today])
+
+  const parsedAmount = Math.max(0, Math.round((Number(amount.replace(/,/g, '')) || 0) * 100) / 100)
+  const payAmount = mode === 'full' ? balance : Math.min(balance, parsedAmount)
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -204,74 +229,191 @@ function InvoicePayStatus({
           <button
             type="button"
             className={cn(
-              'inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-left text-sm font-medium outline-none transition-colors hover:bg-teal-950/[0.04] focus-visible:ring-2 focus-visible:ring-teal-700/25',
-              paid ? 'text-emerald-700' : 'text-amber-800',
+              'inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[12px] font-semibold tracking-wide uppercase outline-none transition-colors hover:bg-teal-950/[0.04] focus-visible:ring-2 focus-visible:ring-teal-700/25',
+              fullyPaid
+                ? 'text-emerald-700'
+                : paidTotal > 0
+                  ? 'text-orange-700'
+                  : 'text-amber-800',
             )}
-            aria-label={`${paid ? 'PAID' : 'Unpaid'}. Review payment for ${doc.number}`}
+            aria-label={`${statusLabel}. Review payment for ${doc.number}`}
           />
         }
       >
-        {paid ? 'PAID' : 'Unpaid'}
-        <ChevronDown className="size-3.5 opacity-50" />
+        {statusLabel}
+        <ChevronDown className="size-3 opacity-45" />
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-72 gap-3 p-3">
+      <PopoverContent align="start" className="w-[22rem] gap-3 p-3">
         <div>
           <p className="text-sm font-medium text-teal-950">{doc.number}</p>
           <p className="text-xs text-teal-900/55">
-            {paid ? 'Review or change payment details.' : 'Confirm payment to issue the receipt.'}
+            Total {formatInvoiceMoney(doc.grandTotal)} · paid {formatInvoiceMoney(paidTotal)} ·{' '}
+            <span className={balance > 0.009 ? 'font-semibold text-orange-700' : 'text-emerald-700'}>
+              left {formatInvoiceMoney(balance)}
+            </span>
           </p>
         </div>
-        <div className="space-y-1.5">
-          <label className="gday-soft-label" htmlFor={`paid-date-${doc.id}`}>
-            Date
-          </label>
-          <Input
-            id={`paid-date-${doc.id}`}
-            type="date"
-            value={paidDate}
-            onChange={(event) => setPaidDate(event.target.value)}
-            className="h-9"
-          />
-        </div>
-        <div className="space-y-1.5">
-          <label className="gday-soft-label" htmlFor={`paid-channel-${doc.id}`}>
-            Channel
-          </label>
-          <select
-            id={`paid-channel-${doc.id}`}
-            value={channel}
-            onChange={(event) => setChannel(event.target.value as PaymentChannel)}
-            className="h-9 w-full rounded-xl border border-teal-900/12 bg-white/80 px-3 text-sm text-teal-950 outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
-          >
-            {PAYMENT_CHANNELS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
+
+        {payments.length > 0 ? (
+          <div className="max-h-36 space-y-1.5 overflow-y-auto rounded-lg border border-teal-900/10 bg-teal-950/[0.03] px-2 py-1.5">
+            <p className="text-[10px] font-semibold tracking-wide text-teal-900/45 uppercase">
+              Payment history
+            </p>
+            {payments.map((payment, index) => (
+              <div
+                key={payment.id}
+                className="flex items-start justify-between gap-2 border-b border-teal-900/6 py-1.5 text-[11px] last:border-0"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-teal-950">
+                    #{index + 1} · {formatInvoiceMoney(payment.amount)}
+                  </p>
+                  <p className="text-teal-900/60">
+                    {formatInvoiceDate(payment.paidDate)} · {formatPaymentChannel(payment.channel)}
+                  </p>
+                  {payment.receiptNo ? (
+                    <button
+                      type="button"
+                      className="mt-0.5 font-medium text-teal-700 hover:text-teal-950"
+                      onClick={() => {
+                        setOpen(false)
+                        onOpenReceipt(doc, payment.id)
+                      }}
+                    >
+                      Receipt {payment.receiptNo}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
             ))}
-          </select>
-        </div>
-        <Button
-          type="button"
-          className="h-9 w-full rounded-xl"
-          onClick={() => {
-            setOpen(false)
-            onConfirm(doc, { paidDate, channel })
-          }}
-        >
-          Confirm
-        </Button>
-        {paid ? (
-          <Button
-            type="button"
-            variant="outline"
-            className="h-9 w-full rounded-xl text-amber-800"
-            onClick={() => {
-              setOpen(false)
-              onUndoPaid(doc)
-            }}
-          >
-            Undo PAID
-          </Button>
+          </div>
+        ) : null}
+
+        {balance > 0.009 ? (
+          <>
+            <div className="grid grid-cols-2 gap-1 rounded-xl bg-teal-950/[0.04] p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('full')
+                  setAmount(String(balance))
+                }}
+                className={cn(
+                  'rounded-lg px-2 py-1.5 text-xs font-semibold transition-all',
+                  mode === 'full'
+                    ? 'bg-teal-800 text-white'
+                    : 'text-teal-900/65 hover:bg-white/80',
+                )}
+              >
+                Paid full
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode('partial')}
+                className={cn(
+                  'rounded-lg px-2 py-1.5 text-xs font-semibold transition-all',
+                  mode === 'partial'
+                    ? 'bg-orange-600 text-white'
+                    : 'text-teal-900/65 hover:bg-white/80',
+                )}
+              >
+                Paid partial
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              <label className="gday-soft-label" htmlFor={`paid-amount-${doc.id}`}>
+                Amount (THB)
+              </label>
+              <Input
+                id={`paid-amount-${doc.id}`}
+                type="number"
+                min={0}
+                max={balance}
+                step={1}
+                inputMode="decimal"
+                disabled={mode === 'full'}
+                value={mode === 'full' ? String(balance) : amount}
+                onChange={(event) => setAmount(event.target.value)}
+                className="h-9"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="gday-soft-label" htmlFor={`paid-date-${doc.id}`}>
+                Date
+              </label>
+              <Input
+                id={`paid-date-${doc.id}`}
+                type="date"
+                value={paidDate}
+                onChange={(event) => setPaidDate(event.target.value)}
+                className="h-9"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="gday-soft-label" htmlFor={`paid-channel-${doc.id}`}>
+                Channel
+              </label>
+              <select
+                id={`paid-channel-${doc.id}`}
+                value={channel}
+                onChange={(event) => setChannel(event.target.value as PaymentChannel)}
+                className="h-9 w-full rounded-xl border border-teal-900/12 bg-white/80 px-3 text-sm text-teal-950 outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
+              >
+                {PAYMENT_CHANNELS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Button
+              type="button"
+              className="h-9 w-full rounded-xl"
+              disabled={payAmount <= 0}
+              onClick={() => {
+                setOpen(false)
+                onConfirm(doc, {
+                  paidDate,
+                  channel,
+                  amount: payAmount,
+                  mode,
+                })
+              }}
+            >
+              {mode === 'full'
+                ? `Confirm full · ${formatInvoiceMoney(payAmount)}`
+                : `Confirm partial · ${formatInvoiceMoney(payAmount)}`}
+            </Button>
+          </>
+        ) : (
+          <p className="text-xs text-emerald-800">This invoice is fully paid.</p>
+        )}
+
+        {payments.length > 0 ? (
+          <div className="space-y-1.5">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-9 w-full rounded-xl text-amber-800"
+              onClick={() => {
+                setOpen(false)
+                onUndoLast(doc)
+              }}
+            >
+              Undo last payment
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-9 w-full rounded-xl text-rose-700"
+              onClick={() => {
+                setOpen(false)
+                onClearAll(doc)
+              }}
+            >
+              Clear all payments
+            </Button>
+          </div>
         ) : null}
       </PopoverContent>
     </Popover>
@@ -295,7 +437,6 @@ export function AdminInvoices() {
     const raw = searchParams.get('tab')
     return isTab(raw) ? raw : 'bills'
   })
-  const [groupBy, setGroupBy] = useState<GroupBy>('date')
   const [billSort, setBillSort] = useState<{ key: BillSortKey; dir: SortDir } | null>(null)
   const portalToday = usePortalTodayISO()
   const [fromDate, setFromDate] = useState(todayISO())
@@ -305,10 +446,12 @@ export function AdminInvoices() {
   const [billProgram, setBillProgram] = useState<BillProgram>('PP')
   const [includePending, setIncludePending] = useState(true)
   const [includeOtherService, setIncludeOtherService] = useState(false)
+  const [hideInvoiced, setHideInvoiced] = useState(false)
   const [selectedCodes, setSelectedCodes] = useState<string[]>([])
   const [selectedDocs, setSelectedDocs] = useState<string[]>([])
   const [preview, setPreview] = useState<InvoiceDocument | null>(null)
   const [previewMode, setPreviewMode] = useState<PrintMode | null>(null)
+  const [previewPaymentId, setPreviewPaymentId] = useState<string | null>(null)
   const [editInvoice, setEditInvoice] = useState<InvoiceDocument | null>(null)
   const [editInvoiceIsNew, setEditInvoiceIsNew] = useState(false)
   const [shareNote, setShareNote] = useState('')
@@ -417,7 +560,10 @@ export function AdminInvoices() {
           booking,
           billingType: parseAgentBillingType(rates.billingType),
           billTotal: invoice ? storedTotal : liveTotal,
-          deductHeads: booking.adults + booking.children,
+          deductHeads:
+            parseAgentBillingType(rates.billingType) === 'prebuy'
+              ? prebuyDeductHeads(items)
+              : 0,
           liveTotal,
           guestCollect: invoice
             ? invoiceGuestAmountForBooking(invoice, booking.code)
@@ -443,13 +589,11 @@ export function AdminInvoices() {
         const cmp = a.booking.agentName.localeCompare(b.booking.agentName)
         return cmp * dir || a.booking.code.localeCompare(b.booking.code)
       }
-      return groupBy === 'agent'
-        ? a.booking.agentName.localeCompare(b.booking.agentName) ||
-            a.booking.date.localeCompare(b.booking.date) ||
-            a.booking.code.localeCompare(b.booking.code)
-        : a.booking.date.localeCompare(b.booking.date) ||
-            a.booking.agentName.localeCompare(b.booking.agentName) ||
-            a.booking.code.localeCompare(b.booking.code)
+      return (
+        a.booking.date.localeCompare(b.booking.date) ||
+        a.booking.agentName.localeCompare(b.booking.agentName) ||
+        a.booking.code.localeCompare(b.booking.code)
+      )
     })
   }, [
     agentSlug,
@@ -459,7 +603,6 @@ export function AdminInvoices() {
     getCheckInAttendance,
     getCheckInEnrollments,
     getDayBoatPlan,
-    groupBy,
     includeOtherService,
     includePending,
     billProgram,
@@ -487,12 +630,20 @@ export function AdminInvoices() {
     [documents],
   )
   const receipts = useMemo(
-    () => invoices.filter((doc) => doc.status === 'paid'),
+    () =>
+      invoiceReceiptRows(invoices).sort((a, b) =>
+        b.payment.paidDate.localeCompare(a.payment.paidDate) ||
+        b.payment.receiptNo.localeCompare(a.payment.receiptNo),
+      ),
     [invoices],
   )
   const listedDocs = tab === 'notes' ? billingNotes : invoices
 
   const openRows = useMemo(() => rows.filter((row) => !row.invoice), [rows])
+  const visibleBillRows = useMemo(
+    () => (hideInvoiced ? openRows : rows),
+    [hideInvoiced, openRows, rows],
+  )
   const allOpenSelected =
     openRows.length > 0 && openRows.every((row) => selectedCodes.includes(row.booking.code))
 
@@ -549,12 +700,33 @@ export function AdminInvoices() {
     return map
   }
 
+  const multiDay = fromDate !== toDate
+  const agentFilterName =
+    agentSlug === 'all'
+      ? null
+      : agents.find((agent) => agent.slug === agentSlug)?.name ??
+        bookings.find((booking) => booking.agentSlug === agentSlug)?.agentName ??
+        agentSlug
+  const billTargets =
+    selectedBookings.length > 0
+      ? selectedBookings
+      : agentSlug !== 'all'
+        ? openRows.map((row) => row.booking)
+        : []
+  const billTargetAgents = new Set(billTargets.map((booking) => booking.agentSlug))
+  const oneInvoiceReady = billTargets.length > 0 && billTargetAgents.size === 1
+
   async function createFromBookings(markPaidAfter = false) {
-    if (selectedBookings.length === 0) {
-      setMessage('Select one or more check-in bookings first.')
+    const toBill = billTargets
+    if (toBill.length === 0) {
+      setMessage(
+        agentSlug === 'all'
+          ? 'Choose an agent (or select bookings), then Make invoice — one agent across many days becomes one invoice.'
+          : 'No open bookings to invoice for this agent in the selected dates.',
+      )
       return
     }
-    const missing = [...new Set(selectedBookings.map((booking) => booking.agentSlug))].filter(
+    const missing = [...new Set(toBill.map((booking) => booking.agentSlug))].filter(
       (slug) => !agencyRatesReady(ratesForAgent(store.rates, slug)),
     )
     if (missing.length > 0) {
@@ -567,7 +739,7 @@ export function AdminInvoices() {
 
     const created: InvoiceDocument[] = []
     let existing = store.invoices
-    for (const [slug, agentBookings] of groupedByAgent(selectedBookings)) {
+    for (const [slug, agentBookings] of groupedByAgent(toBill)) {
       const items = agentBookings.flatMap((booking) => bookingInvoiceItems(booking))
       if (items.length === 0) continue
       const doc = newInvoiceDocument({
@@ -595,12 +767,20 @@ export function AdminInvoices() {
       )
     }
     setSelectedCodes([])
-    setPreview(created[0] ?? null)
-    goTab(markPaidAfter ? 'receipts' : 'documents')
+    const first = created[0] ?? null
+    if (first) {
+      openPreview(first, markPaidAfter ? 'receipt' : 'invoice')
+    }
+    if (markPaidAfter) {
+      goTab('receipts')
+    }
+    const bookingCount = toBill.length
     setMessage(
       markPaidAfter
         ? `Created invoice(s) and issued ${created.length} receipt(s).`
-        : `Created ${created.length} invoice(s).`,
+        : created.length === 1
+          ? `Created 1 invoice · ${bookingCount} booking${bookingCount === 1 ? '' : 's'} · ${dateLabel}.`
+          : `Created ${created.length} invoices (one per agent) · ${bookingCount} bookings.`,
     )
     return created
   }
@@ -654,38 +834,52 @@ export function AdminInvoices() {
 
   async function confirmPayment(
     doc: InvoiceDocument,
-    details: { paidDate: string; channel: PaymentChannel },
+    details: {
+      paidDate: string
+      channel: PaymentChannel
+      amount: number
+      mode: 'full' | 'partial'
+    },
   ) {
     if (doc.kind !== 'invoice') return
     const paidDate = details.paidDate || todayISO()
-    if (doc.status === 'paid') {
-      const next = {
-        ...doc,
-        paidAt: `${paidDate}T12:00:00.000Z`,
-        paymentChannel: details.channel,
-      }
-      await store.replaceDocument(next)
-      if (preview?.id === doc.id) setPreview(next)
-      setMessage(`Updated payment details on ${doc.number}.`)
-      return
-    }
-    const updated = await store.markPaid([doc.id], [], details)
-    const receipt = updated[0]
+    const updated = await store.markPaid([doc.id], [], {
+      paidDate,
+      channel: details.channel,
+      amount: details.amount,
+    })
+    const next = updated[0]
     setSelectedDocs([])
-    if (receipt) openPreview(receipt, 'receipt')
-    setMessage(`Issued ${receipt?.receiptNo ?? 'a receipt'} from ${doc.number}.`)
+    if (next) {
+      if (preview?.id === doc.id) setPreview(next)
+      const latest = invoicePayments(next).at(-1)
+      if (latest?.receiptNo) {
+        openPreview(next, 'receipt', latest.id)
+      }
+    }
+    const left = next ? invoiceBalance(next) : 0
+    const latestReceipt = next ? invoicePayments(next).at(-1)?.receiptNo : null
+    setMessage(
+      next?.status === 'paid'
+        ? `Fully paid · receipt ${latestReceipt ?? 'issued'} from ${doc.number}.`
+        : `Partial payment ${formatInvoiceMoney(details.amount)} · receipt ${latestReceipt ?? 'issued'}. Balance left ${formatInvoiceMoney(left)}.`,
+    )
   }
 
-  async function undoDocPaid(doc: InvoiceDocument) {
-    if (doc.status !== 'paid') return
-    const next = {
-      ...doc,
-      status: 'unpaid' as const,
-      paidAt: null,
-      paymentChannel: null,
-      receiptNo: null,
-    }
-    await store.replaceDocument(next)
+  async function undoLastPayment(doc: InvoiceDocument) {
+    const next = await store.removeLastPayment(doc.id)
+    if (!next) return
+    if (preview?.id === doc.id) setPreview(next)
+    setMessage(
+      next.status === 'unpaid'
+        ? `${doc.number} is unpaid again.`
+        : `Removed last payment on ${doc.number}. Balance left ${formatInvoiceMoney(invoiceBalance(next))}.`,
+    )
+  }
+
+  async function clearAllPayments(doc: InvoiceDocument) {
+    const next = await store.clearPayments(doc.id)
+    if (!next) return
     if (preview?.id === doc.id) setPreview(next)
     setMessage(`${doc.number} is unpaid again.`)
   }
@@ -694,24 +888,31 @@ export function AdminInvoices() {
     return previewMode ?? sheetMode(doc, tab)
   }
 
-  function openPreview(doc: InvoiceDocument, mode?: PrintMode) {
+  function openPreview(doc: InvoiceDocument, mode?: PrintMode, paymentId?: string | null) {
     setPreviewMode(mode ?? sheetMode(doc, tab))
+    setPreviewPaymentId(paymentId ?? null)
     setPreview(doc)
   }
 
   function closePreview() {
     setPreview(null)
     setPreviewMode(null)
+    setPreviewPaymentId(null)
   }
 
-  function printDoc(doc: InvoiceDocument, mode?: PrintMode) {
-    openPreview(doc, mode)
+  function printDoc(doc: InvoiceDocument, mode?: PrintMode, paymentId?: string | null) {
+    openPreview(doc, mode, paymentId)
     window.setTimeout(() => window.print(), 250)
   }
 
   function previewTitle(doc: InvoiceDocument) {
     const mode = currentPreviewMode(doc)
-    if (mode === 'receipt') return `Receipt · ${doc.receiptNo ?? doc.number}`
+    if (mode === 'receipt') {
+      const payment = previewPaymentId
+        ? invoicePayments(doc).find((row) => row.id === previewPaymentId)
+        : invoicePayments(doc).at(-1)
+      return `Receipt · ${payment?.receiptNo ?? doc.receiptNo ?? doc.number}`
+    }
     if (mode === 'billing_note') return `Billing note · ${doc.number}`
     return `Invoice · ${doc.number}`
   }
@@ -723,7 +924,11 @@ export function AdminInvoices() {
       doc.agentName,
       `Date ${formatInvoiceDate(doc.issueDate)}`,
       `Total ${formatInvoiceMoney(doc.grandTotal)} THB`,
-      doc.status === 'paid' ? 'PAID' : 'Unpaid',
+      doc.status === 'paid'
+        ? 'PAID'
+        : doc.status === 'partial'
+          ? `Partial · left ${formatInvoiceMoney(invoiceBalance(doc))}`
+          : 'Unpaid',
     ].join('\n')
     try {
       if (navigator.share) {
@@ -769,7 +974,8 @@ export function AdminInvoices() {
   }
 
   async function saveEditedInvoice(doc: InvoiceDocument) {
-    if (editInvoiceIsNew) {
+    const wasNew = editInvoiceIsNew
+    if (wasNew) {
       await store.addDocuments([doc])
       setMessage(`Created invoice ${doc.number}.`)
     } else {
@@ -778,7 +984,12 @@ export function AdminInvoices() {
     }
     setEditInvoice(null)
     setEditInvoiceIsNew(false)
-    if (preview?.id === doc.id) setPreview(doc)
+    if (wasNew) {
+      // Wait for the edit dialog to close before opening the PDF view.
+      window.setTimeout(() => openPreview(doc, 'invoice'), 120)
+    } else if (preview?.id === doc.id) {
+      setPreview(doc)
+    }
   }
 
   async function deleteSelectedDocs() {
@@ -787,9 +998,11 @@ export function AdminInvoices() {
       return
     }
     const docs = store.invoices.filter((doc) => selectedDocs.includes(doc.id))
-    const paidCount = docs.filter((doc) => doc.status === 'paid').length
+    const paidCount = docs.filter(
+      (doc) => doc.status === 'paid' || doc.status === 'partial' || invoicePaidTotal(doc) > 0,
+    ).length
     if (paidCount > 0) {
-      setMessage(`${paidCount} paid invoice(s) cannot be deleted. Undo PAID first.`)
+      setMessage(`${paidCount} paid/partial invoice(s) cannot be deleted. Clear payments first.`)
       return
     }
     const label = tab === 'notes' ? 'billing note' : 'invoice'
@@ -805,31 +1018,27 @@ export function AdminInvoices() {
 
   async function undoPaidSelected() {
     if (selectedDocs.length === 0) {
-      setMessage('Select paid invoices to undo.')
+      setMessage('Select paid or partial invoices to clear payments.')
       return
     }
     const docs = store.invoices.filter(
-      (doc) => selectedDocs.includes(doc.id) && doc.status === 'paid',
+      (doc) =>
+        selectedDocs.includes(doc.id) &&
+        (doc.status === 'paid' || doc.status === 'partial' || invoicePaidTotal(doc) > 0),
     )
     if (docs.length === 0) {
-      setMessage('No paid invoices selected.')
+      setMessage('No paid/partial invoices selected.')
       return
     }
     const ok = window.confirm(
-      `Undo PAID on ${docs.length} invoice(s)? Receipt numbers will be removed.`,
+      `Clear all payments on ${docs.length} invoice(s)? Receipt numbers will be removed.`,
     )
     if (!ok) return
     for (const doc of docs) {
-      await store.replaceDocument({
-        ...doc,
-        status: 'unpaid',
-        paidAt: null,
-        paymentChannel: null,
-        receiptNo: null,
-      })
+      await store.clearPayments(doc.id)
     }
     setSelectedDocs([])
-    setMessage(`Reversed ${docs.length} payment(s). Invoices are unpaid again.`)
+    setMessage(`Cleared payments on ${docs.length} invoice(s).`)
   }
 
   const agentOptions = useMemo(() => {
@@ -879,12 +1088,20 @@ export function AdminInvoices() {
                 <Button
                   type="button"
                   variant="outline"
-                  className="h-8 min-w-[11rem] justify-start gap-1.5 rounded-lg px-2.5 text-xs font-normal"
+                  className={cn(
+                    'h-8 min-w-[11rem] justify-start gap-1.5 rounded-lg px-2.5 text-xs font-normal',
+                    multiDay && 'border-teal-700/35 bg-teal-50/80',
+                  )}
                 />
               }
             >
               <CalendarIcon className="size-3.5 text-teal-700/60" />
               {dateLabel}
+              {multiDay ? (
+                <span className="rounded-md bg-teal-800/10 px-1.5 py-0.5 text-[10px] font-semibold text-teal-900">
+                  Multi
+                </span>
+              ) : null}
             </PopoverTrigger>
             <PopoverContent
               align="start"
@@ -899,16 +1116,26 @@ export function AdminInvoices() {
                 className="w-full [--cell-size:2.35rem]"
               />
               <p className="px-2 pb-1 text-xs text-teal-900/45">
-                Click one day, or click a second day for a range.
+                One day, or click a second day for a range — then pick one agent to make 1 invoice.
               </p>
             </PopoverContent>
           </Popover>
+          <SoftLabel className="ml-1 mr-0.5">Agent</SoftLabel>
           <select
             id="invoice-agent"
             aria-label="Agent"
             value={agentSlug}
-            onChange={(event) => setAgentSlug(event.target.value)}
-            className="h-8 min-w-[10rem] rounded-lg border border-teal-900/12 bg-white/80 px-2 text-xs text-teal-950 outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
+            onChange={(event) => {
+              setAgentSlug(event.target.value)
+              setSelectedCodes([])
+              setSelectedDocs([])
+            }}
+            className={cn(
+              'h-8 min-w-[12rem] rounded-lg border bg-white/80 px-2 text-xs text-teal-950 outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15',
+              agentSlug !== 'all'
+                ? 'border-teal-700/35 bg-teal-50/80 font-medium'
+                : 'border-teal-900/12',
+            )}
           >
             <option value="all">All agents</option>
             {agentOptions.map(([slug, name]) => (
@@ -918,6 +1145,23 @@ export function AdminInvoices() {
             ))}
           </select>
         </div>
+        {agentFilterName ? (
+          <p className="mt-2 text-xs text-teal-900/60">
+            Showing <span className="font-semibold text-teal-950">{agentFilterName}</span>
+            {multiDay ? ` · ${dateLabel}` : ` · ${dateLabel}`}
+            {' · '}
+            {openRows.length} open booking{openRows.length === 1 ? '' : 's'} ready for{' '}
+            <span className="font-semibold text-teal-950">1 invoice</span>
+            {selectedCodes.length === 0 && openRows.length > 0
+              ? ' (Make invoice uses all open rows)'
+              : ''}
+            .
+          </p>
+        ) : multiDay ? (
+          <p className="mt-2 text-xs text-teal-900/55">
+            Multi-day range selected. Choose one agent to bill all their bookings in a single invoice.
+          </p>
+        ) : null}
       </Surface>
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -1011,22 +1255,6 @@ export function AdminInvoices() {
                   JB
                 </Segment>
               </SegmentedControl>
-              <SegmentedControl className="rounded-xl p-0.5">
-                <Segment
-                  active={groupBy === 'date'}
-                  onClick={() => setGroupBy('date')}
-                  className="rounded-lg px-2.5 py-1 text-xs"
-                >
-                  By date
-                </Segment>
-                <Segment
-                  active={groupBy === 'agent'}
-                  onClick={() => setGroupBy('agent')}
-                  className="rounded-lg px-2.5 py-1 text-xs"
-                >
-                  By agent
-                </Segment>
-              </SegmentedControl>
               <label className="flex items-center gap-1.5 text-xs text-teal-900/65">
                 <input
                   type="checkbox"
@@ -1045,8 +1273,18 @@ export function AdminInvoices() {
                 />
                 Other service
               </label>
+              <label className="flex items-center gap-1.5 text-xs text-teal-900/65">
+                <input
+                  type="checkbox"
+                  checked={hideInvoiced}
+                  onChange={(event) => setHideInvoiced(event.target.checked)}
+                  className="size-3.5 rounded border-teal-900/20"
+                />
+                Hide invoiced
+              </label>
               <p className="text-sm text-teal-900/55">
-                {rows.length} check-in booking{rows.length === 1 ? '' : 's'}
+                {visibleBillRows.length} booking{visibleBillRows.length === 1 ? '' : 's'}
+                {hideInvoiced ? '' : ` · ${openRows.length} open`}
                 {selectedCodes.length > 0
                   ? ` · ${selectedCodes.length} selected · ${formatInvoiceMoney(selectedGuestTotal)} THB`
                   : ''}
@@ -1056,10 +1294,22 @@ export function AdminInvoices() {
               <Button
                 type="button"
                 className="h-10 rounded-xl"
+                disabled={billTargets.length === 0}
+                title={
+                  agentSlug === 'all' && selectedCodes.length === 0
+                    ? 'Choose an agent or select bookings first'
+                    : oneInvoiceReady
+                      ? `Create 1 invoice for ${billTargets.length} booking(s)`
+                      : 'Creates one invoice per agent'
+                }
                 onClick={() => createFromBookings()}
               >
                 <FileText className="size-3.5" />
-                Make invoice
+                {oneInvoiceReady
+                  ? `Make 1 invoice${agentFilterName ? ` · ${agentFilterName}` : ''}`
+                  : selectedCodes.length > 0
+                    ? `Make invoices (${billTargetAgents.size})`
+                    : 'Make invoice'}
               </Button>
             </div>
           </div>
@@ -1072,8 +1322,23 @@ export function AdminInvoices() {
                   : `${formatShortDate(fromDate)} – ${formatShortDate(toDate)}`}
                 .
               </EmptyState>
+            ) : visibleBillRows.length === 0 ? (
+              <EmptyState>
+                All bookings in this range are already invoiced. Turn off “Hide invoiced” to see them,
+                or pick another date / agent.
+              </EmptyState>
             ) : (
               <div>
+                <div className="flex flex-wrap items-center gap-3 border-b border-teal-900/8 px-3 py-2 text-[11px] text-teal-900/55">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="size-2.5 rounded-sm bg-amber-200 ring-1 ring-amber-300" />
+                    Open — can select for a new invoice
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="size-2.5 rounded-sm bg-neutral-200 ring-1 ring-neutral-300" />
+                    Gray — already invoiced (checkbox locked)
+                  </span>
+                </div>
                 <Table className="table-fixed text-xs" containerClassName="overflow-x-hidden">
                   <TableHeader>
                     <TableRow>
@@ -1084,9 +1349,14 @@ export function AdminInvoices() {
                           disabled={openRows.length === 0}
                           onChange={toggleAllBills}
                           className="size-4 rounded border-teal-900/20 disabled:cursor-not-allowed disabled:opacity-40"
-                          title={openRows.length === 0 ? 'All bookings on this day already have an invoice' : undefined}
+                          title={
+                            openRows.length === 0
+                              ? 'All bookings in this range already have an invoice'
+                              : `Select all ${openRows.length} open booking(s) across the date range`
+                          }
                         />
                       </TableHead>
+                      <TableHead className="w-[4.5rem] px-1.5 font-bold">Date</TableHead>
                       <TableHead className="w-[7rem] px-1.5 font-bold">Voucher</TableHead>
                       <BillSortHead
                         column="agent"
@@ -1111,7 +1381,7 @@ export function AdminInvoices() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {rows.map((row) => {
+                    {visibleBillRows.map((row) => {
                       const { booking } = row
                       const issued = Boolean(row.invoice)
                       return (
@@ -1125,8 +1395,8 @@ export function AdminInvoices() {
                           )}
                           title={
                             issued
-                              ? `Invoiced ${row.invoice?.number}`
-                              : 'Needs invoice'
+                              ? `Already invoiced as ${row.invoice?.number} — cannot select again`
+                              : 'Open — select to include on a new invoice'
                           }
                           onClick={() => openBill(row)}
                         >
@@ -1134,14 +1404,31 @@ export function AdminInvoices() {
                             className="px-1.5"
                             onClick={(event) => event.stopPropagation()}
                           >
-                            <input
-                              type="checkbox"
-                              checked={selectedCodes.includes(booking.code)}
-                              disabled={issued}
-                              onChange={() => toggleCode(booking.code, issued)}
-                              className="size-4 rounded border-teal-900/20 disabled:cursor-not-allowed disabled:opacity-40"
-                              title={issued ? `Already invoiced as ${row.invoice?.number}` : undefined}
-                            />
+                            {issued ? (
+                              <span
+                                className="inline-flex size-4 items-center justify-center text-[9px] font-bold text-neutral-400"
+                                title={`Already invoiced as ${row.invoice?.number}`}
+                              >
+                                ✓
+                              </span>
+                            ) : (
+                              <input
+                                type="checkbox"
+                                checked={selectedCodes.includes(booking.code)}
+                                onChange={() => toggleCode(booking.code, false)}
+                                className="size-4 rounded border-teal-900/20"
+                                title="Select for invoice"
+                              />
+                            )}
+                          </TableCell>
+                          <TableCell
+                            className={cn(
+                              'whitespace-nowrap px-1.5 tabular-nums',
+                              issued ? 'text-neutral-400' : 'text-teal-900/75',
+                            )}
+                            title={formatShortDate(booking.date)}
+                          >
+                            {formatDayMonth(booking.date)}
                           </TableCell>
                           <TableCell
                             className={cn(
@@ -1228,7 +1515,20 @@ export function AdminInvoices() {
                               issued ? 'text-neutral-400' : 'text-teal-950',
                             )}
                           >
-                            {row.hasRates ? (
+                            {issued && row.invoice ? (
+                              <button
+                                type="button"
+                                className="text-[11px] font-semibold text-teal-700/80 hover:text-teal-950"
+                                title={`Open invoice ${row.invoice.number} — delete it in Invoices tab to unlock this booking`}
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  openPreview(row.invoice!, 'invoice')
+                                  goTab('documents')
+                                }}
+                              >
+                                {row.invoice.number}
+                              </button>
+                            ) : row.hasRates ? (
                               <span className="inline-flex items-center justify-end gap-1.5">
                                 {row.amountStale ? (
                                   <BillFlag
@@ -1248,7 +1548,7 @@ export function AdminInvoices() {
                   </TableBody>
                   <TableFooter>
                     <TableRow>
-                      <TableCell colSpan={9} />
+                      <TableCell colSpan={10} />
                       <TableCell>Sum</TableCell>
                       <TableCell className="text-right tabular-nums text-teal-950">
                         {selectedCodes.length > 0 ? selectedHeads : pageHeads}
@@ -1288,7 +1588,7 @@ export function AdminInvoices() {
                 onClick={undoPaidSelected}
               >
                 <Undo2 className="size-3.5" />
-                Undo PAID
+                Clear payments
               </Button>
               <Button
                 type="button"
@@ -1321,14 +1621,19 @@ export function AdminInvoices() {
                       <TableHead>Agent</TableHead>
                       <TableHead>Date</TableHead>
                       <TableHead className="text-right">Total</TableHead>
-                      <TableHead>Status</TableHead>
+                      <TableHead className="w-[1%] whitespace-nowrap pr-1">Status</TableHead>
+                      <TableHead className="w-[1%] whitespace-nowrap pl-1 text-right">Balance</TableHead>
                       <TableHead>Receipt</TableHead>
                       <TableHead>Send</TableHead>
                       <TableHead />
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {invoices.map((doc) => (
+                    {invoices.map((doc) => {
+                      const balance = invoiceBalance(doc)
+                      const paidTotal = invoicePaidTotal(doc)
+                      const fullyPaid = balance <= 0.009 && paidTotal > 0
+                      return (
                       <TableRow key={doc.id}>
                         <TableCell>
                           <input
@@ -1341,26 +1646,54 @@ export function AdminInvoices() {
                         <TableCell className="font-medium text-teal-950">{doc.number}</TableCell>
                         <TableCell>{doc.agentName}</TableCell>
                         <TableCell>{formatInvoiceDate(doc.issueDate)}</TableCell>
-                        <TableCell className="text-right">
+                        <TableCell className="text-right tabular-nums">
                           {formatInvoiceMoney(doc.grandTotal)}
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="pr-1">
                           <InvoicePayStatus
                             doc={doc}
                             today={portalToday}
                             onConfirm={(invoice, details) => void confirmPayment(invoice, details)}
-                            onUndoPaid={(invoice) => void undoDocPaid(invoice)}
+                            onUndoLast={(invoice) => void undoLastPayment(invoice)}
+                            onClearAll={(invoice) => void clearAllPayments(invoice)}
+                            onOpenReceipt={(invoice, paymentId) =>
+                              openPreview(invoice, 'receipt', paymentId)
+                            }
                           />
                         </TableCell>
+                        <TableCell
+                          className={cn(
+                            'pl-1 text-right text-[13px] font-semibold tabular-nums whitespace-nowrap',
+                            fullyPaid
+                              ? 'text-emerald-700'
+                              : balance > 0.009
+                                ? 'text-orange-700'
+                                : 'text-teal-900/35',
+                          )}
+                        >
+                          {fullyPaid
+                            ? 'Paid Full'
+                            : balance > 0.009
+                              ? formatInvoiceMoney(balance)
+                              : '—'}
+                        </TableCell>
                         <TableCell>
-                          {doc.status === 'paid' ? (
-                            <button
-                              type="button"
-                              className="text-sm font-medium text-teal-700 hover:text-teal-950"
-                              onClick={() => openPreview(doc, 'receipt')}
-                            >
-                              {doc.receiptNo ?? 'Receipt'}
-                            </button>
+                          {invoicePayments(doc).length > 0 ? (
+                            <div className="flex flex-col gap-0.5">
+                              {invoicePayments(doc).map((payment) =>
+                                payment.receiptNo ? (
+                                  <button
+                                    key={payment.id}
+                                    type="button"
+                                    className="text-left text-sm font-medium text-teal-700 hover:text-teal-950"
+                                    onClick={() => openPreview(doc, 'receipt', payment.id)}
+                                    title={`${formatInvoiceMoney(payment.amount)} · ${formatInvoiceDate(payment.paidDate)}`}
+                                  >
+                                    {payment.receiptNo}
+                                  </button>
+                                ) : null,
+                              )}
+                            </div>
                           ) : (
                             <span className="text-teal-900/35">—</span>
                           )}
@@ -1420,7 +1753,8 @@ export function AdminInvoices() {
                           </div>
                         </TableCell>
                       </TableRow>
-                    ))}
+                      )
+                    })}
                   </TableBody>
                 </Table>
               </div>
@@ -1528,14 +1862,15 @@ export function AdminInvoices() {
         <>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm text-teal-900/55">
-              {receipts.length} receipt{receipts.length === 1 ? '' : 's'} issued from paid invoices
+              {receipts.length} receipt{receipts.length === 1 ? '' : 's'} · each payment issues its own
+              receipt
             </p>
           </div>
           <Surface className="overflow-hidden">
             {receipts.length === 0 ? (
               <EmptyState>
-                No receipts yet. Mark an invoice as PAID and a receipt number will be issued from that
-                same bill.
+                No receipts yet. Record a full or partial payment on an invoice — each payment gets its
+                own receipt number.
               </EmptyState>
             ) : (
               <div className="overflow-x-auto">
@@ -1546,22 +1881,23 @@ export function AdminInvoices() {
                       <TableHead>Invoice</TableHead>
                       <TableHead>Agent</TableHead>
                       <TableHead>Paid</TableHead>
+                      <TableHead>Channel</TableHead>
                       <TableHead className="text-right">Amount</TableHead>
                       <TableHead />
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {receipts.map((doc) => (
-                      <TableRow key={doc.id}>
+                    {receipts.map(({ doc, payment }) => (
+                      <TableRow key={`${doc.id}-${payment.id}`}>
                         <TableCell className="font-medium text-teal-950">
-                          {doc.receiptNo ?? doc.number}
+                          {payment.receiptNo}
                         </TableCell>
                         <TableCell>
                           <button
                             type="button"
                             className="text-sm font-medium text-teal-700 hover:text-teal-950"
                             onClick={() => {
-                              setPreview(doc)
+                              openPreview(doc, 'invoice')
                               goTab('documents')
                             }}
                           >
@@ -1569,11 +1905,12 @@ export function AdminInvoices() {
                           </button>
                         </TableCell>
                         <TableCell>{doc.agentName}</TableCell>
-                        <TableCell>
-                          {formatInvoiceDate((doc.paidAt ?? doc.issueDate).slice(0, 10))}
+                        <TableCell>{formatInvoiceDate(payment.paidDate)}</TableCell>
+                        <TableCell className="text-xs text-teal-900/65">
+                          {formatPaymentChannel(payment.channel)}
                         </TableCell>
-                        <TableCell className="text-right">
-                          {formatInvoiceMoney(doc.grandTotal)}
+                        <TableCell className="text-right tabular-nums">
+                          {formatInvoiceMoney(payment.amount)}
                         </TableCell>
                         <TableCell>
                           <div className="flex justify-end gap-2">
@@ -1582,7 +1919,7 @@ export function AdminInvoices() {
                               size="sm"
                               variant="outline"
                               className="h-8 rounded-lg"
-                              onClick={() => setPreview(doc)}
+                              onClick={() => openPreview(doc, 'receipt', payment.id)}
                             >
                               View
                             </Button>
@@ -1591,7 +1928,7 @@ export function AdminInvoices() {
                               size="sm"
                               variant="outline"
                               className="h-8 rounded-lg"
-                              onClick={() => printDoc(doc)}
+                              onClick={() => printDoc(doc, 'receipt', payment.id)}
                             >
                               <Printer className="size-3.5" />
                               Print
@@ -1647,8 +1984,17 @@ export function AdminInvoices() {
               <DialogHeader className="border-b border-teal-900/8 px-5 py-4 pr-12">
                 <DialogTitle>{previewTitle(preview)}</DialogTitle>
                 <DialogDescription>
-                  {preview.agentName} · {formatInvoiceDate(preview.issueDate)} ·{' '}
-                  {formatInvoiceMoney(preview.grandTotal)} THB
+                  {preview.agentName}
+                  {currentPreviewMode(preview) === 'receipt' && previewPaymentId
+                    ? (() => {
+                        const payment = invoicePayments(preview).find(
+                          (row) => row.id === previewPaymentId,
+                        )
+                        return payment
+                          ? ` · paid ${formatInvoiceDate(payment.paidDate)} · ${formatInvoiceMoney(payment.amount)} THB`
+                          : ` · ${formatInvoiceMoney(preview.grandTotal)} THB`
+                      })()
+                    : ` · ${formatInvoiceDate(preview.issueDate)} · ${formatInvoiceMoney(preview.grandTotal)} THB`}
                 </DialogDescription>
               </DialogHeader>
               <div className="min-h-0 flex-1 overflow-y-auto bg-neutral-50 px-4 py-4">
@@ -1658,6 +2004,7 @@ export function AdminInvoices() {
                     settings={store.settings}
                     linked={store.invoices}
                     mode={currentPreviewMode(preview)}
+                    paymentId={previewPaymentId}
                   />
                 </div>
               </div>
@@ -1692,7 +2039,9 @@ export function AdminInvoices() {
                   <Button
                     type="button"
                     className="h-10 rounded-xl"
-                    onClick={() => printDoc(preview)}
+                    onClick={() =>
+                      printDoc(preview, currentPreviewMode(preview), previewPaymentId)
+                    }
                   >
                     <Printer className="size-3.5" />
                     Print
@@ -1711,6 +2060,7 @@ export function AdminInvoices() {
             settings={store.settings}
             linked={store.invoices}
             mode={currentPreviewMode(preview)}
+            paymentId={previewPaymentId}
           />
         </div>
       ) : null}

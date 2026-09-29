@@ -4,15 +4,23 @@ import {
   COMPANY_LOGO_SRC,
   chargeUnit,
   formatInvoiceDate,
+  formatInvoiceLineDescription,
   formatInvoiceMoney,
   formatPaymentChannel,
+  invoiceBalance,
+  invoicePaidTotal,
+  invoicePayments,
   invoiceTravelRange,
   isGuestCollectLine,
+  isLateReduceFeeLine,
   itemsAgentTotal,
   itemsGuestTotal,
+  lateReduceFeeDisplay,
+  prebuyDeductHeads,
   type InvoiceDocument,
   type InvoiceSettings,
 } from '@/lib/invoice'
+import { cn } from '@/lib/utils'
 
 function CompanyHead({ settings }: { settings: InvoiceSettings }) {
   return (
@@ -162,31 +170,49 @@ function LineTable({
         </tr>
       </thead>
       <tbody>
-        {doc.items.map((item, index) => (
+        {doc.items.map((item, index) => {
+          const lateReduce = isLateReduceFeeLine(item) ? lateReduceFeeDisplay(item) : null
+          return (
           <tr key={item.id} className={isGuestCollectLine(item) ? 'bg-orange-50/70 text-neutral-700' : undefined}>
             <td className="border border-neutral-300 px-1.5 py-1 text-center">{index + 1}</td>
             <td className="border border-neutral-300 px-1.5 py-1 whitespace-nowrap">
               {formatInvoiceDate(item.travelDate)}
             </td>
-            <td className="border border-neutral-300 px-1.5 py-1">{item.description}</td>
-            <td className="border border-neutral-300 px-1.5 py-1">{chargeUnit(item)}</td>
+            <td className="border border-neutral-300 px-1.5 py-1">
+              {formatInvoiceLineDescription(item)}
+            </td>
+            <td className="border border-neutral-300 px-1.5 py-1">
+              {lateReduce ? (lateReduce.heads > 0 ? 'Pax' : 'Fee') : chargeUnit(item)}
+            </td>
             <td className="border border-neutral-300 px-1.5 py-1 text-center">
-              {item.adults || ''}
+              {lateReduce ? lateReduce.heads || '' : item.adults || ''}
             </td>
             <td className="border border-neutral-300 px-1.5 py-1 text-center">
               {item.children || ''}
             </td>
             <td className="border border-neutral-300 px-1.5 py-1 text-right">
-              {item.adultPrice ? formatInvoiceMoney(item.adultPrice) : ''}
+              {lateReduce
+                ? lateReduce.perPerson
+                  ? formatInvoiceMoney(lateReduce.perPerson)
+                  : ''
+                : item.adultPrice
+                  ? formatInvoiceMoney(item.adultPrice)
+                  : ''}
             </td>
             <td className="border border-neutral-300 px-1.5 py-1 text-right">
               {item.childPrice ? formatInvoiceMoney(item.childPrice) : ''}
             </td>
-            <td className="border border-neutral-300 px-1.5 py-1 text-right">
+            <td
+              className={cn(
+                'border border-neutral-300 px-1.5 py-1 text-right',
+                item.amount < 0 && 'font-semibold text-rose-700',
+              )}
+            >
               {formatInvoiceMoney(item.amount)}
             </td>
           </tr>
-        ))}
+          )
+        })}
         {Array.from({ length: filler }, (_, index) => (
           <tr key={`empty-${index}`}>
             {Array.from({ length: 9 }, (__, cell) => (
@@ -206,21 +232,50 @@ export function InvoicePrintSheet({
   settings,
   linked,
   mode = 'invoice',
+  paymentId = null,
 }: {
   doc: InvoiceDocument
   settings: InvoiceSettings
   linked?: InvoiceDocument[]
   mode?: 'invoice' | 'billing_note' | 'receipt'
+  /** When printing a receipt for one instalment. */
+  paymentId?: string | null
 }) {
+  const payments = invoicePayments(doc)
+  const focusedPayment =
+    mode === 'receipt'
+      ? payments.find((row) => row.id === paymentId) ?? payments.at(-1) ?? null
+      : null
   const title =
     mode === 'receipt' ? 'RECEIPT' : mode === 'billing_note' ? 'BILLING NOTE' : 'INVOICE'
-  const number = mode === 'receipt' ? (doc.receiptNo ?? doc.number) : doc.number
+  const number =
+    mode === 'receipt'
+      ? focusedPayment?.receiptNo || doc.receiptNo || doc.number
+      : doc.number
   const related = (linked ?? []).filter((item) => doc.linkedInvoiceIds.includes(item.id))
   const tone = mode === 'receipt' ? 'receipt' : 'invoice'
   const accent = tone === 'receipt' ? 'bg-[#c8ecd4] text-emerald-950' : 'bg-[#f3d4ff] text-neutral-900'
   const prebuy =
-    doc.items.some((item) => item.lineKind === 'tour') &&
-    doc.items.every((item) => item.lineKind !== 'tour' || item.amount === 0)
+    (doc.items.some((item) => item.lineKind === 'tour') &&
+      doc.items.every((item) => item.lineKind !== 'tour' || item.amount === 0)) ||
+    doc.items.some(
+      (item) =>
+        (item.lineKind === 'no_show' || item.lineKind === 'change_date') &&
+        /deduct \d+ heads?/i.test(item.description),
+    )
+  const deductHeads = prebuy
+    ? related.length > 0
+      ? related.reduce((sum, item) => sum + prebuyDeductHeads(item.items), 0)
+      : prebuyDeductHeads(doc.items)
+    : 0
+  const moneyTotal =
+    mode === 'receipt' && focusedPayment
+      ? focusedPayment.amount
+      : related.length > 0
+        ? related.reduce((sum, item) => sum + (item.grandTotal || itemsAgentTotal(item.items)), 0)
+        : doc.grandTotal || itemsAgentTotal(doc.items)
+  const receiptDate = focusedPayment?.paidDate ?? doc.paidAt?.slice(0, 10) ?? doc.issueDate
+  const receiptChannel = focusedPayment?.channel ?? doc.paymentChannel
 
   return (
     <article className="invoice-print-page relative overflow-hidden bg-white text-neutral-900 [print-color-adjust:exact]">
@@ -247,13 +302,20 @@ export function InvoicePrintSheet({
           <span className="inline-block w-14 text-neutral-500">No.</span>
           {number}
         </p>
-        <p>
-          <span className="inline-block w-24 text-neutral-500">Voucher</span>
-          {[...new Set(doc.items.map((item) => item.voucherNo.trim()).filter(Boolean))].join(', ') || '—'}
-        </p>
+        {mode === 'receipt' ? (
+          <p>
+            <span className="inline-block w-24 text-neutral-500">Invoice</span>
+            {doc.number}
+          </p>
+        ) : (
+          <p>
+            <span className="inline-block w-24 text-neutral-500">Voucher</span>
+            {[...new Set(doc.items.map((item) => item.voucherNo.trim()).filter(Boolean))].join(', ') || '—'}
+          </p>
+        )}
         <p>
           <span className="inline-block w-14 text-neutral-500">Date</span>
-          {formatInvoiceDate(doc.issueDate)}
+          {formatInvoiceDate(mode === 'receipt' ? receiptDate : doc.issueDate)}
         </p>
       </div>
 
@@ -282,70 +344,170 @@ export function InvoicePrintSheet({
             ))}
           </tbody>
         </table>
+      ) : mode === 'receipt' && focusedPayment ? (
+        <table className="mt-4 w-full border-collapse text-[12px]">
+          <thead>
+            <tr className={accent}>
+              <th className="border border-neutral-400 px-2 py-1.5 text-left">Description</th>
+              <th className="border border-neutral-400 px-2 py-1.5 text-left">Channel</th>
+              <th className="border border-neutral-400 px-2 py-1.5 text-right">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td className="border border-neutral-300 px-2 py-2">
+                Payment received for invoice {doc.number}
+                {invoiceBalance(doc) > 0.009
+                  ? ` · balance left ${formatInvoiceMoney(invoiceBalance(doc))}`
+                  : ' · paid in full'}
+              </td>
+              <td className="border border-neutral-300 px-2 py-2">
+                {formatPaymentChannel(focusedPayment.channel)}
+              </td>
+              <td className="border border-neutral-300 px-2 py-2 text-right font-semibold tabular-nums">
+                {formatInvoiceMoney(focusedPayment.amount)}
+              </td>
+            </tr>
+          </tbody>
+        </table>
       ) : (
         <div className="mt-4">
           <LineTable doc={doc} tone={tone} />
         </div>
       )}
 
-      <div className="mt-3 grid grid-cols-[1fr_16rem] items-start gap-4">
-        <div>
-          <p className="text-[11px] text-neutral-500">Remarks:</p>
-          <p className="mt-1 text-[11px] text-neutral-600">
+      <div className="mt-4 grid grid-cols-[1fr_17rem] items-start gap-5">
+        <div className="min-w-0">
+          <p className="text-[11px] font-medium text-neutral-500">Remarks</p>
+          <p className="mt-1 text-[11px] leading-relaxed text-neutral-600">
             {prebuy
-              ? 'Tour and included park deduct the agent\'s pre-buy heads. Not-included park is collected from the guest at check-in and is not deducted.'
+              ? 'Pre-buy: tour / no-show / late change-date AD+CH deduct heads (no amount). Extras are billed. Not-included park is collected from the guest at check-in.'
               : 'Tour price and included park are billed to the agent. Not-included park is collected from the guest at check-in and is not deducted.'}
           </p>
-          {doc.notes ? <p className="mt-1 text-[11px]">{doc.notes}</p> : null}
+          {doc.notes ? <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-800">{doc.notes}</p> : null}
           <div className="mt-3">
             <BankBlock settings={settings} />
           </div>
         </div>
-        <table className="w-full border-collapse text-[12px]">
-          <tbody>
-            {itemsGuestTotal(doc.items) > 0 ? (
-              <tr>
-                <td className="border border-neutral-400 px-2 py-1.5 text-neutral-600">
-                  Guest collected at marina
-                </td>
-                <td className="border border-neutral-400 px-2 py-1.5 text-right text-neutral-600">
-                  {formatInvoiceMoney(itemsGuestTotal(doc.items))}
-                </td>
-              </tr>
-            ) : null}
-            <tr>
-              <td className="border border-neutral-400 px-2 py-1.5">
-                {prebuy ? 'Deduct deposit' : 'Amount due'}
-              </td>
-              <td className="border border-neutral-400 px-2 py-1.5 text-right">
-                {formatInvoiceMoney(
-                  related.length > 0
-                    ? related.reduce((sum, item) => sum + itemsAgentTotal(item.items), 0)
-                    : itemsAgentTotal(doc.items) || doc.grandTotal,
-                )}
-              </td>
-            </tr>
-            <tr className={accent}>
-              <td className="border border-neutral-400 px-2 py-1.5 font-semibold">
-                {prebuy ? 'GRAND TOTAL · deduct' : 'GRAND TOTAL'}
-              </td>
-              <td className="border border-neutral-400 px-2 py-1.5 text-right font-semibold">
-                {formatInvoiceMoney(
-                  related.length > 0
-                    ? related.reduce((sum, item) => sum + item.grandTotal, 0)
-                    : doc.grandTotal,
-                )}
-              </td>
-            </tr>
-          </tbody>
-        </table>
+
+        <div className="overflow-hidden rounded-md border border-neutral-400">
+          <table className="w-full border-collapse text-[12px]">
+            <tbody>
+              {mode === 'receipt' && focusedPayment ? (
+                <>
+                  <tr>
+                    <td className="border-b border-neutral-300 px-2.5 py-1.5 text-neutral-600">
+                      Invoice total
+                    </td>
+                    <td className="border-b border-neutral-300 px-2.5 py-1.5 text-right tabular-nums text-neutral-700">
+                      {formatInvoiceMoney(doc.grandTotal)}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="border-b border-neutral-300 px-2.5 py-1.5 text-neutral-600">
+                      Paid to date
+                    </td>
+                    <td className="border-b border-neutral-300 px-2.5 py-1.5 text-right tabular-nums text-neutral-700">
+                      {formatInvoiceMoney(invoicePaidTotal(doc))}
+                    </td>
+                  </tr>
+                  {invoiceBalance(doc) > 0.009 ? (
+                    <tr className="bg-orange-100 text-orange-950">
+                      <td className="border-b border-neutral-300 px-2.5 py-2 font-semibold">
+                        Balance left
+                      </td>
+                      <td className="border-b border-neutral-300 px-2.5 py-2 text-right text-base font-bold tabular-nums">
+                        {formatInvoiceMoney(invoiceBalance(doc))}
+                      </td>
+                    </tr>
+                  ) : null}
+                  <tr className={accent}>
+                    <td className="px-2.5 py-2 font-semibold">This receipt</td>
+                    <td className="px-2.5 py-2 text-right text-base font-bold tabular-nums">
+                      {formatInvoiceMoney(focusedPayment.amount)}
+                    </td>
+                  </tr>
+                </>
+              ) : (
+                <>
+                  {itemsGuestTotal(doc.items) > 0 ? (
+                    <tr>
+                      <td className="border-b border-neutral-300 px-2.5 py-1.5 text-neutral-600">
+                        Guest at marina
+                      </td>
+                      <td className="border-b border-neutral-300 px-2.5 py-1.5 text-right tabular-nums text-neutral-600">
+                        {formatInvoiceMoney(itemsGuestTotal(doc.items))}
+                      </td>
+                    </tr>
+                  ) : null}
+                  {prebuy && deductHeads > 0 ? (
+                    <tr className="bg-[#d8f3ea] text-teal-950">
+                      <td className="border-b border-neutral-300 px-2.5 py-2 font-semibold">
+                        Deduct heads
+                      </td>
+                      <td className="border-b border-neutral-300 px-2.5 py-2 text-right text-base font-bold tabular-nums">
+                        {deductHeads}
+                      </td>
+                    </tr>
+                  ) : null}
+                  {invoicePaidTotal(doc) > 0 ? (
+                    <tr>
+                      <td className="border-b border-neutral-300 px-2.5 py-1.5 text-neutral-600">
+                        Paid to date
+                      </td>
+                      <td className="border-b border-neutral-300 px-2.5 py-1.5 text-right tabular-nums text-neutral-700">
+                        {formatInvoiceMoney(invoicePaidTotal(doc))}
+                      </td>
+                    </tr>
+                  ) : null}
+                  {invoiceBalance(doc) > 0.009 && invoicePaidTotal(doc) > 0 ? (
+                    <tr className="bg-orange-100 text-orange-950">
+                      <td className="border-b border-neutral-300 px-2.5 py-2 font-semibold">
+                        Balance left
+                      </td>
+                      <td className="border-b border-neutral-300 px-2.5 py-2 text-right text-base font-bold tabular-nums">
+                        {formatInvoiceMoney(invoiceBalance(doc))}
+                      </td>
+                    </tr>
+                  ) : null}
+                  <tr className={accent}>
+                    <td className="px-2.5 py-2 font-semibold">
+                      {prebuy ? 'To pay' : 'GRAND TOTAL'}
+                    </td>
+                    <td className="px-2.5 py-2 text-right text-base font-bold tabular-nums">
+                      {formatInvoiceMoney(moneyTotal)}
+                    </td>
+                  </tr>
+                </>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {mode === 'receipt' ? (
         <p className="mt-4 text-center text-sm font-semibold tracking-wide text-emerald-800">
-          PAID · {doc.paidAt ? formatInvoiceDate(doc.paidAt.slice(0, 10)) : formatInvoiceDate(doc.issueDate)}
-          {formatPaymentChannel(doc.paymentChannel) ? ` · ${formatPaymentChannel(doc.paymentChannel)}` : ''}
+          RECEIVED · {formatInvoiceDate(receiptDate)}
+          {formatPaymentChannel(receiptChannel) ? ` · ${formatPaymentChannel(receiptChannel)}` : ''}
+          {focusedPayment && invoiceBalance(doc) > 0.009
+            ? ` · balance left ${formatInvoiceMoney(invoiceBalance(doc))}`
+            : ''}
         </p>
+      ) : payments.length > 0 ? (
+        <div className="mt-4 rounded-md border border-neutral-300 px-3 py-2 text-[11px]">
+          <p className="font-semibold text-neutral-800">Payment history</p>
+          <ul className="mt-1 space-y-0.5 text-neutral-700">
+            {payments.map((payment) => (
+              <li key={payment.id} className="flex justify-between gap-3">
+                <span>
+                  {payment.receiptNo ? `${payment.receiptNo} · ` : ''}
+                  {formatInvoiceDate(payment.paidDate)} · {formatPaymentChannel(payment.channel)}
+                </span>
+                <span className="tabular-nums">{formatInvoiceMoney(payment.amount)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
 
       <SignatureBlock settings={settings} paid={mode === 'receipt'} />

@@ -36,10 +36,15 @@ export type BookingActionOptions = {
   bypassCutoff?: boolean
   actor?: BookingActor
   /**
-   * Extra late-change fee (THB) to add on this action.
+   * Extra late reduce-guest fee (THB) to add on this action.
    * Admin can set 0 (complimentary) or any amount; agents ignore this and use the rule.
    */
   lateChangeFee?: number
+  /**
+   * Late date-change charge for this action.
+   * Omit = follow cutoff auto rule. true = charge (Invoice full / Prebuy heads). false = waive.
+   */
+  lateDateChange?: boolean
   /** Admin cancel: override late-cancel rule. */
   lateCancel?: boolean
   /** Admin cancel: exact THB to bill (0 = no charge). */
@@ -177,10 +182,15 @@ export type Booking = {
   pickupTime: string
   status: BookingStatus
   /**
-   * Accumulated late date-change fee billed to the agency (THB).
-   * +300 per AD / CH after the late-fee time; infant and tour leader are free.
+   * Accumulated late reduce-guest fee (THB) — +dateChangeFeePerPerson per AD / CH after the
+   * late-fee time. Infant and tour leader are free. Not used for date-change full price.
    */
   lateChangeFee?: number
+  /**
+   * Sticky: a late date change was charged (after lateFeeFromTime Thailand).
+   * Invoice → separate “Change date · full price” line. Prebuy → head deduct like no-show.
+   */
+  lateDateChange?: boolean
   /** Agent cancelled after the late-fee time — invoice at full tour price. */
   lateCancel?: boolean
   /** Admin-set cancel charge (THB). 0 = complimentary. Unset = follow lateCancel rule. */
@@ -490,7 +500,7 @@ export function normalizeBoatLabels(
   return Array.from({ length: count }, (_, index) =>
     String(source[index] ?? '')
       .trim()
-      .slice(0, 20),
+      .slice(0, 28),
   )
 }
 
@@ -587,7 +597,14 @@ export function boatDisplayName(
     return 'Send to Partner'
   }
   const custom = hydrated.names[boat - 1]?.trim()
-  return custom || defaultBoatLabel(boat)
+  if (custom) return custom
+  const rawLabel = hydrated.labels[boat - 1]?.trim() ?? ''
+  // Own boats may pack "BoatNo|color" in labels — show Boat No when name is empty.
+  const pipe = rawLabel.indexOf('|')
+  const boatNo =
+    pipe >= 0 ? rawLabel.slice(0, pipe).trim() : rawLabel && !/^[a-z]+$/i.test(rawLabel) ? rawLabel : ''
+  if (boatNo) return `Boat ${boatNo}`
+  return defaultBoatLabel(boat)
 }
 
 export function emptyDayBoatPlan(date: string, program: Program): DayBoatPlan {

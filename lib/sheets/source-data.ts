@@ -72,6 +72,7 @@ type BookingRow = {
   pickup_time: string
   status: Booking['status']
   late_change_fee?: number | null
+  late_date_change?: boolean | null
   late_cancel?: boolean | null
   cancel_fee?: number | null
 }
@@ -149,6 +150,7 @@ function mapBooking(row: BookingRow): Booking {
     pickupTime: row.pickup_time,
     status: row.status,
     lateChangeFee: Math.max(0, Math.floor(Number(row.late_change_fee) || 0)),
+    lateDateChange: row.late_date_change === true,
     lateCancel: row.late_cancel === true,
     cancelFee:
       row.cancel_fee == null ? undefined : Math.max(0, Math.floor(Number(row.cancel_fee) || 0)),
@@ -389,7 +391,8 @@ export async function loadSheetsBackupSource(): Promise<SheetsBackupSource> {
     const id = String(row.id ?? '').trim()
     const number = String(row.invoice_no ?? '').trim()
     const kind = row.kind === 'billing_note' ? 'billing_note' : 'invoice'
-    const status = row.status === 'paid' ? 'paid' : 'unpaid'
+    const status =
+      row.status === 'paid' ? 'paid' : row.status === 'partial' ? 'partial' : 'unpaid'
     if (!id || !number) continue
     invoices.push({
       id,

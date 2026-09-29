@@ -128,6 +128,7 @@ type BookingRow = {
   pickup_time: string
   status: Booking['status']
   late_change_fee?: number | null
+  late_date_change?: boolean | null
   late_cancel?: boolean | null
   cancel_fee?: number | null
 }
@@ -296,6 +297,7 @@ function mapBooking(row: BookingRow): Booking {
     pickupTime: row.pickup_time,
     status: row.status,
     lateChangeFee: Math.max(0, Math.floor(Number(row.late_change_fee) || 0)),
+    lateDateChange: row.late_date_change === true,
     lateCancel: row.late_cancel === true,
     cancelFee:
       row.cancel_fee == null ? undefined : Math.max(0, Math.floor(Number(row.cancel_fee) || 0)),
@@ -330,6 +332,7 @@ function bookingToRow(booking: Booking): BookingRow {
     pickup_time: booking.pickupTime,
     status: booking.status,
     late_change_fee: Math.max(0, Math.floor(Number(booking.lateChangeFee) || 0)),
+    late_date_change: booking.lateDateChange === true,
     late_cancel: booking.lateCancel === true,
     cancel_fee: booking.cancelFee == null ? null : Math.max(0, Math.floor(booking.cancelFee)),
   }
@@ -714,7 +717,11 @@ export async function insertBooking(booking: Booking) {
   const { late_cancel: _lateCancel, cancel_fee: _cancelFee, ...withoutCancel } = row
   const { error: withoutCancelError } = await supabase.from('bookings').insert(withoutCancel)
   if (!withoutCancelError) return
-  const { late_change_fee: _lateChangeFee, ...withoutFee } = withoutCancel
+  const {
+    late_change_fee: _lateChangeFee,
+    late_date_change: _lateDateChange,
+    ...withoutFee
+  } = withoutCancel
   const { error: fallbackError } = await supabase.from('bookings').insert(withoutFee)
   if (fallbackError) throw new Error(`insert booking: ${fallbackError.message}`)
 }
@@ -751,16 +758,19 @@ export async function updateBookingPickup(
 export async function updateBookingDate(
   code: string,
   date: string,
-  extra?: { lateChangeFee?: number },
+  extra?: { lateChangeFee?: number; lateDateChange?: boolean },
 ) {
   const supabase = getSupabaseBrowserClient()
   const patch: Record<string, unknown> = { date }
   if (extra?.lateChangeFee !== undefined) {
     patch.late_change_fee = Math.max(0, Math.floor(extra.lateChangeFee))
   }
+  if (extra?.lateDateChange !== undefined) {
+    patch.late_date_change = extra.lateDateChange === true
+  }
   const { error } = await supabase.from('bookings').update(patch).eq('code', code)
   if (!error) return
-  if (extra?.lateChangeFee !== undefined) {
+  if (extra?.lateChangeFee !== undefined || extra?.lateDateChange !== undefined) {
     const { error: fallbackError } = await supabase
       .from('bookings')
       .update({ date })

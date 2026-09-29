@@ -1,8 +1,8 @@
 'use client'
 
-import { Suspense, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { usePathname, useSearchParams } from 'next/navigation'
+import { usePathname } from 'next/navigation'
 import {
   CalendarClock,
   ChevronDown,
@@ -17,6 +17,7 @@ import {
   QrCode,
   Settings,
   Ship,
+  Ticket,
   Users,
 } from 'lucide-react'
 import { AdminLogin } from '@/components/admin/admin-login'
@@ -98,9 +99,35 @@ function settingsActive(pathname: string) {
   )
 }
 
+const accountingItems = [
+  {
+    href: '/admin/invoices',
+    label: 'Invoice / Receipt',
+    icon: FileText,
+    tone: 'bg-fuchsia-100 text-fuchsia-700',
+  },
+  {
+    href: '/admin/allotments',
+    label: 'Agent Allotment',
+    icon: Ticket,
+    tone: 'bg-amber-100 text-amber-700',
+  },
+] as const
+
+function accountingActive(pathname: string) {
+  return (
+    pathname.startsWith('/admin/invoices') ||
+    pathname.startsWith('/admin/receipts') ||
+    pathname.startsWith('/admin/allotments')
+  )
+}
+
 function currentPageLabel(pathname: string) {
-  const billing = billingLabel(pathname)
-  if (billing) return billing
+  if (pathname.startsWith('/admin/invoices/setup')) return 'Invoice setup'
+  if (pathname.startsWith('/admin/allotments')) return 'Agent Allotment'
+  if (pathname.startsWith('/admin/invoices') || pathname.startsWith('/admin/receipts')) {
+    return 'Invoice / Receipt'
+  }
   const setting = settingsItems.find((item) => pathname.startsWith(item.href))
   if (setting) return setting.label
   if (pathname.startsWith('/admin/settings')) return 'Settings'
@@ -156,7 +183,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           {nav.map((item) => (
             <NavLink key={item.href} item={item} pathname={pathname} />
           ))}
-          <InvoiceReceiptNav pathname={pathname} />
+          <AccountingNav pathname={pathname} />
           <SettingsNav pathname={pathname} />
         </nav>
         <div className="border-t border-teal-900/8 p-4">
@@ -209,12 +236,68 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   )
 }
 
-function billingLabel(pathname: string) {
-  if (pathname.startsWith('/admin/invoices/setup')) return 'Invoice setup'
-  if (pathname.startsWith('/admin/invoices') || pathname.startsWith('/admin/receipts')) {
-    return 'Invoice / Receipt'
-  }
-  return null
+function AccountingNav({ pathname }: { pathname: string }) {
+  const active = accountingActive(pathname)
+
+  return (
+    <div>
+      <Link
+        href="/admin/invoices"
+        className={cn(
+          'group flex items-center gap-3 rounded-2xl px-2.5 py-2 text-sm font-medium transition-all',
+          active
+            ? 'bg-gradient-to-r from-teal-700 to-cyan-700 text-white shadow-md shadow-teal-700/25'
+            : 'text-teal-900/65 hover:bg-white/70 hover:text-teal-950',
+        )}
+      >
+        <span
+          className={cn(
+            'flex size-8 shrink-0 items-center justify-center rounded-xl transition-colors',
+            active ? 'bg-white/20 text-white' : 'bg-fuchsia-100 text-fuchsia-700 group-hover:bg-fuchsia-200/80',
+          )}
+        >
+          <FileText className="size-4" strokeWidth={active ? 2.4 : 2} />
+        </span>
+        <span className="flex-1">Accounting</span>
+        <ChevronDown
+          className={cn('size-4 shrink-0 transition-transform', active ? 'rotate-180 opacity-90' : 'opacity-50')}
+        />
+      </Link>
+      {active ? (
+        <div className="ml-4 mt-1 flex flex-col gap-0.5 border-l border-teal-900/10 pl-2">
+          {accountingItems.map((item) => {
+            const itemActive =
+              item.href === '/admin/invoices'
+                ? pathname.startsWith('/admin/invoices') || pathname.startsWith('/admin/receipts')
+                : pathname.startsWith(item.href)
+            const Icon = item.icon
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={cn(
+                  'flex items-center gap-2.5 rounded-xl px-2.5 py-2 text-sm font-medium transition-colors',
+                  itemActive
+                    ? 'bg-white text-teal-950 shadow-sm ring-1 ring-teal-900/8'
+                    : 'text-teal-900/70 hover:bg-white/80 hover:text-teal-950',
+                )}
+              >
+                <span
+                  className={cn(
+                    'flex size-7 shrink-0 items-center justify-center rounded-lg',
+                    itemActive ? item.tone : 'bg-white/70 text-teal-800/60',
+                  )}
+                >
+                  <Icon className="size-3.5" strokeWidth={itemActive ? 2.4 : 2} />
+                </span>
+                {item.label}
+              </Link>
+            )
+          })}
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 function SettingsNav({ pathname }: { pathname: string }) {
@@ -279,72 +362,6 @@ function SettingsNav({ pathname }: { pathname: string }) {
   )
 }
 
-function InvoiceReceiptNav({ pathname }: { pathname: string }) {
-  return (
-    <Suspense fallback={<InvoiceReceiptLinks pathname={pathname} tab={null} />}>
-      <InvoiceReceiptNavSearch pathname={pathname} />
-    </Suspense>
-  )
-}
-
-function InvoiceReceiptNavSearch({ pathname }: { pathname: string }) {
-  const searchParams = useSearchParams()
-  return <InvoiceReceiptLinks pathname={pathname} tab={searchParams.get('tab')} />
-}
-
-function InvoiceReceiptLinks({
-  pathname,
-  tab,
-}: {
-  pathname: string
-  tab: string | null
-}) {
-  const active = pathname.startsWith('/admin/invoices') || pathname.startsWith('/admin/receipts')
-  const receiptActive =
-    pathname.startsWith('/admin/receipts') ||
-    (pathname.startsWith('/admin/invoices') && tab === 'receipts')
-  const invoiceActive = active && !receiptActive
-
-  return (
-    <div
-      className={cn(
-        'flex items-center gap-0.5 rounded-2xl px-2 py-1.5 text-sm font-medium transition-all',
-        active
-          ? 'bg-gradient-to-r from-teal-700 to-cyan-700 text-white shadow-md shadow-teal-700/25'
-          : 'text-teal-900/65 hover:bg-white/70 hover:text-teal-950',
-      )}
-    >
-      <span
-        className={cn(
-          'flex size-8 shrink-0 items-center justify-center rounded-xl transition-colors',
-          active ? 'bg-white/20 text-white' : 'bg-fuchsia-100 text-fuchsia-700',
-        )}
-      >
-        <FileText className="size-4" strokeWidth={active ? 2.4 : 2} />
-      </span>
-      <Link
-        href="/admin/invoices"
-        className={cn(
-          'rounded-xl px-2 py-1 transition-colors',
-          invoiceActive ? 'bg-white/15 text-white' : active ? 'text-white/80 hover:text-white' : 'hover:text-teal-950',
-        )}
-      >
-        Invoice
-      </Link>
-      <span className={active ? 'text-white/35' : 'text-teal-900/25'}>/</span>
-      <Link
-        href="/admin/invoices?tab=receipts"
-        className={cn(
-          'rounded-xl px-2 py-1 transition-colors',
-          receiptActive ? 'bg-white/15 text-white' : active ? 'text-white/80 hover:text-white' : 'hover:text-teal-950',
-        )}
-      >
-        Receipt
-      </Link>
-    </div>
-  )
-}
-
 function NavLink({
   item,
   pathname,
@@ -395,7 +412,7 @@ function MobileNav({ pathname, onSignOut }: { pathname: string; onSignOut: () =>
           {nav.map((item) => (
             <NavLink key={item.href} item={item} pathname={pathname} />
           ))}
-          <InvoiceReceiptNav pathname={pathname} />
+          <AccountingNav pathname={pathname} />
           <SettingsNav pathname={pathname} />
         </div>
         <div className="mt-auto border-t border-teal-900/8 px-4 py-4">

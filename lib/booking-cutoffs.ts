@@ -220,10 +220,12 @@ export function cancelClosedMessage(
 export function lateDateChangeNotice(
   settings: BookingCutoffSettings,
   booking: Pick<Booking, 'adults' | 'children'>,
+  fullPriceThb?: number,
 ): string {
-  const count = chargeablePax(booking)
-  const fee = dateChangeFeeAmount(settings, booking)
-  return `This change is after ${settings.lateFeeFromTime} Thailand time. Extra charge: ${formatThbAmount(fee)} (${booking.adults} AD + ${booking.children} CH × ${formatThbAmount(settings.dateChangeFeePerPerson)}). Infant and TL are free.`
+  if (typeof fullPriceThb === 'number' && fullPriceThb >= 0) {
+    return `This change is after ${settings.lateFeeFromTime} Thailand time. Full tour price applies: ${formatThbAmount(fullPriceThb)} (${booking.adults} AD + ${booking.children} CH). Prebuy agents deduct heads like a no-show.`
+  }
+  return `This change is after ${settings.lateFeeFromTime} Thailand time. Full tour price applies (agency AD/CH rates). Prebuy agents deduct heads like a no-show.`
 }
 
 export function lateCancelNotice(settings: BookingCutoffSettings): string {
@@ -278,6 +280,6 @@ export function amendmentPolicyLines(settings: BookingCutoffSettings): string[] 
   return [
     `New bookings for the next day stay open until ${summarizeCutoffRule(settings.bookBeforeDays, settings.bookUntilTime)}. After midnight, that day is closed — book the following day only.`,
     `You can modify, add guests, cancel, or change the date until ${summarizeCutoffRule(settings.cancelBeforeDays, settings.cancelUntilTime)}.`,
-    `After ${settings.lateFeeFromTime} Thailand time: reducing AD / CH or changing the date is +${formatThbAmount(settings.dateChangeFeePerPerson)} per AD / CH (infant and TL free). Adding guests has no extra charge. Cancel the whole booking — full price (no refund).`,
+    `After ${settings.lateFeeFromTime} Thailand time: changing the date is charged at full tour price (Invoice) or head deduct like no-show (Prebuy). Reducing AD / CH is +${formatThbAmount(settings.dateChangeFeePerPerson)} per AD / CH (infant and TL free). Adding guests has no extra charge. Cancel the whole booking — full price (no refund).`,
   ]
 }

@@ -41,7 +41,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { formatLongDate, formatShortDate, formatThb, toISODate } from '@/lib/format'
-import { boatFleetNumber, boatTheme, boatThemeFor, boatColorOptions, PARTNER_BOAT_THEME, type BoatColorKey } from '@/lib/boat-theme'
+import { boatFleetNumber, boatThemeFor, boatColorOptions, boatAssignChipLabel, packOwnBoatLabel, unpackOwnBoatLabel, PARTNER_BOAT_THEME, type BoatColorKey } from '@/lib/boat-theme'
 import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
 import {
   DEFAULT_BOAT_CAPACITY,
@@ -49,9 +49,9 @@ import {
   MIN_VAN_CAPACITY,
   MAX_VAN_CAPACITY,
   MAX_DAY_BOATS,
+  DEFAULT_BOAT_LABEL_START,
   boatDisplayName,
   boatNumbersForPlan,
-  defaultBoatLabel,
   canonicalVanOutsourceCompany,
   clampVanCapacity,
     bookingAssignedToBoat,
@@ -100,6 +100,7 @@ import {
   sortOrderOnVan,
   suggestVanSplit,
 } from '@/lib/vehicle-assign'
+import { bookingPaxOnVanAndBoat } from '@/lib/boat-load'
 import { cn } from '@/lib/utils'
 
 const DRAG_MIME = 'application/x-gday-van-codes'
@@ -1111,7 +1112,8 @@ function VehicleBoard({
   const [partnerCompany, setPartnerCompany] = useState('')
   const [rentalOpen, setRentalOpen] = useState(false)
   const [rentalCapacity, setRentalCapacity] = useState(60)
-  const [rentalName, setRentalName] = useState('Rental')
+  const [rentalBoatNo, setRentalBoatNo] = useState('')
+  const [rentalName, setRentalName] = useState('')
   const [rentalColor, setRentalColor] = useState<BoatColorKey>('amber')
   const [showAssistantFor, setShowAssistantFor] = useState<Record<number, boolean>>({})
   const [sheetQuery, setSheetQuery] = useState('')
@@ -1272,9 +1274,12 @@ function VehicleBoard({
 
   const sheetRows = useMemo(() => {
     let rows = listBookings.filter((booking) => {
+      const kind = bookingTransferKind(booking, plan, boatPlan)
+      // No-transfer guests are never "waiting" for a van — still list them when filtered.
+      if (kindFilter === 'no_transfer') return kind === 'no_transfer'
       if (!bookingWaitingForVan(booking, plan, boatPlan)) return false
       if (kindFilter === 'all') return true
-      return bookingTransferKind(booking, plan, boatPlan) === kindFilter
+      return kind === kindFilter
     })
     const q = sheetQuery.trim().toLowerCase()
     if (!q) return rows
@@ -1530,12 +1535,37 @@ function VehicleBoard({
     )
     const groupMap = new Map<number | 'loose', { van: number | null; items: Booking[]; pax: number }>()
     for (const booking of items) {
-      const van = primaryVan(plan.assignments[booking.code])
-      const key = van ?? 'loose'
-      const current = groupMap.get(key) ?? { van, items: [], pax: 0 }
-      current.items.push(booking)
-      current.pax += bookingPaxOnBoat(booking, boatPlan.assignments[booking.code], boat)
-      groupMap.set(key, current)
+      const legs = plan.assignments[booking.code]
+      const vansOnBoat = [
+        ...new Set((legs ?? []).map((leg) => leg.van).filter((n) => n > 0)),
+      ]
+        .filter(
+          (van) =>
+            bookingPaxOnVanAndBoat(booking, legs, boatPlan.assignments[booking.code], van, boat) > 0,
+        )
+        .sort((a, b) => a - b)
+
+      if (vansOnBoat.length === 0) {
+        const current = groupMap.get('loose') ?? { van: null, items: [], pax: 0 }
+        current.items.push(booking)
+        current.pax += bookingPaxOnBoat(booking, boatPlan.assignments[booking.code], boat)
+        groupMap.set('loose', current)
+        continue
+      }
+
+      for (const van of vansOnBoat) {
+        const onVanBoat = bookingPaxOnVanAndBoat(
+          booking,
+          legs,
+          boatPlan.assignments[booking.code],
+          van,
+          boat,
+        )
+        const current = groupMap.get(van) ?? { van, items: [], pax: 0 }
+        current.items.push(booking)
+        current.pax += onVanBoat
+        groupMap.set(van, current)
+      }
     }
     const groups = [...groupMap.values()].sort((a, b) => {
       if (a.van === null) return 1
@@ -1772,12 +1802,18 @@ function VehicleBoard({
                         assignToKind(selectedList, kind)
                         return
                       }
-                      const waitingHere = listBookings.some(
-                        (booking) =>
-                          bookingWaitingForVan(booking, plan, boatPlan) &&
-                          bookingTransferKind(booking, plan, boatPlan) === kind,
-                      )
-                      if (!waitingHere) {
+                      const hasHere =
+                        kind === 'no_transfer'
+                          ? listBookings.some(
+                              (booking) =>
+                                bookingTransferKind(booking, plan, boatPlan) === 'no_transfer',
+                            )
+                          : listBookings.some(
+                              (booking) =>
+                                bookingWaitingForVan(booking, plan, boatPlan) &&
+                                bookingTransferKind(booking, plan, boatPlan) === kind,
+                            )
+                      if (!hasHere) {
                         setKindFilter('all')
                         return
                       }
@@ -1829,7 +1865,9 @@ function VehicleBoard({
                     <p className="mt-0.5 text-xs text-teal-900/55">
                       {kindFilter === 'all'
                         ? `${sheetRows.length} not on a van yet`
-                        : `${sheetRows.length} ${TRANSFER_KIND_LABELS[kindFilter].toLowerCase()} waiting`}
+                        : kindFilter === 'no_transfer'
+                          ? `${sheetRows.length} no transfer guest${sheetRows.length === 1 ? '' : 's'}`
+                          : `${sheetRows.length} ${TRANSFER_KIND_LABELS[kindFilter].toLowerCase()} waiting`}
                     </p>
                   </div>
                   <label className="flex items-center gap-1.5 text-xs text-teal-900/60">
@@ -1860,6 +1898,7 @@ function VehicleBoard({
                       ['all', 'All'],
                       ['private', 'Private'],
                       ['partner', 'Partner'],
+                      ['no_transfer', 'No Transfers'],
                     ] as const
                   ).map(([key, label]) => (
                     <button
@@ -1952,6 +1991,8 @@ function VehicleBoard({
                           ? 'No waiting private transfers. If the count is still 1, look for a sky-bordered private van card.'
                           : kindFilter === 'partner'
                             ? 'No waiting tour-partner bookings.'
+                          : kindFilter === 'no_transfer'
+                            ? 'No no-transfer guests for this day.'
                         : kindFilter !== 'all'
                           ? 'No guests of this type are waiting — they are already on a van.'
                         : bookings.length === 0
@@ -2393,7 +2434,11 @@ function VehicleBoard({
                                     />
                                   ) : null}
                                   <p className="text-[13px] leading-snug font-semibold text-teal-950">
-                                    {hotel || booking.pickupZone || 'Hotel TBA'}
+                                    {hotel ||
+                                      (isNoTransfer(booking.pickupZone)
+                                        ? 'Hotel TBA'
+                                        : booking.pickupZone.trim()) ||
+                                      'Hotel TBA'}
                                     {booking.roomNumber ? ` · Rm ${booking.roomNumber}` : ''}
                                     {split ? (
                                       <span className="ml-1 font-normal text-teal-900/40">van split</span>
@@ -2423,7 +2468,8 @@ function VehicleBoard({
                                 ? boatNumbers.filter((boat) => !isPartnerBoat(boatPlan, boat))
                                 : ([1, 2, 3] as BoatNumber[])
                             ).map((boat) => {
-                              const theme = boatTheme(boat)
+                              const theme = boatThemeFor(boatPlan, boat)
+                              const chipLabel = boatAssignChipLabel(boatPlan, boat)
                               const partnerLocked = crew.specialKind === 'partner'
                               const selected = !partnerLocked && assignedBoat === boat
                               const dimOthers = partnerLocked || (assignedBoat !== null && !selected)
@@ -2448,10 +2494,10 @@ function VehicleBoard({
                                   title={
                                     partnerLocked
                                       ? 'Tour partner vans stay on the partner boat'
-                                      : `Boat ${theme.fleetNumber} · ${theme.colorName}`
+                                      : `Boat ${chipLabel}${theme.colorName ? ` · ${theme.colorName}` : ''}`
                                   }
                                 >
-                                  {boatFleetNumber(boat)}
+                                  {chipLabel}
                                 </button>
                               )
                             })}
@@ -2527,6 +2573,18 @@ function VehicleBoard({
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <label className="space-y-1">
+                          <span className="block text-[10px] font-medium text-teal-900/50">
+                            Boat No <span className="text-rose-600">*</span>
+                          </span>
+                          <Input
+                            value={rentalBoatNo}
+                            onChange={(event) => setRentalBoatNo(event.target.value)}
+                            placeholder={String(DEFAULT_BOAT_LABEL_START + boatNumbers.length)}
+                            className="h-8 px-2 text-sm tabular-nums"
+                            aria-required
+                          />
+                        </label>
+                        <label className="space-y-1">
                           <span className="block text-[10px] font-medium text-teal-900/50">Seats</span>
                           <Input
                             type="number"
@@ -2540,16 +2598,18 @@ function VehicleBoard({
                             className="h-8 px-2 text-sm"
                           />
                         </label>
-                        <label className="space-y-1">
-                          <span className="block text-[10px] font-medium text-teal-900/50">Name</span>
-                          <Input
-                            value={rentalName}
-                            onChange={(event) => setRentalName(event.target.value)}
-                            placeholder="Rental"
-                            className="h-8 px-2 text-sm"
-                          />
-                        </label>
                       </div>
+                      <label className="block space-y-1">
+                        <span className="block text-[10px] font-medium text-teal-900/50">
+                          Boat name <span className="font-normal text-teal-900/35">(optional)</span>
+                        </span>
+                        <Input
+                          value={rentalName}
+                          onChange={(event) => setRentalName(event.target.value)}
+                          placeholder="Optional"
+                          className="h-8 px-2 text-sm"
+                        />
+                      </label>
                       <div className="space-y-1">
                         <span className="block text-[10px] font-medium text-teal-900/50">Color</span>
                         <div className="flex flex-wrap gap-1.5">
@@ -2575,14 +2635,20 @@ function VehicleBoard({
                         type="button"
                         size="sm"
                         className="h-8 w-full"
-                        disabled={boatNumbers.length >= MAX_DAY_BOATS}
+                        disabled={
+                          boatNumbers.length >= MAX_DAY_BOATS || !rentalBoatNo.trim()
+                        }
                         onClick={() => {
+                          const boatNo = rentalBoatNo.trim()
+                          if (!boatNo) return
                           addDayBoat(date, program, rentalCapacity, {
-                            name: rentalName.trim() || 'Rental',
+                            boatNo,
+                            name: rentalName.trim(),
                             color: rentalColor,
                           })
                           setRentalOpen(false)
-                          setRentalName('Rental')
+                          setRentalName('')
+                          setRentalBoatNo('')
                           setRentalCapacity(60)
                         }}
                       >
@@ -2595,7 +2661,10 @@ function VehicleBoard({
                       size="sm"
                       className="h-8"
                       disabled={boatNumbers.length >= MAX_DAY_BOATS}
-                      onClick={() => setRentalOpen(true)}
+                      onClick={() => {
+                        setRentalBoatNo(String(DEFAULT_BOAT_LABEL_START + boatNumbers.length))
+                        setRentalOpen(true)
+                      }}
                     >
                       <Plus data-icon="inline-start" />
                       Add rental boat
@@ -2737,24 +2806,36 @@ function VehicleBoard({
                                 </p>
                                 <ul className="mt-1 space-y-0.5">
                                   {group.items.map((booking) => {
-                                    const onBoat = bookingPaxOnBoat(
-                                      booking,
-                                      boatPlan.assignments[booking.code],
-                                      boat,
-                                    )
+                                    const onBoat =
+                                      group.van !== null
+                                        ? bookingPaxOnVanAndBoat(
+                                            booking,
+                                            plan.assignments[booking.code],
+                                            boatPlan.assignments[booking.code],
+                                            group.van,
+                                            boat,
+                                          )
+                                        : bookingPaxOnBoat(
+                                            booking,
+                                            boatPlan.assignments[booking.code],
+                                            boat,
+                                          )
+                                    const vanSplit =
+                                      (plan.assignments[booking.code]?.length ?? 0) > 1
                                     const boatSplit =
                                       normalizeBoatAssignment(
                                         boatPlan.assignments[booking.code],
                                       ).length > 1
                                     return (
-                                    <li key={booking.code}>
+                                    <li key={`${group.van ?? 'loose'}-${booking.code}`}>
                                       <LongPressCard
                                         className="flex items-center justify-between gap-2 text-xs text-neutral-800"
                                         onLongPress={() => setSplitCode(booking.code)}
                                       >
                                       <span className="min-w-0 truncate">
                                         {booking.pickupHotel || booking.leadGuest} · {onBoat}
-                                        {boatSplit ? ' split' : ''}
+                                        {vanSplit ? ' van split' : ''}
+                                        {boatSplit ? ' boat split' : ''}
                                       </span>
                                       <button
                                         type="button"
@@ -2793,27 +2874,34 @@ function VehicleBoard({
                       <div className="flex min-w-0 items-start gap-1.5">
                         <span className={cn('mt-1.5 size-2.5 shrink-0 rounded-full', theme.swatch)} />
                         <div className="min-w-0 space-y-1">
-                          <Input
-                            value={boatPlan.names[boat - 1] ?? ''}
-                            onChange={(event) =>
-                              setBoatName(date, program, boat, event.target.value)
-                            }
-                            onClick={(event) => event.stopPropagation()}
-                            placeholder={defaultBoatLabel(boat)}
-                            className={cn(
-                              'h-7 border-0 bg-transparent px-0 text-sm font-semibold shadow-none focus-visible:ring-0',
-                              theme.title,
-                            )}
-                            aria-label={`Boat ${boat} name`}
-                          />
-                          <span
-                            className={cn(
-                              'inline-flex rounded px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide',
-                              theme.softBadge,
-                            )}
-                          >
-                            {theme.colorName}
-                          </span>
+                          {(() => {
+                            const packed = unpackOwnBoatLabel(boatPlan.labels[boat - 1], boat)
+                            return (
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span
+                                  className={cn(
+                                    'inline-flex rounded px-1.5 py-0.5 text-[11px] font-bold tabular-nums',
+                                    theme.softBadge,
+                                  )}
+                                >
+                                  No. {packed.boatNo}
+                                </span>
+                                <span
+                                  className={cn(
+                                    'inline-flex rounded px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide',
+                                    theme.softBadge,
+                                  )}
+                                >
+                                  {theme.colorName}
+                                </span>
+                              </div>
+                            )
+                          })()}
+                          {(boatPlan.names[boat - 1] ?? '').trim() ? (
+                            <p className={cn('truncate text-sm font-semibold', theme.title)}>
+                              {(boatPlan.names[boat - 1] ?? '').trim()}
+                            </p>
+                          ) : null}
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
@@ -2854,6 +2942,61 @@ function VehicleBoard({
                       onClick={(event) => event.stopPropagation()}
                     >
                       <label className="space-y-0.5">
+                        <span className="block text-[10px] font-medium text-teal-900/45">
+                          Boat No <span className="text-rose-600">*</span>
+                        </span>
+                        <Input
+                          value={unpackOwnBoatLabel(boatPlan.labels[boat - 1], boat).boatNo}
+                          onChange={(event) => {
+                            const packed = unpackOwnBoatLabel(boatPlan.labels[boat - 1], boat)
+                            const nextNo = event.target.value.replace(/\|/g, '').slice(0, 12)
+                            setBoatLabel(
+                              date,
+                              program,
+                              boat,
+                              packOwnBoatLabel(nextNo, packed.color ?? theme.key),
+                            )
+                          }}
+                          onBlur={() => {
+                            const packed = unpackOwnBoatLabel(boatPlan.labels[boat - 1], boat)
+                            if (packed.boatNo.trim()) return
+                            setBoatLabel(
+                              date,
+                              program,
+                              boat,
+                              packOwnBoatLabel(
+                                String(boatFleetNumber(boat)),
+                                packed.color ?? theme.key,
+                              ),
+                            )
+                          }}
+                          placeholder={String(boatFleetNumber(boat))}
+                          className="h-7 px-2 text-sm tabular-nums"
+                          aria-label={`Boat ${boat} number`}
+                          required
+                        />
+                      </label>
+                      <label className="space-y-0.5">
+                        <span className="block text-[10px] font-medium text-teal-900/45">
+                          Boat name{' '}
+                          <span className="font-normal text-teal-900/35">(optional)</span>
+                        </span>
+                        <Input
+                          value={boatPlan.names[boat - 1] ?? ''}
+                          onChange={(event) =>
+                            setBoatName(date, program, boat, event.target.value)
+                          }
+                          placeholder="Optional"
+                          className="h-7 px-2 text-sm"
+                          aria-label={`Boat ${boat} name`}
+                        />
+                      </label>
+                    </div>
+                    <div
+                      className="mt-2 grid grid-cols-[4.5rem_minmax(0,1fr)] gap-2"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <label className="space-y-0.5">
                         <span className="block text-[10px] font-medium text-teal-900/45">Seats</span>
                         <Input
                           type="number"
@@ -2878,7 +3021,15 @@ function VehicleBoard({
                                 key={option.key}
                                 type="button"
                                 title={option.colorName}
-                                onClick={() => setBoatLabel(date, program, boat, option.key)}
+                                onClick={() => {
+                                  const packed = unpackOwnBoatLabel(boatPlan.labels[boat - 1], boat)
+                                  setBoatLabel(
+                                    date,
+                                    program,
+                                    boat,
+                                    packOwnBoatLabel(packed.boatNo, option.key),
+                                  )
+                                }}
                                 className={cn(
                                   'size-5 rounded-full border-2 transition-transform',
                                   option.swatch,
@@ -2919,23 +3070,35 @@ function VehicleBoard({
                             </p>
                             <ul className="mt-1 space-y-0.5">
                               {group.items.map((booking) => {
-                                const onBoat = bookingPaxOnBoat(
-                                  booking,
-                                  boatPlan.assignments[booking.code],
-                                  boat,
-                                )
+                                const onBoat =
+                                  group.van !== null
+                                    ? bookingPaxOnVanAndBoat(
+                                        booking,
+                                        plan.assignments[booking.code],
+                                        boatPlan.assignments[booking.code],
+                                        group.van,
+                                        boat,
+                                      )
+                                    : bookingPaxOnBoat(
+                                        booking,
+                                        boatPlan.assignments[booking.code],
+                                        boat,
+                                      )
+                                const vanSplit =
+                                  (plan.assignments[booking.code]?.length ?? 0) > 1
                                 const boatSplit =
                                   normalizeBoatAssignment(boatPlan.assignments[booking.code])
                                     .length > 1
                                 return (
-                                <li key={booking.code}>
+                                <li key={`${group.van ?? 'loose'}-${booking.code}`}>
                                   <LongPressCard
                                     className="flex items-center justify-between gap-2 text-xs text-teal-950"
                                     onLongPress={() => setSplitCode(booking.code)}
                                   >
                                   <span className="min-w-0 truncate">
                                     {booking.pickupHotel || booking.leadGuest} · {onBoat}
-                                    {boatSplit ? ' split' : ''}
+                                    {vanSplit ? ' van split' : ''}
+                                    {boatSplit ? ' boat split' : ''}
                                   </span>
                                   <button
                                     type="button"

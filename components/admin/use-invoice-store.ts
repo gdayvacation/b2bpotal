@@ -3,10 +3,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   DEFAULT_INVOICE_SETTINGS,
+  invoiceBalance,
+  invoicePayments,
   nextDocumentNumber,
   normalizeInvoiceSettings,
+  withInvoicePayments,
   type AgencyInvoiceRates,
   type InvoiceDocument,
+  type InvoicePayment,
   type InvoiceSettings,
   type PaymentChannel,
 } from '@/lib/invoice'
@@ -96,11 +100,10 @@ export function useInvoiceStore() {
   const markPaid = useCallback(async (
     ids: string[],
     extras: InvoiceDocument[] = [],
-    details?: { paidDate?: string; channel?: PaymentChannel },
+    details?: { paidDate?: string; channel?: PaymentChannel; amount?: number },
   ) => {
     const wanted = new Set(ids)
     const paidDate = details?.paidDate || todayISO()
-    const paidAt = `${paidDate}T12:00:00.000Z`
     const channel = details?.channel ?? 'deduct_deposit'
     const pool = [...extras, ...invoices].filter(
       (doc, index, list) => list.findIndex((row) => row.id === doc.id) === index,
@@ -108,15 +111,22 @@ export function useInvoiceStore() {
     let working = pool
     const updated: InvoiceDocument[] = []
     for (const doc of pool) {
-      if (!wanted.has(doc.id) || doc.status === 'paid') continue
-      const receiptNo = doc.receiptNo ?? nextDocumentNumber(working, 'receipt', paidDate)
-      const next = {
-        ...doc,
-        status: 'paid' as const,
-        paidAt,
-        paymentChannel: channel,
-        receiptNo,
+      if (!wanted.has(doc.id) || doc.kind !== 'invoice') continue
+      const balance = invoiceBalance(doc)
+      if (balance <= 0.009) continue
+      const rawAmount =
+        details?.amount !== undefined ? Math.max(0, Number(details.amount) || 0) : balance
+      const amount = Math.min(balance, Math.round(rawAmount * 100) / 100)
+      if (amount <= 0) continue
+      const payment: InvoicePayment = {
+        id: crypto.randomUUID(),
+        amount,
+        paidDate,
+        channel,
+        receiptNo: nextDocumentNumber(working, 'receipt', paidDate),
       }
+      const payments = [...invoicePayments(doc), payment]
+      const next = withInvoicePayments(doc, payments)
       working = working.map((row) => (row.id === doc.id ? next : row))
       updated.push(next)
     }
@@ -126,6 +136,30 @@ export function useInvoiceStore() {
     const result = await saveInvoiceDocuments(updated)
     if (result?.error) setError(`Mark paid failed: ${result.error}`)
     return updated
+  }, [invoices])
+
+  const clearPayments = useCallback(async (id: string) => {
+    const doc = invoices.find((row) => row.id === id)
+    if (!doc) return null
+    const next = withInvoicePayments(doc, [])
+    setInvoices((current) => current.map((row) => (row.id === id ? next : row)))
+    setError(null)
+    const result = await saveInvoiceDocument(next)
+    if (result?.error) setError(`Update failed: ${result.error}`)
+    return next
+  }, [invoices])
+
+  const removeLastPayment = useCallback(async (id: string) => {
+    const doc = invoices.find((row) => row.id === id)
+    if (!doc) return null
+    const payments = invoicePayments(doc)
+    if (payments.length === 0) return doc
+    const next = withInvoicePayments(doc, payments.slice(0, -1))
+    setInvoices((current) => current.map((row) => (row.id === id ? next : row)))
+    setError(null)
+    const result = await saveInvoiceDocument(next)
+    if (result?.error) setError(`Update failed: ${result.error}`)
+    return next
   }, [invoices])
 
   return {
@@ -142,5 +176,7 @@ export function useInvoiceStore() {
     replaceDocument,
     removeDocument,
     markPaid,
+    clearPayments,
+    removeLastPayment,
   }
 }

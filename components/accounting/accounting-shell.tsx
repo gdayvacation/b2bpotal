@@ -1,9 +1,9 @@
 'use client'
 
-import { Suspense, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { usePathname, useSearchParams } from 'next/navigation'
-import { FileText, LogOut, Menu } from 'lucide-react'
+import { usePathname } from 'next/navigation'
+import { ChevronDown, FileText, LogOut, Menu, Ticket } from 'lucide-react'
 import { AccountingLogin } from '@/components/accounting/accounting-login'
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
@@ -11,9 +11,25 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/co
 import { logoutStaff, readStaffSession } from '@/lib/staff-auth'
 import { cn } from '@/lib/utils'
 
-function currentPageLabel(pathname: string, tab: string | null) {
+const accountingItems = [
+  {
+    href: '/accounting',
+    label: 'Invoice / Receipt',
+    icon: FileText,
+    tone: 'bg-fuchsia-100 text-fuchsia-700',
+  },
+  {
+    href: '/accounting/allotments',
+    label: 'Agent Allotment',
+    icon: Ticket,
+    tone: 'bg-amber-100 text-amber-700',
+  },
+] as const
+
+function currentPageLabel(pathname: string) {
   if (pathname.startsWith('/accounting/setup')) return 'Invoice setup'
-  return tab === 'receipts' ? 'Receipt' : 'Invoice'
+  if (pathname.startsWith('/accounting/allotments')) return 'Agent Allotment'
+  return 'Invoice / Receipt'
 }
 
 export function AccountingShell({ children }: { children: React.ReactNode }) {
@@ -46,6 +62,8 @@ export function AccountingShell({ children }: { children: React.ReactNode }) {
     return <AccountingLogin onSuccess={signIn} />
   }
 
+  const current = currentPageLabel(pathname)
+
   return (
     <div className="gday-app relative">
       <aside className="gday-admin-sidebar fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-teal-900/8 lg:flex lg:flex-col">
@@ -56,9 +74,7 @@ export function AccountingShell({ children }: { children: React.ReactNode }) {
         </div>
         <nav className="flex flex-1 flex-col gap-1 px-3 pb-4">
           <p className="gday-soft-label px-3 py-2">Accounting / บัญชี</p>
-          <Suspense fallback={<InvoiceReceiptNav tab={null} />}>
-            <InvoiceReceiptNavSearch />
-          </Suspense>
+          <AccountingGroup pathname={pathname} />
         </nav>
         <div className="border-t border-teal-900/8 p-4">
           <div className="rounded-2xl bg-gradient-to-br from-teal-50 via-white to-sky-50 px-3.5 py-3 ring-1 ring-teal-900/6">
@@ -79,10 +95,15 @@ export function AccountingShell({ children }: { children: React.ReactNode }) {
         <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-teal-900/8 bg-white/70 px-4 backdrop-blur-xl sm:h-16 lg:px-8">
           <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-sky-400/50 via-teal-500/60 to-amber-400/40" />
           <div className="flex min-w-0 items-center gap-3">
-            <MobileNav onSignOut={signOut} />
-            <Suspense fallback={<HeaderLabel pathname={pathname} tab={null} />}>
-              <HeaderLabelSearch pathname={pathname} />
-            </Suspense>
+            <MobileNav pathname={pathname} onSignOut={signOut} />
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-teal-950 lg:hidden">{current}</p>
+              <p className="hidden text-sm text-teal-800/50 lg:block">
+                Accounting
+                <span className="mx-2 text-teal-900/20">/</span>
+                <span className="font-semibold text-teal-950">{current}</span>
+              </p>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -105,57 +126,52 @@ export function AccountingShell({ children }: { children: React.ReactNode }) {
   )
 }
 
-function HeaderLabelSearch({ pathname }: { pathname: string }) {
-  const searchParams = useSearchParams()
-  return <HeaderLabel pathname={pathname} tab={searchParams.get('tab')} />
-}
-
-function HeaderLabel({ pathname, tab }: { pathname: string; tab: string | null }) {
-  const current = currentPageLabel(pathname, tab)
+function AccountingGroup({ pathname }: { pathname: string }) {
   return (
-    <div className="min-w-0">
-      <p className="truncate text-sm font-semibold text-teal-950 lg:hidden">{current}</p>
-      <p className="hidden text-sm text-teal-800/50 lg:block">
-        Accounting
-        <span className="mx-2 text-teal-900/20">/</span>
-        <span className="font-semibold text-teal-950">{current}</span>
-      </p>
+    <div>
+      <div className="group flex items-center gap-3 rounded-2xl bg-gradient-to-r from-teal-700 to-cyan-700 px-2.5 py-2 text-sm font-medium text-white shadow-md shadow-teal-700/25">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-white/20 text-white">
+          <FileText className="size-4" strokeWidth={2.4} />
+        </span>
+        <span className="flex-1">Accounting</span>
+        <ChevronDown className="size-4 shrink-0 rotate-180 opacity-90" />
+      </div>
+      <div className="ml-4 mt-1 flex flex-col gap-0.5 border-l border-teal-900/10 pl-2">
+        {accountingItems.map((item) => {
+          const itemActive =
+            item.href === '/accounting'
+              ? !pathname.startsWith('/accounting/allotments')
+              : pathname.startsWith(item.href)
+          const Icon = item.icon
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={cn(
+                'flex items-center gap-2.5 rounded-xl px-2.5 py-2 text-sm font-medium transition-colors',
+                itemActive
+                  ? 'bg-white text-teal-950 shadow-sm ring-1 ring-teal-900/8'
+                  : 'text-teal-900/70 hover:bg-white/80 hover:text-teal-950',
+              )}
+            >
+              <span
+                className={cn(
+                  'flex size-7 shrink-0 items-center justify-center rounded-lg',
+                  itemActive ? item.tone : 'bg-white/70 text-teal-800/60',
+                )}
+              >
+                <Icon className="size-3.5" strokeWidth={itemActive ? 2.4 : 2} />
+              </span>
+              {item.label}
+            </Link>
+          )
+        })}
+      </div>
     </div>
   )
 }
 
-function InvoiceReceiptNavSearch() {
-  const searchParams = useSearchParams()
-  return <InvoiceReceiptNav tab={searchParams.get('tab')} />
-}
-
-function InvoiceReceiptNav({ tab }: { tab: string | null }) {
-  const receiptActive = tab === 'receipts'
-  const invoiceActive = !receiptActive
-
-  return (
-    <div className="flex items-center gap-0.5 rounded-2xl bg-gradient-to-r from-teal-700 to-cyan-700 px-2 py-1.5 text-sm font-medium text-white shadow-md shadow-teal-700/25">
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-white/20 text-white">
-        <FileText className="size-4" strokeWidth={2.4} />
-      </span>
-      <Link
-        href="/accounting"
-        className={cn('rounded-xl px-2 py-1 transition-colors', invoiceActive ? 'bg-white/15 text-white' : 'text-white/80 hover:text-white')}
-      >
-        Invoice
-      </Link>
-      <span className="text-white/35">/</span>
-      <Link
-        href="/accounting?tab=receipts"
-        className={cn('rounded-xl px-2 py-1 transition-colors', receiptActive ? 'bg-white/15 text-white' : 'text-white/80 hover:text-white')}
-      >
-        Receipt
-      </Link>
-    </div>
-  )
-}
-
-function MobileNav({ onSignOut }: { onSignOut: () => void }) {
+function MobileNav({ pathname, onSignOut }: { pathname: string; onSignOut: () => void }) {
   return (
     <Sheet>
       <SheetTrigger
@@ -171,9 +187,7 @@ function MobileNav({ onSignOut }: { onSignOut: () => void }) {
         </SheetHeader>
         <div className="flex flex-col gap-1 px-3">
           <p className="gday-soft-label px-1 py-2">Accounting / บัญชี</p>
-          <Suspense fallback={<InvoiceReceiptNav tab={null} />}>
-            <InvoiceReceiptNavSearch />
-          </Suspense>
+          <AccountingGroup pathname={pathname} />
         </div>
         <div className="mt-auto border-t border-teal-900/8 px-4 py-4">
           <p className="text-sm font-semibold text-teal-950">account</p>

@@ -201,9 +201,15 @@ export function VoucherPreview({
                 value={live.note.trim() || '—'}
                 wrap
               />
+              {live.lateDateChange ? (
+                <DetailCell
+                  label="Late date change"
+                  value="Charged · full price (Invoice) / head deduct (Prebuy)"
+                />
+              ) : null}
               {(live.lateChangeFee ?? 0) > 0 ? (
                 <DetailCell
-                  label="Late date-change fee"
+                  label="Late reduce fee"
                   value={formatThbAmount(live.lateChangeFee ?? 0)}
                 />
               ) : null}

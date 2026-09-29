@@ -2,14 +2,17 @@ import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/clie
 import {
   DEFAULT_INVOICE_SETTINGS,
   emptyAgencyRates,
+  invoicePayments,
   migrateInvoiceDocumentNumbers,
   normalizeInvoiceSettings,
   parseAgentBillingType,
+  parseInvoiceStatus,
   type AgencyInvoiceRates,
   type InvoiceDocument,
   type InvoiceItem,
   type InvoiceKind,
   type InvoiceLineKind,
+  type InvoicePayment,
   type InvoiceSettings,
   type InvoiceStatus,
   parsePaymentChannel,
@@ -65,6 +68,7 @@ type InvoiceRow = {
   linked_invoice_ids: unknown
   created_at: string
   send_to_agent?: boolean | null
+  payments?: unknown
 }
 
 type ItemRow = {
@@ -167,6 +171,11 @@ function normalizeRates(rates: AgencyInvoiceRates[]): AgencyInvoiceRates[] {
   }))
 }
 
+/** Sync read of agency rates (local cache) for ops that cannot await the store. */
+export function readLocalAgencyRates(): AgencyInvoiceRates[] {
+  return normalizeRates(readLocal<AgencyInvoiceRates[]>(RATES_KEY, []))
+}
+
 function mergeRatesWithLocal(
   cloudRates: AgencyInvoiceRates[],
   localRates: AgencyInvoiceRates[],
@@ -267,6 +276,37 @@ function parseLinkedIds(value: unknown): string[] {
   return []
 }
 
+function parsePayments(value: unknown): InvoicePayment[] {
+  const raw = (() => {
+    if (Array.isArray(value)) return value
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value) as unknown
+        return Array.isArray(parsed) ? parsed : []
+      } catch {
+        return []
+      }
+    }
+    return []
+  })()
+  return raw
+    .map((row) => {
+      const item = row as Partial<InvoicePayment>
+      const amount = Math.max(0, Math.round((Number(item.amount) || 0) * 100) / 100)
+      const paidDate = String(item.paidDate ?? '').slice(0, 10)
+      const channel = parsePaymentChannel(item.channel) ?? 'deduct_deposit'
+      if (!paidDate || amount <= 0) return null
+      return {
+        id: String(item.id || crypto.randomUUID()),
+        amount,
+        paidDate,
+        channel,
+        receiptNo: String(item.receiptNo ?? '').trim(),
+      } satisfies InvoicePayment
+    })
+    .filter((row): row is InvoicePayment => row != null)
+}
+
 function mapInvoice(row: InvoiceRow, items: InvoiceItem[]): InvoiceDocument {
   return {
     id: row.id,
@@ -275,7 +315,7 @@ function mapInvoice(row: InvoiceRow, items: InvoiceItem[]): InvoiceDocument {
     agentSlug: row.agent_slug,
     agentName: row.agent_name,
     issueDate: row.issue_date,
-    status: row.status,
+    status: parseInvoiceStatus(row.status),
     notes: row.notes ?? '',
     grandTotal: num(row.grand_total),
     paidAt: row.paid_at,
@@ -283,6 +323,7 @@ function mapInvoice(row: InvoiceRow, items: InvoiceItem[]): InvoiceDocument {
     receiptNo: row.receipt_no,
     linkedInvoiceIds: parseLinkedIds(row.linked_invoice_ids),
     items: items.slice().sort((a, b) => a.sortOrder - b.sortOrder),
+    payments: parsePayments(row.payments),
     createdAt: row.created_at,
     sendToAgent: row.send_to_agent === true,
   }
@@ -305,6 +346,7 @@ function invoiceToRow(doc: InvoiceDocument, includeChannel = true): InvoiceRow {
     linked_invoice_ids: doc.linkedInvoiceIds,
     created_at: doc.createdAt,
     send_to_agent: doc.sendToAgent === true,
+    payments: invoicePayments(doc),
   }
 }
 
@@ -490,13 +532,13 @@ export async function saveInvoiceDocument(doc: InvoiceDocument): Promise<{ error
     const row = invoiceToRow(doc)
     const { error: invoiceError } = await supabase.from('invoices').upsert(row)
     if (invoiceError) {
-      const missingColumn = /payment_channel|send_to_agent|schema cache|column/i.test(
+      const missingColumn = /payment_channel|send_to_agent|payments|schema cache|column/i.test(
         invoiceError.message,
       )
       if (missingColumn) {
-        const { send_to_agent: _send, ...withoutSend } = row
-        const retrySend = await supabase.from('invoices').upsert(withoutSend)
-        if (retrySend.error) {
+        const { send_to_agent: _send, payments: _payments, ...withoutExtras } = row
+        const retryExtras = await supabase.from('invoices').upsert(withoutExtras)
+        if (retryExtras.error) {
           const retry = await supabase.from('invoices').upsert(invoiceToRow(doc, false))
           if (retry.error) {
             console.warn('[supabase] invoice save failed', retry.error.message)

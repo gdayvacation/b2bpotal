@@ -62,9 +62,15 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
             <Item label="Extra Charge Transfer" value={booking.transferExtraCharge.trim()} />
           ) : null}
           <Item label="Cash on tour" value={booking.cashOnTour || '—'} />
+          {booking.lateDateChange ? (
+            <Item
+              label="Late date change"
+              value="Charged · full price (Invoice) / head deduct (Prebuy)"
+            />
+          ) : null}
           {(booking.lateChangeFee ?? 0) > 0 ? (
             <Item
-              label="Late date-change fee"
+              label="Late reduce fee"
               value={formatThbAmount(booking.lateChangeFee ?? 0)}
             />
           ) : null}

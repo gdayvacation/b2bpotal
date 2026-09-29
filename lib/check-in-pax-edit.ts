@@ -6,6 +6,7 @@ import {
   type InvoiceDocument,
   type InvoiceItem,
 } from '@/lib/invoice'
+import { THAI_PARK_FEE_THB } from '@/lib/nationalities'
 import { loadInvoiceStore, saveInvoiceDocuments } from '@/lib/supabase/invoice-db'
 import type { Booking } from '@/lib/types'
 
@@ -54,7 +55,10 @@ function snapshotAmount(item: Pick<InvoiceItem, 'adultPrice' | 'childPrice' | 'i
 
 function updateDeductHeads(description: string, pax: BookedPaxSnapshot) {
   const heads = Math.max(0, pax.adults) + Math.max(0, pax.children)
-  return description.replace(/deduct \d+ heads?/i, `deduct ${heads} head${heads === 1 ? '' : 's'}`)
+  if (/deduct \d+ heads?/i.test(description)) {
+    return description.replace(/deduct \d+ heads?/i, `deduct ${heads} head${heads === 1 ? '' : 's'}`)
+  }
+  return description
 }
 
 function applyPaxToItem(
@@ -86,6 +90,21 @@ function applyPaxToItem(
   if (item.lineKind === 'park_fee' && booking.program === 'PP' && booking.parkFee === 'Included') {
     const rates = parkFeeRates('PP')
     const park = parkFeeTotalWithThai('Not Included', 'PP', pax.adults, pax.children, thaiGuests)
+    const isThaiLine = /thai nationality/i.test(item.description)
+    if (isThaiLine) {
+      if (park.thaiAdults + park.thaiChildren <= 0) return null
+      return {
+        ...item,
+        adults: park.thaiAdults,
+        children: park.thaiChildren,
+        infants: 0,
+        tourLeaders: 0,
+        adultPrice: THAI_PARK_FEE_THB,
+        childPrice: THAI_PARK_FEE_THB,
+        amount: park.thaiAmount,
+        description: 'Thai nationality · National Park',
+      }
+    }
     if (park.foreignAdults + park.foreignChildren <= 0) return null
     return {
       ...item,
@@ -123,13 +142,52 @@ export function applyPaxChangeToInvoice(
       return applyPaxToItem(item, booking, pax, thaiGuests)
     })
     .filter((item): item is InvoiceItem => item != null)
-    .map((item, index) => ({ ...item, sortOrder: index }))
+
+  // If check-in found Thai seats after the bill was issued, add the 40 THB line.
+  if (
+    booking.program === 'PP' &&
+    booking.parkFee === 'Included' &&
+    booking.status !== 'Cancelled'
+  ) {
+    const park = parkFeeTotalWithThai('Not Included', 'PP', pax.adults, pax.children, thaiGuests)
+    const hasThaiLine = items.some(
+      (item) =>
+        item.bookingCode === booking.code &&
+        item.lineKind === 'park_fee' &&
+        /thai nationality/i.test(item.description),
+    )
+    if (!hasThaiLine && park.thaiAdults + park.thaiChildren > 0) {
+      items.push({
+        id: crypto.randomUUID(),
+        invoiceId: doc.id,
+        bookingCode: booking.code,
+        travelDate: booking.date,
+        voucherNo: items.find((item) => item.bookingCode === booking.code)?.voucherNo ?? '',
+        description: 'Thai nationality · National Park',
+        adults: park.thaiAdults,
+        children: park.thaiChildren,
+        infants: 0,
+        tourLeaders: 0,
+        adultPrice: THAI_PARK_FEE_THB,
+        childPrice: THAI_PARK_FEE_THB,
+        infantPrice: 0,
+        tourLeaderPrice: 0,
+        cot: 0,
+        amount: park.thaiAmount,
+        lineKind: 'park_fee',
+        sortOrder: items.length,
+        unit: 'Pax',
+      })
+    }
+  }
+
+  const ordered = items.map((item, index) => ({ ...item, sortOrder: index }))
 
   return {
     ...doc,
-    items,
+    items: ordered,
     notes: appendRemark(doc.notes, remark),
-    grandTotal: itemsAgentTotal(items),
+    grandTotal: itemsAgentTotal(ordered),
   }
 }
 
