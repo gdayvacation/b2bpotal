@@ -158,9 +158,27 @@ export const PARTNER_BOAT_THEME: BoatTheme = {
 }
 
 export function boatThemeFor(
-  plan: Pick<DayBoatPlan, 'capacities' | 'kinds' | 'names'> | null | undefined,
+  plan: Pick<DayBoatPlan, 'capacities' | 'kinds' | 'names' | 'labels'> | null | undefined,
   boat: BoatNumber,
 ): BoatTheme {
   if (plan && isPartnerBoat(plan, boat)) return PARTNER_BOAT_THEME
+  const override = String(plan?.labels?.[boat - 1] ?? '')
+    .trim()
+    .toLowerCase() as BoatColorKey
+  if (override && BOAT_COLOR_ORDER.includes(override)) {
+    return {
+      key: override,
+      fleetNumber: boatFleetNumber(boat),
+      ...THEMES[override],
+    }
+  }
   return boatTheme(boat)
+}
+
+export function boatColorOptions(): Array<{ key: BoatColorKey; colorName: string; swatch: string }> {
+  return BOAT_COLOR_ORDER.map((key) => ({
+    key,
+    colorName: THEMES[key].colorName,
+    swatch: THEMES[key].swatch,
+  }))
 }

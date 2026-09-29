@@ -57,7 +57,6 @@ import {
   sanitizeEnglishPassport,
 } from '@/lib/check-in-i18n'
 import {
-  SEQUENCE_START_PRESETS,
   formatSequenceRange,
   sequenceBoardLabel,
   sequenceForSeatOffset,
@@ -152,6 +151,7 @@ type InsuranceGuestRow = {
   birthday: string
   passportNumber: string
   hotel: string
+  isGuide?: boolean
 }
 
 type InsuranceProgramGroup = {
@@ -713,10 +713,14 @@ function InsuranceListTab({
         if (!fullName) continue
         list.push({
           key: `${booking.code}-${enrollment.id}`,
-          fullName,
+          fullName:
+            enrollment.scope === 'guide'
+              ? `${guestDisplayName(enrollment)} (Tour Group Guide)`
+              : guestDisplayName(enrollment),
           birthday: enrollment.birthday,
           passportNumber: enrollment.passportNumber || '',
           hotel,
+          isGuide: enrollment.scope === 'guide',
         })
       }
       byProgram.set(booking.program, list)
@@ -3345,10 +3349,18 @@ function GuestEditDialog({
     updateCheckInEnrollment,
     isCheckInGuestEditOpen,
     setCheckInGuestEditOpen,
+    getCheckInGroupGuide,
+    setCheckInGroupGuide,
   } = usePortal()
   const enrollments = booking
     ? getCheckInEnrollments(booking.date, booking.program, booking.code)
     : []
+  const savedGuideName = booking
+    ? getCheckInGroupGuide(booking.date, booking.program, booking.code)
+    : ''
+  const guideEnrollment = enrollments.find((item) => item.scope === 'guide') ?? null
+  const [guideDraft, setGuideDraft] = useState('')
+  const [guideSaved, setGuideSaved] = useState(false)
   const [activeId, setActiveId] = useState<string | null>(null)
   const [draft, setDraft] = useState({
     firstName: '',
@@ -3365,11 +3377,13 @@ function GuestEditDialog({
       setActiveId(null)
       setError('')
       setSaved(false)
+      setGuideSaved(false)
+      return
     }
-  }, [open])
+    setGuideDraft(savedGuideName)
+  }, [open, savedGuideName, booking?.code])
 
   function startEdit(enrollment: CheckInEnrollment) {
-    if (!booking) return
     setActiveId(enrollment.id)
     setDraft({
       firstName: enrollment.firstName,
@@ -3380,24 +3394,23 @@ function GuestEditDialog({
     })
     setError('')
     setSaved(false)
-    setCheckInGuestEditOpen(
-      booking.date,
-      booking.program,
-      booking.code,
-      enrollment.id,
-      true,
-    )
   }
 
-  function togglePhoneEdit(enrollment: CheckInEnrollment, open: boolean) {
+  function togglePhoneEdit(enrollment: CheckInEnrollment, openPhone: boolean) {
     if (!booking) return
     setCheckInGuestEditOpen(
       booking.date,
       booking.program,
       booking.code,
       enrollment.id,
-      open,
+      openPhone,
     )
+  }
+
+  function saveGuide() {
+    if (!booking) return
+    setCheckInGroupGuide(booking.date, booking.program, booking.code, guideDraft)
+    setGuideSaved(true)
   }
 
   function save() {
@@ -3448,8 +3461,8 @@ function GuestEditDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md" showCloseButton>
-        <DialogHeader>
+      <DialogContent className="flex max-h-[min(92vh,740px)] flex-col gap-3 overflow-hidden sm:max-w-md">
+        <DialogHeader className="shrink-0">
           <DialogTitle className="pr-8 font-display text-lg font-semibold text-teal-950">
             Edit guest information
           </DialogTitle>
@@ -3459,12 +3472,71 @@ function GuestEditDialog({
               : 'Fix checked-in guest details.'}
           </DialogDescription>
         </DialogHeader>
+
+        {booking ? (
+          <div className="shrink-0 space-y-2 rounded-xl border border-violet-200/80 bg-violet-50/50 px-3 py-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="group-guide-name" className="text-[11px] font-semibold text-violet-950">
+                Tour Group Guide
+              </Label>
+              {guideEnrollment ? (
+                <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-900">
+                  Checked in
+                </span>
+              ) : savedGuideName.trim() ? (
+                <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900">
+                  On QR
+                </span>
+              ) : null}
+            </div>
+            <p className="text-[11px] leading-snug text-violet-900/65">
+              Separate from Boat Guide. This is the agency/tour leader traveling with these
+              guests. After you save, they refresh the QR and use Tour Group Guide Check-in —
+              then they appear on Insurance.
+            </p>
+            <div className="flex gap-2">
+              <Input
+                id="group-guide-name"
+                className="h-9"
+                value={guideDraft}
+                onChange={(event) => {
+                  setGuideDraft(event.target.value)
+                  setGuideSaved(false)
+                }}
+                placeholder="Tour group guide full name"
+                aria-label="Tour Group Guide name"
+              />
+              <Button
+                type="button"
+                size="sm"
+                className="h-9 shrink-0"
+                onClick={saveGuide}
+                disabled={guideDraft.trim() === savedGuideName.trim()}
+              >
+                Save
+              </Button>
+            </div>
+            {guideSaved ? (
+              <p className="text-[11px] font-medium text-emerald-800">
+                Tour Group Guide saved — ask them to refresh the QR page.
+              </p>
+            ) : null}
+            {guideEnrollment ? (
+              <p className="truncate text-[11px] text-teal-900/55">
+                Passport: {guestDisplayName(guideEnrollment)}
+                {guideEnrollment.passportNumber ? ` · ${guideEnrollment.passportNumber}` : ''}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
         {enrollments.length === 0 ? (
-          <p className="text-sm text-teal-900/55">No guests checked in yet.</p>
+          <p className="shrink-0 text-sm text-teal-900/55">No guests checked in yet.</p>
         ) : (
-          <div className="space-y-2">
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-0.5">
             {enrollments.map((enrollment) => {
               const editing = activeId === enrollment.id
+              const isGuide = enrollment.scope === 'guide'
               return (
                 <div
                   key={enrollment.id}
@@ -3561,6 +3633,11 @@ function GuestEditDialog({
                       <div className="min-w-0">
                         <p className="truncate text-sm font-semibold text-teal-950">
                           {guestDisplayName(enrollment)}
+                          {isGuide ? (
+                            <span className="ml-1.5 rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-900">
+                              Tour Group Guide
+                            </span>
+                          ) : null}
                           {booking &&
                           isCheckInGuestEditOpen(
                             booking.date,
@@ -3636,6 +3713,7 @@ function GuestEditDialog({
     </Dialog>
   )
 }
+
 
 function BoardNoteField({
   note,
@@ -3872,34 +3950,9 @@ function SequenceCell({
               : 'Number shows after this guest checks in.'}
           </p>
         </div>
-        <div className="flex flex-wrap gap-1.5">
-          <button
-            type="button"
-            className="rounded-lg bg-teal-950/[0.06] px-2 py-1 text-[11px] font-semibold text-teal-900/70 hover:bg-teal-950/[0.1]"
-            onClick={() => {
-              onSetStart(null)
-              setOpen(false)
-            }}
-          >
-            Auto
-          </button>
-          {SEQUENCE_START_PRESETS.map((start) => (
-            <button
-              key={start}
-              type="button"
-              className="rounded-lg bg-teal-950/[0.06] px-2 py-1 text-[11px] font-semibold tabular-nums text-teal-900/70 hover:bg-teal-950/[0.1]"
-              onClick={() => {
-                onSetStart(start)
-                setOpen(false)
-              }}
-            >
-              {block ? formatSequenceRange(start, start + block.seats - 1) : String(start)}
-            </button>
-          ))}
-        </div>
         <div className="space-y-1.5">
           <Label htmlFor="sequence-start" className="text-[11px] text-teal-900/60">
-            Custom start
+            Start number
           </Label>
           <div className="flex gap-1.5">
             <Input
@@ -3908,7 +3961,7 @@ function SequenceCell({
               className="h-8 tabular-nums"
               value={custom}
               onChange={(event) => setCustom(event.target.value.replace(/[^\d]/g, '').slice(0, 4))}
-              placeholder="100"
+              placeholder="e.g. 1"
             />
             <Button
               type="button"
@@ -3926,6 +3979,18 @@ function SequenceCell({
           </div>
           {preview ? (
             <p className="text-[11px] tabular-nums text-teal-800/70">Preview {preview}</p>
+          ) : null}
+          {block?.overridden ? (
+            <button
+              type="button"
+              className="text-[11px] font-semibold text-teal-800/60 underline-offset-2 hover:underline"
+              onClick={() => {
+                onSetStart(null)
+                setOpen(false)
+              }}
+            >
+              Clear override (use auto order)
+            </button>
           ) : null}
         </div>
       </PopoverContent>

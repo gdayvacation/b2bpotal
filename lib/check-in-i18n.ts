@@ -52,6 +52,21 @@ const COPY = {
     howManyTitle: 'How many people you want to check in for?',
     howManySub:
       'Anyone with this QR can check in 1 person or several friends. All names stay on this same booking. Others can scan later for the rest.',
+    groupGuideCheckIn: 'Tour Group Guide Check-in',
+    groupGuideCheckInSub:
+      'For the tour group guide traveling with this booking only — not the marina boat guide. Guests use the options below.',
+    groupGuideContinue: 'Continue as tour group guide',
+    groupGuideDetails: 'Tour group guide details',
+    groupGuideDetailsSub:
+      'Passport details only — for QR check-in and the insurance list. No booking, billing, or national park payment on this step.',
+    groupGuideNote: ' (tour group guide)',
+    groupGuideFinish: 'Complete tour group guide check-in',
+    groupGuideSuccessTitle: 'Tour group guide checked in',
+    groupGuideSuccessBody:
+      'You are on this booking’s check-in and insurance list. No payment or park fee is collected here.',
+    groupGuideInsuranceTitle: 'Passport details for insurance only',
+    groupGuideInsuranceBody:
+      'Name, birthday, nationality, and passport must match your passport. This step does not charge park fees or booking payment.',
     guestCountLabel: 'Number of guests',
     continueWith: 'Continue with {count} guest{plural}',
     allRemaining: 'Check in for whole group',
@@ -197,6 +212,21 @@ const COPY = {
     howManyTitle: 'आप कितने लोगों का चेक-इन करना चाहते हैं?',
     howManySub:
       'इस QR से कोई भी 1 व्यक्ति या कई दोस्तों का चेक-इन कर सकता है। सभी नाम इसी बुकिंग में रहेंगे। बाकी लोग बाद में स्कैन कर सकते हैं।',
+    groupGuideCheckIn: 'टूर ग्रुप गाइड चेक-इन',
+    groupGuideCheckInSub:
+      'केवल इस बुकिंग के साथ आने वाले टूर ग्रुप गाइड के लिए — मरीना बोट गाइड के लिए नहीं। अतिथि नीचे के विकल्प से चेक-इन करें।',
+    groupGuideContinue: 'टूर ग्रुप गाइड के रूप में आगे बढ़ें',
+    groupGuideDetails: 'टूर ग्रुप गाइड की जानकारी',
+    groupGuideDetailsSub:
+      'केवल पासपोर्ट जानकारी — QR चेक-इन और बीमा सूची के लिए। इस चरण में बुकिंग, बिलिंग या नेशनल पार्क भुगतान नहीं है।',
+    groupGuideNote: ' (टूर ग्रुप गाइड)',
+    groupGuideFinish: 'टूर ग्रुप गाइड चेक-इन पूरा करें',
+    groupGuideSuccessTitle: 'टूर ग्रुप गाइड चेक-इन हो गया',
+    groupGuideSuccessBody:
+      'आप इस बुकिंग की चेक-इन और बीमा सूची में हैं। यहाँ कोई भुगतान या पार्क शुल्क नहीं लिया जाता।',
+    groupGuideInsuranceTitle: 'केवल बीमा के लिए पासपोर्ट जानकारी',
+    groupGuideInsuranceBody:
+      'नाम, जन्म तिथि, राष्ट्रीयता और पासपोर्ट पासपोर्ट से मिलने चाहिए। इस चरण में पार्क शुल्क या बुकिंग भुगतान नहीं है।',
     guestCountLabel: 'अतिथियों की संख्या',
     continueWith: '{count} अतिथि{plural} के साथ आगे बढ़ें',
     allRemaining: 'पूरे समूह का चेक-इन करें',

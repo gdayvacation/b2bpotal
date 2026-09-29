@@ -68,8 +68,17 @@ import {
   type DayCheckInNoteMap,
 } from '@/lib/check-in-notes'
 import {
+  CHECK_IN_GROUP_GUIDE_STORAGE_KEY,
+  getCheckInGroupGuide,
+  loadCheckInGroupGuideMap,
+  saveCheckInGroupGuideMap,
+  withCheckInGroupGuide,
+  type DayCheckInGroupGuideMap,
+} from '@/lib/check-in-group-guide'
+import {
   CHECK_IN_ENROLLMENT_STORAGE_KEY,
   enrolledSeatCount,
+  findGuideEnrollment,
   getCheckInEnrollments,
   loadCheckInEnrollmentMap,
   newEnrollmentId,
@@ -163,6 +172,7 @@ import {
   deleteBookingClosures,
   deleteCheckInAttendanceRow,
   deleteCheckInEnrollment,
+  deleteCheckInGroupGuideRow,
   deleteCheckInNoteRow,
   deleteCheckInPaymentRow,
   deleteCheckInTicketRow,
@@ -200,6 +210,7 @@ import {
   upsertCheckInAttendanceRow,
   upsertCheckInEnrollments,
   upsertCheckInNoteRow,
+  upsertCheckInGroupGuideRow,
   upsertCheckInPaymentRow,
   upsertCheckInSequenceStart,
   upsertCheckInTicketRow,
@@ -508,6 +519,13 @@ type PortalContextValue = {
   ) => void
   getCheckInNote: (date: string, program: Program, bookingCode: string) => string
   setCheckInNote: (date: string, program: Program, bookingCode: string, note: string) => void
+  getCheckInGroupGuide: (date: string, program: Program, bookingCode: string) => string
+  setCheckInGroupGuide: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    guideName: string,
+  ) => void
   getPickupNoShow: (date: string, program: Program, bookingCode: string) => BookedPaxSnapshot
   recordPickupNoShow: (
     date: string,
@@ -608,12 +626,17 @@ type PortalContextValue = {
     guide: Partial<BoatGuide>,
     options?: { persist?: boolean },
   ) => void
-  /** Append a boat for this day (default capacity 50, or a custom rental size). */
+  /** Append a boat for this day (default capacity 50, or a custom rental size/name/color). */
   addDayBoat: (
     date: string,
     program: Program,
     capacity?: number,
-    options?: { persist?: boolean },
+    options?: {
+      persist?: boolean
+      name?: string
+      /** Own-boat color key stored in labels (orange, green, …). */
+      color?: string
+    },
   ) => void
   /** Open an uncolored dummy boat for overflow sent to another company. */
   addPartnerBoat: (date: string, program: Program, options?: { persist?: boolean }) => void
@@ -714,7 +737,8 @@ function checkInMapsHaveData(maps: CheckInMapsSnapshot) {
     Object.keys(maps.services).length > 0 ||
     Object.keys(maps.sequences).length > 0 ||
     Object.keys(maps.guestEdits).length > 0 ||
-    Object.keys(maps.notes).length > 0
+    Object.keys(maps.notes).length > 0 ||
+    Object.keys(maps.groupGuides).length > 0
   )
 }
 
@@ -727,6 +751,7 @@ function applyCheckInMapsToStorage(maps: CheckInMapsSnapshot) {
   saveCheckInSequenceMap(maps.sequences)
   saveCheckInGuestEditMap(maps.guestEdits)
   saveCheckInNoteMap(maps.notes)
+  saveCheckInGroupGuideMap(maps.groupGuides)
 }
 
 export function PortalProvider({ children }: { children: ReactNode }) {
@@ -749,6 +774,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [checkInSequence, setCheckInSequenceMap] = useState<DayCheckInSequenceMap>({})
   const [checkInGuestEdit, setCheckInGuestEditMap] = useState<DayCheckInGuestEditMap>({})
   const [checkInNotes, setCheckInNoteMap] = useState<DayCheckInNoteMap>({})
+  const [checkInGroupGuides, setCheckInGroupGuideMap] = useState<DayCheckInGroupGuideMap>({})
   const [pickupNoShowMap, setPickupNoShowMap] = useState<BookedPaxMap>({})
   const [ownArrivalMap, setOwnArrivalMap] = useState<BookedPaxMap>({})
   const [jobOrderActionMap, setJobOrderActionMap] = useState<DayJobOrderActionMap>({})
@@ -846,9 +872,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     setCheckInNoteMap(
       Object.keys(maps.notes).length > 0 ? maps.notes : loadCheckInNoteMap(),
     )
+    setCheckInGroupGuideMap(
+      Object.keys(maps.groupGuides).length > 0
+        ? maps.groupGuides
+        : loadCheckInGroupGuideMap(),
+    )
     applyCheckInMapsToStorage({
       ...maps,
       notes: Object.keys(maps.notes).length > 0 ? maps.notes : loadCheckInNoteMap(),
+      groupGuides:
+        Object.keys(maps.groupGuides).length > 0
+          ? maps.groupGuides
+          : loadCheckInGroupGuideMap(),
     })
   }
 
@@ -880,6 +915,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     setCheckInSequenceMap(loadCheckInSequenceMap())
     setCheckInGuestEditMap(loadCheckInGuestEditMap())
     setCheckInNoteMap(loadCheckInNoteMap())
+    setCheckInGroupGuideMap(loadCheckInGroupGuideMap())
     setPickupNoShowMap(loadPickupNoShowMap())
     setOwnArrivalMap(loadOwnArrivalMap())
     setJobOrderActionMap(loadJobOrderActionMap())
@@ -1164,6 +1200,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       setCheckInSequenceMap(loadCheckInSequenceMap())
       setCheckInGuestEditMap(loadCheckInGuestEditMap())
       setCheckInNoteMap(loadCheckInNoteMap())
+      setCheckInGroupGuideMap(loadCheckInGroupGuideMap())
       setPickupNoShowMap(loadPickupNoShowMap())
       setOwnArrivalMap(loadOwnArrivalMap())
       setJobOrderActionMap(loadJobOrderActionMap())
@@ -1192,6 +1229,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             sequences: loadCheckInSequenceMap(),
             guestEdits: loadCheckInGuestEditMap(),
             notes: loadCheckInNoteMap(),
+            groupGuides: loadCheckInGroupGuideMap(),
           }
           // First cloud sync: upload this browser's local-only check-ins when remote is empty.
           if (!checkInMapsHaveData(remote) && checkInMapsHaveData(local)) {
@@ -1299,6 +1337,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         event.key === CHECK_IN_SEQUENCE_STORAGE_KEY ||
         event.key === CHECK_IN_GUEST_EDIT_STORAGE_KEY ||
         event.key === CHECK_IN_NOTE_STORAGE_KEY ||
+        event.key === CHECK_IN_GROUP_GUIDE_STORAGE_KEY ||
         event.key === CHECK_IN_BOOKED_PAX_STORAGE_KEY ||
         event.key === CHECK_IN_ARRIVED_PAX_STORAGE_KEY ||
         event.key === PICKUP_NS_STORAGE_KEY ||
@@ -1531,6 +1570,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       setCheckInNoteMap((current) => {
         const next = moveDayBookingEntry(current, oldDate, newDate, program, bookingCode)
         saveCheckInNoteMap(next)
+        return next
+      })
+      setCheckInGroupGuideMap((current) => {
+        const next = moveDayBookingEntry(current, oldDate, newDate, program, bookingCode)
+        saveCheckInGroupGuideMap(next)
         return next
       })
       setCheckInSequenceMap((current) => {
@@ -1885,6 +1929,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       }>
     }): { ok: true; count: number } | { ok: false; error: string } => {
       if (!input.guests.length) return { ok: false, error: 'Add at least one guest.' }
+      const isGuide = input.scope === 'guide'
+      if (isGuide && input.guests.length !== 1) {
+        return { ok: false, error: 'Tour group guide check-in is for one person only.' }
+      }
 
       const cleaned: CheckInEnrollment[] = []
       for (let index = 0; index < input.guests.length; index += 1) {
@@ -1935,16 +1983,31 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         input.program,
         input.bookingCode,
       )
-      const already = enrolledSeatCount(existing)
-      const seatsTotal = totalPassengers(booking)
-      if (already >= seatsTotal) {
-        return { ok: false, error: 'This booking is already fully checked in.' }
-      }
-      const remaining = Math.max(0, seatsTotal - already)
-      if (cleaned.length > remaining) {
-        return {
-          ok: false,
-          error: `Only ${remaining} seat${remaining === 1 ? '' : 's'} left to check in.`,
+      if (isGuide) {
+        const guideName = getCheckInGroupGuide(
+          checkInGroupGuides,
+          input.date,
+          input.program,
+          input.bookingCode,
+        ).trim()
+        if (!guideName) {
+          return { ok: false, error: 'No tour group guide was added for this booking.' }
+        }
+        if (findGuideEnrollment(existing)) {
+          return { ok: false, error: 'Tour group guide is already checked in.' }
+        }
+      } else {
+        const already = enrolledSeatCount(existing)
+        const seatsTotal = totalPassengers(booking)
+        if (already >= seatsTotal) {
+          return { ok: false, error: 'This booking is already fully checked in.' }
+        }
+        const remaining = Math.max(0, seatsTotal - already)
+        if (cleaned.length > remaining) {
+          return {
+            ok: false,
+            error: `Only ${remaining} seat${remaining === 1 ? '' : 's'} left to check in.`,
+          }
         }
       }
 
@@ -1967,22 +2030,26 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         upsertCheckInEnrollments(input.date, input.program, input.bookingCode, cleaned),
       )
 
-      if (already + cleaned.length >= seatsTotal) {
-        setCheckInAttendanceMap((current) => {
-          const next = withCheckInAttendance(
-            current,
-            input.date,
-            input.program,
-            input.bookingCode,
-            'checked',
+      if (!isGuide) {
+        const already = enrolledSeatCount(existing)
+        const seatsTotal = totalPassengers(booking)
+        if (already + cleaned.length >= seatsTotal) {
+          setCheckInAttendanceMap((current) => {
+            const next = withCheckInAttendance(
+              current,
+              input.date,
+              input.program,
+              input.bookingCode,
+              'checked',
+            )
+            saveCheckInAttendanceMap(next)
+            return next
+          })
+          persistCheckInWrite(
+            'upsertCheckInAttendance',
+            upsertCheckInAttendanceRow(input.date, input.program, input.bookingCode, 'checked'),
           )
-          saveCheckInAttendanceMap(next)
-          return next
-        })
-        persistCheckInWrite(
-          'upsertCheckInAttendance',
-          upsertCheckInAttendanceRow(input.date, input.program, input.bookingCode, 'checked'),
-        )
+        }
       }
 
       return { ok: true, count: cleaned.length }
@@ -2230,6 +2297,22 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           text
             ? upsertCheckInNoteRow(date, program, bookingCode, text)
             : deleteCheckInNoteRow(date, program, bookingCode),
+        )
+      },
+      getCheckInGroupGuide: (date, program, bookingCode) =>
+        getCheckInGroupGuide(checkInGroupGuides, date, program, bookingCode),
+      setCheckInGroupGuide: (date, program, bookingCode, guideName) => {
+        setCheckInGroupGuideMap((current) => {
+          const next = withCheckInGroupGuide(current, date, program, bookingCode, guideName)
+          saveCheckInGroupGuideMap(next)
+          return next
+        })
+        const text = guideName.trim()
+        persistCheckInWrite(
+          text ? 'upsertCheckInGroupGuide' : 'deleteCheckInGroupGuide',
+          text
+            ? upsertCheckInGroupGuideRow(date, program, bookingCode, text)
+            : deleteCheckInGroupGuideRow(date, program, bookingCode),
         )
       },
       getPickupNoShow: (date, program, bookingCode) =>
@@ -3378,9 +3461,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           (plan) => {
             const next = hydrateDayBoatPlan(plan)
             const index = boat - 1
-            if (index < 0 || index >= next.labels.length || next.kinds[index] !== 'partner') {
-              return plan
-            }
+            if (index < 0 || index >= next.labels.length) return plan
             next.labels[index] = label.trim().slice(0, 20)
             return next
           },
@@ -3430,11 +3511,14 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               1,
               Math.floor(capacity ?? DEFAULT_BOAT_CAPACITY) || DEFAULT_BOAT_CAPACITY,
             )
+            const color = String(options?.color ?? '')
+              .trim()
+              .toLowerCase()
             return {
               ...next,
               capacities: [...next.capacities, nextCap],
-              names: [...next.names, ''],
-              labels: [...next.labels, ''],
+              names: [...next.names, String(options?.name ?? '').trim().slice(0, 40)],
+              labels: [...next.labels, color.slice(0, 20)],
               kinds: [...next.kinds, 'own'],
               guides: [...next.guides, emptyBoatGuide()],
             }
@@ -4174,7 +4258,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
       },
     }
-  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
+  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, checkInGroupGuides, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }

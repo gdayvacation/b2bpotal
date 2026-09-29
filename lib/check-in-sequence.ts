@@ -265,6 +265,49 @@ export function sequenceJustCheckedInLabel(
     fullyChecked: boolean
   },
 ) {
-  if (!block || !options.fullyChecked) return null
-  return formatSequenceRange(block.start, block.end)
+  if (!block) return null
+  if (options.fullyChecked) {
+    return formatSequenceRange(block.start, block.end)
+  }
+  const just = Math.max(0, Math.floor(options.justChecked))
+  const already = Math.max(0, Math.floor(options.alreadyChecked))
+  if (just <= 0) return null
+  const from = block.start + already
+  if (from > block.end) return null
+  const to = Math.min(block.end, from + just - 1)
+  return formatSequenceRange(from, to)
+}
+
+/** Server-side sequence for a guest QR (bypasses guest booking RLS). */
+export async function fetchGuestTicketSequence(
+  bookingCode: string,
+): Promise<GuestSequenceBlock | null> {
+  const code = bookingCode.trim()
+  if (!code) return null
+  try {
+    const { getSupabaseBrowserClient, hasSupabaseConfig } = await import('@/lib/supabase/client')
+    if (!hasSupabaseConfig()) return null
+    const { data, error } = await getSupabaseBrowserClient().rpc('portal_guest_ticket_sequence', {
+      p_code: code,
+    })
+    if (error) {
+      console.warn('[check-in] ticket sequence rpc', error.message)
+      return null
+    }
+    const row = Array.isArray(data) ? data[0] : data
+    if (!row || typeof row !== 'object') return null
+    const start = Math.floor(Number((row as { start_number?: unknown }).start_number))
+    const end = Math.floor(Number((row as { end_number?: unknown }).end_number))
+    const seats = Math.floor(Number((row as { seats?: unknown }).seats))
+    if (!Number.isFinite(start) || start < 1) return null
+    return {
+      start,
+      end: Number.isFinite(end) && end >= start ? end : start,
+      seats: Number.isFinite(seats) && seats >= 1 ? seats : Math.max(1, end - start + 1),
+      overridden: false,
+    }
+  } catch (error) {
+    console.warn('[check-in] ticket sequence rpc failed', error)
+    return null
+  }
 }

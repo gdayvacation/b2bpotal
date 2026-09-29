@@ -23,7 +23,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { CheckInI18nProvider, CheckInLanguageSwitch, useCheckInI18n } from '@/components/check-in/check-in-i18n'
 import { NationalityCombobox } from '@/components/check-in/nationality-combobox'
-import { enrolledSeatCount, guestDisplayName } from '@/lib/check-in-enrollment'
+import { enrolledSeatCount, findGuideEnrollment, guestDisplayName } from '@/lib/check-in-enrollment'
+import { splitGuideDisplayName } from '@/lib/check-in-group-guide'
 import {
   CHECK_IN_SERVICE_KINDS,
   checkInServiceLabel,
@@ -31,7 +32,7 @@ import {
   type CheckInServiceKind,
   type CheckInServiceLine,
 } from '@/lib/check-in-services'
-import { sequenceJustCheckedInLabel } from '@/lib/check-in-sequence'
+import { sequenceJustCheckedInLabel, fetchGuestTicketSequence, type GuestSequenceBlock } from '@/lib/check-in-sequence'
 import { boatTheme } from '@/lib/boat-theme'
 import {
   isThaiNationality,
@@ -81,7 +82,7 @@ type Step =
   | 'edit'
 
 type FindMode = 'van' | 'hotel'
-type Scope = 'one' | 'group'
+type Scope = 'one' | 'group' | 'guide'
 
 type GuestDraft = {
   firstName: string
@@ -209,6 +210,7 @@ function GuestCheckInForm({
     resolveVanMeta,
     getCheckInEnrollments,
     getCheckInAttendance,
+    getCheckInGroupGuide,
     getGuestSequence,
     recordGuestCheckIns,
     updateCheckInEnrollment,
@@ -243,8 +245,10 @@ function GuestCheckInForm({
   const [error, setError] = useState('')
   const [detailsAttempted, setDetailsAttempted] = useState(false)
   const [doneNeedsPayment, setDoneNeedsPayment] = useState(false)
+  const [doneGuideOnly, setDoneGuideOnly] = useState(false)
   const [lockedReady, setLockedReady] = useState(!lockedCode)
   const [editEnrollmentId, setEditEnrollmentId] = useState<string | null>(null)
+  const [ticketSequence, setTicketSequence] = useState<GuestSequenceBlock | null>(null)
   const lockedBootstrappedRef = useRef(false)
 
   const detailsReady = guests.length > 0 && guests.every(guestDraftReady)
@@ -350,6 +354,15 @@ function GuestCheckInForm({
     ? remainingSeats === 0 ||
       getCheckInAttendance(tourDate, selectedBooking.program, selectedBooking.code) === 'checked'
     : false
+  const groupGuideName = selectedBooking
+    ? getCheckInGroupGuide(
+        selectedBooking.date,
+        selectedBooking.program,
+        selectedBooking.code,
+      ).trim()
+    : ''
+  const guideCheckedIn = Boolean(findGuideEnrollment(enrolled))
+  const guideCheckInAvailable = Boolean(groupGuideName) && !guideCheckedIn
   const marinaPaid = Boolean(
     selectedBooking &&
       getCheckInPayment(selectedBooking.date, selectedBooking.program, selectedBooking.code) ===
@@ -358,6 +371,35 @@ function GuestCheckInForm({
   const marinaServices = selectedBooking
     ? getCheckInServices(selectedBooking.date, selectedBooking.program, selectedBooking.code)
     : []
+
+  useEffect(() => {
+    if (step !== 'done' || !selectedBooking) {
+      setTicketSequence(null)
+      return
+    }
+    const local =
+      getGuestSequence(
+        selectedBooking.date,
+        selectedBooking.program,
+        selectedBooking.code,
+      ) ?? null
+    setTicketSequence(local)
+    let cancelled = false
+    void fetchGuestTicketSequence(selectedBooking.code).then((remote) => {
+      if (cancelled || !remote) return
+      setTicketSequence(remote)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    step,
+    selectedBooking?.code,
+    selectedBooking?.date,
+    selectedBooking?.program,
+    getGuestSequence,
+    bookings.length,
+  ])
 
   // Resolve locked QR booking once portal data is ready.
   useEffect(() => {
@@ -407,13 +449,25 @@ function GuestCheckInForm({
       getCheckInEnrollments(booking.date, booking.program, booking.code),
     )
     const attendance = getCheckInAttendance(booking.date, booking.program, booking.code)
-    if (attendance === 'checked' || already >= seats) {
+    const guideName = getCheckInGroupGuide(
+      booking.date,
+      booking.program,
+      booking.code,
+    ).trim()
+    const guideDone = Boolean(
+      findGuideEnrollment(
+        getCheckInEnrollments(booking.date, booking.program, booking.code),
+      ),
+    )
+    const guestsDone = attendance === 'checked' || already >= seats
+    if (guestsDone && !(guideName && !guideDone)) {
+      setDoneGuideOnly(false)
       setDoneNeedsPayment(
         paymentDue(
           booking,
-          getCheckInEnrollments(booking.date, booking.program, booking.code).map(
-            (item) => item.nationality,
-          ),
+          getCheckInEnrollments(booking.date, booking.program, booking.code)
+            .filter((item) => item.scope !== 'guide')
+            .map((item) => item.nationality),
         ).needsStaff,
       )
       setStep('done')
@@ -424,6 +478,7 @@ function GuestCheckInForm({
     bookings,
     getCheckInAttendance,
     getCheckInEnrollments,
+    getCheckInGroupGuide,
     getDayBoatPlan,
     hydrated,
     lockedCode,
@@ -472,28 +527,37 @@ function GuestCheckInForm({
     setDetailsAttempted(false)
     setError('')
     setDoneNeedsPayment(false)
+    setDoneGuideOnly(false)
     setEditEnrollmentId(null)
     if (isLocked && lockedBooking && isActiveBooking(lockedBooking)) {
       setProgram(lockedBooking.program)
       setBookingCode(lockedBooking.code)
       const seats = totalPassengers(lockedBooking)
-      const already = enrolledSeatCount(
-        getCheckInEnrollments(lockedBooking.date, lockedBooking.program, lockedBooking.code),
+      const enrolledList = getCheckInEnrollments(
+        lockedBooking.date,
+        lockedBooking.program,
+        lockedBooking.code,
       )
+      const already = enrolledSeatCount(enrolledList)
       const attendance = getCheckInAttendance(
         lockedBooking.date,
         lockedBooking.program,
         lockedBooking.code,
       )
-      if (attendance === 'checked' || already >= seats) {
+      const guideName = getCheckInGroupGuide(
+        lockedBooking.date,
+        lockedBooking.program,
+        lockedBooking.code,
+      ).trim()
+      const guideDone = Boolean(findGuideEnrollment(enrolledList))
+      const guestsDone = attendance === 'checked' || already >= seats
+      if (guestsDone && !(guideName && !guideDone)) {
         setDoneNeedsPayment(
           paymentDue(
             lockedBooking,
-            getCheckInEnrollments(
-              lockedBooking.date,
-              lockedBooking.program,
-              lockedBooking.code,
-            ).map((item) => item.nationality),
+            enrolledList
+              .filter((item) => item.scope !== 'guide')
+              .map((item) => item.nationality),
           ).needsStaff,
         )
         setStep('done')
@@ -524,23 +588,46 @@ function GuestCheckInForm({
     setStep('details')
   }
 
+  function beginGuideCheckIn() {
+    if (!selectedBooking || !guideCheckInAvailable) return
+    const split = splitGuideDisplayName(groupGuideName)
+    setPartySize(1)
+    setScope('guide')
+    setGuests([
+      {
+        ...emptyGuestDraft(),
+        firstName: sanitizeEnglishName(split.firstName),
+        lastName: sanitizeEnglishName(split.lastName),
+      },
+    ])
+    setDetailsAttempted(false)
+    setError('')
+    setStep('details')
+  }
+
   function openBooking(code: string) {
     const booking = dayBookings.find((item) => item.code === code)
     if (!booking) return
     const seats = totalPassengers(booking)
-    const enrolledCount = enrolledSeatCount(
-      getCheckInEnrollments(tourDate, booking.program, booking.code),
-    )
+    const enrolledList = getCheckInEnrollments(tourDate, booking.program, booking.code)
+    const enrolledCount = enrolledSeatCount(enrolledList)
     const attendance = getCheckInAttendance(tourDate, booking.program, booking.code)
-    const alreadyDone = attendance === 'checked' || enrolledCount >= seats
+    const guideName = getCheckInGroupGuide(
+      booking.date,
+      booking.program,
+      booking.code,
+    ).trim()
+    const guideDone = Boolean(findGuideEnrollment(enrolledList))
+    const guestsDone = attendance === 'checked' || enrolledCount >= seats
     setBookingCode(code)
-    if (alreadyDone) {
+    if (guestsDone && !(guideName && !guideDone)) {
+      setDoneGuideOnly(false)
       setDoneNeedsPayment(
         paymentDue(
           booking,
-          getCheckInEnrollments(tourDate, booking.program, booking.code).map(
-            (item) => item.nationality,
-          ),
+          enrolledList
+            .filter((item) => item.scope !== 'guide')
+            .map((item) => item.nationality),
         ).needsStaff,
       )
       setStep('done')
@@ -578,13 +665,37 @@ function GuestCheckInForm({
       return
     }
 
+    if (scope === 'guide') {
+      setDoneNeedsPayment(false)
+      setDoneGuideOnly(true)
+      setStep('done')
+      return
+    }
+
+    setDoneGuideOnly(false)
     setDoneNeedsPayment(
       paymentDue(
         selectedBooking,
-        payload.map((guest) => guest.nationality),
+        getCheckInEnrollments(
+          selectedBooking.date,
+          selectedBooking.program,
+          selectedBooking.code,
+        )
+          .filter((item) => item.scope !== 'guide')
+          .map((item) => item.nationality),
       ).needsStaff,
     )
     setStep('done')
+  }
+
+  function submitGuideDetails() {
+    setDetailsAttempted(true)
+    if (!detailsReady) {
+      setError(t('allFieldsRequired'))
+      return
+    }
+    setError('')
+    submitCheckIn()
   }
 
   function beginGuestEdit(enrollmentId?: string) {
@@ -931,12 +1042,29 @@ function GuestCheckInForm({
                 })}
               </p>
             </div>
+            {guideCheckInAvailable ? (
+              <div className="gday-sheet space-y-3 rounded-[1.5rem] border border-violet-200/80 bg-violet-50/50 p-5">
+                <div>
+                  <p className="text-sm font-semibold text-violet-950">{t('groupGuideCheckIn')}</p>
+                  <p className="mt-1 text-xs text-violet-900/70">{t('groupGuideCheckInSub')}</p>
+                </div>
+                <p className="text-sm font-medium text-violet-950">{groupGuideName}</p>
+                <Button
+                  className="h-12 w-full bg-violet-800 text-base text-white hover:bg-violet-700"
+                  onClick={beginGuideCheckIn}
+                >
+                  {t('groupGuideContinue')}
+                  <ChevronRight data-icon="inline-end" />
+                </Button>
+              </div>
+            ) : null}
             {fullyCheckedIn ? (
               <div className="space-y-3">
                 <EmptyNote text={t('alreadyCheckedIn')} />
                 <Button
                   className="h-12 w-full text-base"
                   onClick={() => {
+                    setDoneGuideOnly(false)
                     setDoneNeedsPayment(
                       paymentDue(
                         selectedBooking,
@@ -944,7 +1072,9 @@ function GuestCheckInForm({
                           selectedBooking.date,
                           selectedBooking.program,
                           selectedBooking.code,
-                        ).map((item) => item.nationality),
+                        )
+                          .filter((item) => item.scope !== 'guide')
+                          .map((item) => item.nationality),
                       ).needsStaff,
                     )
                     setStep('done')
@@ -1066,11 +1196,19 @@ function GuestCheckInForm({
         {step === 'details' && selectedBooking && scope ? (
           <section className="space-y-4">
             <StepHeading
-              title={scope === 'group' ? t('groupDetails') : t('yourDetails')}
+              title={
+                scope === 'guide'
+                  ? t('groupGuideDetails')
+                  : scope === 'group'
+                    ? t('groupDetails')
+                    : t('yourDetails')
+              }
               subtitle={
-                scope === 'group'
-                  ? t('groupDetailsSub', { count: guests.length })
-                  : t('yourDetailsSub')
+                scope === 'guide'
+                  ? t('groupGuideDetailsSub')
+                  : scope === 'group'
+                    ? t('groupDetailsSub', { count: guests.length })
+                    : t('yourDetailsSub')
               }
             />
             <div
@@ -1079,13 +1217,23 @@ function GuestCheckInForm({
             >
               <p className="font-semibold">{t('fillEnglishOnly')}</p>
             </div>
-            <div
-              role="alert"
-              className="rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3.5 text-sm leading-relaxed text-rose-900"
-            >
-              <p className="font-semibold text-rose-950">{t('passportOnlyTitle')}</p>
-              <p className="mt-1 text-rose-900/85">{t('passportOnlyBody')}</p>
-            </div>
+            {scope === 'guide' ? (
+              <div
+                role="alert"
+                className="rounded-2xl border border-violet-300 bg-violet-50 px-4 py-3.5 text-sm leading-relaxed text-violet-950"
+              >
+                <p className="font-semibold">{t('groupGuideInsuranceTitle')}</p>
+                <p className="mt-1 text-violet-900/85">{t('groupGuideInsuranceBody')}</p>
+              </div>
+            ) : (
+              <div
+                role="alert"
+                className="rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3.5 text-sm leading-relaxed text-rose-900"
+              >
+                <p className="font-semibold text-rose-950">{t('passportOnlyTitle')}</p>
+                <p className="mt-1 text-rose-900/85">{t('passportOnlyBody')}</p>
+              </div>
+            )}
             <div className="space-y-4">
               {guests.map((guest, index) => {
                 const birthdayOk = Boolean(
@@ -1141,7 +1289,7 @@ function GuestCheckInForm({
                       noMatchText={t('nationalityNoMatch')}
                       errorText={t('nationalityRequired')}
                     />
-                    {isThaiNationality(guest.nationality) ? (
+                    {scope !== 'guide' && isThaiNationality(guest.nationality) ? (
                       <ThaiParkFeeNote count={1} />
                     ) : null}
                     <BirthdayPickers
@@ -1195,6 +1343,10 @@ function GuestCheckInForm({
               <Button
                 className="h-12 w-full text-base"
                 onClick={() => {
+                  if (scope === 'guide') {
+                    submitGuideDetails()
+                    return
+                  }
                   setDetailsAttempted(true)
                   if (!detailsReady) {
                     setError(t('allFieldsRequired'))
@@ -1204,14 +1356,14 @@ function GuestCheckInForm({
                   setStep('confirm')
                 }}
               >
-                {t('next')}
+                {scope === 'guide' ? t('groupGuideFinish') : t('next')}
                 <ChevronRight data-icon="inline-end" />
               </Button>
             </div>
           </section>
         ) : null}
 
-        {step === 'confirm' && selectedBooking && scope ? (
+        {step === 'confirm' && selectedBooking && scope && scope !== 'guide' ? (
           <ConfirmStep
             booking={selectedBooking}
             guests={guests}
@@ -1357,6 +1509,26 @@ function GuestCheckInForm({
         ) : null}
 
         {step === 'done' ? (
+          doneGuideOnly ? (
+            <GuideDoneStep
+              guideName={
+                guests.some((guest) => guest.firstName.trim() || guest.lastName.trim())
+                  ? guestDisplayName(guests[0]!)
+                  : selectedBooking
+                    ? guestDisplayName(
+                        findGuideEnrollment(
+                          getCheckInEnrollments(
+                            selectedBooking.date,
+                            selectedBooking.program,
+                            selectedBooking.code,
+                          ),
+                        ) ?? { firstName: groupGuideName, lastName: '' },
+                      )
+                    : groupGuideName
+              }
+              onAgain={startOver}
+            />
+          ) : (
           <DoneStep
             needsPayment={doneNeedsPayment && !marinaPaid}
             paid={marinaPaid}
@@ -1372,7 +1544,7 @@ function GuestCheckInForm({
                         selectedBooking.date,
                         selectedBooking.program,
                         selectedBooking.code,
-                      )
+                      ).filter((item) => item.scope !== 'guide')
                       return enrolled.length > 0
                         ? enrolled
                         : guests.map((guest) => ({
@@ -1390,7 +1562,7 @@ function GuestCheckInForm({
                       selectedBooking.date,
                       selectedBooking.program,
                       selectedBooking.code,
-                    )
+                    ).filter((item) => item.scope !== 'guide')
                     return enrolled.length > 0
                       ? enrolled.map((item) => item.nationality)
                       : guests.map(
@@ -1414,11 +1586,12 @@ function GuestCheckInForm({
             sequenceLabel={
               selectedBooking
                 ? sequenceJustCheckedInLabel(
-                    getGuestSequence(
-                      selectedBooking.date,
-                      selectedBooking.program,
-                      selectedBooking.code,
-                    ),
+                    ticketSequence ??
+                      getGuestSequence(
+                        selectedBooking.date,
+                        selectedBooking.program,
+                        selectedBooking.code,
+                      ),
                     (() => {
                       const enrollments = getCheckInEnrollments(
                         selectedBooking.date,
@@ -1470,6 +1643,7 @@ function GuestCheckInForm({
                 : undefined
             }
           />
+          )
         ) : null}
       </main>
     </div>
@@ -1658,7 +1832,12 @@ function ConfirmStep({
             {t('checkingInGuests', {
               count: guests.length,
               plural: englishPlural(guests.length),
-              group: scope === 'group' ? t('wholeGroupNote') : '',
+              group:
+                scope === 'guide'
+                  ? t('groupGuideNote')
+                  : scope === 'group'
+                    ? t('wholeGroupNote')
+                    : '',
             })}
           </p>
           {guests.map((guest, index) => {
@@ -1705,6 +1884,37 @@ function ConfirmStep({
           {t('confirmFinish')}
         </Button>
       </div>
+    </section>
+  )
+}
+
+function GuideDoneStep({
+  guideName,
+  onAgain,
+}: {
+  guideName: string
+  onAgain: () => void
+}) {
+  const { t } = useCheckInI18n()
+  return (
+    <section className="gday-sheet space-y-5 rounded-[1.5rem] border border-violet-200/80 bg-gradient-to-br from-violet-50 via-white to-fuchsia-50 p-6 text-center">
+      <div className="mx-auto flex size-16 items-center justify-center rounded-full bg-violet-700 text-white shadow-lg shadow-violet-500/25">
+        <CheckCircle2 className="size-8" />
+      </div>
+      <div>
+        <h1 className="font-display text-2xl font-semibold text-violet-950">
+          {t('groupGuideSuccessTitle')}
+        </h1>
+        <p className="mt-2 text-sm leading-relaxed text-violet-950/70">
+          {t('groupGuideSuccessBody')}
+        </p>
+        {guideName.trim() ? (
+          <p className="mt-3 text-base font-semibold text-violet-950">{guideName.trim()}</p>
+        ) : null}
+      </div>
+      <Button variant="outline" className="h-11 w-full" onClick={onAgain}>
+        {t('back')}
+      </Button>
     </section>
   )
 }

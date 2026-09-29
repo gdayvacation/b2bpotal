@@ -31,6 +31,7 @@ import {
 } from '@/lib/check-in-sequence'
 import type { DayCheckInGuestEditMap } from '@/lib/check-in-guest-edit'
 import type { DayCheckInNoteMap } from '@/lib/check-in-notes'
+import type { DayCheckInGroupGuideMap } from '@/lib/check-in-group-guide'
 import {
   DEFAULT_DRIVERS,
   mergeDriverRoster,
@@ -1416,6 +1417,7 @@ export type CheckInMapsSnapshot = {
   sequences: DayCheckInSequenceMap
   guestEdits: DayCheckInGuestEditMap
   notes: DayCheckInNoteMap
+  groupGuides: DayCheckInGroupGuideMap
 }
 
 function isProgram(value: unknown): value is Program {
@@ -1425,7 +1427,7 @@ function isProgram(value: unknown): value is Program {
 function mapEnrollmentRow(row: CheckInEnrollmentRow): CheckInEnrollment | null {
   const id = String(row.id ?? '').trim()
   const firstName = String(row.first_name ?? '').trim()
-  const scope = row.scope === 'group' ? 'group' : row.scope === 'one' ? 'one' : null
+  const scope = row.scope === 'group' ? 'group' : row.scope === 'guide' ? 'guide' : row.scope === 'one' ? 'one' : null
   const checkedInAt = String(row.checked_in_at ?? '').trim()
   if (!id || !firstName || !scope || !checkedInAt) return null
   return {
@@ -1703,6 +1705,13 @@ type CheckInNoteRow = {
   note: string
 }
 
+type CheckInGroupGuideRow = {
+  date: string
+  program: Program
+  booking_code: string
+  guide_name: string
+}
+
 function buildCheckInNoteMap(rows: CheckInNoteRow[]): DayCheckInNoteMap {
   const next: DayCheckInNoteMap = {}
   for (const row of rows) {
@@ -1734,6 +1743,43 @@ function flattenCheckInNoteMap(map: DayCheckInNoteMap): CheckInNoteRow[] {
         program,
         booking_code: bookingCode,
         note: text,
+      })
+    }
+  }
+  return rows
+}
+
+function buildCheckInGroupGuideMap(rows: CheckInGroupGuideRow[]): DayCheckInGroupGuideMap {
+  const next: DayCheckInGroupGuideMap = {}
+  for (const row of rows) {
+    if (!isProgram(row.program)) continue
+    const bookingCode = String(row.booking_code ?? '').trim()
+    const guideName = String(row.guide_name ?? '').trim()
+    if (!bookingCode || !guideName) continue
+    const key = dayBoatPlanKey(asDateString(row.date), row.program)
+    const day = next[key] ?? {}
+    day[bookingCode] = guideName.slice(0, 80)
+    next[key] = day
+  }
+  return next
+}
+
+function flattenCheckInGroupGuideMap(map: DayCheckInGroupGuideMap): CheckInGroupGuideRow[] {
+  const rows: CheckInGroupGuideRow[] = []
+  for (const [dayKey, byCode] of Object.entries(map)) {
+    const sep = dayKey.indexOf('|')
+    if (sep <= 0) continue
+    const date = dayKey.slice(0, sep)
+    const program = dayKey.slice(sep + 1)
+    if (!isProgram(program)) continue
+    for (const [bookingCode, guideName] of Object.entries(byCode)) {
+      const text = guideName.trim()
+      if (!text) continue
+      rows.push({
+        date,
+        program,
+        booking_code: bookingCode,
+        guide_name: text.slice(0, 80),
       })
     }
   }
@@ -1812,7 +1858,7 @@ function flattenCheckInServiceMap(map: DayCheckInServiceMap): CheckInServiceRow[
 /** Returns null when core check-in tables are missing (migration not run yet). */
 export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
   const supabase = getSupabaseBrowserClient()
-  const [enrollmentsRes, attendanceRes, paymentsRes, servicesRes, sequencesRes, guestEditsRes, notesRes] =
+  const [enrollmentsRes, attendanceRes, paymentsRes, servicesRes, sequencesRes, guestEditsRes, notesRes, groupGuidesRes] =
     await Promise.all([
       supabase.from('check_in_enrollments').select('*'),
       supabase.from('check_in_attendance').select('*'),
@@ -1821,6 +1867,7 @@ export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
       supabase.from('check_in_sequences').select('*'),
       supabase.from('check_in_guest_edits').select('*'),
       supabase.from('check_in_notes').select('*'),
+      supabase.from('check_in_group_guides').select('*'),
     ])
 
   if (enrollmentsRes.error || attendanceRes.error || paymentsRes.error) {
@@ -1876,6 +1923,16 @@ export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
     notes = buildCheckInNoteMap(notesRes.data as CheckInNoteRow[])
   }
 
+  let groupGuides: DayCheckInGroupGuideMap = {}
+  if (groupGuidesRes.error) {
+    console.warn(
+      '[supabase] check_in_group_guides unavailable — run supabase/add-check-in-group-guides.sql',
+      groupGuidesRes.error.message,
+    )
+  } else {
+    groupGuides = buildCheckInGroupGuideMap(groupGuidesRes.data as CheckInGroupGuideRow[])
+  }
+
   const paymentRows = paymentsRes.data as CheckInPaymentRow[]
   const split = adoptLegacyPaymentsAsTickets(
     buildCheckInPaymentMap(paymentRows),
@@ -1891,6 +1948,7 @@ export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
     sequences,
     guestEdits,
     notes,
+    groupGuides,
   }
 
   if (split.migrated) {
@@ -2139,6 +2197,7 @@ export async function pushCheckInMaps(snapshot: CheckInMapsSnapshot) {
   const sequenceRows = flattenCheckInSequenceMap(snapshot.sequences)
   const guestEditRows = flattenCheckInGuestEditMap(snapshot.guestEdits)
   const noteRows = flattenCheckInNoteMap(snapshot.notes)
+  const groupGuideRows = flattenCheckInGroupGuideMap(snapshot.groupGuides)
 
   if (enrollmentRows.length > 0) {
     const { error } = await supabase.from('check_in_enrollments').upsert(enrollmentRows)
@@ -2171,6 +2230,10 @@ export async function pushCheckInMaps(snapshot: CheckInMapsSnapshot) {
   if (noteRows.length > 0) {
     const { error } = await supabase.from('check_in_notes').upsert(noteRows)
     if (error) throw new Error(`push check-in notes: ${error.message}`)
+  }
+  if (groupGuideRows.length > 0) {
+    const { error } = await supabase.from('check_in_group_guides').upsert(groupGuideRows)
+    if (error) throw new Error(`push check-in group guides: ${error.message}`)
   }
 }
 
@@ -2208,6 +2271,42 @@ export async function deleteCheckInNoteRow(
     .eq('program', program)
     .eq('booking_code', bookingCode)
   if (error) throw new Error(`delete check-in note: ${error.message}`)
+}
+
+export async function upsertCheckInGroupGuideRow(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  guideName: string,
+) {
+  const text = guideName.trim().slice(0, 80)
+  if (!text) {
+    await deleteCheckInGroupGuideRow(date, program, bookingCode)
+    return
+  }
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase.from('check_in_group_guides').upsert({
+    date,
+    program,
+    booking_code: bookingCode,
+    guide_name: text,
+  })
+  if (error) throw new Error(`upsert check-in group guide: ${error.message}`)
+}
+
+export async function deleteCheckInGroupGuideRow(
+  date: string,
+  program: Program,
+  bookingCode: string,
+) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase
+    .from('check_in_group_guides')
+    .delete()
+    .eq('date', date)
+    .eq('program', program)
+    .eq('booking_code', bookingCode)
+  if (error) throw new Error(`delete check-in group guide: ${error.message}`)
 }
 
 async function moveTableDate(
@@ -2248,6 +2347,9 @@ export async function moveCheckInBookingDate(
     booking_code: bookingCode,
   })
   await moveTableDate('check_in_notes', oldDate, newDate, program, {
+    booking_code: bookingCode,
+  })
+  await moveTableDate('check_in_group_guides', oldDate, newDate, program, {
     booking_code: bookingCode,
   })
   await moveTableDate('check_in_guest_edits', oldDate, newDate, program, {

@@ -945,7 +945,7 @@ export function AdminInvoices() {
                 : 'text-violet-900/55 hover:bg-white/70 hover:text-violet-950'
             }
           >
-            Send to Partner
+            Tour Partner Inv.
           </Segment>
         </SegmentedControl>
       </div>

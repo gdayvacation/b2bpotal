@@ -361,7 +361,7 @@ export function InvoiceDummyVanPanel({
       <Surface className="overflow-hidden">
         {rows.length === 0 ? (
           <EmptyState>
-            No Send to Partner bookings for {dateLabel}.
+            No Tour Partner bookings for {dateLabel}.
           </EmptyState>
         ) : (
           <div className="space-y-5 px-3 py-3 sm:px-4">

@@ -1,7 +1,7 @@
 import type { Program } from '@/lib/types'
 import { dayBoatPlanKey } from '@/lib/types'
 
-export type CheckInScope = 'one' | 'group'
+export type CheckInScope = 'one' | 'group' | 'guide'
 
 export type CheckInEnrollment = {
   id: string
@@ -12,7 +12,7 @@ export type CheckInEnrollment = {
   birthday: string
   passportNumber: string
   scope: CheckInScope
-  /** How many passenger seats this record covers. */
+  /** How many passenger seats this record covers. Guides use 0 (not a guest seat). */
   seats: number
   checkedInAt: string
 }
@@ -25,7 +25,11 @@ export const CHECK_IN_ENROLLMENT_STORAGE_KEY = 'gday-check-in-enrollment'
 const STORAGE_KEY = CHECK_IN_ENROLLMENT_STORAGE_KEY
 
 function isScope(value: unknown): value is CheckInScope {
-  return value === 'one' || value === 'group'
+  return value === 'one' || value === 'group' || value === 'guide'
+}
+
+export function isGuideEnrollment(enrollment: Pick<CheckInEnrollment, 'scope'>) {
+  return enrollment.scope === 'guide'
 }
 
 function normalizeEnrollment(raw: unknown): CheckInEnrollment | null {
@@ -37,9 +41,10 @@ function normalizeEnrollment(raw: unknown): CheckInEnrollment | null {
   const nationality = String(row.nationality ?? '').trim()
   const birthday = String(row.birthday ?? '').trim()
   const passportNumber = String(row.passportNumber ?? '').trim()
-  const seats = Math.max(1, Math.floor(Number(row.seats) || 1))
   const checkedInAt = String(row.checkedInAt ?? '').trim()
   if (!id || !firstName || !isScope(row.scope) || !checkedInAt) return null
+  const scope = row.scope
+  const seats = Math.max(1, Math.floor(Number(row.seats) || 1))
   return {
     id,
     firstName,
@@ -47,7 +52,7 @@ function normalizeEnrollment(raw: unknown): CheckInEnrollment | null {
     nationality,
     birthday,
     passportNumber,
-    scope: row.scope,
+    scope,
     seats,
     checkedInAt,
   }
@@ -98,7 +103,14 @@ export function getCheckInEnrollments(
 }
 
 export function enrolledSeatCount(enrollments: CheckInEnrollment[]) {
-  return enrollments.reduce((sum, item) => sum + item.seats, 0)
+  return enrollments.reduce(
+    (sum, item) => sum + (isGuideEnrollment(item) ? 0 : item.seats),
+    0,
+  )
+}
+
+export function findGuideEnrollment(enrollments: CheckInEnrollment[]) {
+  return enrollments.find((item) => isGuideEnrollment(item)) ?? null
 }
 
 export function withCheckInEnrollment(
@@ -150,7 +162,7 @@ export function withoutCheckInEnrollment(
   return next
 }
 
-/** Keep at most `maxSeats` enrolled seats (drops from the end). */
+/** Keep at most `maxSeats` enrolled seats (drops from the end). Guide enrollments are always kept. */
 export function trimCheckInEnrollmentsToSeats(
   map: DayCheckInEnrollmentMap,
   date: string,
@@ -161,18 +173,21 @@ export function trimCheckInEnrollmentsToSeats(
   const key = dayBoatPlanKey(date, program)
   const existing = map[key]?.[bookingCode] ?? []
   if (existing.length === 0) return map
+  const guides = existing.filter((item) => isGuideEnrollment(item))
+  const guests = existing.filter((item) => !isGuideEnrollment(item))
   const kept: CheckInEnrollment[] = []
   let seats = 0
-  for (const enrollment of existing) {
+  for (const enrollment of guests) {
     if (seats >= maxSeats) break
     const take = Math.min(enrollment.seats, maxSeats - seats)
     if (take <= 0) break
     kept.push(take === enrollment.seats ? enrollment : { ...enrollment, seats: take })
     seats += take
   }
+  const merged = [...kept, ...guides]
   const day = { ...(map[key] ?? {}) }
-  if (kept.length === 0) delete day[bookingCode]
-  else day[bookingCode] = kept
+  if (merged.length === 0) delete day[bookingCode]
+  else day[bookingCode] = merged
   const next = { ...map }
   if (Object.keys(day).length === 0) delete next[key]
   else next[key] = day

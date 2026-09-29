@@ -1197,7 +1197,33 @@ function GuestRow({
   max?: number
   onChange: (value: number) => void
 }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(String(value))
+  const inputRef = useRef<HTMLInputElement>(null)
   const atMax = max !== undefined && value >= max
+  const hardCap = max !== undefined ? max : 999
+
+  useEffect(() => {
+    if (!editing) return
+    const input = inputRef.current
+    if (!input) return
+    input.focus()
+    input.select()
+  }, [editing])
+
+  function startEdit() {
+    setDraft(String(value))
+    setEditing(true)
+  }
+
+  function commit(raw: string) {
+    const digits = raw.replace(/\D/g, '')
+    const parsed = digits === '' ? 0 : Number.parseInt(digits, 10)
+    const next = Number.isFinite(parsed) ? Math.min(hardCap, Math.max(0, parsed)) : 0
+    onChange(next)
+    setEditing(false)
+  }
+
   return (
     <div className="flex items-center justify-between border-b border-teal-900/6 py-4 last:border-0">
       <div>
@@ -1213,15 +1239,44 @@ function GuestRow({
         >
           <Minus />
         </Button>
-        <span className="w-7 text-center text-base font-semibold tabular-nums text-teal-950">
-          {value}
-        </span>
+        {editing ? (
+          <input
+            ref={inputRef}
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            aria-label={`${label} count`}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value.replace(/\D/g, '').slice(0, 3))}
+            onBlur={() => commit(draft)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                commit(draft)
+              }
+              if (event.key === 'Escape') {
+                event.preventDefault()
+                setEditing(false)
+              }
+            }}
+            className="h-10 w-14 rounded-xl border border-teal-700/35 bg-white text-center text-base font-semibold tabular-nums text-teal-950 outline-none ring-2 ring-teal-700/15"
+          />
+        ) : (
+          <button
+            type="button"
+            title="Click or tap to type a number"
+            onClick={startEdit}
+            className="min-w-7 rounded-lg px-1.5 py-1 text-center text-base font-semibold tabular-nums text-teal-950 transition-colors hover:bg-teal-950/[0.05]"
+          >
+            {value}
+          </button>
+        )}
         <Button
           variant="outline"
           size="icon"
           className="size-10 rounded-full"
           disabled={atMax}
-          onClick={() => onChange(max !== undefined ? Math.min(max, value + 1) : value + 1)}
+          onClick={() => onChange(Math.min(hardCap, value + 1))}
         >
           <Plus />
         </Button>

@@ -41,7 +41,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { formatLongDate, formatShortDate, formatThb, toISODate } from '@/lib/format'
-import { boatFleetNumber, boatTheme, boatThemeFor, PARTNER_BOAT_THEME } from '@/lib/boat-theme'
+import { boatFleetNumber, boatTheme, boatThemeFor, boatColorOptions, PARTNER_BOAT_THEME, type BoatColorKey } from '@/lib/boat-theme'
 import { usePortalDefaultDateISO } from '@/lib/use-portal-today'
 import {
   DEFAULT_BOAT_CAPACITY,
@@ -51,6 +51,7 @@ import {
   MAX_DAY_BOATS,
   boatDisplayName,
   boatNumbersForPlan,
+  defaultBoatLabel,
   canonicalVanOutsourceCompany,
   clampVanCapacity,
     bookingAssignedToBoat,
@@ -120,6 +121,39 @@ function insertCodeInList(codes: string[], fromIndex: number, insertAt: number) 
   next.splice(at, 0, moved)
   if (next.every((code, index) => code === codes[index])) return null
   return next
+}
+
+function confirmRemoveBoat({
+  boatPlan,
+  boat,
+  bookingCount,
+  pax,
+  totalBoats,
+}: {
+  boatPlan: DayBoatPlan
+  boat: BoatNumber
+  bookingCount: number
+  pax: number
+  totalBoats: number
+}) {
+  if (totalBoats <= 1) {
+    window.alert('Keep at least one boat for the day.')
+    return false
+  }
+  const name = boatDisplayName(boatPlan, boat)
+  if (bookingCount <= 0) {
+    return window.confirm(`Remove ${name}?`)
+  }
+  return window.confirm(
+    [
+      `Remove ${name}?`,
+      '',
+      `${bookingCount} booking${bookingCount === 1 ? '' : 's'} · ${pax} guest${pax === 1 ? '' : 's'} are still on this boat.`,
+      'They will be unassigned and must be placed on another boat.',
+      '',
+      'Continue and unassign these guests?',
+    ].join('\n'),
+  )
 }
 
 function LongPressCard({
@@ -1060,6 +1094,7 @@ function VehicleBoard({
     resolveVanMeta,
     addDayBoat,
     removeDayBoat,
+    setBoatCapacity,
     setBoatName,
     setBoatLabel,
     setBoatGuide,
@@ -1074,7 +1109,10 @@ function VehicleBoard({
   const [privateName, setPrivateName] = useState('')
   const [privateNumber, setPrivateNumber] = useState('')
   const [partnerCompany, setPartnerCompany] = useState('')
+  const [rentalOpen, setRentalOpen] = useState(false)
   const [rentalCapacity, setRentalCapacity] = useState(60)
+  const [rentalName, setRentalName] = useState('Rental')
+  const [rentalColor, setRentalColor] = useState<BoatColorKey>('amber')
   const [showAssistantFor, setShowAssistantFor] = useState<Record<number, boolean>>({})
   const [sheetQuery, setSheetQuery] = useState('')
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(() => new Set())
@@ -1551,7 +1589,7 @@ function VehicleBoard({
             </p>
             <p className="mt-1 text-sm text-teal-900/45">
               Step 1 · set every guest’s van type. Long-press a hotel card to separate vans or boats.
-              Step 2 · arrange boats. Step 3 · assign guides.
+              Step 2 · arrange boats. Step 3 · assign boat guides.
             </p>
           </div>
         </div>
@@ -2469,42 +2507,104 @@ function VehicleBoard({
                     Arrange boats
                   </h3>
                   <p className="mt-1 text-sm text-teal-900/55">
-                    Default 3 boats / day. Add a rental boat if you hire one. Partner tour boats
-                    come from Tour partner vans. No-transfer and private guests can be placed here
-                    too.
+                    Default 3 boats / day. Add a rental with seats, name, and color. Delete any
+                    boat — if guests are still on it, you get a warning first.
                   </p>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <div className="flex items-center gap-1.5 rounded-xl border border-teal-900/12 bg-white px-2 py-1">
-                    <input
-                      type="number"
-                      min={1}
-                      value={rentalCapacity}
-                      onChange={(event) => {
-                        const next = Number(event.target.value)
-                        if (Number.isFinite(next)) setRentalCapacity(Math.max(1, next))
-                      }}
-                      className="h-7 w-14 border-0 bg-transparent text-center text-sm font-medium text-teal-950 outline-none"
-                      aria-label="Rental boat capacity"
-                    />
+                <div className="flex flex-wrap items-start gap-2">
+                  {rentalOpen ? (
+                    <div className="w-full max-w-sm space-y-2 rounded-xl border border-teal-900/12 bg-white p-3 sm:w-72">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-teal-950">Add rental boat</p>
+                        <button
+                          type="button"
+                          className="text-teal-800/40 hover:text-teal-900"
+                          onClick={() => setRentalOpen(false)}
+                          aria-label="Close rental form"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="space-y-1">
+                          <span className="block text-[10px] font-medium text-teal-900/50">Seats</span>
+                          <Input
+                            type="number"
+                            min={1}
+                            max={200}
+                            value={rentalCapacity}
+                            onChange={(event) => {
+                              const next = Number(event.target.value)
+                              if (Number.isFinite(next)) setRentalCapacity(Math.max(1, Math.min(200, next)))
+                            }}
+                            className="h-8 px-2 text-sm"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="block text-[10px] font-medium text-teal-900/50">Name</span>
+                          <Input
+                            value={rentalName}
+                            onChange={(event) => setRentalName(event.target.value)}
+                            placeholder="Rental"
+                            className="h-8 px-2 text-sm"
+                          />
+                        </label>
+                      </div>
+                      <div className="space-y-1">
+                        <span className="block text-[10px] font-medium text-teal-900/50">Color</span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {boatColorOptions().map((option) => (
+                            <button
+                              key={option.key}
+                              type="button"
+                              title={option.colorName}
+                              onClick={() => setRentalColor(option.key)}
+                              className={cn(
+                                'size-6 rounded-full border-2 transition-transform',
+                                option.swatch,
+                                rentalColor === option.key
+                                  ? 'scale-110 border-teal-950'
+                                  : 'border-white/80 opacity-80 hover:opacity-100',
+                              )}
+                              aria-label={option.colorName}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="h-8 w-full"
+                        disabled={boatNumbers.length >= MAX_DAY_BOATS}
+                        onClick={() => {
+                          addDayBoat(date, program, rentalCapacity, {
+                            name: rentalName.trim() || 'Rental',
+                            color: rentalColor,
+                          })
+                          setRentalOpen(false)
+                          setRentalName('Rental')
+                          setRentalCapacity(60)
+                        }}
+                      >
+                        Add boat
+                      </Button>
+                    </div>
+                  ) : (
                     <Button
                       type="button"
                       size="sm"
-                      className="h-7"
+                      className="h-8"
                       disabled={boatNumbers.length >= MAX_DAY_BOATS}
-                      onClick={() => {
-                        const nextBoat = boatNumbers.length + 1
-                        addDayBoat(date, program, rentalCapacity)
-                        setBoatName(date, program, nextBoat, 'Rental')
-                      }}
+                      onClick={() => setRentalOpen(true)}
                     >
+                      <Plus data-icon="inline-start" />
                       Add rental boat
                     </Button>
-                  </div>
-                  <Button type="button" variant="outline" size="sm" onClick={onClearBoats}>
+                  )}
+                  <Button type="button" variant="outline" size="sm" className="h-8" onClick={onClearBoats}>
                     Clear boats
                   </Button>
-                  <Button type="button" size="sm" onClick={onAutoAssignBoats}>
+                  <Button type="button" size="sm" className="h-8" onClick={onAutoAssignBoats}>
                     <Sparkles data-icon="inline-start" />
                     Auto-assign boats
                   </Button>
@@ -2560,12 +2660,16 @@ function VehicleBoard({
                             type="button"
                             className="text-neutral-400 hover:text-rose-700"
                             title="Remove partner boat"
-                            onClick={() => {
+                            onClick={(event) => {
+                              event.stopPropagation()
                               if (
-                                items.length > 0 &&
-                                !window.confirm(
-                                  'Remove this partner boat? Guests return to the leftover list.',
-                                )
+                                !confirmRemoveBoat({
+                                  boatPlan,
+                                  boat,
+                                  bookingCount: items.length,
+                                  pax,
+                                  totalBoats: boatNumbers.length,
+                                })
                               ) {
                                 return
                               }
@@ -2685,16 +2789,26 @@ function VehicleBoard({
                       </div>
                     ) : (
                       <>
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-start justify-between gap-2">
                       <div className="flex min-w-0 items-start gap-1.5">
-                        <span className={cn('mt-1 size-2.5 shrink-0 rounded-full', theme.swatch)} />
-                        <div className="min-w-0">
-                          <p className={cn('truncate text-sm font-semibold leading-tight', theme.title)}>
-                            {boatDisplayName(boatPlan, boat)}
-                          </p>
+                        <span className={cn('mt-1.5 size-2.5 shrink-0 rounded-full', theme.swatch)} />
+                        <div className="min-w-0 space-y-1">
+                          <Input
+                            value={boatPlan.names[boat - 1] ?? ''}
+                            onChange={(event) =>
+                              setBoatName(date, program, boat, event.target.value)
+                            }
+                            onClick={(event) => event.stopPropagation()}
+                            placeholder={defaultBoatLabel(boat)}
+                            className={cn(
+                              'h-7 border-0 bg-transparent px-0 text-sm font-semibold shadow-none focus-visible:ring-0',
+                              theme.title,
+                            )}
+                            aria-label={`Boat ${boat} name`}
+                          />
                           <span
                             className={cn(
-                              'mt-0.5 inline-flex rounded px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide',
+                              'inline-flex rounded px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide',
                               theme.softBadge,
                             )}
                           >
@@ -2702,18 +2816,88 @@ function VehicleBoard({
                           </span>
                         </div>
                       </div>
-                      <span
-                        className={cn(
-                          'rounded-md px-2 py-0.5 text-xs font-semibold tabular-nums',
-                          over ? 'bg-amber-100 text-amber-900' : 'bg-white/80 text-teal-800',
-                        )}
-                      >
-                        {pax}/{boatCap}
-                      </span>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <span
+                          className={cn(
+                            'rounded-md px-2 py-0.5 text-xs font-semibold tabular-nums',
+                            over ? 'bg-amber-100 text-amber-900' : 'bg-white/80 text-teal-800',
+                          )}
+                        >
+                          {pax}/{boatCap}
+                        </span>
+                        <button
+                          type="button"
+                          className="rounded-md p-1 text-teal-800/35 hover:bg-white/70 hover:text-rose-700"
+                          title="Remove boat"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            if (
+                              !confirmRemoveBoat({
+                                boatPlan,
+                                boat,
+                                bookingCount: items.length,
+                                pax,
+                                totalBoats: boatNumbers.length,
+                              })
+                            ) {
+                              return
+                            }
+                            removeDayBoat(date, program, boat)
+                          }}
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      </div>
                     </div>
-                    <p className="mt-1 text-xs text-teal-900/50">
+                    <div
+                      className="mt-2 grid grid-cols-[4.5rem_minmax(0,1fr)] gap-2"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <label className="space-y-0.5">
+                        <span className="block text-[10px] font-medium text-teal-900/45">Seats</span>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={200}
+                          value={boatCap}
+                          onChange={(event) => {
+                            const next = Number(event.target.value)
+                            if (!Number.isFinite(next)) return
+                            setBoatCapacity(date, program, boat, Math.max(1, Math.min(200, next)))
+                          }}
+                          className="h-7 px-2 text-sm tabular-nums"
+                        />
+                      </label>
+                      <div className="space-y-0.5">
+                        <span className="block text-[10px] font-medium text-teal-900/45">Color</span>
+                        <div className="flex flex-wrap gap-1 pt-0.5">
+                          {boatColorOptions().map((option) => {
+                            const selected = theme.key === option.key
+                            return (
+                              <button
+                                key={option.key}
+                                type="button"
+                                title={option.colorName}
+                                onClick={() => setBoatLabel(date, program, boat, option.key)}
+                                className={cn(
+                                  'size-5 rounded-full border-2 transition-transform',
+                                  option.swatch,
+                                  selected
+                                    ? 'scale-110 border-teal-950'
+                                    : 'border-white/70 opacity-75 hover:opacity-100',
+                                )}
+                                aria-label={option.colorName}
+                              />
+                            )
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                    <p className="mt-2 text-xs text-teal-900/50">
                       {items.length} booking{items.length === 1 ? '' : 's'}
-                      {boatPlan.names[boat - 1]?.trim() === 'Rental' ? ' · Rental' : ''}
+                      {(boatPlan.names[boat - 1] ?? '').trim().toLowerCase().includes('rental')
+                        ? ' · Rental'
+                        : ''}
                     </p>
                     {selectedList.length > 0 ? (
                       <p className="mt-1 text-[11px] font-medium text-teal-800">
@@ -2806,12 +2990,15 @@ function VehicleBoard({
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0">
                   <p className="text-xs font-semibold tracking-[0.14em] text-teal-700/55 uppercase">
-                    Step 3 · Guides
+                    Step 3 · Boat Guides
                   </p>
-                  <h3 className="mt-1 text-lg font-semibold text-teal-950">Assign a guide to each boat</h3>
+                  <h3 className="mt-1 text-lg font-semibold text-teal-950">
+                    Assign a boat guide to each boat
+                  </h3>
                   <p className="mt-1 text-sm text-teal-900/55">
-                    Gday boats only. Tour partner boats bring their own guide. Check-in boat
-                    changes and extras print on the Guide JO.
+                    Gday boat staff only — not the tour group guide on a booking QR. Tour partner
+                    boats bring their own guide. Check-in boat changes and extras print on the Boat
+                    Guide JO.
                   </p>
                 </div>
                 <Button
@@ -2821,7 +3008,7 @@ function VehicleBoard({
                   onClick={() => printGuideJobOrder(date, program)}
                 >
                   <Printer className="size-3" />
-                  Print Guide JO
+                  Print Boat Guide JO
                 </Button>
               </div>
               <div
@@ -2866,27 +3053,27 @@ function VehicleBoard({
                         </div>
                         {guideAssigned ? (
                           <span className="shrink-0 rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-emerald-900 uppercase">
-                            Guide set
+                            Boat guide set
                           </span>
                         ) : null}
                       </div>
                       <div className="mt-3 space-y-2">
                         <label className="block">
                           <span className="text-[11px] font-semibold tracking-wide text-teal-800/55 uppercase">
-                            Guide name
+                            Boat guide name
                           </span>
                           <Input
                             value={guide.guideName}
                             onChange={(event) =>
                               setBoatGuide(date, program, boat, { guideName: event.target.value })
                             }
-                            placeholder="Guide full name"
+                            placeholder="Boat guide full name"
                             className="mt-1 h-9"
                           />
                         </label>
                         <label className="block">
                           <span className="text-[11px] font-semibold tracking-wide text-teal-800/55 uppercase">
-                            Guide phone
+                            Boat guide phone
                           </span>
                           <Input
                             value={guide.guidePhone}
@@ -2901,7 +3088,7 @@ function VehicleBoard({
                           <>
                             <label className="block">
                               <span className="text-[11px] font-semibold tracking-wide text-teal-800/55 uppercase">
-                                Assistant
+                                Boat assistant
                               </span>
                               <Input
                                 value={guide.assistantName}
@@ -2910,7 +3097,7 @@ function VehicleBoard({
                                     assistantName: event.target.value,
                                   })
                                 }
-                                placeholder="Assistant name"
+                                placeholder="Boat assistant name"
                                 className="mt-1 h-9"
                               />
                             </label>
@@ -2921,7 +3108,7 @@ function VehicleBoard({
                                   assistantPhone: event.target.value,
                                 })
                               }
-                              placeholder="Assistant phone"
+                              placeholder="Boat assistant phone"
                               className="h-9"
                             />
                           </>
@@ -2933,7 +3120,7 @@ function VehicleBoard({
                               setShowAssistantFor((current) => ({ ...current, [boat]: true }))
                             }
                           >
-                            + Add assistant guide
+                            + Add boat assistant
                           </button>
                         )}
                       </div>

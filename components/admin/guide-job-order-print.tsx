@@ -117,10 +117,14 @@ export function GuideJobOrderPrint({
                 (sum, booking) => sum + vanPaxOnThisBoat(booking, van),
                 0,
               )
+              const plate = meta.plate.trim()
+              const phone = meta.phone.trim()
               const titleBits = [
                 isNoTransferVan(van) ? 'No Transfers' : `Van ${van}`,
                 `${pax} pax`,
-                meta.driver ? `Driver ${meta.driver}` : '',
+                meta.driver.trim() ? `Driver ${meta.driver.trim()}` : '',
+                plate ? `Plate ${plate}` : '',
+                phone ? `Tel ${phone}` : '',
               ].filter(Boolean)
               return {
                 key: `print-van-${boat}-${van}`,
@@ -213,7 +217,7 @@ export function GuideJobOrderPrint({
               <div className="guide-jo-header mb-3 flex items-start justify-between gap-4 border-b-2 border-teal-900/30 pb-3">
                 <div className="min-w-0 flex-1">
                   <p className="text-[8px] font-bold tracking-[0.16em] text-teal-800 uppercase">
-                    G&apos;Day Tours Phuket · Guide Job Order
+                    G&apos;Day Tours Phuket · Boat Guide Job Order
                   </p>
                   <h1 className="mt-1 text-[15px] leading-snug font-bold text-teal-950">
                     <span
@@ -230,7 +234,7 @@ export function GuideJobOrderPrint({
                 </div>
                 <div className="guide-jo-contact w-[13.5rem] shrink-0 rounded-md border border-teal-900/25 bg-teal-50/60 px-3 py-2.5">
                   <p className="text-[8px] font-bold tracking-[0.14em] text-teal-800/70 uppercase">
-                    Guide
+                    Boat Guide
                   </p>
                   <p className="mt-1 text-[13px] leading-tight font-bold text-teal-950">
                     {guide.guideName.trim() || '—'}
@@ -241,7 +245,7 @@ export function GuideJobOrderPrint({
                   {guide.assistantName.trim() || guide.assistantPhone.trim() ? (
                     <div className="mt-2 border-t border-teal-900/15 pt-2">
                       <p className="text-[8px] font-bold tracking-[0.14em] text-teal-800/70 uppercase">
-                        Assistant
+                        Boat Assistant
                       </p>
                       <p className="mt-1 text-[12px] leading-tight font-bold text-teal-950">
                         {guide.assistantName.trim() || '—'}
