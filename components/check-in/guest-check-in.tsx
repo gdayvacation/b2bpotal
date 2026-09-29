@@ -32,7 +32,11 @@ import {
   type CheckInServiceKind,
   type CheckInServiceLine,
 } from '@/lib/check-in-services'
-import { sequenceJustCheckedInLabel, fetchGuestTicketSequence, type GuestSequenceBlock } from '@/lib/check-in-sequence'
+import {
+  fetchGuestTicketSequence,
+  sequenceJustCheckedInLabel,
+  type GuestSequenceBlock,
+} from '@/lib/check-in-sequence'
 import { boatTheme } from '@/lib/boat-theme'
 import {
   isThaiNationality,
@@ -211,7 +215,6 @@ function GuestCheckInForm({
     getCheckInEnrollments,
     getCheckInAttendance,
     getCheckInGroupGuide,
-    getGuestSequence,
     recordGuestCheckIns,
     updateCheckInEnrollment,
     getCheckInGuestEditIds,
@@ -372,34 +375,24 @@ function GuestCheckInForm({
     ? getCheckInServices(selectedBooking.date, selectedBooking.program, selectedBooking.code)
     : []
 
+  // Guest RLS only sees this booking, so local sequence math always starts at 1.
+  // Only the security-definer RPC has the real marina order — never flash local first.
   useEffect(() => {
     if (step !== 'done' || !selectedBooking) {
       setTicketSequence(null)
       return
     }
-    const local =
-      getGuestSequence(
-        selectedBooking.date,
-        selectedBooking.program,
-        selectedBooking.code,
-      ) ?? null
-    setTicketSequence(local)
+    const code = selectedBooking.code
     let cancelled = false
-    void fetchGuestTicketSequence(selectedBooking.code).then((remote) => {
-      if (cancelled || !remote) return
+    setTicketSequence(null)
+    void fetchGuestTicketSequence(code).then((remote) => {
+      if (cancelled) return
       setTicketSequence(remote)
     })
     return () => {
       cancelled = true
     }
-  }, [
-    step,
-    selectedBooking?.code,
-    selectedBooking?.date,
-    selectedBooking?.program,
-    getGuestSequence,
-    bookings.length,
-  ])
+  }, [step, selectedBooking?.code])
 
   // Resolve locked QR booking once portal data is ready.
   useEffect(() => {
@@ -1584,37 +1577,29 @@ function GuestCheckInForm({
                   : []
             }
             sequenceLabel={
-              selectedBooking
-                ? sequenceJustCheckedInLabel(
-                    ticketSequence ??
-                      getGuestSequence(
-                        selectedBooking.date,
-                        selectedBooking.program,
-                        selectedBooking.code,
-                      ),
-                    (() => {
-                      const enrollments = getCheckInEnrollments(
-                        selectedBooking.date,
-                        selectedBooking.program,
-                        selectedBooking.code,
-                      )
-                      const checked = enrolledSeatCount(enrollments)
-                      const justChecked = guests.filter(
-                        (guest) => guest.firstName.trim() || guest.lastName.trim(),
-                      ).length
-                      const seats = totalPassengers(selectedBooking)
-                      return {
-                        alreadyChecked: Math.max(0, checked - justChecked),
-                        justChecked: justChecked || checked,
-                        fullyChecked:
-                          getCheckInAttendance(
-                            selectedBooking.date,
-                            selectedBooking.program,
-                            selectedBooking.code,
-                          ) === 'checked' || checked >= seats,
-                      }
-                    })(),
-                  )
+              selectedBooking && ticketSequence
+                ? sequenceJustCheckedInLabel(ticketSequence, (() => {
+                    const enrollments = getCheckInEnrollments(
+                      selectedBooking.date,
+                      selectedBooking.program,
+                      selectedBooking.code,
+                    )
+                    const checked = enrolledSeatCount(enrollments)
+                    const justChecked = guests.filter(
+                      (guest) => guest.firstName.trim() || guest.lastName.trim(),
+                    ).length
+                    const seats = totalPassengers(selectedBooking)
+                    return {
+                      alreadyChecked: Math.max(0, checked - justChecked),
+                      justChecked: justChecked || checked,
+                      fullyChecked:
+                        getCheckInAttendance(
+                          selectedBooking.date,
+                          selectedBooking.program,
+                          selectedBooking.code,
+                        ) === 'checked' || checked >= seats,
+                    }
+                  })())
                 : null
             }
             boat={
