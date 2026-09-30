@@ -4,10 +4,11 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { cn } from 'cn'
-import { ArrowDown, ArrowUp, ArrowUpDown, CalendarIcon, ChevronDown, FileText, Printer, Settings2, Share2, Trash2, Undo2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpDown, CalendarIcon, ChevronDown, Download, FileText, Printer, RefreshCw, Search, Settings2, Share2, Trash2, Undo2, X } from 'lucide-react'
 import { InvoiceEditDialog } from '@/components/admin/admin-invoice-edit-dialog'
 import { InvoiceDummyVanPanel } from '@/components/admin/admin-invoice-dummy-van'
 import { InvoicePrintSheet } from '@/components/admin/admin-invoice-print'
+import { InvoiceMonthlySummary } from '@/components/admin/admin-invoice-summary'
 import { useInvoiceStore } from '@/components/admin/use-invoice-store'
 import { usePortal } from '@/components/portal-provider'
 import {
@@ -40,6 +41,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import {
+  DEFAULT_NATIONAL_PARK_FEE,
+  NO_TRANSFER_DISCOUNT_PER_PERSON,
   agencyRatesReady,
   formatAgentBillingType,
   buildInvoiceItemsForBooking,
@@ -60,6 +63,7 @@ import {
   itemsAgentTotal,
   itemsGuestTotal,
   majorityProgram,
+  newCreditNoteFromInvoice,
   newInvoiceDocument,
   parseAgentBillingType,
   prebuyDeductHeads,
@@ -69,18 +73,27 @@ import {
   type PaymentChannel,
 } from '@/lib/invoice'
 import {
+  buildInvoiceShareText,
+  downloadInvoiceCsv,
+  downloadInvoiceXlsx,
+  invoiceExportFilename,
+  invoicesToExportRows,
+} from '@/lib/invoice-export'
+import { loadPrebuyHeadBalance } from '@/lib/prebuy-allotment-sync'
+import {
   bookingOnPartnerBoat,
   formatPaxBreakdown,
+  isNoTransfer,
   type Booking,
   type Program,
 } from '@/lib/types'
 import { bookingNotesForInvoice } from '@/lib/check-in-pax-edit'
-import { addDaysISO, dateFromISO, formatIncludeShort, formatShortDate, thaiParkSeatsFromGuests, todayISO, toISODate } from '@/lib/format'
+import { addDaysISO, dateFromISO, formatShortDate, thaiParkSeatsFromGuests, todayISO, toISODate } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 
-type Tab = 'bills' | 'dummy' | 'documents' | 'notes' | 'receipts'
-type PrintMode = 'invoice' | 'billing_note' | 'receipt'
-type BillSortKey = 'agent'
+type Tab = 'bills' | 'dummy' | 'documents' | 'notes' | 'credits' | 'receipts' | 'summary'
+type PrintMode = 'invoice' | 'billing_note' | 'receipt' | 'credit_note'
+type BillSortKey = 'agent' | 'type'
 type BillProgram = Program
 type SortDir = 'asc' | 'desc'
 
@@ -90,13 +103,59 @@ function isTab(value: string | null): value is Tab {
     value === 'dummy' ||
     value === 'documents' ||
     value === 'notes' ||
-    value === 'receipts'
+    value === 'credits' ||
+    value === 'receipts' ||
+    value === 'summary'
   )
+}
+
+function normalizeInvoiceSearch(value: string) {
+  return value.trim().toLowerCase()
+}
+
+function haystackIncludes(query: string, parts: Array<string | null | undefined>) {
+  if (!query) return true
+  return parts.some((part) => (part ?? '').toLowerCase().includes(query))
+}
+
+function bookingMatchesInvoiceSearch(booking: Booking, query: string) {
+  return haystackIncludes(query, [
+    booking.code,
+    booking.agentName,
+    booking.agentSlug,
+    booking.leadGuest,
+    booking.agentRef,
+    booking.pickupHotel,
+    booking.note,
+    booking.program,
+  ])
+}
+
+function documentMatchesInvoiceSearch(
+  doc: InvoiceDocument,
+  query: string,
+  guestByCode: Map<string, string>,
+) {
+  return haystackIncludes(query, [
+    doc.number,
+    doc.receiptNo,
+    doc.agentName,
+    doc.agentSlug,
+    doc.notes,
+    ...invoicePayments(doc).flatMap((payment) => [payment.receiptNo, payment.channel]),
+    ...doc.items.flatMap((item) => [
+      item.bookingCode,
+      item.voucherNo,
+      item.description,
+      guestByCode.get(item.bookingCode),
+    ]),
+  ])
 }
 
 function sheetMode(doc: InvoiceDocument, tab: Tab): PrintMode {
   if (tab === 'receipts') return 'receipt'
   if (doc.kind === 'billing_note') return 'billing_note'
+  if (doc.kind === 'credit_note') return 'credit_note'
   return 'invoice'
 }
 
@@ -116,6 +175,9 @@ type BillRow = {
   guestCollect: number
   parkCharge: number
   extraCharge: number
+  /** Invoice + No Transfer only: AD+CH × 100 discount (positive number). */
+  noTransferDiscount: number
+  noTransfer: boolean
   amountStale: boolean
   hasRates: boolean
   hasNoShow: boolean
@@ -443,6 +505,7 @@ export function AdminInvoices() {
   const [toDate, setToDate] = useState(todayISO())
   const [calendarOpen, setCalendarOpen] = useState(false)
   const [agentSlug, setAgentSlug] = useState('all')
+  const [search, setSearch] = useState('')
   const [billProgram, setBillProgram] = useState<BillProgram>('PP')
   const [includePending, setIncludePending] = useState(true)
   const [includeOtherService, setIncludeOtherService] = useState(false)
@@ -456,6 +519,11 @@ export function AdminInvoices() {
   const [editInvoiceIsNew, setEditInvoiceIsNew] = useState(false)
   const [shareNote, setShareNote] = useState('')
   const [message, setMessage] = useState('')
+  const [prebuyBalance, setPrebuyBalance] = useState<{
+    remaining: number
+    purchased: number
+    deducted: number
+  } | null>(null)
 
   const invoiced = useMemo(() => invoicedBookingCodes(store.invoices), [store.invoices])
   const yesterday = addDaysISO(portalToday, -1)
@@ -475,6 +543,39 @@ export function AdminInvoices() {
     }
     if (tab !== 'bills') setTab('bills')
   }, [searchParams, tab])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadBalance() {
+      if (agentSlug === 'all') {
+        setPrebuyBalance(null)
+        return
+      }
+      const billing = parseAgentBillingType(
+        ratesForAgent(store.rates, agentSlug).billingType,
+      )
+      if (billing !== 'prebuy') {
+        setPrebuyBalance(null)
+        return
+      }
+      const balance = await loadPrebuyHeadBalance(agentSlug)
+      if (!cancelled) {
+        setPrebuyBalance(
+          balance
+            ? {
+                remaining: balance.remaining,
+                purchased: balance.purchased,
+                deducted: balance.deducted,
+              }
+            : null,
+        )
+      }
+    }
+    void loadBalance()
+    return () => {
+      cancelled = true
+    }
+  }, [agentSlug, store.rates, store.invoices])
 
   const dateLabel =
     fromDate === toDate
@@ -529,11 +630,27 @@ export function AdminInvoices() {
     })
   }
 
+  const query = normalizeInvoiceSearch(search)
+  const isSearching = query.length > 0
+
+  const guestByBookingCode = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const booking of bookings) {
+      if (booking.leadGuest.trim()) map.set(booking.code, booking.leadGuest)
+    }
+    return map
+  }, [bookings])
+
   const rows = useMemo<BillRow[]>(() => {
     const list = bookings
-      .filter((booking) => booking.date >= fromDate && booking.date <= toDate)
-      .filter((booking) => (agentSlug === 'all' ? true : booking.agentSlug === agentSlug))
+      .filter((booking) =>
+        isSearching ? true : booking.date >= fromDate && booking.date <= toDate,
+      )
+      .filter((booking) =>
+        isSearching || agentSlug === 'all' ? true : booking.agentSlug === agentSlug,
+      )
       .filter((booking) => booking.program === billProgram)
+      .filter((booking) => bookingMatchesInvoiceSearch(booking, query))
       .filter((booking) => {
         const attendance = getCheckInAttendance(booking.date, booking.program, booking.code)
         if (booking.status === 'Cancelled') return true
@@ -542,6 +659,7 @@ export function AdminInvoices() {
       })
       .map((booking) => {
         const rates = ratesForAgent(store.rates, booking.agentSlug)
+        const billingType = parseAgentBillingType(rates.billingType)
         const items = bookingInvoiceItems(booking)
         const invoice = store.invoices.find(
           (doc) =>
@@ -556,20 +674,29 @@ export function AdminInvoices() {
         )
         const extraItems = billedItems.filter((item) => EXTRA_CHARGE_KINDS.has(item.lineKind))
         const parkItems = billedItems.filter((item) => item.lineKind === 'park_fee')
+        const noTransfer = isNoTransfer(booking.pickupZone)
+        const noTfHeads =
+          Math.max(0, booking.adults) + Math.max(0, booking.children)
+        const noTransferDiscount =
+          noTransfer &&
+          billingType === 'invoice' &&
+          booking.status !== 'Cancelled' &&
+          noTfHeads > 0
+            ? noTfHeads * NO_TRANSFER_DISCOUNT_PER_PERSON
+            : 0
         return {
           booking,
-          billingType: parseAgentBillingType(rates.billingType),
+          billingType,
           billTotal: invoice ? storedTotal : liveTotal,
-          deductHeads:
-            parseAgentBillingType(rates.billingType) === 'prebuy'
-              ? prebuyDeductHeads(items)
-              : 0,
+          deductHeads: billingType === 'prebuy' ? prebuyDeductHeads(items) : 0,
           liveTotal,
           guestCollect: invoice
             ? invoiceGuestAmountForBooking(invoice, booking.code)
             : itemsGuestTotal(items),
           parkCharge: parkItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
           extraCharge: extraItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
+          noTransferDiscount,
+          noTransfer,
           amountStale: Boolean(
             invoice && isInvoiceAmountStale(invoiceAutoAmountForBooking(invoice, booking.code), liveAuto),
           ),
@@ -586,6 +713,14 @@ export function AdminInvoices() {
       if (issuedCmp !== 0) return issuedCmp
       if (billSort) {
         const dir = billSort.dir === 'asc' ? 1 : -1
+        if (billSort.key === 'type') {
+          const byType = a.billingType.localeCompare(b.billingType)
+          if (byType !== 0) return byType * dir
+          return (
+            a.booking.agentName.localeCompare(b.booking.agentName) ||
+            a.booking.code.localeCompare(b.booking.code)
+          )
+        }
         const cmp = a.booking.agentName.localeCompare(b.booking.agentName)
         return cmp * dir || a.booking.code.localeCompare(b.booking.code)
       }
@@ -605,7 +740,9 @@ export function AdminInvoices() {
     getDayBoatPlan,
     includeOtherService,
     includePending,
+    isSearching,
     billProgram,
+    query,
     store.invoices,
     store.rates,
     toDate,
@@ -613,13 +750,27 @@ export function AdminInvoices() {
 
   const documents = useMemo(() => {
     return store.invoices
-      .filter((doc) => (agentSlug === 'all' ? true : doc.agentSlug === agentSlug))
+      .filter((doc) =>
+        isSearching || agentSlug === 'all' ? true : doc.agentSlug === agentSlug,
+      )
       .filter((doc) => {
-        const dates = doc.items.map((item) => item.travelDate).filter(Boolean)
-        if (dates.length === 0) return doc.issueDate >= fromDate && doc.issueDate <= toDate
-        return dates.some((date) => date >= fromDate && date <= toDate)
+        if (isSearching) return documentMatchesInvoiceSearch(doc, query, guestByBookingCode)
+        // Show docs issued, paid, or with travel in the selected range (not travel-only —
+        // staff often bill older trips on a later day).
+        if (doc.issueDate >= fromDate && doc.issueDate <= toDate) return true
+        if (
+          doc.items.some((item) => {
+            const date = item.travelDate
+            return Boolean(date) && date >= fromDate && date <= toDate
+          })
+        ) {
+          return true
+        }
+        return invoicePayments(doc).some(
+          (payment) => payment.paidDate >= fromDate && payment.paidDate <= toDate,
+        )
       })
-  }, [agentSlug, fromDate, store.invoices, toDate])
+  }, [agentSlug, fromDate, guestByBookingCode, isSearching, query, store.invoices, toDate])
 
   const invoices = useMemo(
     () => documents.filter((doc) => doc.kind === 'invoice'),
@@ -629,15 +780,41 @@ export function AdminInvoices() {
     () => documents.filter((doc) => doc.kind === 'billing_note'),
     [documents],
   )
-  const receipts = useMemo(
-    () =>
-      invoiceReceiptRows(invoices).sort((a, b) =>
+  const creditNotes = useMemo(
+    () => documents.filter((doc) => doc.kind === 'credit_note'),
+    [documents],
+  )
+  const receipts = useMemo(() => {
+    // Receipts: prefer payment date in range; fall back to already date-matched invoices.
+    const pool =
+      isSearching || agentSlug === 'all'
+        ? store.invoices.filter((doc) => doc.kind === 'invoice')
+        : store.invoices.filter((doc) => doc.kind === 'invoice' && doc.agentSlug === agentSlug)
+    const rows = invoiceReceiptRows(pool).filter(({ doc, payment }) => {
+      if (isSearching) return documentMatchesInvoiceSearch(doc, query, guestByBookingCode)
+      if (payment.paidDate >= fromDate && payment.paidDate <= toDate) return true
+      if (doc.issueDate >= fromDate && doc.issueDate <= toDate) return true
+      return doc.items.some((item) => {
+        const date = item.travelDate
+        return Boolean(date) && date >= fromDate && date <= toDate
+      })
+    })
+    return rows.sort(
+      (a, b) =>
         b.payment.paidDate.localeCompare(a.payment.paidDate) ||
         b.payment.receiptNo.localeCompare(a.payment.receiptNo),
-      ),
-    [invoices],
-  )
-  const listedDocs = tab === 'notes' ? billingNotes : invoices
+    )
+  }, [
+    agentSlug,
+    fromDate,
+    guestByBookingCode,
+    isSearching,
+    query,
+    store.invoices,
+    toDate,
+  ])
+  const listedDocs =
+    tab === 'notes' ? billingNotes : tab === 'credits' ? creditNotes : invoices
 
   const openRows = useMemo(() => rows.filter((row) => !row.invoice), [rows])
   const visibleBillRows = useMemo(
@@ -826,10 +1003,61 @@ export function AdminInvoices() {
     setMessage(`Created ${created.length} billing note(s).`)
   }
 
+  async function createCreditNotesFromInvoices() {
+    const source = selectedDocuments.filter((doc) => doc.kind === 'invoice')
+    if (source.length === 0) {
+      setMessage('Select one or more invoices to create credit notes.')
+      return
+    }
+    const created: InvoiceDocument[] = []
+    let existing = store.invoices
+    for (const invoice of source) {
+      const note = newCreditNoteFromInvoice(invoice, existing, todayISO())
+      created.push(note)
+      existing = [note, ...existing]
+    }
+    await store.addDocuments(created)
+    setSelectedDocs([])
+    setPreview(created[0] ?? null)
+    setPreviewMode('credit_note')
+    goTab('credits')
+    setMessage(`Created ${created.length} credit note(s).`)
+  }
+
   async function toggleSendToAgent(doc: InvoiceDocument) {
-    const next = { ...doc, sendToAgent: !doc.sendToAgent }
+    const nextSend = !doc.sendToAgent
+    const next = { ...doc, sendToAgent: nextSend }
     await store.replaceDocument(next)
     if (preview?.id === doc.id) setPreview(next)
+    if (nextSend) {
+      const text = buildInvoiceShareText(next)
+      try {
+        await navigator.clipboard.writeText(text)
+        setShareNote(`Marked send · copied ${next.number} summary`)
+        openPreview(next, next.kind === 'billing_note' ? 'billing_note' : next.kind === 'credit_note' ? 'credit_note' : 'invoice')
+      } catch {
+        setShareNote(`Marked send for ${next.number} — copy failed, use Share/Print`)
+      }
+      window.setTimeout(() => setShareNote(''), 2500)
+    }
+  }
+
+  async function exportDocuments(ext: 'csv' | 'xlsx') {
+    const pool =
+      tab === 'notes'
+        ? billingNotes
+        : tab === 'credits'
+          ? creditNotes
+          : invoices
+    if (pool.length === 0) {
+      setMessage('Nothing to export in this view.')
+      return
+    }
+    const rows = invoicesToExportRows(pool, store.rates)
+    const filename = invoiceExportFilename(fromDate, toDate, ext)
+    if (ext === 'csv') downloadInvoiceCsv(rows, filename)
+    else await downloadInvoiceXlsx(rows, filename)
+    setMessage(`Exported ${pool.length} row(s) · ${filename}`)
   }
 
   async function confirmPayment(
@@ -914,22 +1142,13 @@ export function AdminInvoices() {
       return `Receipt · ${payment?.receiptNo ?? doc.receiptNo ?? doc.number}`
     }
     if (mode === 'billing_note') return `Billing note · ${doc.number}`
+    if (mode === 'credit_note' || doc.kind === 'credit_note') return `Credit note · ${doc.number}`
     return `Invoice · ${doc.number}`
   }
 
   async function shareDoc(doc: InvoiceDocument) {
     const title = previewTitle(doc)
-    const text = [
-      title,
-      doc.agentName,
-      `Date ${formatInvoiceDate(doc.issueDate)}`,
-      `Total ${formatInvoiceMoney(doc.grandTotal)} THB`,
-      doc.status === 'paid'
-        ? 'PAID'
-        : doc.status === 'partial'
-          ? `Partial · left ${formatInvoiceMoney(invoiceBalance(doc))}`
-          : 'Unpaid',
-    ].join('\n')
+    const text = buildInvoiceShareText(doc)
     try {
       if (navigator.share) {
         await navigator.share({ title, text })
@@ -1005,7 +1224,8 @@ export function AdminInvoices() {
       setMessage(`${paidCount} paid/partial invoice(s) cannot be deleted. Clear payments first.`)
       return
     }
-    const label = tab === 'notes' ? 'billing note' : 'invoice'
+    const label =
+      tab === 'notes' ? 'billing note' : tab === 'credits' ? 'credit note' : 'invoice'
     const ok = window.confirm(`Delete ${docs.length} ${label}(s)? This cannot be undone.`)
     if (!ok) return
     for (const doc of docs) {
@@ -1057,15 +1277,33 @@ export function AdminInvoices() {
         title="Invoice / Receipt"
         description="Set each agent as Prebuy or Invoice in Setup. Prebuy deducts AD+CH heads and bills extras. Invoice bills the tour price. Not-included park is collected from the guest."
         actions={
-          <Link href={pathname.startsWith('/accounting') ? '/accounting/setup' : '/admin/invoices/setup'}>
-            <Button type="button" variant="outline" className="h-10 rounded-xl">
-              <Settings2 className="size-3.5" />
-              Setup
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-10 rounded-xl gap-1.5"
+              onClick={() => void store.reload()}
+              disabled={store.loading}
+            >
+              <RefreshCw className={cn('size-3.5', store.loading && 'animate-spin')} />
+              Refresh
             </Button>
-          </Link>
+            <Link href={pathname.startsWith('/accounting') ? '/accounting/setup' : '/admin/invoices/setup'}>
+              <Button type="button" variant="outline" className="h-10 rounded-xl">
+                <Settings2 className="size-3.5" />
+                Setup
+              </Button>
+            </Link>
+          </div>
         }
       />
 
+      {!store.cloud && !store.loading ? (
+        <p className="mb-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          Invoice cloud sync is off on this browser (local copy only). Sign in again with the staff
+          PIN, or open Setup — otherwise invoices from other computers will not appear here.
+        </p>
+      ) : null}
       <Surface className="mb-3 px-3 py-2.5 sm:px-4">
         <div className="flex flex-wrap items-center gap-2">
           <SoftLabel className="mr-0.5">Date</SoftLabel>
@@ -1144,8 +1382,43 @@ export function AdminInvoices() {
               </option>
             ))}
           </select>
+          <div className="relative min-w-[14rem] flex-1 sm:max-w-sm">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-teal-900/35" />
+            <Input
+              value={search}
+              onChange={(event) => {
+                setSearch(event.target.value)
+                setSelectedCodes([])
+                setSelectedDocs([])
+              }}
+              placeholder="Search INV No., Receipt No., agent, or guest…"
+              className="h-8 rounded-lg pr-8 pl-8 text-xs"
+              aria-label="Search by invoice number, receipt number, agent, or guest"
+            />
+            {isSearching ? (
+              <button
+                type="button"
+                className="absolute top-1/2 right-1.5 -translate-y-1/2 rounded-md p-1 text-teal-900/40 hover:bg-teal-950/5 hover:text-teal-950"
+                aria-label="Clear search"
+                onClick={() => {
+                  setSearch('')
+                  setSelectedCodes([])
+                  setSelectedDocs([])
+                }}
+              >
+                <X className="size-3.5" />
+              </button>
+            ) : null}
+          </div>
         </div>
-        {agentFilterName ? (
+        {isSearching ? (
+          <p className="mt-2 text-xs text-teal-900/60">
+            Searching all dates for{' '}
+            <span className="font-semibold text-teal-950">&ldquo;{search.trim()}&rdquo;</span>
+            {' · '}
+            INV No., Receipt No., agent, or guest
+          </p>
+        ) : agentFilterName ? (
           <p className="mt-2 text-xs text-teal-900/60">
             Showing <span className="font-semibold text-teal-950">{agentFilterName}</span>
             {multiDay ? ` · ${dateLabel}` : ` · ${dateLabel}`}
@@ -1175,8 +1448,14 @@ export function AdminInvoices() {
           <Segment active={tab === 'notes'} onClick={() => goTab('notes')}>
             Billing notes
           </Segment>
+          <Segment active={tab === 'credits'} onClick={() => goTab('credits')}>
+            Credit notes
+          </Segment>
           <Segment active={tab === 'receipts'} onClick={() => goTab('receipts')}>
             Receipts
+          </Segment>
+          <Segment active={tab === 'summary'} onClick={() => goTab('summary')}>
+            Summary
           </Segment>
         </SegmentedControl>
         <SegmentedControl className="border-violet-900/12 bg-gradient-to-r from-violet-950/[0.06] via-fuchsia-950/[0.04] to-neutral-950/[0.03]">
@@ -1289,6 +1568,19 @@ export function AdminInvoices() {
                   ? ` · ${selectedCodes.length} selected · ${formatInvoiceMoney(selectedGuestTotal)} THB`
                   : ''}
               </p>
+              {prebuyBalance ? (
+                <p
+                  className={cn(
+                    'rounded-lg px-2.5 py-1 text-[11px] font-medium',
+                    prebuyBalance.remaining < 0
+                      ? 'bg-rose-50 text-rose-800'
+                      : 'bg-amber-50 text-amber-900',
+                  )}
+                  title={`Purchased ${prebuyBalance.purchased} · Deducted ${prebuyBalance.deducted}`}
+                >
+                  Prebuy heads left: {prebuyBalance.remaining}
+                </p>
+              ) : null}
             </div>
             <div className="flex flex-wrap gap-2">
               <Button
@@ -1302,7 +1594,7 @@ export function AdminInvoices() {
                       ? `Create 1 invoice for ${billTargets.length} booking(s)`
                       : 'Creates one invoice per agent'
                 }
-                onClick={() => createFromBookings()}
+                onClick={() => void createFromBookings()}
               >
                 <FileText className="size-3.5" />
                 {oneInvoiceReady
@@ -1310,6 +1602,16 @@ export function AdminInvoices() {
                   : selectedCodes.length > 0
                     ? `Make invoices (${billTargetAgents.size})`
                     : 'Make invoice'}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl"
+                disabled={billTargets.length === 0}
+                title="Create invoice(s) and mark paid with Deduct Deposit receipt"
+                onClick={() => void createFromBookings(true)}
+              >
+                Invoice + receipt
               </Button>
             </div>
           </div>
@@ -1363,16 +1665,34 @@ export function AdminInvoices() {
                         active={billSort?.key === 'agent'}
                         dir={billSort?.dir ?? 'asc'}
                         onSort={toggleBillSort}
-                        className="w-[11rem] px-1.5 font-bold"
+                        className="w-[10rem] px-1 font-bold"
                       >
                         Agent
                       </BillSortHead>
-                      <TableHead className="w-14 px-1.5 font-bold">Type</TableHead>
+                      <BillSortHead
+                        column="type"
+                        active={billSort?.key === 'type'}
+                        dir={billSort?.dir ?? 'asc'}
+                        onSort={toggleBillSort}
+                        className="w-14 pl-0.5 pr-1 font-bold"
+                      >
+                        Type
+                      </BillSortHead>
                       <TableHead className="w-[7.5rem] px-1.5 font-bold">Guest</TableHead>
                       <TableHead className="w-[7rem] px-1.5 font-bold">Pax</TableHead>
-                      <TableHead className="w-10 px-1.5 font-bold">Park</TableHead>
-                      <TableHead className="w-[4.75rem] px-1.5 text-right font-bold" title="National Park">
-                        N.Park
+                      <TableHead
+                        className="w-[4.25rem] px-1 font-bold"
+                        title="Included = INC · Excluded shows Exc + agency park fee"
+                      >
+                        Park Fee
+                      </TableHead>
+                      <TableHead
+                        className="w-[4.75rem] px-1.5 text-right font-bold"
+                        title="No Transfer: −100 THB per AD+CH for Invoice agents only. Transfer bookings stay blank."
+                      >
+                        TF /
+                        <br />
+                        No TF
                       </TableHead>
                       <TableHead className="w-[4.75rem] px-1.5 text-right font-bold">Extra</TableHead>
                       <TableHead className="w-[6.5rem] px-1.5 font-bold">Note</TableHead>
@@ -1439,11 +1759,11 @@ export function AdminInvoices() {
                           >
                             {booking.agentRef?.trim() || '—'}
                           </TableCell>
-                          <TableCell className="truncate px-1.5" title={booking.agentName}>
+                          <TableCell className="truncate px-1" title={booking.agentName}>
                             {booking.agentName}
                           </TableCell>
                           <TableCell
-                            className="w-14 truncate px-1.5 text-[11px]"
+                            className="w-14 truncate pl-0.5 pr-1 text-left text-[11px]"
                             title={
                               row.billingType === 'prebuy'
                                 ? 'Prebuy — deduct AD+CH heads, bill extras only'
@@ -1465,24 +1785,40 @@ export function AdminInvoices() {
                           </TableCell>
                           <TableCell className="truncate px-1.5 tabular-nums" title={formatPaxBreakdown(booking)}>{formatPaxBreakdown(booking)}</TableCell>
                           <TableCell
-                            className="w-10 px-1.5 text-[11px]"
+                            className="w-[4.25rem] px-1 text-[11px] tabular-nums"
                             title={
-                              booking.parkFee === 'Included'
-                                ? 'Included — billed to the agent'
-                                : 'Not included — collect from guest'
+                              booking.parkFee === 'Included' ||
+                              ratesForAgent(store.rates, booking.agentSlug).nationalParkIncluded
+                                ? 'Included — no Exc park fee'
+                                : `Not included — Exc price ${ratesForAgent(store.rates, booking.agentSlug).nationalParkFee || DEFAULT_NATIONAL_PARK_FEE} THB (set in Setup)`
                             }
                           >
-                            {booking.parkFee === 'Included' ? 'Inc' : booking.parkFee === 'Not Included' ? 'Exc' : formatIncludeShort(booking.parkFee)}
+                            {booking.parkFee === 'Included' ||
+                            ratesForAgent(store.rates, booking.agentSlug).nationalParkIncluded
+                              ? 'INC'
+                              : `Exc: ${ratesForAgent(store.rates, booking.agentSlug).nationalParkFee || DEFAULT_NATIONAL_PARK_FEE}`}
                           </TableCell>
                           <TableCell
-                            className="px-1.5 text-right tabular-nums"
+                            className={cn(
+                              'px-1.5 text-right text-[11px] tabular-nums',
+                              issued ? 'text-neutral-400' : undefined,
+                              !issued && row.noTransferDiscount > 0 ? 'font-medium text-rose-700' : undefined,
+                            )}
                             title={
-                              row.parkCharge > 0
-                                ? 'Included park billed to the agent'
-                                : 'No included park on this bill'
+                              !row.noTransfer
+                                ? 'Has transfer'
+                                : row.billingType === 'prebuy'
+                                  ? 'No Transfer — discount applies to Invoice agents only'
+                                  : row.noTransferDiscount > 0
+                                    ? `No Transfer −${NO_TRANSFER_DISCOUNT_PER_PERSON} × ${Math.max(0, booking.adults) + Math.max(0, booking.children)} AD+CH`
+                                    : 'No Transfer'
                             }
                           >
-                            {row.parkCharge > 0 ? formatInvoiceMoney(row.parkCharge) : '—'}
+                            {!row.noTransfer
+                              ? ''
+                              : row.noTransferDiscount > 0
+                                ? `−${formatInvoiceMoney(row.noTransferDiscount)}`
+                                : 'No TF'}
                           </TableCell>
                           <TableCell className="px-1.5 text-right tabular-nums">
                             {row.extraCharge > 0 ? formatInvoiceMoney(row.extraCharge) : '—'}
@@ -1577,9 +1913,36 @@ export function AdminInvoices() {
                 type="button"
                 variant="outline"
                 className="h-10 rounded-xl"
-                onClick={createBillingNoteFromInvoices}
+                onClick={() => void exportDocuments('csv')}
+              >
+                <Download className="size-3.5" />
+                CSV
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl"
+                onClick={() => void exportDocuments('xlsx')}
+              >
+                <Download className="size-3.5" />
+                Excel
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl"
+                onClick={() => void createBillingNoteFromInvoices()}
               >
                 Create billing note
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl"
+                onClick={() => void createCreditNotesFromInvoices()}
+                title="Reverse selected invoice(s) as credit note(s)"
+              >
+                Credit note
               </Button>
               <Button
                 type="button"
@@ -1858,6 +2221,121 @@ export function AdminInvoices() {
             )}
           </Surface>
         </>
+      ) : tab === 'credits' ? (
+        <>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-teal-900/55">
+              {creditNotes.length} credit note{creditNotes.length === 1 ? '' : 's'}
+              {selectedDocs.length > 0 ? ` · ${selectedDocs.length} selected` : ''}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl"
+                onClick={() => void exportDocuments('csv')}
+              >
+                <Download className="size-3.5" />
+                CSV
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl text-rose-600 hover:text-rose-800"
+                onClick={deleteSelectedDocs}
+              >
+                <Trash2 className="size-3.5" />
+                Delete
+              </Button>
+            </div>
+          </div>
+          <Surface className="overflow-hidden">
+            {creditNotes.length === 0 ? (
+              <EmptyState>
+                No credit notes yet. On the Invoices tab, select invoice(s) then Credit note.
+              </EmptyState>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-10">
+                        <input
+                          type="checkbox"
+                          checked={
+                            creditNotes.length > 0 && selectedDocs.length === creditNotes.length
+                          }
+                          onChange={toggleAllDocs}
+                          className="size-4 rounded border-teal-900/20"
+                        />
+                      </TableHead>
+                      <TableHead>No.</TableHead>
+                      <TableHead>Agent</TableHead>
+                      <TableHead>Date</TableHead>
+                      <TableHead>Linked</TableHead>
+                      <TableHead className="text-right">Amount</TableHead>
+                      <TableHead />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {creditNotes.map((doc) => (
+                      <TableRow key={doc.id}>
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            checked={selectedDocs.includes(doc.id)}
+                            onChange={() => toggleDoc(doc.id)}
+                            className="size-4 rounded border-teal-900/20"
+                          />
+                        </TableCell>
+                        <TableCell className="font-medium text-teal-950">{doc.number}</TableCell>
+                        <TableCell>{doc.agentName}</TableCell>
+                        <TableCell>{formatInvoiceDate(doc.issueDate)}</TableCell>
+                        <TableCell className="truncate text-teal-900/60" title={doc.notes}>
+                          {doc.notes || '—'}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums text-rose-700">
+                          {formatInvoiceMoney(doc.grandTotal)}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-8 rounded-lg"
+                              onClick={() => openPreview(doc, 'credit_note')}
+                            >
+                              View
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-8 rounded-lg"
+                              onClick={() => printDoc(doc)}
+                            >
+                              <Printer className="size-3.5" />
+                              Print
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </Surface>
+        </>
+      ) : tab === 'summary' ? (
+        <InvoiceMonthlySummary
+          invoices={store.invoices}
+          rates={store.rates}
+          bookings={bookings}
+          fromDate={fromDate}
+          toDate={toDate}
+        />
       ) : (
         <>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">

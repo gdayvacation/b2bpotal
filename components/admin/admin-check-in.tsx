@@ -22,6 +22,11 @@ import {
 import { BoatFleetBadge } from '@/components/boat-badge'
 import { AdminCheckInBookingPanel } from '@/components/admin/admin-check-in-booking-panel'
 import { AdminCheckInPaxDialog } from '@/components/admin/admin-check-in-pax-dialog'
+import {
+  GuideJobOrderPrint,
+  GuideJobOrderPrintRoot,
+  printGuideJobOrder,
+} from '@/components/admin/guide-job-order-print'
 import { usePortal } from '@/components/portal-provider'
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
@@ -1557,6 +1562,21 @@ function TodayBoardTab({
           {groups.length > 0 ? (
             <CheckInSearchField value={boardQuery} onChange={setBoardQuery} />
           ) : null}
+          {!isHelper ? (
+            <Button
+              type="button"
+              size="sm"
+              className="h-10 shrink-0 gap-1.5 px-3 text-[13px]"
+              onClick={() => {
+                const programs: Program[] =
+                  programFilter === 'all' ? ['PP', 'James Bond'] : [programFilter]
+                printGuideJobOrder(boardDate, programs)
+              }}
+            >
+              <Printer className="size-3.5" />
+              Print Boat Guide JO
+            </Button>
+          ) : null}
         </div>
         {boardView === 'partner' && !isHelper ? (
           <div className="flex flex-wrap gap-1.5 text-[11px] font-semibold sm:gap-2 sm:text-xs">
@@ -1672,6 +1692,34 @@ function TodayBoardTab({
         dateLabel={formatShortDate(boardDate)}
         rows={dayServiceDetails}
       />
+
+      {!isHelper ? (
+        <GuideJobOrderPrintRoot>
+          {(programFilter === 'all' ? (['PP', 'James Bond'] as const) : [programFilter]).map(
+            (program) => {
+              const boatPlan = getDayBoatPlan(boardDate, program)
+              const vehiclePlan = getDayVehiclePlan(boardDate, program)
+              const programBookings = bookings.filter(
+                (booking) =>
+                  booking.date === boardDate &&
+                  booking.program === program &&
+                  isActiveBooking(booking),
+              )
+              return (
+                <GuideJobOrderPrint
+                  key={`guide-jo-${boardDate}-${program}`}
+                  date={boardDate}
+                  program={program}
+                  boatPlan={boatPlan}
+                  vehiclePlan={vehiclePlan}
+                  bookings={programBookings}
+                  bare
+                />
+              )
+            },
+          )}
+        </GuideJobOrderPrintRoot>
+      ) : null}
     </div>
   )
 }

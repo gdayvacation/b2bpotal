@@ -112,8 +112,8 @@ export function canFitBookingOnBoat(
 }
 
 /**
- * If a van already sits on one boat, later guests dropped on that van
- * inherit the same boat so they do not disappear from the boat board.
+ * If a van already sits on one boat (or a clear majority boat), guests dropped
+ * on that van inherit it — including when they previously had a different boat.
  */
 export function adoptVanBookingsOntoSharedBoat(
   bookings: Booking[],
@@ -125,13 +125,19 @@ export function adoptVanBookingsOntoSharedBoat(
     (booking) => bookingPaxOnVan(booking, vehicleAssignments[booking.code], van) > 0,
   )
   if (members.length === 0) return null
-  const boats = new Set<BoatNumber>()
+  const boatVotes = new Map<BoatNumber, number>()
   for (const booking of members) {
     const boat = primaryBoatNumber(boatAssignments[booking.code])
-    if (boat) boats.add(boat)
+    if (!boat) continue
+    boatVotes.set(boat, (boatVotes.get(boat) ?? 0) + 1)
   }
-  if (boats.size !== 1) return null
-  const boat = [...boats][0]!
+  if (boatVotes.size === 0) return null
+  const ranked = [...boatVotes.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])
+  const top = ranked[0]!
+  // Require a unique shared boat, or a strict majority when a moved guest still
+  // carries a different boat assignment from their previous van.
+  if (boatVotes.size > 1 && (ranked[1]?.[1] ?? 0) >= top[1]) return null
+  const boat = top[0]
   let changed = false
   const next: DayBoatPlan['assignments'] = { ...boatAssignments }
   for (const booking of members) {

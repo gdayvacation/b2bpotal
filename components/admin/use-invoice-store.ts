@@ -14,6 +14,7 @@ import {
   type InvoiceSettings,
   type PaymentChannel,
 } from '@/lib/invoice'
+import { syncPrebuyDeductFromInvoice } from '@/lib/prebuy-allotment-sync'
 import {
   loadInvoiceStore,
   saveAgencyRates,
@@ -46,7 +47,10 @@ export function useInvoiceStore() {
         setRates(snapshot.rates)
         setInvoices(snapshot.invoices)
         setCloud(snapshot.cloud)
-        if (settings.issuerTitle !== snapshot.settings.issuerTitle) {
+        if (
+          settings.issuerTitle !== snapshot.settings.issuerTitle ||
+          settings.issuerName !== snapshot.settings.issuerName
+        ) {
           void saveInvoiceSettings(settings)
         }
       })
@@ -60,6 +64,32 @@ export function useInvoiceStore() {
       cancelled = true
     }
   }, [])
+
+  const reload = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const snapshot = await loadInvoiceStore()
+      const nextSettings = normalizeInvoiceSettings(snapshot.settings)
+      setSettings(nextSettings)
+      setRates(snapshot.rates)
+      setInvoices(snapshot.invoices)
+      setCloud(snapshot.cloud)
+    } catch (err) {
+      setError(`Failed to load invoice data: ${String(err)}`)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  // Pull latest cloud invoices when returning to this browser tab.
+  useEffect(() => {
+    function onFocus() {
+      void reload()
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [reload])
 
   const updateSettings = useCallback(async (next: InvoiceSettings) => {
     setSettings(next)
@@ -76,19 +106,42 @@ export function useInvoiceStore() {
   }, [])
 
   const addDocuments = useCallback(async (docs: InvoiceDocument[]) => {
-    if (docs.length === 0) return
+    if (docs.length === 0) return [] as InvoiceDocument[]
     setInvoices((current) => [...docs, ...current])
     setError(null)
     const result = await saveInvoiceDocuments(docs)
-    if (result?.error) setError(`Save invoice failed: ${result.error}`)
-  }, [])
+    if (result?.error) {
+      setError(`Save invoice failed: ${result.error}`)
+      return result.documents ?? []
+    }
+    const saved = result.documents ?? docs
+    setInvoices((current) => {
+      const byId = new Map(saved.map((doc) => [doc.id, doc]))
+      return current.map((row) => byId.get(row.id) ?? row)
+    })
+    for (const doc of saved) {
+      const sync = await syncPrebuyDeductFromInvoice(doc, rates)
+      if (sync.message) setError(sync.message)
+    }
+    return saved
+  }, [rates])
 
   const replaceDocument = useCallback(async (doc: InvoiceDocument) => {
     setInvoices((current) => current.map((row) => (row.id === doc.id ? doc : row)))
     setError(null)
     const result = await saveInvoiceDocument(doc)
-    if (result?.error) setError(`Update failed: ${result.error}`)
-  }, [])
+    if (result?.error) {
+      setError(`Update failed: ${result.error}`)
+      return null
+    }
+    const saved = result.document ?? doc
+    if (saved.number !== doc.number) {
+      setInvoices((current) => current.map((row) => (row.id === saved.id ? saved : row)))
+    }
+    const sync = await syncPrebuyDeductFromInvoice(saved, rates)
+    if (sync.message) setError(sync.message)
+    return saved
+  }, [rates])
 
   const removeDocument = useCallback(async (id: string) => {
     setInvoices((current) => current.filter((row) => row.id !== id))
@@ -135,7 +188,7 @@ export function useInvoiceStore() {
     setError(null)
     const result = await saveInvoiceDocuments(updated)
     if (result?.error) setError(`Mark paid failed: ${result.error}`)
-    return updated
+    return result.documents ?? updated
   }, [invoices])
 
   const clearPayments = useCallback(async (id: string) => {
@@ -146,7 +199,7 @@ export function useInvoiceStore() {
     setError(null)
     const result = await saveInvoiceDocument(next)
     if (result?.error) setError(`Update failed: ${result.error}`)
-    return next
+    return result.document ?? next
   }, [invoices])
 
   const removeLastPayment = useCallback(async (id: string) => {
@@ -159,7 +212,7 @@ export function useInvoiceStore() {
     setError(null)
     const result = await saveInvoiceDocument(next)
     if (result?.error) setError(`Update failed: ${result.error}`)
-    return next
+    return result.document ?? next
   }, [invoices])
 
   return {
@@ -170,6 +223,7 @@ export function useInvoiceStore() {
     cloud,
     error,
     clearError,
+    reload,
     updateSettings,
     updateRates,
     addDocuments,

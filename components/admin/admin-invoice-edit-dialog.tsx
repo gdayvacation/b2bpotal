@@ -393,8 +393,6 @@ export function InvoiceEditDialog({
                     <th className="w-24 px-2 py-2.5 font-bold" title="Pax, Box, Pcs, Van">Unit</th>
                     <th className="w-14 px-1 py-2.5 text-right font-bold" title="Adults">AD</th>
                     <th className="w-14 px-1 py-2.5 text-right font-bold" title="Children">CH</th>
-                    <th className="w-14 px-1 py-2.5 text-right font-bold" title="Infants">IN</th>
-                    <th className="w-14 px-1 py-2.5 text-right font-bold" title="Tour leaders">TL</th>
                     <th className="w-32 px-2 py-2.5 text-right font-bold">Amount (THB)</th>
                     <th className="w-10 px-2 py-2.5" />
                   </tr>
@@ -439,16 +437,6 @@ export function InvoiceEditDialog({
                       </td>
                       <td className="px-1 py-1.5">
                         {countInput(item.children, (children) => patchItem(item.id, { children }), 'Children')}
-                      </td>
-                      <td className="px-1 py-1.5">
-                        {countInput(item.infants, (infants) => patchItem(item.id, { infants }), 'Infants')}
-                      </td>
-                      <td className="px-1 py-1.5">
-                        {countInput(
-                          item.tourLeaders,
-                          (tourLeaders) => patchItem(item.id, { tourLeaders }),
-                          'Tour leaders',
-                        )}
                       </td>
                       <td className="px-2 py-1.5">
                         <Input

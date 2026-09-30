@@ -11,7 +11,7 @@ create table if not exists public.invoice_settings (
   bank_account_type text not null default 'Saving account',
   bank_account_name text not null default 'Nusara Darayang',
   bank_account_no text not null default '822-215284-9',
-  issuer_name text not null default 'Jererawan',
+  issuer_name text not null default 'Jerawan',
   issuer_title text not null default 'Director',
   signature_image text not null default '',
   created_at timestamptz not null default timezone('utc', now()),
@@ -34,6 +34,8 @@ create table if not exists public.agency_invoice_rates (
   child_price numeric not null default 0,
   infant_price numeric not null default 0,
   tour_leader_price numeric not null default 0,
+  national_park_fee numeric not null default 400,
+  national_park_included boolean not null default false,
   change_date_price numeric not null default 0,
   cancel_price numeric not null default 0,
   private_transfer_extra numeric not null default 0,
@@ -47,6 +49,12 @@ create table if not exists public.agency_invoice_rates (
 alter table public.agency_invoice_rates
   add column if not exists billing_type text not null default 'invoice';
 
+alter table public.agency_invoice_rates
+  add column if not exists national_park_fee numeric not null default 400;
+
+alter table public.agency_invoice_rates
+  add column if not exists national_park_included boolean not null default false;
+
 drop trigger if exists agency_invoice_rates_set_updated_at on public.agency_invoice_rates;
 create trigger agency_invoice_rates_set_updated_at
 before update on public.agency_invoice_rates
@@ -55,7 +63,7 @@ for each row execute function public.set_updated_at();
 create table if not exists public.invoices (
   id text primary key,
   invoice_no text not null unique,
-  kind text not null check (kind in ('invoice', 'billing_note')),
+  kind text not null check (kind in ('invoice', 'billing_note', 'credit_note')),
   agent_slug text not null,
   agent_name text not null,
   issue_date date not null,

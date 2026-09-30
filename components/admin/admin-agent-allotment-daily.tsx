@@ -171,12 +171,25 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
     return map
   }, [allDaily])
 
+  const prebuyAgentSlugs = useMemo(
+    () =>
+      new Set(
+        Object.entries(purchasedByAgent)
+          .filter(([, seats]) => seats > 0)
+          .map(([slug]) => slug),
+      ),
+    [purchasedByAgent],
+  )
+
   const rows = useMemo<CheckerRow[]>(() => {
     const result: CheckerRow[] = []
 
     for (const day of selectedDays) {
       const dayBookings = bookings.filter(
-        (booking) => booking.date === day && isActiveBooking(booking),
+        (booking) =>
+          booking.date === day &&
+          isActiveBooking(booking) &&
+          prebuyAgentSlugs.has(booking.agentSlug),
       )
       const byAgent = new Map<
         string,
@@ -207,10 +220,10 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
         byAgent.set(booking.agentSlug, current)
       }
 
-      for (const [slug, purchased] of Object.entries(purchasedByAgent)) {
-        if (purchased <= 0 || byAgent.has(slug)) continue
+      // Always list every prebuy agent for the day (even with 0 bookings).
+      for (const slug of prebuyAgentSlugs) {
+        if (byAgent.has(slug)) continue
         const saved = savedByDayAgent.get(draftKey(day, slug))
-        if (!saved && !filterAgent) continue
         const name =
           agents.find((agent) => agent.slug === slug)?.name || saved?.agentName || slug
         byAgent.set(slug, {
@@ -222,20 +235,9 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
         })
       }
 
-      for (const [key, saved] of savedByDayAgent) {
-        if (!key.startsWith(`${day}|`)) continue
-        if (byAgent.has(saved.agentSlug)) continue
-        byAgent.set(saved.agentSlug, {
-          agentName: saved.agentName,
-          bookingHead: 0,
-          checkInHead: 0,
-          noShowHead: 0,
-          invoiceHead: 0,
-        })
-      }
-
       for (const [agentSlug, stats] of byAgent) {
         if (filterAgent && agentSlug !== filterAgent) continue
+        if (!prebuyAgentSlugs.has(agentSlug)) continue
         const saved = savedByDayAgent.get(draftKey(day, agentSlug))
         const suggested = stats.checkInHead + stats.noShowHead
         result.push({
@@ -267,6 +269,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
     filterAgent,
     getCheckInAttendance,
     invoicedCodes,
+    prebuyAgentSlugs,
     purchasedByAgent,
     savedByDayAgent,
     selectedDays,
@@ -284,18 +287,16 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
   }, [rows])
 
   const agentOptions = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const agent of agents) map.set(agent.slug, agent.name)
-    for (const row of rows) map.set(row.agentSlug, row.agentName)
-    for (const [slug, seats] of Object.entries(purchasedByAgent)) {
-      if (seats > 0 && !map.has(slug)) {
-        map.set(slug, agents.find((agent) => agent.slug === slug)?.name || slug)
-      }
-    }
-    return [...map.entries()]
-      .map(([slug, name]) => ({ slug, name }))
+    return [...prebuyAgentSlugs]
+      .map((slug) => ({
+        slug,
+        name:
+          agents.find((agent) => agent.slug === slug)?.name ||
+          rows.find((row) => row.agentSlug === slug)?.agentName ||
+          slug,
+      }))
       .sort((a, b) => a.name.localeCompare(b.name))
-  }, [agents, purchasedByAgent, rows])
+  }, [agents, prebuyAgentSlugs, rows])
 
   const dayTotals = useMemo(() => {
     return rows.reduce(
@@ -352,7 +353,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
     <div className="w-full">
       <PageHeader
         title="Daily checker"
-        description="Each tour date deducts heads from agent prebuy. Pick one day or a range — edit Total Deduct when needed."
+        description="Shows only agents with prebuy allotment. Pick one day or a range — edit Total Deduct when needed."
         actions={
           <Button type="button" variant="outline" size="sm" onClick={onBack}>
             <ArrowLeft className="size-3.5" />
@@ -432,7 +433,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
               onChange={(event) => setFilterAgent(event.target.value)}
               className="h-10 w-full rounded-xl border border-teal-900/12 bg-white/80 px-3 text-sm outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
             >
-              <option value="">All agents</option>
+              <option value="">All prebuy agents</option>
               {agentOptions.map((agent) => (
                 <option key={agent.slug} value={agent.slug}>
                   {agent.name}
@@ -465,8 +466,9 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
 
       {!loading && rows.length === 0 && !loadError ? (
         <Surface className="p-6 text-sm text-teal-900/55">
-          No bookings for {dateLabel}
-          {filterAgent ? ' with this agent filter' : ''}. Pick another date or clear the agent filter.
+          {prebuyAgentSlugs.size === 0
+            ? 'No prebuy agents yet. Add an allotment purchase first, then return here to deduct heads.'
+            : `No prebuy agents to show for ${dateLabel}${filterAgent ? ' with this agent filter' : ''}. Clear the agent filter or pick another date.`}
         </Surface>
       ) : null}
 

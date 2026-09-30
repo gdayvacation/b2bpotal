@@ -243,10 +243,10 @@ function bookingWaitingForVan(
   boatPlan: Pick<DayBoatPlan, 'capacities' | 'kinds' | 'names' | 'assignments'>,
 ) {
   const kind = bookingTransferKind(booking, plan, boatPlan)
+  // No-transfer guests use their own card — everyone else without a van stays in Waiting,
+  // even if they already have a boat or check-in, so vans can always be rearranged.
   if (kind === 'no_transfer') return false
-  if ((plan.assignments[booking.code]?.length ?? 0) > 0) return false
-  if (boatPlan.assignments[booking.code]) return false
-  return true
+  return (plan.assignments[booking.code]?.length ?? 0) === 0
 }
 
 function bookingNeedsPlacement(
@@ -1355,6 +1355,12 @@ function VehicleBoard({
     const unique = [...new Set(codes)].filter((code) => bookings.some((b) => b.code === code))
     if (unique.length === 0) return
     onAssignMany(unique, van)
+    // Returning to Waiting clears boat too so the guest can be reassigned to any van/boat.
+    if (van === null) {
+      for (const code of unique) {
+        assignBookingToBoat(date, program, code, null)
+      }
+    }
     setSelectedCodes(new Set())
     setKindFilter('all')
   }

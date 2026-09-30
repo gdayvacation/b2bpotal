@@ -1,11 +1,14 @@
 import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/client'
 import {
   DEFAULT_INVOICE_SETTINGS,
+  DEFAULT_NATIONAL_PARK_FEE,
   emptyAgencyRates,
   invoicePayments,
   migrateInvoiceDocumentNumbers,
+  nextDocumentNumber,
   normalizeInvoiceSettings,
   parseAgentBillingType,
+  parseInvoiceKind,
   parseInvoiceStatus,
   type AgencyInvoiceRates,
   type InvoiceDocument,
@@ -17,6 +20,11 @@ import {
   type InvoiceStatus,
   parsePaymentChannel,
 } from '@/lib/invoice'
+import {
+  allocateUniqueDocumentNumber,
+  fetchCloudInvoiceNumberPool,
+  isDuplicateInvoiceNoError,
+} from '@/lib/invoice-number'
 
 const SETTINGS_KEY = 'gday-invoice-settings'
 const RATES_KEY = 'gday-agency-invoice-rates'
@@ -44,6 +52,8 @@ type RatesRow = {
   child_price: number | string
   infant_price: number | string
   tour_leader_price: number | string
+  national_park_included?: boolean | null
+  national_park_fee?: number | string | null
   change_date_price: number | string
   cancel_price: number | string
   private_transfer_extra: number | string
@@ -154,6 +164,11 @@ function mapRates(row: RatesRow): AgencyInvoiceRates {
     childPrice: num(row.child_price),
     infantPrice: num(row.infant_price),
     tourLeaderPrice: num(row.tour_leader_price),
+    nationalParkIncluded: Boolean(row.national_park_included),
+    nationalParkFee:
+      row.national_park_fee == null || row.national_park_fee === ''
+        ? DEFAULT_NATIONAL_PARK_FEE
+        : num(row.national_park_fee),
     changeDatePrice: num(row.change_date_price),
     cancelPrice: num(row.cancel_price),
     privateTransferExtra: num(row.private_transfer_extra),
@@ -206,6 +221,8 @@ function ratesToRow(rates: AgencyInvoiceRates, includeBillingType = true): Rates
     child_price: rates.childPrice,
     infant_price: rates.infantPrice,
     tour_leader_price: rates.tourLeaderPrice,
+    national_park_included: Boolean(rates.nationalParkIncluded),
+    national_park_fee: rates.nationalParkFee ?? DEFAULT_NATIONAL_PARK_FEE,
     change_date_price: rates.changeDatePrice,
     cancel_price: rates.cancelPrice,
     private_transfer_extra: rates.privateTransferExtra,
@@ -311,7 +328,7 @@ function mapInvoice(row: InvoiceRow, items: InvoiceItem[]): InvoiceDocument {
   return {
     id: row.id,
     number: row.invoice_no,
-    kind: row.kind,
+    kind: parseInvoiceKind(row.kind),
     agentSlug: row.agent_slug,
     agentName: row.agent_name,
     issueDate: row.issue_date,
@@ -505,8 +522,19 @@ export async function saveAgencyRates(rates: AgencyInvoiceRates): Promise<{ erro
     const supabase = getSupabaseBrowserClient()
     const { error } = await supabase.from('agency_invoice_rates').upsert(ratesToRow(rates))
     if (error) {
-      const missingColumn = /billing_type|schema cache|column/i.test(error.message)
+      const missingColumn =
+        /billing_type|national_park_fee|national_park_included|schema cache|column/i.test(
+          error.message,
+        )
       if (missingColumn) {
+        const full = ratesToRow(rates, false)
+        const {
+          national_park_fee: _park,
+          national_park_included: _inc,
+          ...withoutPark
+        } = full
+        const retryPark = await supabase.from('agency_invoice_rates').upsert(withoutPark)
+        if (!retryPark.error) return {}
         const retry = await supabase.from('agency_invoice_rates').upsert(ratesToRow(rates, false))
         if (!retry.error) return {}
         console.warn('[supabase] agency invoice rates save failed', retry.error.message)
@@ -523,14 +551,40 @@ export async function saveAgencyRates(rates: AgencyInvoiceRates): Promise<{ erro
   }
 }
 
-export async function saveInvoiceDocument(doc: InvoiceDocument): Promise<{ error?: string }> {
+export async function saveInvoiceDocument(
+  doc: InvoiceDocument,
+): Promise<{ error?: string; document?: InvoiceDocument }> {
+  let working = doc
+  try {
+    working = await allocateUniqueDocumentNumber(doc)
+  } catch {
+    working = doc
+  }
   const current = readLocal<InvoiceDocument[]>(DOCS_KEY, [])
-  writeLocal(DOCS_KEY, [doc, ...current.filter((row) => row.id !== doc.id)])
-  if (!hasSupabaseConfig()) return {}
+  writeLocal(DOCS_KEY, [working, ...current.filter((row) => row.id !== working.id)])
+  if (!hasSupabaseConfig()) return { document: working }
   try {
     const supabase = getSupabaseBrowserClient()
-    const row = invoiceToRow(doc)
-    const { error: invoiceError } = await supabase.from('invoices').upsert(row)
+    let row = invoiceToRow(working)
+    let invoiceError = (await supabase.from('invoices').upsert(row)).error
+
+    if (invoiceError && isDuplicateInvoiceNoError(invoiceError.message)) {
+      let pool = await fetchCloudInvoiceNumberPool()
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        pool = pool.filter((item) => item.id !== working.id)
+        working = {
+          ...working,
+          number: nextDocumentNumber(pool, working.kind, working.issueDate),
+        }
+        pool = [...pool, working]
+        writeLocal(DOCS_KEY, [working, ...current.filter((row) => row.id !== working.id)])
+        row = invoiceToRow(working)
+        invoiceError = (await supabase.from('invoices').upsert(row)).error
+        if (!invoiceError) break
+        if (!isDuplicateInvoiceNoError(invoiceError.message)) break
+      }
+    }
+
     if (invoiceError) {
       const missingColumn = /payment_channel|send_to_agent|payments|schema cache|column/i.test(
         invoiceError.message,
@@ -539,7 +593,7 @@ export async function saveInvoiceDocument(doc: InvoiceDocument): Promise<{ error
         const { send_to_agent: _send, payments: _payments, ...withoutExtras } = row
         const retryExtras = await supabase.from('invoices').upsert(withoutExtras)
         if (retryExtras.error) {
-          const retry = await supabase.from('invoices').upsert(invoiceToRow(doc, false))
+          const retry = await supabase.from('invoices').upsert(invoiceToRow(working, false))
           if (retry.error) {
             console.warn('[supabase] invoice save failed', retry.error.message)
             return { error: retry.error.message }
@@ -550,16 +604,18 @@ export async function saveInvoiceDocument(doc: InvoiceDocument): Promise<{ error
         return { error: invoiceError.message }
       }
     }
-    await supabase.from('invoice_items').delete().eq('invoice_id', doc.id)
-    if (doc.items.length > 0) {
-      const { error: itemError } = await supabase.from('invoice_items').insert(doc.items.map((item) => itemToRow(item)))
+    await supabase.from('invoice_items').delete().eq('invoice_id', working.id)
+    if (working.items.length > 0) {
+      const { error: itemError } = await supabase
+        .from('invoice_items')
+        .insert(working.items.map((item) => itemToRow(item)))
       if (itemError) {
         const missingUnit = /unit|schema cache|column/i.test(itemError.message)
         if (missingUnit) {
           const retry = await supabase
             .from('invoice_items')
-            .insert(doc.items.map((item) => itemToRow(item, false)))
-          if (!retry.error) return {}
+            .insert(working.items.map((item) => itemToRow(item, false)))
+          if (!retry.error) return { document: working }
           console.warn('[supabase] invoice items save failed', retry.error.message)
           return { error: retry.error.message }
         }
@@ -567,7 +623,7 @@ export async function saveInvoiceDocument(doc: InvoiceDocument): Promise<{ error
         return { error: itemError.message }
       }
     }
-    return {}
+    return { document: working }
   } catch (error) {
     const msg = String(error)
     console.warn('[supabase] invoice save failed', msg)
@@ -575,12 +631,16 @@ export async function saveInvoiceDocument(doc: InvoiceDocument): Promise<{ error
   }
 }
 
-export async function saveInvoiceDocuments(docs: InvoiceDocument[]): Promise<{ error?: string }> {
+export async function saveInvoiceDocuments(
+  docs: InvoiceDocument[],
+): Promise<{ error?: string; documents?: InvoiceDocument[] }> {
+  const saved: InvoiceDocument[] = []
   for (const doc of docs) {
     const result = await saveInvoiceDocument(doc)
-    if (result.error) return result
+    if (result.error) return { error: result.error, documents: saved }
+    if (result.document) saved.push(result.document)
   }
-  return {}
+  return { documents: saved }
 }
 
 export async function deleteInvoiceDocument(id: string): Promise<{ error?: string }> {

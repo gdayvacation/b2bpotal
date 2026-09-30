@@ -3,13 +3,14 @@ import { DEFAULT_BOOKING_CUTOFFS } from '@/lib/booking-cutoffs'
 import { parkFeeRates, parkFeeTotalWithThai, parseCashOnTourAmount } from '@/lib/format'
 import { THAI_PARK_FEE_THB } from '@/lib/nationalities'
 import {
+  isNoTransfer,
   isPrivateTransfer,
   type Booking,
   type CheckInAttendance,
   type Program,
 } from '@/lib/types'
 
-export type InvoiceKind = 'invoice' | 'billing_note'
+export type InvoiceKind = 'invoice' | 'billing_note' | 'credit_note'
 export type InvoiceStatus = 'unpaid' | 'partial' | 'paid'
 export type PaymentChannel = 'bank_transfer' | 'deduct_deposit' | 'payment_link' | 'cash'
 
@@ -83,6 +84,10 @@ export type AgencyInvoiceRates = {
   childPrice: number
   infantPrice: number
   tourLeaderPrice: number
+  /** When true, National Park is Included for this agent (no Exc price). */
+  nationalParkIncluded: boolean
+  /** Per-adult National Park fee when Excluded (default 400). Ignored if included. */
+  nationalParkFee: number
   changeDatePrice: number
   cancelPrice: number
   privateTransferExtra: number
@@ -192,7 +197,7 @@ export const DEFAULT_INVOICE_SETTINGS: InvoiceSettings = {
   bankAccountType: 'Saving account',
   bankAccountName: 'Nusara Darayang',
   bankAccountNo: '822-215284-9',
-  issuerName: 'Jererawan',
+  issuerName: 'Jerawan',
   issuerTitle: 'Director',
   signatureImage: '',
 }
@@ -204,12 +209,19 @@ export function normalizeInvoiceSettings(
   if (next.companyName === 'Good Day Vacation Speedboat') {
     next.companyName = DEFAULT_INVOICE_SETTINGS.companyName
   }
+  if (next.issuerName === 'Jererawan') {
+    next.issuerName = DEFAULT_INVOICE_SETTINGS.issuerName
+  }
   if (next.issuerTitle === 'ผู้อำนวยการ') {
     next.issuerTitle = DEFAULT_INVOICE_SETTINGS.issuerTitle
   }
   next.signatureImage = next.signatureImage ?? ''
   return next
 }
+
+export const DEFAULT_NATIONAL_PARK_FEE = 400
+/** Invoice agents only — discount per AD+CH when pickup is No Transfer. Prebuy gets none. */
+export const NO_TRANSFER_DISCOUNT_PER_PERSON = 100
 
 export const COMPANY_LOGO_SRC = '/goodday-logo.png'
 
@@ -221,6 +233,8 @@ export function emptyAgencyRates(agentSlug: string): AgencyInvoiceRates {
     childPrice: 0,
     infantPrice: 0,
     tourLeaderPrice: 0,
+    nationalParkIncluded: false,
+    nationalParkFee: DEFAULT_NATIONAL_PARK_FEE,
     changeDatePrice: 0,
     cancelPrice: 0,
     privateTransferExtra: 0,
@@ -275,6 +289,29 @@ export function prebuyDeductHeads(
 
 export function programLabel(program: Program) {
   return program === 'PP' ? 'Phi Phi Speedboat' : 'James Bond Speedboat'
+}
+
+/** Short program name for per-pax invoice lines (Adult / Children). */
+export function programShortLabel(program: Program) {
+  return program === 'PP' ? 'Phi Phi' : 'James Bond'
+}
+
+export function programPaxLineLabel(
+  program: Program,
+  paxKind: 'adult' | 'child' | 'infant' | 'tourLeader',
+  options?: { prebuy?: boolean; prefix?: string },
+) {
+  const short = programShortLabel(program)
+  const role =
+    paxKind === 'adult'
+      ? 'Adult'
+      : paxKind === 'child'
+        ? 'Children'
+        : paxKind === 'infant'
+          ? 'Infant'
+          : 'Tour Leader'
+  const base = `${options?.prefix ? `${options.prefix} · ` : ''}${short} ${role}`
+  return options?.prebuy ? `${base} · deduct` : base
 }
 
 export function invoicePrefix(program: Program) {
@@ -425,13 +462,136 @@ export function formatInvoiceLineDescription(
     const prebuy = /deduct/i.test(text) || item.amount === 0
     return lateChangeDateDescription({ heads, prebuy })
   }
-  if (item.lineKind === 'cancel' || /^Cancel ·/i.test(text)) {
+  if (item.lineKind === 'cancel' || /^Cancel ·/i.test(text) || /^Late Cancel/i.test(text)) {
     const fullPrice = /full price/i.test(text)
     const programMatch = text.match(/·\s*(Phi Phi Speedboat|James Bond Speedboat)\s*$/i)
-    const program: Program = /james bond/i.test(programMatch?.[1] ?? '') ? 'James Bond' : 'PP'
+    const program: Program = /james bond/i.test(programMatch?.[1] ?? text) ? 'James Bond' : 'PP'
     return lateCancelDescription(program, fullPrice || item.amount > 0)
   }
   return item.description
+}
+
+export type InvoiceDisplayLine = {
+  key: string
+  travelDate: string
+  description: string
+  qty: number | ''
+  unit: string
+  unitPrice: number | ''
+  amount: number
+  guestCollect: boolean
+}
+
+function detectProgramFromDescription(description: string): Program {
+  return /james bond/i.test(description) ? 'James Bond' : 'PP'
+}
+
+function isLegacyCombinedTourLine(item: Pick<InvoiceItem, 'description' | 'lineKind' | 'adults' | 'children' | 'infants' | 'tourLeaders'>) {
+  if (item.lineKind !== 'tour' && item.lineKind !== 'no_show' && item.lineKind !== 'cancel') {
+    return false
+  }
+  if (/Adult|Children|Infant|Tour Leader/i.test(item.description)) return false
+  const kinds =
+    Number(item.adults > 0) +
+    Number(item.children > 0) +
+    Number(item.infants > 0) +
+    Number(item.tourLeaders > 0)
+  return kinds > 1 || /Speedboat/i.test(item.description)
+}
+
+/** Flatten invoice items into print rows (one pax type per line, like Unit Price invoices). */
+export function expandInvoiceDisplayLines(items: InvoiceItem[]): InvoiceDisplayLine[] {
+  const lines: InvoiceDisplayLine[] = []
+
+  for (const item of items) {
+    if (isLateReduceFeeLine(item)) {
+      const late = lateReduceFeeDisplay(item)
+      lines.push({
+        key: item.id,
+        travelDate: item.travelDate,
+        description: formatInvoiceLineDescription(item),
+        qty: late.heads || '',
+        unit: late.heads > 0 ? 'Pax' : 'Fee',
+        unitPrice: late.perPerson || '',
+        amount: item.amount,
+        guestCollect: isGuestCollectLine(item),
+      })
+      continue
+    }
+
+    if (isLegacyCombinedTourLine(item)) {
+      const program = detectProgramFromDescription(item.description)
+      const prebuy = /deduct/i.test(item.description) || item.amount === 0
+      const prefix =
+        item.lineKind === 'no_show'
+          ? 'No show'
+          : item.lineKind === 'cancel'
+            ? /full price/i.test(item.description)
+              ? 'Late Cancel, full price'
+              : 'Late Cancel'
+            : undefined
+      const parts: Array<{
+        kind: 'adult' | 'child' | 'infant' | 'tourLeader'
+        qty: number
+        unitPrice: number
+      }> = []
+      if (item.adults > 0) {
+        parts.push({ kind: 'adult', qty: item.adults, unitPrice: prebuy ? 0 : item.adultPrice })
+      }
+      if (item.children > 0) {
+        parts.push({ kind: 'child', qty: item.children, unitPrice: prebuy ? 0 : item.childPrice })
+      }
+      if (item.infants > 0) {
+        parts.push({ kind: 'infant', qty: item.infants, unitPrice: prebuy ? 0 : item.infantPrice })
+      }
+      if (item.tourLeaders > 0) {
+        parts.push({
+          kind: 'tourLeader',
+          qty: item.tourLeaders,
+          unitPrice: prebuy ? 0 : item.tourLeaderPrice,
+        })
+      }
+      for (const part of parts) {
+        lines.push({
+          key: `${item.id}-${part.kind}`,
+          travelDate: item.travelDate,
+          description: programPaxLineLabel(program, part.kind, { prebuy, prefix }),
+          qty: part.qty,
+          unit: 'Pax',
+          unitPrice: part.unitPrice || '',
+          amount: prebuy ? 0 : part.qty * part.unitPrice,
+          guestCollect: false,
+        })
+      }
+      continue
+    }
+
+    const qty =
+      item.adults ||
+      item.children ||
+      item.infants ||
+      item.tourLeaders ||
+      (item.amount !== 0 || item.lineKind === 'tour' ? 1 : 0)
+    const unitPrice =
+      item.adultPrice ||
+      item.childPrice ||
+      item.infantPrice ||
+      item.tourLeaderPrice ||
+      (qty === 1 ? Math.abs(item.amount) : 0)
+
+    lines.push({
+      key: item.id,
+      travelDate: item.travelDate,
+      description: formatInvoiceLineDescription(item),
+      qty: qty || '',
+      unit: chargeUnit(item) || (qty ? 'Pax' : ''),
+      unitPrice: unitPrice || '',
+      amount: item.amount,
+      guestCollect: isGuestCollectLine(item),
+    })
+  }
+
+  return lines
 }
 
 export function isLateReduceFeeLine(
@@ -501,6 +661,7 @@ export function parseSignedMoneyInput(value: string) {
 function documentKindPrefix(kind: InvoiceKind | 'receipt') {
   if (kind === 'receipt') return 'RC'
   if (kind === 'billing_note') return 'BN'
+  if (kind === 'credit_note') return 'CN'
   return 'INV'
 }
 
@@ -514,7 +675,13 @@ function sequenceFromDocumentNumber(
   const next = source.match(new RegExp(`^${prefix}${yy}-${mm}(\\d{3,})$`))
   if (next) return Number(next[1])
   const oldStem =
-    kind === 'receipt' ? 'RC-GDV' : kind === 'billing_note' ? 'BN-GDV' : '(?:PP|JB)-GDV'
+    kind === 'receipt'
+      ? 'RC-GDV'
+      : kind === 'billing_note'
+        ? 'BN-GDV'
+        : kind === 'credit_note'
+          ? 'CN-GDV'
+          : '(?:PP|JB)-GDV'
   const previous = source.match(new RegExp(`^${oldStem}-${yy}${mm}-(\\d+)$`))
   if (previous) return Number(previous[1])
   return null
@@ -555,7 +722,13 @@ export function toNewDocumentNumber(source: string, kind: InvoiceKind | 'receipt
   const prefix = documentKindPrefix(kind)
   if (trimmed.match(new RegExp(`^${prefix}\\d{2}-\\d{5,}$`))) return trimmed
   const oldStem =
-    kind === 'receipt' ? 'RC-GDV' : kind === 'billing_note' ? 'BN-GDV' : '(?:PP|JB)-GDV'
+    kind === 'receipt'
+      ? 'RC-GDV'
+      : kind === 'billing_note'
+        ? 'BN-GDV'
+        : kind === 'credit_note'
+          ? 'CN-GDV'
+          : '(?:PP|JB)-GDV'
   const previous = trimmed.match(new RegExp(`^${oldStem}-(\\d{2})(\\d{2})-(\\d+)$`))
   if (!previous) return trimmed
   return `${prefix}${previous[1]}-${previous[2]}${String(Number(previous[3])).padStart(3, '0')}`
@@ -627,6 +800,77 @@ function snapshotAmount(row: BookedPaxSnapshot, rates: AgencyInvoiceRates) {
 
 function emptySnapshot(): BookedPaxSnapshot {
   return { adults: 0, children: 0, infants: 0, tourLeaders: 0 }
+}
+
+function pushProgramPaxLines(
+  items: Omit<InvoiceItem, 'invoiceId'>[],
+  input: {
+    booking: Booking
+    voucherNo: string
+    pax: BookedPaxSnapshot
+    rates: AgencyInvoiceRates
+    prebuy: boolean
+    lineKind: 'tour' | 'no_show'
+    prefix?: string
+  },
+) {
+  const { booking, voucherNo, pax, rates, prebuy, lineKind, prefix } = input
+  const rows: Array<{
+    kind: 'adult' | 'child' | 'infant' | 'tourLeader'
+    qty: number
+    unitPrice: number
+    adults: number
+    children: number
+    infants: number
+    tourLeaders: number
+  }> = []
+
+  if (pax.adults > 0) {
+    rows.push({
+      kind: 'adult',
+      qty: pax.adults,
+      unitPrice: prebuy ? 0 : rates.adultPrice,
+      adults: pax.adults,
+      children: 0,
+      infants: 0,
+      tourLeaders: 0,
+    })
+  }
+  if (pax.children > 0) {
+    rows.push({
+      kind: 'child',
+      qty: pax.children,
+      unitPrice: prebuy ? 0 : rates.childPrice,
+      adults: 0,
+      children: pax.children,
+      infants: 0,
+      tourLeaders: 0,
+    })
+  }
+  // Infants and tour leaders are free — no priced invoice lines.
+
+  for (const row of rows) {
+    items.push({
+      id: moneyId(),
+      bookingCode: booking.code,
+      travelDate: booking.date,
+      voucherNo,
+      description: programPaxLineLabel(booking.program, row.kind, { prebuy, prefix }),
+      adults: row.adults,
+      children: row.children,
+      infants: row.infants,
+      tourLeaders: row.tourLeaders,
+      adultPrice: row.kind === 'adult' ? row.unitPrice : 0,
+      childPrice: row.kind === 'child' ? row.unitPrice : 0,
+      infantPrice: row.kind === 'infant' ? row.unitPrice : 0,
+      tourLeaderPrice: row.kind === 'tourLeader' ? row.unitPrice : 0,
+      cot: 0,
+      amount: prebuy ? 0 : row.qty * row.unitPrice,
+      lineKind,
+      sortOrder: items.length,
+      unit: 'Pax',
+    })
+  }
 }
 
 export function noShowPaxForInvoice(
@@ -732,57 +976,27 @@ export function buildInvoiceItemsForBooking(
           infants: booking.infants,
           tourLeaders: booking.tourLeaders,
         }
-    const tourAmount = snapshotAmount(tourPax, rates)
 
-    if (snapshotTotal(tourPax) > 0 || tourAmount > 0) {
-      const heads = Math.max(0, tourPax.adults) + Math.max(0, tourPax.children)
-      items.push({
-        id: moneyId(),
-        bookingCode: booking.code,
-        travelDate: booking.date,
+    if (snapshotTotal(tourPax) > 0) {
+      pushProgramPaxLines(items, {
+        booking,
         voucherNo,
-        description: prebuy
-          ? `${programLabel(booking.program)} · deduct ${heads} head${heads === 1 ? '' : 's'}`
-          : programLabel(booking.program),
-        adults: tourPax.adults,
-        children: tourPax.children,
-        infants: tourPax.infants,
-        tourLeaders: tourPax.tourLeaders,
-        adultPrice: prebuy ? 0 : rates.adultPrice,
-        childPrice: prebuy ? 0 : rates.childPrice,
-        infantPrice: prebuy ? 0 : rates.infantPrice,
-        tourLeaderPrice: prebuy ? 0 : rates.tourLeaderPrice,
-        cot: 0,
-        amount: prebuy ? 0 : tourAmount,
+        pax: tourPax,
+        rates,
+        prebuy,
         lineKind: 'tour',
-        sortOrder: items.length,
       })
     }
 
-    const noShowAmount = snapshotAmount(noShow, rates)
     if (snapshotTotal(noShow) > 0) {
-      const noShowHeads = Math.max(0, noShow.adults) + Math.max(0, noShow.children)
-      items.push({
-        id: moneyId(),
-        bookingCode: booking.code,
-        travelDate: booking.date,
+      pushProgramPaxLines(items, {
+        booking,
         voucherNo,
-        description: prebuy
-          ? `No show · deduct ${noShowHeads} head${noShowHeads === 1 ? '' : 's'}`
-          : `No show · ${snapshotTotal(noShow)} pax`,
-        adults: noShow.adults,
-        children: noShow.children,
-        infants: noShow.infants,
-        tourLeaders: noShow.tourLeaders,
-        adultPrice: prebuy ? 0 : rates.adultPrice,
-        childPrice: prebuy ? 0 : rates.childPrice,
-        infantPrice: prebuy ? 0 : rates.infantPrice,
-        tourLeaderPrice: prebuy ? 0 : rates.tourLeaderPrice,
-        cot: 0,
-        // Prebuy: no-show only deducts heads — no money on the bill.
-        amount: prebuy ? 0 : noShowAmount,
+        pax: noShow,
+        rates,
+        prebuy,
         lineKind: 'no_show',
-        sortOrder: items.length,
+        prefix: 'No show',
       })
     }
   }
@@ -904,6 +1118,39 @@ export function buildInvoiceItemsForBooking(
       lineKind: 'extra_zone',
       sortOrder: items.length,
     })
+  }
+
+  // Invoice agents only: No Transfer pickup → -100 THB per AD+CH. Prebuy: no discount.
+  if (
+    !prebuy &&
+    booking.status !== 'Cancelled' &&
+    isNoTransfer(booking.pickupZone)
+  ) {
+    const heads =
+      Math.max(0, booking.adults) + Math.max(0, booking.children)
+    if (heads > 0) {
+      const per = NO_TRANSFER_DISCOUNT_PER_PERSON
+      items.push({
+        id: moneyId(),
+        bookingCode: booking.code,
+        travelDate: booking.date,
+        voucherNo,
+        description: `No Transfer · -${per} THB / Person`,
+        adults: booking.adults,
+        children: booking.children,
+        infants: 0,
+        tourLeaders: 0,
+        adultPrice: -per,
+        childPrice: -per,
+        infantPrice: 0,
+        tourLeaderPrice: 0,
+        cot: 0,
+        amount: -(heads * per),
+        lineKind: 'other',
+        unit: 'Pax',
+        sortOrder: items.length,
+      })
+    }
   }
 
   const thaiGuests = Math.max(0, Math.floor(options?.thaiGuests ?? 0))
@@ -1069,6 +1316,12 @@ export function checkInStatusLabel(status: CheckInAttendance | null, cancelled: 
   return 'Pending'
 }
 
+export function parseInvoiceKind(value: unknown): InvoiceKind {
+  if (value === 'billing_note') return 'billing_note'
+  if (value === 'credit_note') return 'credit_note'
+  return 'invoice'
+}
+
 export function newInvoiceDocument(input: {
   existing: InvoiceDocument[]
   kind: InvoiceKind
@@ -1104,5 +1357,35 @@ export function newInvoiceDocument(input: {
     payments: [],
     createdAt: new Date().toISOString(),
     sendToAgent: false,
+  }
+}
+
+export function newCreditNoteFromInvoice(
+  source: InvoiceDocument,
+  existing: InvoiceDocument[],
+  issueDate: string,
+): InvoiceDocument {
+  const items = source.items.map((item) => ({
+    ...item,
+    id: crypto.randomUUID(),
+    amount: -Math.abs(Number(item.amount) || 0),
+    adultPrice: item.adultPrice ? -Math.abs(item.adultPrice) : item.adultPrice,
+    childPrice: item.childPrice ? -Math.abs(item.childPrice) : item.childPrice,
+    description: `Credit · ${item.description}`,
+  }))
+  const doc = newInvoiceDocument({
+    existing,
+    kind: 'credit_note',
+    agentSlug: source.agentSlug,
+    agentName: source.agentName,
+    issueDate,
+    notes: `Credit note for ${source.number}`,
+    items,
+    linkedInvoiceIds: [source.id],
+  })
+  return {
+    ...doc,
+    status: 'paid',
+    paidAt: `${issueDate}T12:00:00.000Z`,
   }
 }

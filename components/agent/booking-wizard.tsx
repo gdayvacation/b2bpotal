@@ -32,7 +32,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
-import { dateFromISO, formatIncludeLabel, formatLongDate, slugifyAgentName, startOfToday, toISODate, todayISO } from '@/lib/format'
+import { dateFromISO, formatIncludeLabel, formatLongDate, startOfToday, toISODate, todayISO, uniqueAgentSlug } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { cn } from '@/lib/utils'
 import { duplicateBookingMessage, findDuplicateBookings } from '@/lib/booking-duplicates'
@@ -91,7 +91,7 @@ export function BookingWizard({
 }: {
   /** Locked agent for partner booking links. */
   agent?: Agent
-  /** Admin offline flow: choose an existing agent or type a name. */
+  /** Admin flow: choose an existing agent or create a new one (syncs to Invoice setup). */
   selectAgent?: boolean
   title?: string
   description?: string
@@ -102,6 +102,7 @@ export function BookingWizard({
 }) {
   const router = useRouter()
   const {
+    addAgent,
     addBooking,
     agents,
     bookings,
@@ -141,12 +142,12 @@ export function BookingWizard({
   const [selectedAgentSlug, setSelectedAgentSlug] = useState<string | null>(
     agent?.slug ?? seededAgent?.slug ?? null,
   )
-  const [agentMode, setAgentMode] = useState<'existing' | 'offline'>(() => {
+  const [agentMode, setAgentMode] = useState<'existing' | 'new'>(() => {
     if (agent || seededAgent) return 'existing'
-    if (seed?.agentName?.trim()) return 'offline'
+    if (seed?.agentName?.trim()) return 'new'
     return 'existing'
   })
-  const [offlineAgentName, setOfflineAgentName] = useState(
+  const [newAgentName, setNewAgentName] = useState(
     () => (!seededAgent && seed?.agentName ? seed.agentName : ''),
   )
   const [agentRef, setAgentRef] = useState(() => seed?.agentRef ?? '')
@@ -229,13 +230,13 @@ export function BookingWizard({
     if (matched) {
       setSelectedAgentSlug(matched.slug)
       setAgentMode('existing')
-      setOfflineAgentName('')
+      setNewAgentName('')
       seedAgentApplied.current = true
       return
     }
     if (agents.length > 0) {
-      setAgentMode('offline')
-      setOfflineAgentName(seed.agentName)
+      setAgentMode('new')
+      setNewAgentName(seed.agentName)
       seedAgentApplied.current = true
     }
   }, [agents, seed?.agentName])
@@ -275,14 +276,18 @@ export function BookingWizard({
 
   const resolvedAgent: ResolvedAgent | null = useMemo(() => {
     if (!selectAgent && agent) return { slug: agent.slug, name: agent.name }
-    if (agentMode === 'offline') {
-      const name = offlineAgentName.trim()
+    if (agentMode === 'new') {
+      const name = newAgentName.trim().replace(/\s+/g, ' ')
       if (name.length < 2) return null
-      return { slug: `offline-${slugifyAgentName(name)}`, name }
+      const existing = agents.find(
+        (item) => item.name.toLowerCase() === name.toLowerCase(),
+      )
+      if (existing) return { slug: existing.slug, name: existing.name }
+      return { slug: uniqueAgentSlug(name, agents.map((item) => item.slug)), name }
     }
     const found = agents.find((item) => item.slug === selectedAgentSlug)
     return found ? { slug: found.slug, name: found.name } : null
-  }, [selectAgent, agent, agentMode, offlineAgentName, selectedAgentSlug, agents])
+  }, [selectAgent, agent, agentMode, newAgentName, selectedAgentSlug, agents])
 
   const total = adults + children + infants + tourLeaders
   const isoDate = date ? toISODate(date) : ''
@@ -371,8 +376,8 @@ export function BookingWizard({
     if (!canContinue) {
       setError(
         selectAgent && step === 0
-          ? agentMode === 'offline'
-            ? 'Enter the agent or agency name.'
+          ? agentMode === 'new'
+            ? 'Enter the new agent or agency name.'
             : 'Select an agent.'
           : step === programStep
             ? 'Please select a program.'
@@ -398,6 +403,32 @@ export function BookingWizard({
       )
       return
     }
+
+    if (selectAgent && step === 0 && agentMode === 'new') {
+      const trimmed = newAgentName.trim().replace(/\s+/g, ' ')
+      const existing = agents.find(
+        (item) => item.name.toLowerCase() === trimmed.toLowerCase(),
+      )
+      if (existing) {
+        setSelectedAgentSlug(existing.slug)
+        setAgentMode('existing')
+        setNewAgentName('')
+      } else {
+        const createError = addAgent(trimmed)
+        if (createError) {
+          setError(createError)
+          return
+        }
+        const slug = uniqueAgentSlug(
+          trimmed,
+          agents.map((item) => item.slug),
+        )
+        setSelectedAgentSlug(slug)
+        setAgentMode('existing')
+        setNewAgentName('')
+      }
+    }
+
     setError('')
     setStep((current) => Math.min(current + 1, steps.length - 1))
   }
@@ -595,18 +626,18 @@ export function BookingWizard({
               <button
                 type="button"
                 onClick={() => {
-                  setAgentMode('offline')
+                  setAgentMode('new')
                   setSelectedAgentSlug(null)
                   setError('')
                 }}
                 className={cn(
                   'min-h-12 rounded-2xl border px-4 py-3 text-sm font-semibold transition-colors',
-                  agentMode === 'offline'
+                  agentMode === 'new'
                     ? 'border-teal-800 bg-teal-800 text-white shadow-sm shadow-teal-800/20'
                     : 'border-teal-900/10 bg-white/70 text-teal-900/65 hover:border-teal-700/30',
                 )}
               >
-                Offline / walk-in
+                New agent
               </button>
             </div>
 
@@ -615,7 +646,7 @@ export function BookingWizard({
                 <Label className="mb-3">Choose agent</Label>
                 {activeAgents.length === 0 ? (
                   <p className="rounded-xl border border-dashed border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-500">
-                    No active agents yet. Use Offline / walk-in and type the agency name.
+                    No active agents yet. Use New agent to add one — it syncs to Invoice setup too.
                   </p>
                 ) : (
                   <div className="grid max-h-72 gap-2 overflow-y-auto sm:grid-cols-2">
@@ -642,15 +673,16 @@ export function BookingWizard({
               </div>
             ) : (
               <div className="max-w-md space-y-2">
-                <Label htmlFor="offline-agent">Agent / agency name</Label>
+                <Label htmlFor="new-agent-name">New agent / agency name</Label>
                 <Input
-                  id="offline-agent"
-                  value={offlineAgentName}
-                  onChange={(event) => setOfflineAgentName(event.target.value)}
+                  id="new-agent-name"
+                  value={newAgentName}
+                  onChange={(event) => setNewAgentName(event.target.value)}
                   className="h-11"
+                  placeholder="e.g. 888 Travel"
                 />
                 <p className="text-xs text-neutral-500">
-                  For bookings taken offline — no partner link required.
+                  Saved to the shared agent list — shows in Invoice setup and Add Booking.
                 </p>
               </div>
             )}
@@ -1061,10 +1093,10 @@ export function BookingWizard({
               <h3 className="font-display mt-1.5 text-3xl leading-tight font-semibold tracking-tight sm:text-4xl">
                 {leadGuest.trim() || '—'}
               </h3>
-              {resolvedAgent?.name || (selectAgent && agentMode === 'offline') ? (
+              {resolvedAgent?.name || (selectAgent && agentMode === 'new') ? (
                 <p className="mt-2 text-sm text-white/70">
-                  {resolvedAgent?.name ?? '—'}
-                  {selectAgent && agentMode === 'offline' ? ' · Offline / walk-in' : ''}
+                  {resolvedAgent?.name || newAgentName.trim() || '—'}
+                  {selectAgent && agentMode === 'new' ? ' · New agent' : ''}
                 </p>
               ) : null}
               <div className="mt-5 grid grid-cols-2 gap-4 border-t border-white/15 pt-4 sm:grid-cols-3">

@@ -2,20 +2,16 @@
 
 import {
   COMPANY_LOGO_SRC,
-  chargeUnit,
+  expandInvoiceDisplayLines,
   formatInvoiceDate,
-  formatInvoiceLineDescription,
   formatInvoiceMoney,
   formatPaymentChannel,
   invoiceBalance,
   invoicePaidTotal,
   invoicePayments,
   invoiceTravelRange,
-  isGuestCollectLine,
-  isLateReduceFeeLine,
   itemsAgentTotal,
   itemsGuestTotal,
-  lateReduceFeeDisplay,
   prebuyDeductHeads,
   type InvoiceDocument,
   type InvoiceSettings,
@@ -71,7 +67,7 @@ function DocumentFooter({
 }: {
   settings: InvoiceSettings
   tone: 'invoice' | 'receipt'
-  mode: 'invoice' | 'billing_note' | 'receipt'
+  mode: 'invoice' | 'billing_note' | 'receipt' | 'credit_note'
 }) {
   return (
     <footer className="mt-8 overflow-hidden rounded-lg border border-neutral-200">
@@ -152,7 +148,8 @@ function LineTable({
   emptyRows?: number
   tone?: 'invoice' | 'receipt'
 }) {
-  const filler = Math.max(0, emptyRows - doc.items.length)
+  const lines = expandInvoiceDisplayLines(doc.items)
+  const filler = Math.max(0, emptyRows - lines.length)
   const head = tone === 'receipt' ? 'bg-[#c8ecd4] text-emerald-950' : 'bg-[#f3d4ff] text-neutral-900'
   return (
     <table className="w-full border-collapse text-[11px]">
@@ -160,62 +157,48 @@ function LineTable({
         <tr className={head}>
           <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">No.</th>
           <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">Date</th>
-          <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">Description</th>
+          <th className="border border-neutral-400 px-1.5 py-1.5 text-left font-semibold">
+            Description
+          </th>
+          <th className="border border-neutral-400 px-1.5 py-1.5 text-right font-semibold">Qty</th>
           <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">Unit</th>
-          <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">AD</th>
-          <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">CH</th>
-          <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">AD price</th>
-          <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">CH price</th>
-          <th className="border border-neutral-400 px-1.5 py-1.5 font-semibold">Amount</th>
+          <th className="border border-neutral-400 px-1.5 py-1.5 text-right font-semibold">
+            Unit price
+          </th>
+          <th className="border border-neutral-400 px-1.5 py-1.5 text-right font-semibold">Amount</th>
         </tr>
       </thead>
       <tbody>
-        {doc.items.map((item, index) => {
-          const lateReduce = isLateReduceFeeLine(item) ? lateReduceFeeDisplay(item) : null
-          return (
-          <tr key={item.id} className={isGuestCollectLine(item) ? 'bg-orange-50/70 text-neutral-700' : undefined}>
+        {lines.map((line, index) => (
+          <tr
+            key={line.key}
+            className={line.guestCollect ? 'bg-orange-50/70 text-neutral-700' : undefined}
+          >
             <td className="border border-neutral-300 px-1.5 py-1 text-center">{index + 1}</td>
             <td className="border border-neutral-300 px-1.5 py-1 whitespace-nowrap">
-              {formatInvoiceDate(item.travelDate)}
+              {formatInvoiceDate(line.travelDate)}
             </td>
-            <td className="border border-neutral-300 px-1.5 py-1">
-              {formatInvoiceLineDescription(item)}
+            <td className="border border-neutral-300 px-1.5 py-1">{line.description}</td>
+            <td className="border border-neutral-300 px-1.5 py-1 text-right tabular-nums">
+              {line.qty === '' ? '' : Number(line.qty).toFixed(2)}
             </td>
-            <td className="border border-neutral-300 px-1.5 py-1">
-              {lateReduce ? (lateReduce.heads > 0 ? 'Pax' : 'Fee') : chargeUnit(item)}
-            </td>
-            <td className="border border-neutral-300 px-1.5 py-1 text-center">
-              {lateReduce ? lateReduce.heads || '' : item.adults || ''}
-            </td>
-            <td className="border border-neutral-300 px-1.5 py-1 text-center">
-              {item.children || ''}
-            </td>
-            <td className="border border-neutral-300 px-1.5 py-1 text-right">
-              {lateReduce
-                ? lateReduce.perPerson
-                  ? formatInvoiceMoney(lateReduce.perPerson)
-                  : ''
-                : item.adultPrice
-                  ? formatInvoiceMoney(item.adultPrice)
-                  : ''}
-            </td>
-            <td className="border border-neutral-300 px-1.5 py-1 text-right">
-              {item.childPrice ? formatInvoiceMoney(item.childPrice) : ''}
+            <td className="border border-neutral-300 px-1.5 py-1">{line.unit}</td>
+            <td className="border border-neutral-300 px-1.5 py-1 text-right tabular-nums">
+              {line.unitPrice === '' ? '' : formatInvoiceMoney(line.unitPrice)}
             </td>
             <td
               className={cn(
-                'border border-neutral-300 px-1.5 py-1 text-right',
-                item.amount < 0 && 'font-semibold text-rose-700',
+                'border border-neutral-300 px-1.5 py-1 text-right tabular-nums',
+                line.amount < 0 && 'font-semibold text-rose-700',
               )}
             >
-              {formatInvoiceMoney(item.amount)}
+              {formatInvoiceMoney(line.amount)}
             </td>
           </tr>
-          )
-        })}
+        ))}
         {Array.from({ length: filler }, (_, index) => (
           <tr key={`empty-${index}`}>
-            {Array.from({ length: 9 }, (__, cell) => (
+            {Array.from({ length: 7 }, (__, cell) => (
               <td key={cell} className="border border-neutral-300 px-1.5 py-2.5">
                 &nbsp;
               </td>
@@ -237,7 +220,7 @@ export function InvoicePrintSheet({
   doc: InvoiceDocument
   settings: InvoiceSettings
   linked?: InvoiceDocument[]
-  mode?: 'invoice' | 'billing_note' | 'receipt'
+  mode?: 'invoice' | 'billing_note' | 'receipt' | 'credit_note'
   /** When printing a receipt for one instalment. */
   paymentId?: string | null
 }) {
@@ -247,7 +230,13 @@ export function InvoicePrintSheet({
       ? payments.find((row) => row.id === paymentId) ?? payments.at(-1) ?? null
       : null
   const title =
-    mode === 'receipt' ? 'RECEIPT' : mode === 'billing_note' ? 'BILLING NOTE' : 'INVOICE'
+    mode === 'receipt'
+      ? 'RECEIPT'
+      : mode === 'billing_note'
+        ? 'BILLING NOTE'
+        : mode === 'credit_note'
+          ? 'CREDIT NOTE'
+          : 'INVOICE'
   const number =
     mode === 'receipt'
       ? focusedPayment?.receiptNo || doc.receiptNo || doc.number
@@ -531,7 +520,13 @@ export function InvoicePrintBundle({
       doc={doc}
       settings={settings}
       linked={linked}
-      mode={doc.kind === 'billing_note' ? 'billing_note' : 'invoice'}
+      mode={
+        doc.kind === 'billing_note'
+          ? 'billing_note'
+          : doc.kind === 'credit_note'
+            ? 'credit_note'
+            : 'invoice'
+      }
     />
   )
 }

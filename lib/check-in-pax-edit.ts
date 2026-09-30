@@ -3,6 +3,7 @@ import { parkFeeRates, parkFeeTotalWithThai } from '@/lib/format'
 import {
   invoicesForBookings,
   itemsAgentTotal,
+  programPaxLineLabel,
   type InvoiceDocument,
   type InvoiceItem,
 } from '@/lib/invoice'
@@ -61,6 +62,16 @@ function updateDeductHeads(description: string, pax: BookedPaxSnapshot) {
   return description
 }
 
+function tourPaxKindFromDescription(
+  description: string,
+): 'adult' | 'child' | 'infant' | 'tourLeader' | 'combined' {
+  if (/Tour Leader/i.test(description)) return 'tourLeader'
+  if (/Infant/i.test(description)) return 'infant'
+  if (/Children|Child\b/i.test(description)) return 'child'
+  if (/Adult/i.test(description)) return 'adult'
+  return 'combined'
+}
+
 function applyPaxToItem(
   item: InvoiceItem,
   booking: Booking,
@@ -70,6 +81,58 @@ function applyPaxToItem(
   if (item.lineKind === 'no_show') return null
 
   if (item.lineKind === 'tour') {
+    const kind = tourPaxKindFromDescription(item.description)
+    const prebuy = /deduct/i.test(item.description) || Number(item.amount) === 0
+
+    if (kind === 'adult') {
+      if (pax.adults <= 0) return null
+      const unitPrice = Number(item.adultPrice) || 0
+      return {
+        ...item,
+        adults: pax.adults,
+        children: 0,
+        infants: 0,
+        tourLeaders: 0,
+        amount: prebuy ? 0 : unitPrice > 0 ? pax.adults * unitPrice : item.amount,
+      }
+    }
+    if (kind === 'child') {
+      if (pax.children <= 0) return null
+      const unitPrice = Number(item.childPrice) || 0
+      return {
+        ...item,
+        adults: 0,
+        children: pax.children,
+        infants: 0,
+        tourLeaders: 0,
+        amount: prebuy ? 0 : unitPrice > 0 ? pax.children * unitPrice : item.amount,
+      }
+    }
+    if (kind === 'infant') {
+      if (pax.infants <= 0) return null
+      const unitPrice = Number(item.infantPrice) || 0
+      return {
+        ...item,
+        adults: 0,
+        children: 0,
+        infants: pax.infants,
+        tourLeaders: 0,
+        amount: prebuy ? 0 : unitPrice > 0 ? pax.infants * unitPrice : item.amount,
+      }
+    }
+    if (kind === 'tourLeader') {
+      if (pax.tourLeaders <= 0) return null
+      const unitPrice = Number(item.tourLeaderPrice) || 0
+      return {
+        ...item,
+        adults: 0,
+        children: 0,
+        infants: 0,
+        tourLeaders: pax.tourLeaders,
+        amount: prebuy ? 0 : unitPrice > 0 ? pax.tourLeaders * unitPrice : item.amount,
+      }
+    }
+
     const computed = snapshotAmount(item, pax)
     const hasUnitPrices =
       (Number(item.adultPrice) || 0) > 0 ||
@@ -142,6 +205,87 @@ export function applyPaxChangeToInvoice(
       return applyPaxToItem(item, booking, pax, thaiGuests)
     })
     .filter((item): item is InvoiceItem => item != null)
+
+  // Split tour lines: add missing Adult/Children rows when pax grows.
+  const tourItems = items.filter(
+    (item) => item.bookingCode === booking.code && item.lineKind === 'tour',
+  )
+  const splitTour = tourItems.some(
+    (item) => tourPaxKindFromDescription(item.description) !== 'combined',
+  )
+  if (splitTour) {
+    const template = tourItems[0]!
+    const prebuy = /deduct/i.test(template.description) || Number(template.amount) === 0
+    const voucherNo = template.voucherNo
+    const present = new Set(
+      tourItems.map((item) => tourPaxKindFromDescription(item.description)),
+    )
+    const ensure = (
+      kind: 'adult' | 'child' | 'infant' | 'tourLeader',
+      qty: number,
+      unitPrice: number,
+      fields: Pick<InvoiceItem, 'adults' | 'children' | 'infants' | 'tourLeaders'>,
+    ) => {
+      if (qty <= 0 || present.has(kind)) return
+      items.push({
+        id: crypto.randomUUID(),
+        invoiceId: doc.id,
+        bookingCode: booking.code,
+        travelDate: booking.date,
+        voucherNo,
+        description: programPaxLineLabel(booking.program, kind, { prebuy }),
+        adults: fields.adults,
+        children: fields.children,
+        infants: fields.infants,
+        tourLeaders: fields.tourLeaders,
+        adultPrice: kind === 'adult' ? unitPrice : 0,
+        childPrice: kind === 'child' ? unitPrice : 0,
+        infantPrice: kind === 'infant' ? unitPrice : 0,
+        tourLeaderPrice: kind === 'tourLeader' ? unitPrice : 0,
+        cot: 0,
+        amount: prebuy ? 0 : qty * unitPrice,
+        lineKind: 'tour',
+        sortOrder: items.length,
+        unit: 'Pax',
+      })
+    }
+    const adultPrice =
+      tourItems.find((item) => tourPaxKindFromDescription(item.description) === 'adult')
+        ?.adultPrice ?? template.adultPrice
+    const childPrice =
+      tourItems.find((item) => tourPaxKindFromDescription(item.description) === 'child')
+        ?.childPrice ?? template.childPrice
+    const infantPrice =
+      tourItems.find((item) => tourPaxKindFromDescription(item.description) === 'infant')
+        ?.infantPrice ?? template.infantPrice
+    const tourLeaderPrice =
+      tourItems.find((item) => tourPaxKindFromDescription(item.description) === 'tourLeader')
+        ?.tourLeaderPrice ?? template.tourLeaderPrice
+    ensure('adult', pax.adults, Number(adultPrice) || 0, {
+      adults: pax.adults,
+      children: 0,
+      infants: 0,
+      tourLeaders: 0,
+    })
+    ensure('child', pax.children, Number(childPrice) || 0, {
+      adults: 0,
+      children: pax.children,
+      infants: 0,
+      tourLeaders: 0,
+    })
+    ensure('infant', pax.infants, Number(infantPrice) || 0, {
+      adults: 0,
+      children: 0,
+      infants: pax.infants,
+      tourLeaders: 0,
+    })
+    ensure('tourLeader', pax.tourLeaders, Number(tourLeaderPrice) || 0, {
+      adults: 0,
+      children: 0,
+      infants: 0,
+      tourLeaders: pax.tourLeaders,
+    })
+  }
 
   // If check-in found Thai seats after the bill was issued, add the 40 THB line.
   if (

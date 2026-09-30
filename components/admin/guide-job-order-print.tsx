@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment } from 'react'
+import { Fragment, type ReactNode } from 'react'
 import { usePortal } from '@/components/portal-provider'
 import { boatThemeFor } from '@/lib/boat-theme'
 import { formatCheckInServicesOption, type CheckInServiceLine } from '@/lib/check-in-services'
@@ -40,9 +40,13 @@ type GuidePassengerRow = {
   note: string
 }
 
-export function printGuideJobOrder(date: string, program: Program) {
+export function printGuideJobOrder(date: string, program: Program | Program[]) {
   const previous = document.title
-  const programShort = program === 'PP' ? 'PP' : 'JB'
+  const programs = (Array.isArray(program) ? program : [program]).filter(Boolean)
+  const programShort =
+    programs.length === 0
+      ? 'All'
+      : programs.map((item) => (item === 'PP' ? 'PP' : 'JB')).join('+')
   document.title = `GuideJO-${date}-${programShort}`
   document.body.classList.add('printing-guide-jo')
   const restore = () => {
@@ -60,12 +64,15 @@ export function GuideJobOrderPrint({
   boatPlan,
   vehiclePlan,
   bookings,
+  bare = false,
 }: {
   date: string
   program: Program
   boatPlan: DayBoatPlan
   vehiclePlan: DayVehiclePlan
   bookings: Booking[]
+  /** Render boat sheets only — wrap several in one print root from the caller. */
+  bare?: boolean
 }) {
   const { resolveVanMeta, getCheckInAttendance, getCheckInServices, getCheckInNote } = usePortal()
   const boatNumbers = boatNumbersForPlan(boatPlan).filter((boat) => !isPartnerBoat(boatPlan, boat))
@@ -73,10 +80,7 @@ export function GuideJobOrderPrint({
     (booking) => getCheckInAttendance(date, program, booking.code) !== 'no-show',
   )
 
-  return (
-    <>
-      <div className="guide-job-order-print hidden">
-        {boatNumbers.map((boat, boatIndex) => {
+  const sheets = boatNumbers.map((boat, boatIndex) => {
           const guide = boatPlan.guides?.[boat - 1] ?? emptyBoatGuide()
           const onBoat = active.filter((booking) =>
             bookingAssignedToBoat(boatPlan.assignments[booking.code], boat),
@@ -302,8 +306,26 @@ export function GuideJobOrderPrint({
               </p>
             </div>
           )
-        })}
+  })
+
+  if (bare) {
+    return <div className="guide-jo-program">{sheets}</div>
+  }
+
+  return (
+    <>
+      <div className="guide-job-order-print hidden">
+        <div className="guide-jo-program">{sheets}</div>
       </div>
+      <style>{GUIDE_JO_PRINT_CSS}</style>
+    </>
+  )
+}
+
+export function GuideJobOrderPrintRoot({ children }: { children: ReactNode }) {
+  return (
+    <>
+      <div className="guide-job-order-print hidden">{children}</div>
       <style>{GUIDE_JO_PRINT_CSS}</style>
     </>
   )
@@ -455,6 +477,10 @@ const GUIDE_JO_PRINT_CSS = `
       color: #042f2e !important;
       -webkit-print-color-adjust: exact !important;
       print-color-adjust: exact !important;
+    }
+    body.printing-guide-jo .guide-jo-program + .guide-jo-program {
+      break-before: page;
+      page-break-before: always;
     }
     body.printing-guide-jo .guide-jo-table {
       table-layout: fixed !important;
