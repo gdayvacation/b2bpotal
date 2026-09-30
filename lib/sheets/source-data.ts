@@ -8,7 +8,8 @@ import { isCheckInServiceKind, type CheckInServiceLine } from '@/lib/check-in-se
 import { PORTAL_TIMEZONE } from '@/lib/format'
 import type { InvoiceDocument, InvoiceItem, InvoiceKind, InvoiceLineKind, InvoiceStatus } from '@/lib/invoice'
 import { parsePaymentChannel } from '@/lib/invoice'
-import { getSupabaseBrowserClient } from '@/lib/supabase/client'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { getSupabaseBackupClient } from '@/lib/supabase/backup-client'
 import {
   defaultBoatLabel,
   type Booking,
@@ -89,8 +90,7 @@ export function assignmentKey(date: string, program: Program, bookingCode: strin
   return bookedPaxKey(date, program, bookingCode)
 }
 
-async function fetchAllRows<T>(table: string): Promise<T[]> {
-  const supabase = getSupabaseBrowserClient()
+async function fetchAllRows<T>(supabase: SupabaseClient, table: string): Promise<T[]> {
   const pageSize = 1000
   const all: T[] = []
   let from = 0
@@ -110,9 +110,12 @@ async function fetchAllRows<T>(table: string): Promise<T[]> {
   return all
 }
 
-async function fetchOptionalRows<T>(table: string): Promise<T[] | null> {
+async function fetchOptionalRows<T>(
+  supabase: SupabaseClient,
+  table: string,
+): Promise<T[] | null> {
   try {
-    return await fetchAllRows<T>(table)
+    return await fetchAllRows<T>(supabase, table)
   } catch (error) {
     console.warn(`[sheets] ${table} unavailable`, error)
     return null
@@ -170,6 +173,7 @@ function formatThaiStamp(now = new Date()) {
 }
 
 export async function loadSheetsBackupSource(): Promise<SheetsBackupSource> {
+  const supabase = await getSupabaseBackupClient()
   const [
     bookingRows,
     enrollmentRows,
@@ -186,20 +190,20 @@ export async function loadSheetsBackupSource(): Promise<SheetsBackupSource> {
     invoiceRows,
     invoiceItemRows,
   ] = await Promise.all([
-    fetchAllRows<BookingRow>('bookings'),
-    fetchOptionalRows<Record<string, unknown>>('check_in_enrollments'),
-    fetchOptionalRows<Record<string, unknown>>('check_in_attendance'),
-    fetchOptionalRows<Record<string, unknown>>('check_in_payments'),
-    fetchOptionalRows<Record<string, unknown>>('check_in_services'),
-    fetchOptionalRows<Record<string, unknown>>('check_in_notes'),
-    fetchOptionalRows<Record<string, unknown>>('check_in_booked_pax'),
-    fetchOptionalRows<Record<string, unknown>>('pickup_no_shows'),
-    fetchOptionalRows<Record<string, unknown>>('own_arrivals'),
-    fetchOptionalRows<Record<string, unknown>>('job_order_actions'),
-    fetchOptionalRows<Record<string, unknown>>('boat_assignments'),
-    fetchOptionalRows<Record<string, unknown>>('van_assignments'),
-    fetchOptionalRows<Record<string, unknown>>('invoices'),
-    fetchOptionalRows<Record<string, unknown>>('invoice_items'),
+    fetchAllRows<BookingRow>(supabase, 'bookings'),
+    fetchOptionalRows<Record<string, unknown>>(supabase, 'check_in_enrollments'),
+    fetchOptionalRows<Record<string, unknown>>(supabase, 'check_in_attendance'),
+    fetchOptionalRows<Record<string, unknown>>(supabase, 'check_in_payments'),
+    fetchOptionalRows<Record<string, unknown>>(supabase, 'check_in_services'),
+    fetchOptionalRows<Record<string, unknown>>(supabase, 'check_in_notes'),
+    fetchOptionalRows<Record<string, unknown>>(supabase, 'check_in_booked_pax'),
+    fetchOptionalRows<Record<string, unknown>>(supabase, 'pickup_no_shows'),
+    fetchOptionalRows<Record<string, unknown>>(supabase, 'own_arrivals'),
+    fetchOptionalRows<Record<string, unknown>>(supabase, 'job_order_actions'),
+    fetchOptionalRows<Record<string, unknown>>(supabase, 'boat_assignments'),
+    fetchOptionalRows<Record<string, unknown>>(supabase, 'van_assignments'),
+    fetchOptionalRows<Record<string, unknown>>(supabase, 'invoices'),
+    fetchOptionalRows<Record<string, unknown>>(supabase, 'invoice_items'),
   ])
 
   const bookings = bookingRows.map(mapBooking).sort((a, b) => {

@@ -70,14 +70,22 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
     (await getSelectedMonthSafe()) ||
     (months.includes(currentThaiMonth()) ? currentThaiMonth() : (months[0] ?? currentThaiMonth()))
 
+  const bookingRowBudget = Math.max(50000, bookingRows.length + 2000)
+  const guestRowBudget = Math.max(50000, guestRows.length + 2000)
+  const mergeRowBudget = Math.max(50000, mergeRows.length + 2000)
+  const invoiceRowBudget = Math.max(20000, invoiceRows.length + 1000)
+  const invoiceLineRowBudget = Math.max(50000, invoiceLineRows.length + 2000)
+  // Monthly tab holds summary + QUERY spill of selected-month bookings/merge.
+  const monthlyRowBudget = Math.max(50000, bookingRows.length + 5000)
+
   await batchUpdate([
-    expandGridRequests(bookingsId),
-    expandGridRequests(guestsId),
-    expandGridRequests(mergeId),
-    expandGridRequests(invoicesId),
-    expandGridRequests(invoiceLinesId),
-    expandGridRequests(monthlyId, 10000, 80),
-    expandGridRequests(monthsId, 200, 4),
+    expandGridRequests(bookingsId, bookingRowBudget),
+    expandGridRequests(guestsId, guestRowBudget),
+    expandGridRequests(mergeId, mergeRowBudget),
+    expandGridRequests(invoicesId, invoiceRowBudget),
+    expandGridRequests(invoiceLinesId, invoiceLineRowBudget),
+    expandGridRequests(monthlyId, monthlyRowBudget, 80),
+    expandGridRequests(monthsId, Math.max(200, months.length + 20), 4),
   ])
 
   await Promise.all([

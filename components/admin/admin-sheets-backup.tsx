@@ -87,7 +87,7 @@ export function AdminSheetsBackup({ onBack }: { onBack: () => void }) {
       </div>
       <PageHeader
         title="Google Sheets backup"
-        description="Backup writes Bookings, Check-in guests, Merge, Invoices, and Invoice lines. Nightly sync at 4:00 AM Thai time keeps it updated."
+        description="Full history backup (all months) into Google Sheets. Nightly sync at 4:00 AM Thai time. Staff open the shared sheet anytime — use Monthly → month dropdown to filter."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -145,7 +145,12 @@ export function AdminSheetsBackup({ onBack }: { onBack: () => void }) {
               check-in vs extra charge.
             </li>
             <li>
-              <span className="font-semibold text-teal-950">Monthly</span> — pick a month in B1.
+              <span className="font-semibold text-teal-950">Monthly</span> — pick a month in B1
+              (dropdown). Shows that month’s summary, bookings, and merge view.
+            </li>
+            <li>
+              <span className="font-semibold text-teal-950">Bookings / Merge</span> also have a
+              Month column — filter any tab by month anytime.
             </li>
           </ol>
         </Surface>
@@ -157,11 +162,13 @@ export function AdminSheetsBackup({ onBack }: { onBack: () => void }) {
           ) : (
             <div className="mt-3 space-y-3 text-sm leading-relaxed text-teal-900/70">
               <div className="space-y-1.5">
-                <SoftLabel htmlFor="sheets-share-email">Share the new sheet with</SoftLabel>
+                <SoftLabel htmlFor="sheets-share-email">
+                  Staff emails who can open the sheet (comma-separated)
+                </SoftLabel>
                 <Input
                   id="sheets-share-email"
-                  type="email"
-                  placeholder="your@gmail.com"
+                  type="text"
+                  placeholder="you@gmail.com, ops@gmail.com"
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                 />
@@ -169,7 +176,7 @@ export function AdminSheetsBackup({ onBack }: { onBack: () => void }) {
               {hasServiceAccount ? (
                 <p>
                   Service account is ready. Click <span className="font-semibold">Create Google Sheet</span>{' '}
-                  — Google will make the workbook and share it to that email.
+                  — Google will make the workbook and share it so listed staff can open it anytime.
                 </p>
               ) : (
                 <div className="space-y-2">

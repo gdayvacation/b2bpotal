@@ -1,4 +1,5 @@
 import { readStoredSpreadsheet } from '@/lib/sheets/store'
+import { missingBackupSupabaseEnv } from '@/lib/supabase/backup-client'
 
 export const SHEET_TITLES = {
   bookings: 'Bookings',
@@ -42,6 +43,7 @@ export function missingSheetsBackupEnv() {
   if (!resolvedSpreadsheetId()) {
     missing.push('GOOGLE_SHEETS_SPREADSHEET_ID (or click Create sheet)')
   }
+  missing.push(...missingBackupSupabaseEnv())
   return missing
 }
 
@@ -53,6 +55,18 @@ export function spreadsheetId() {
 
 export function shareEmail() {
   return process.env.GOOGLE_SHEETS_SHARE_EMAIL?.trim() ?? ''
+}
+
+/** Comma/semicolon-separated staff emails who can open the backup sheet anytime. */
+export function shareEmails(raw = shareEmail()) {
+  return [
+    ...new Set(
+      raw
+        .split(/[,;\n]+/)
+        .map((email) => email.trim())
+        .filter(Boolean),
+    ),
+  ]
 }
 
 export function serviceAccountCredentials() {

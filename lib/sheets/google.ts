@@ -71,20 +71,43 @@ export async function createSpreadsheet(title: string, tabTitles: string[]) {
   }
 }
 
-export async function shareSpreadsheet(id: string, email: string) {
+export async function shareSpreadsheet(
+  id: string,
+  email: string,
+  role: 'reader' | 'writer' = 'writer',
+) {
   const trimmed = email.trim()
   if (!trimmed) return
   await googleFetch(
-    `${DRIVE_API}/files/${encodeURIComponent(id)}/permissions?sendNotificationEmail=true`,
+    `${DRIVE_API}/files/${encodeURIComponent(id)}/permissions?sendNotificationEmail=false`,
     {
       method: 'POST',
       body: JSON.stringify({
         type: 'user',
-        role: 'writer',
+        role,
         emailAddress: trimmed,
       }),
     },
   )
+}
+
+export async function shareSpreadsheetWithEmails(
+  id: string,
+  emails: string[],
+  role: 'reader' | 'writer' = 'writer',
+) {
+  const unique = [...new Set(emails.map((email) => email.trim()).filter(Boolean))]
+  for (const email of unique) {
+    try {
+      await shareSpreadsheet(id, email, role)
+    } catch (error) {
+      // Already shared is fine; keep going for the rest of the staff list.
+      const message = error instanceof Error ? error.message : String(error)
+      if (!/already|duplicate|exists/i.test(message)) {
+        console.warn(`[sheets] share failed for ${email}`, message)
+      }
+    }
+  }
 }
 
 export async function shareSpreadsheetAnyoneWithLink(id: string) {
@@ -92,7 +115,7 @@ export async function shareSpreadsheetAnyoneWithLink(id: string) {
     method: 'POST',
     body: JSON.stringify({
       type: 'anyone',
-      role: 'writer',
+      role: 'reader',
     }),
   })
 }
@@ -155,10 +178,33 @@ export async function writeValues(
   values: SheetCell[][],
   valueInputOption: 'RAW' | 'USER_ENTERED' = 'RAW',
 ) {
-  await sheetsFetch(`/values/${encodeURIComponent(range)}?valueInputOption=${valueInputOption}`, {
-    method: 'PUT',
-    body: JSON.stringify({ range, majorDimension: 'ROWS', values }),
-  })
+  // Chunk large history dumps so Google Sheets accepts multi-month backups.
+  const chunkSize = 4000
+  if (values.length <= chunkSize) {
+    await sheetsFetch(`/values/${encodeURIComponent(range)}?valueInputOption=${valueInputOption}`, {
+      method: 'PUT',
+      body: JSON.stringify({ range, majorDimension: 'ROWS', values }),
+    })
+    return
+  }
+
+  const match = /^(.+!)([A-Z]+)(\d+)$/.exec(range)
+  const prefix = match?.[1] ?? `${range.replace(/!.*$/, '')}!`
+  const startCol = match?.[2] ?? 'A'
+  let startRow = Number(match?.[3] ?? '1')
+
+  for (let offset = 0; offset < values.length; offset += chunkSize) {
+    const chunk = values.slice(offset, offset + chunkSize)
+    const chunkRange = `${prefix}${startCol}${startRow}`
+    await sheetsFetch(
+      `/values/${encodeURIComponent(chunkRange)}?valueInputOption=${valueInputOption}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ range: chunkRange, majorDimension: 'ROWS', values: chunk }),
+      },
+    )
+    startRow += chunk.length
+  }
 }
 
 export async function batchUpdate(requests: unknown[]) {
@@ -169,7 +215,7 @@ export async function batchUpdate(requests: unknown[]) {
   })
 }
 
-export function expandGridRequests(sheetId: number, rowCount = 10000, columnCount = 60) {
+export function expandGridRequests(sheetId: number, rowCount = 50000, columnCount = 60) {
   return {
     updateSheetProperties: {
       properties: {

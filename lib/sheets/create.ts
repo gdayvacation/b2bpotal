@@ -6,8 +6,9 @@ import {
   hasServiceAccount,
   resolvedSpreadsheetId,
   shareEmail,
+  shareEmails,
 } from '@/lib/sheets/config'
-import { createSpreadsheet, shareSpreadsheet } from '@/lib/sheets/google'
+import { createSpreadsheet, shareSpreadsheetWithEmails } from '@/lib/sheets/google'
 import { spreadsheetUrl, writeStoredSpreadsheet } from '@/lib/sheets/store'
 
 export type CreatedSpreadsheet = {
@@ -25,34 +26,35 @@ export async function createBackupSpreadsheet(email = shareEmail()): Promise<Cre
     )
   }
 
+  const emails = shareEmails(email)
+  const sharedWith = emails.join(', ')
+
   const existing = resolvedSpreadsheetId()
   if (existing) {
     const url = spreadsheetUrl(existing)
-    if (email) {
-      try {
-        await shareSpreadsheet(existing, email)
-      } catch (error) {
-        console.warn('[sheets] share existing spreadsheet', error)
-      }
+    if (emails.length > 0) {
+      await shareSpreadsheetWithEmails(existing, emails, 'writer')
     }
     return {
       spreadsheetId: existing,
       url,
       title: BACKUP_SPREADSHEET_TITLE,
       created: false,
-      sharedWith: email,
+      sharedWith,
     }
   }
 
   const created = await createSpreadsheet(BACKUP_SPREADSHEET_TITLE, Object.values(SHEET_TITLES))
   writeStoredSpreadsheet(created)
   appendSpreadsheetIdToLocalEnv(created.spreadsheetId)
-  if (email) await shareSpreadsheet(created.spreadsheetId, email)
+  if (emails.length > 0) {
+    await shareSpreadsheetWithEmails(created.spreadsheetId, emails, 'writer')
+  }
 
   return {
     ...created,
     created: true,
-    sharedWith: email,
+    sharedWith,
   }
 }
 

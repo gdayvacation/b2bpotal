@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server'
 import { runSheetsBackup } from '@/lib/sheets/sync'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 60
+export const maxDuration = 300
 
 function authorized(request: NextRequest) {
   const secret = process.env.CRON_SECRET?.trim()
