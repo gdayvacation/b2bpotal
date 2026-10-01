@@ -1289,7 +1289,40 @@ export function subscribeCheckInChanges(onChange: () => void) {
         onChange()
       },
     )
-    .subscribe()
+  // Tables below need supabase/add-realtime-more-tables.sql; without it they just never fire
+  // and the slow fallback poll still covers them.
+  for (const table of [
+    'check_in_payments',
+    'check_in_services',
+    'check_in_sequences',
+    'check_in_guest_edits',
+    'check_in_notes',
+    'check_in_group_guides',
+    'own_arrivals',
+    'job_order_actions',
+  ]) {
+    channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => {
+      onChange()
+    })
+  }
+  channel.subscribe()
+  return () => {
+    void supabase.removeChannel(channel)
+  }
+}
+
+/** Live seats / cutoffs / close-dates updates (requires add-realtime-more-tables.sql). */
+export function subscribeSettingsChanges(onChange: () => void) {
+  const supabase = getSupabaseBrowserClient()
+  const channel = supabase.channel(
+    `portal-settings-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  )
+  for (const table of ['availability', 'booking_cutoffs', 'booking_closures']) {
+    channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => {
+      onChange()
+    })
+  }
+  channel.subscribe()
   return () => {
     void supabase.removeChannel(channel)
   }

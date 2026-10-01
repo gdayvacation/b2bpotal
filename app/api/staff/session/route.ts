@@ -2,6 +2,7 @@ import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
 import {
   createStaffSupabaseSession,
+  encodeStaffCookie,
   parseStaffCookie,
   STAFF_COOKIE,
   staffCookieOptions,
@@ -36,5 +37,8 @@ export async function GET() {
     return response
   }
 
-  return NextResponse.json({ role: parts.role })
+  // Sliding session: every use pushes the cookie expiry out again (idle window in the DB too).
+  const response = NextResponse.json({ role: parts.role })
+  response.cookies.set(STAFF_COOKIE, encodeStaffCookie(parts), staffCookieOptions())
+  return response
 }

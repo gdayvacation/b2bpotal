@@ -221,6 +221,7 @@ import {
   subscribeBookings,
   subscribeCheckInChanges,
   subscribeDayPlanChanges,
+  subscribeSettingsChanges,
   type CheckInMapsSnapshot,
   updateBookingDate,
   updateBookingDetails,
@@ -1404,7 +1405,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       }
       boatPoll = window.setInterval(() => {
         void refreshDayBoatPlans()
-      }, 20000)
+      }, 60000)
     })()
 
     return () => {
@@ -1471,7 +1472,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       }
       vehiclePoll = window.setInterval(() => {
         void refreshDayVehiclePlans()
-      }, 20000)
+      }, 60000)
     })()
 
     return () => {
@@ -1515,6 +1516,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     window.addEventListener('focus', onVisible)
 
     let settingsPoll: number | undefined
+    let settingsTimer: number | undefined
+    let unsubscribeSettings: (() => void) | undefined
     void (async () => {
       let role = ''
       if (hasSupabaseConfig()) {
@@ -1528,9 +1531,21 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (cancelled) return
       void refreshAvailabilitySettings()
       if (role === 'guest') return
+      try {
+        // Pushed instantly via Realtime; the interval below is only a slow safety net.
+        unsubscribeSettings = subscribeSettingsChanges(() => {
+          if (settingsTimer != null) return
+          settingsTimer = window.setTimeout(() => {
+            settingsTimer = undefined
+            void refreshAvailabilitySettings()
+          }, 1000)
+        })
+      } catch (error) {
+        console.error('[portal] settings realtime subscribe failed', error)
+      }
       settingsPoll = window.setInterval(() => {
         void refreshAvailabilitySettings()
-      }, 30000)
+      }, 120000)
     })()
 
     return () => {
@@ -1538,6 +1553,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
       if (settingsPoll != null) window.clearInterval(settingsPoll)
+      if (settingsTimer != null) window.clearTimeout(settingsTimer)
+      unsubscribeSettings?.()
     }
   }, [hydrated])
 
@@ -1834,7 +1851,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       // Staff/helper: day-scoped poll as fallback; realtime (debounced) covers the rush.
       poll = window.setInterval(() => {
         schedulePartialSync()
-      }, 30_000)
+      }, 90_000)
     })()
 
     return () => {

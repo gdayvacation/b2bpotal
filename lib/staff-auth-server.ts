@@ -6,11 +6,14 @@ export const STAFF_COOKIE = 'gday-staff'
 export const STAFF_ADMIN_EMAIL = 'gday-staff-admin@internal.gday'
 export const STAFF_ACCOUNTING_EMAIL = 'gday-staff-accounting@internal.gday'
 
-/** Days without any staff activity before the device is logged out. */
+/**
+ * Days without any staff activity before the device is logged out.
+ * The cookie is renewed on every use, so an active device stays signed in.
+ */
 export function staffSessionIdleDays() {
   const n = Math.floor(Number(process.env.STAFF_SESSION_IDLE_DAYS))
   if (Number.isFinite(n) && n >= 1) return Math.min(n, 30)
-  return 2
+  return 14
 }
 
 /** Cookie lifetime matches idle window so abandoned browsers drop access. */
@@ -50,8 +53,8 @@ export function staffMaxSessions(role: StaffRole) {
       : process.env.STAFF_ACCOUNTING_MAX_SESSIONS
   const n = Math.floor(Number(raw))
   if (Number.isFinite(n) && n >= 1) return Math.min(n, 10)
-  // Default: two desks each (marina + office). Override via env.
-  return 2
+  // Default: six devices each. Override via env (max 10, enforced by the database function).
+  return 6
 }
 
 export function staffCookieOptions() {
