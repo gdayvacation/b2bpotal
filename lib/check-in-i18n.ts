@@ -19,6 +19,7 @@ const COPY = {
     welcomeAskStaff:
       'Please ask marina staff to show the QR code for your booking, then scan it with your phone.',
     invalidQr: 'This check-in QR is not valid. Please ask marina staff for a new code.',
+    tryAgain: 'Try again',
     cancelledBooking: 'This booking is cancelled. Please ask marina staff for help.',
     noShowBooking:
       'This booking was marked no-show at pickup. Ask marina staff to allow late check-in if you arrived.',
@@ -180,6 +181,7 @@ const COPY = {
     welcomeAskStaff:
       'कृपया मरीना स्टाफ से अपनी बुकिंग का QR दिखाएँ, फिर अपने फ़ोन से स्कैन करें।',
     invalidQr: 'यह चेक-इन QR मान्य नहीं है। कृपया स्टाफ से नया कोड माँगें।',
+    tryAgain: 'फिर से कोशिश करें',
     cancelledBooking: 'यह बुकिंग रद्द है। कृपया मरीना स्टाफ से मदद लें।',
     noShowBooking: 'यह बुकिंग नो-शो चिह्नित है। कृपया मरीना स्टाफ से मदद लें।',
     partnerSent:

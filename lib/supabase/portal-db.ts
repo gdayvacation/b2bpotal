@@ -287,6 +287,21 @@ export async function fetchBookingsInDateRange(
   return data.map(mapBooking)
 }
 
+/**
+ * Load one booking by code (any date). Used by the guest QR page so it never depends on
+ * the bulk ops snapshot (30-day window / session timing) to find its own booking.
+ */
+export async function fetchBookingByCode(code: string): Promise<Booking | null> {
+  const supabase = getSupabaseBrowserClient()
+  const { data, error } = await supabase
+    .from('bookings')
+    .select('*')
+    .eq('code', code.trim())
+    .maybeSingle()
+  if (error) throw new Error(error.message)
+  return data ? mapBooking(data as BookingRow) : null
+}
+
 function mapAgent(row: AgentRow): Agent {
   return {
     slug: row.slug,

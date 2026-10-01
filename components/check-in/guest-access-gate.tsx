@@ -88,8 +88,12 @@ export function GuestAccessGate({
         return
       }
       const reloadKey = `gday-guest-reloaded:${code}`
-      if (sessionStorage.getItem(reloadKey) !== '1') {
-        sessionStorage.setItem(reloadKey, '1')
+      // The portal loaded its data before this guest session existed, so reload once to pick it
+      // up. Time-boxed (not once-per-tab) so a restored/old tab can recover later, while a
+      // session that fails to persist cannot cause a reload loop.
+      const lastReload = Number(sessionStorage.getItem(reloadKey) ?? 0)
+      if (!Number.isFinite(lastReload) || Date.now() - lastReload > 60_000) {
+        sessionStorage.setItem(reloadKey, String(Date.now()))
         window.location.reload()
         return
       }

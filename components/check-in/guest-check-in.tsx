@@ -230,6 +230,7 @@ function GuestCheckInForm({
     setCheckInGuestEditOpen,
     getCheckInPayment,
     getCheckInServices,
+    ensureBookingByCode,
     hydrated,
   } = usePortal()
 
@@ -263,6 +264,7 @@ function GuestCheckInForm({
   const [editEnrollmentId, setEditEnrollmentId] = useState<string | null>(null)
   const [ticketSequence, setTicketSequence] = useState<GuestSequenceBlock | null>(null)
   const lockedBootstrappedRef = useRef(false)
+  const lockedFetchingRef = useRef(false)
 
   const detailsReady = guests.length > 0 && guests.every(guestDraftReady)
 
@@ -411,14 +413,35 @@ function GuestCheckInForm({
     if (!hydrated || !lockedCode || lockedBootstrappedRef.current) return
 
     const booking = bookings.find((item) => item.code === lockedCode) ?? null
-    lockedBootstrappedRef.current = true
 
     if (!booking) {
-      setLockedReady(true)
-      setError(t('invalidQr'))
-      setStep('welcome')
+      // The bulk portal snapshot can miss this booking (guest session applied after the first
+      // load, slow network, 30-day window). Ask the database for this one booking directly and
+      // retry before telling the guest the QR is bad. Once found, `bookings` changes and this
+      // effect runs again.
+      if (lockedFetchingRef.current) return
+      lockedFetchingRef.current = true
+      void (async () => {
+        let found: Booking | null = null
+        for (let attempt = 0; attempt < 3 && !found; attempt += 1) {
+          if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1200 * attempt))
+          try {
+            found = await ensureBookingByCode(lockedCode)
+          } catch {
+            found = null
+          }
+        }
+        lockedFetchingRef.current = false
+        if (!found) {
+          lockedBootstrappedRef.current = true
+          setLockedReady(true)
+          setError(t('invalidQr'))
+          setStep('welcome')
+        }
+      })()
       return
     }
+    lockedBootstrappedRef.current = true
 
     if (!isActiveBooking(booking)) {
       setLockedReady(true)
@@ -834,9 +857,21 @@ function GuestCheckInForm({
               {error ? t('checkInUnavailable') : t('scanQr')}
             </h1>
             {error ? (
-              <p className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3.5 text-sm leading-relaxed text-rose-900">
-                {error}
-              </p>
+              <>
+                <p className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3.5 text-sm leading-relaxed text-rose-900">
+                  {error}
+                </p>
+                {isLocked ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full"
+                    onClick={() => window.location.reload()}
+                  >
+                    {t('tryAgain')}
+                  </Button>
+                ) : null}
+              </>
             ) : (
               <>
                 <p className="text-sm leading-relaxed text-teal-950/60">{t('welcomeBody')}</p>

@@ -193,6 +193,7 @@ import {
   deleteHotel,
   deleteZone,
   fetchBookingEvents,
+  fetchBookingByCode,
   fetchBookings,
   fetchBookingsInDateRange,
   fetchCheckInMaps,
@@ -364,6 +365,11 @@ type PortalContextValue = {
    * Safe to call repeatedly — skips ranges already loaded.
    */
   ensureBookingsForRange: (fromDate: string, toDate?: string) => Promise<void>
+  /**
+   * Load a single booking by code (any date) and merge it into `bookings`.
+   * Guest QR pages use this so they never depend on the bulk snapshot timing.
+   */
+  ensureBookingByCode: (code: string) => Promise<Booking | null>
   zones: PickupZone[]
   hotels: Hotel[]
   availability: Availability[]
@@ -1827,6 +1833,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     await task
   }, [])
 
+  const ensureBookingByCode = useCallback(async (code: string) => {
+    const booking = await fetchBookingByCode(code)
+    if (booking) setBookings((current) => mergeBookingsByCode(current, [booking]))
+    return booking
+  }, [])
+
   const value = useMemo<PortalContextValue>(() => {
     const getZoneTime = (name: PickupZoneName) =>
       zones.find((zone) => zone.name === name)?.time ?? 'Awaiting pickup time'
@@ -2585,6 +2597,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       agents,
       bookings,
       ensureBookingsForRange,
+      ensureBookingByCode,
       zones,
       hotels,
       availability,
@@ -4842,7 +4855,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
       },
     }
-  }, [agents, bookings, ensureBookingsForRange, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, checkInGroupGuides, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
+  }, [agents, bookings, ensureBookingsForRange, ensureBookingByCode, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, checkInGroupGuides, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }
