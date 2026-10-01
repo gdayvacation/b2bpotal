@@ -1,4 +1,5 @@
 import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/client'
+import { selectAllPaged } from '@/lib/supabase/paged'
 import {
   DEFAULT_INVOICE_SETTINGS,
   DEFAULT_NATIONAL_PARK_FEE,
@@ -430,8 +431,11 @@ export async function loadInvoiceStore(): Promise<InvoiceStoreSnapshot> {
     const [settingsRes, ratesRes, invoicesRes, itemsRes] = await Promise.all([
       supabase.from('invoice_settings').select('*').eq('id', 'default').maybeSingle(),
       supabase.from('agency_invoice_rates').select('*'),
-      supabase.from('invoices').select('*').order('created_at', { ascending: false }),
-      supabase.from('invoice_items').select('*'),
+      selectAllPaged<InvoiceRow>('invoices', ['created_at', 'id']).then((res) => ({
+        ...res,
+        data: res.data ? [...res.data].reverse() : null,
+      })),
+      selectAllPaged<ItemRow>('invoice_items', ['id']),
     ])
 
     if (settingsRes.error || ratesRes.error || invoicesRes.error || itemsRes.error) {

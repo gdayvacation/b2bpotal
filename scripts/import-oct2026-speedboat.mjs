@@ -599,7 +599,6 @@ async function apply(bookings) {
   const env = loadEnv()
   const key =
     env.SUPABASE_SERVICE_ROLE_KEY ||
-    env.NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY ||
     env.NEXT_PUBLIC_SUPABASE_ANON_KEY
   const supabase = createClient(env.NEXT_PUBLIC_SUPABASE_URL, key)
   const agents = collectAgents(bookings)

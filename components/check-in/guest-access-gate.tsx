@@ -35,12 +35,15 @@ async function partnerSession() {
 
 export function GuestAccessGate({
   bookingCode,
+  token = '',
   children,
 }: {
   bookingCode: string
+  token?: string
   children: React.ReactNode
 }) {
   const code = bookingCode.trim()
+  const linkToken = token.trim()
   const [state, setState] = useState<'loading' | 'ok' | 'blocked'>(code ? 'loading' : 'blocked')
   const [message, setMessage] = useState(
     'Scan the check-in QR for this booking. The page only opens that one booking.',
@@ -53,7 +56,7 @@ export function GuestAccessGate({
     async function unlock() {
       const staff = await readStaffSession()
       if (cancelled) return
-      if (staff === 'admin' || (await helperOnDuty()) || (await partnerSession())) {
+      if (staff || (await helperOnDuty()) || (await partnerSession())) {
         setState('ok')
         return
       }
@@ -65,7 +68,7 @@ export function GuestAccessGate({
       const response = await fetch('/api/check-in/guest/enter', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ code, token: linkToken }),
       })
       const payload = (await response.json().catch(() => ({}))) as {
         error?: string
@@ -97,7 +100,7 @@ export function GuestAccessGate({
     return () => {
       cancelled = true
     }
-  }, [code])
+  }, [code, linkToken])
 
   if (state === 'ok') return children
 

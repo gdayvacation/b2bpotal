@@ -1,6 +1,4 @@
 import { PORTAL_TIMEZONE, addDaysISO, todayISO } from '@/lib/format'
-import { guestCheckInQrImageUrl } from '@/lib/check-in-qr'
-
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/
 
 export const HELPER_BOARD_HOURS_STORAGE_KEY = 'gday-helper-board-hours'
@@ -89,18 +87,6 @@ export function helperBoardUrl(
   const path = helperBoardPath(date, hours, token)
   if (!path) return ''
   return `${origin.replace(/\/$/, '')}${path}`
-}
-
-export function helperBoardQrImageUrl(
-  origin: string,
-  date: string,
-  size = 512,
-  hours?: Partial<HelperBoardHours>,
-  token?: string,
-) {
-  const url = helperBoardUrl(origin, date, hours, token)
-  if (!url) return ''
-  return guestCheckInQrImageUrl(url, size)
 }
 
 function bangkokClock(now: Date) {

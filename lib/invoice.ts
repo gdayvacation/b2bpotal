@@ -847,15 +847,31 @@ function pushProgramPaxLines(
       tourLeaders: 0,
     })
   }
-  // Infants and tour leaders are free — no priced invoice lines.
+  // Infants are free — no invoice line. Tour leaders / guides get a 0 THB row staff can delete.
+  if (lineKind === 'tour' && pax.tourLeaders > 0) {
+    rows.push({
+      kind: 'tourLeader',
+      qty: pax.tourLeaders,
+      unitPrice: prebuy ? 0 : rates.tourLeaderPrice,
+      adults: 0,
+      children: 0,
+      infants: 0,
+      tourLeaders: pax.tourLeaders,
+    })
+  }
 
   for (const row of rows) {
+    const freeLeader = row.kind === 'tourLeader' && row.unitPrice === 0
+    const label = programPaxLineLabel(booking.program, row.kind, {
+      prebuy: prebuy && !freeLeader,
+      prefix,
+    })
     items.push({
       id: moneyId(),
       bookingCode: booking.code,
       travelDate: booking.date,
       voucherNo,
-      description: programPaxLineLabel(booking.program, row.kind, { prebuy, prefix }),
+      description: freeLeader ? `${label} · Free` : label,
       adults: row.adults,
       children: row.children,
       infants: row.infants,
@@ -907,6 +923,8 @@ export function buildInvoiceItemsForBooking(
     includeOtherService?: boolean
     attendance?: CheckInAttendance | null
     thaiGuests?: number
+    /** Checked-in Tour Group Guide enrollments (scope 'guide'). */
+    groupGuides?: number
   },
 ): Omit<InvoiceItem, 'invoiceId'>[] {
   const items: Omit<InvoiceItem, 'invoiceId'>[] = []
@@ -985,6 +1003,33 @@ export function buildInvoiceItemsForBooking(
         rates,
         prebuy,
         lineKind: 'tour',
+      })
+    }
+
+    // Checked-in Tour Group Guides beyond the booked TL seats: shown free, never billed.
+    const extraGuides = wholeNoShow
+      ? 0
+      : Math.max(0, Math.floor(options?.groupGuides ?? 0) - Math.max(0, tourPax.tourLeaders))
+    if (extraGuides > 0) {
+      items.push({
+        id: moneyId(),
+        bookingCode: booking.code,
+        travelDate: booking.date,
+        voucherNo,
+        description: `${programShortLabel(booking.program)} Tour Group Guide · Free`,
+        adults: 0,
+        children: 0,
+        infants: 0,
+        tourLeaders: extraGuides,
+        adultPrice: 0,
+        childPrice: 0,
+        infantPrice: 0,
+        tourLeaderPrice: 0,
+        cot: 0,
+        amount: 0,
+        lineKind: 'other',
+        unit: 'Pax',
+        sortOrder: items.length,
       })
     }
 

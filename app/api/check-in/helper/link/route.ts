@@ -3,11 +3,11 @@ import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
 import { helperBoardPath, normalizeHelperBoardHours } from '@/lib/check-in-helper'
 import { rpcMessage } from '@/lib/rpc-error'
-import { STAFF_COOKIE, STAFF_ADMIN_EMAIL } from '@/lib/staff-auth-server'
+import { hasStaffSession, STAFF_COOKIE, STAFF_ADMIN_EMAIL } from '@/lib/staff-auth-server'
 
 export async function POST(request: Request) {
   const jar = await cookies()
-  if (jar.get(STAFF_COOKIE)?.value !== 'admin') {
+  if (!(await hasStaffSession(jar.get(STAFF_COOKIE)?.value, 'admin'))) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 

@@ -10,6 +10,7 @@ import {
   normalizeHelperBoardHours,
 } from '@/lib/check-in-helper'
 import { formatLongDate, formatShortDate } from '@/lib/format'
+import { publicOrigin } from '@/lib/public-origin'
 
 export function HelperCheckIn({
   date,
@@ -25,7 +26,7 @@ export function HelperCheckIn({
   const hours = normalizeHelperBoardHours({ open: openTime, close: closeTime })
 
   useEffect(() => {
-    setOrigin(window.location.origin)
+    setOrigin(publicOrigin())
     const id = window.setInterval(() => setNow(new Date()), 10_000)
     const onVisible = () => {
       if (document.visibilityState === 'visible') setNow(new Date())

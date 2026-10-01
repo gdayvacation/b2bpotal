@@ -1,7 +1,7 @@
 import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
 import { parseBookingImageModelText } from '@/lib/booking-from-image'
-import { isStaffRole, STAFF_COOKIE } from '@/lib/staff-auth-server'
+import { hasStaffSession, STAFF_COOKIE } from '@/lib/staff-auth-server'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -47,8 +47,7 @@ Rules:
 
 async function requireAdmin() {
   const jar = await cookies()
-  const role = jar.get(STAFF_COOKIE)?.value
-  return isStaffRole(role) && role === 'admin'
+  return hasStaffSession(jar.get(STAFF_COOKIE)?.value, 'admin')
 }
 
 function geminiApiKey() {

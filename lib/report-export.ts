@@ -106,7 +106,9 @@ export async function downloadReportXlsx(rows: ReportExportRow[], filename: stri
 }
 
 function csvEscape(value: string | number) {
-  const text = String(value ?? '')
+  let text = String(value ?? '')
+  // Agent-entered text must not run as a spreadsheet formula.
+  if (typeof value === 'string' && /^[=+\-@\t\r]/.test(text)) text = `'${text}`
   if (/[",\r\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`
   return text
 }

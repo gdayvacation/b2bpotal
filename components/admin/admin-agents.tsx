@@ -27,6 +27,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { agentBookingPath, agentBookingUrl } from '@/lib/agent-access'
+import { publicOrigin } from '@/lib/public-origin'
 import { listAgentAccessKeys, rotateAgentAccessKey } from '@/lib/supabase/agent-links-db'
 import { cn } from '@/lib/utils'
 import type { Agent } from '@/lib/types'
@@ -64,7 +65,7 @@ export function AdminAgents() {
       window.alert('The private link is not ready yet. Refresh the page and try again.')
       return
     }
-    const url = agentBookingUrl(window.location.origin, slug, key)
+    const url = agentBookingUrl(publicOrigin(), slug, key)
     try {
       await navigator.clipboard.writeText(url)
       setCopied(slug)
@@ -85,7 +86,7 @@ export function AdminAgents() {
     try {
       const next = await rotateAgentAccessKey(agent.slug)
       setKeys((current) => ({ ...current, [agent.slug]: next }))
-      const url = agentBookingUrl(window.location.origin, agent.slug, next)
+      const url = agentBookingUrl(publicOrigin(), agent.slug, next)
       try {
         await navigator.clipboard.writeText(url)
         setCopied(agent.slug)

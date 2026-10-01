@@ -80,6 +80,7 @@ import {
   CHECK_IN_GROUP_GUIDE_STORAGE_KEY,
   getCheckInGroupGuide,
   loadCheckInGroupGuideMap,
+  parseGroupGuideNames,
   saveCheckInGroupGuideMap,
   withCheckInGroupGuide,
   type DayCheckInGroupGuideMap,
@@ -87,8 +88,8 @@ import {
 import {
   CHECK_IN_ENROLLMENT_STORAGE_KEY,
   enrolledSeatCount,
-  findGuideEnrollment,
   getCheckInEnrollments,
+  guideEnrollmentCount,
   loadCheckInEnrollmentMap,
   newEnrollmentId,
   saveCheckInEnrollmentMap,
@@ -864,6 +865,15 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const vehiclePlanSaveChainRef = useRef(Promise.resolve())
   const vehiclePlanLatestRef = useRef<Record<string, DayVehiclePlan>>({})
   const vehiclePlanSaveGenerationRef = useRef(0)
+  /** Newest revision this device saved per board key — queued saves must not resend a stale one. */
+  const boatPlanRevisionRef = useRef<Record<string, number>>({})
+  const boatPlanSaveGenerationRef = useRef(0)
+  /** Boat assignments queued this tick, before React commits them. */
+  const boatAssignmentsPendingRef = useRef<Record<string, DayBoatPlan['assignments']>>({})
+  useEffect(() => {
+    boatAssignmentsPendingRef.current = {}
+  }, [dayBoatPlans])
+  const vehiclePlanRevisionRef = useRef<Record<string, number>>({})
   const settingsWritePendingRef = useRef(0)
   const dayOpsCloudEnabledRef = useRef(false)
   const dayOpsWritePendingRef = useRef(0)
@@ -881,6 +891,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   }
 
   function enqueueBoatPlanSave<T>(task: () => Promise<T>): Promise<T> {
+    boatPlanSaveGenerationRef.current += 1
     boatPlanWritePendingRef.current += 1
     const run = boatPlanSaveChainRef.current.then(task, task)
     boatPlanSaveChainRef.current = run.then(
@@ -895,7 +906,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   function persistBoatPlanWrite(plan: DayBoatPlan) {
     const key = dayBoatPlanKey(plan.date, plan.program)
     void enqueueBoatPlanSave(async () => {
-      const saved = await saveDayBoatPlan(plan)
+      const revision = Math.max(plan.revision ?? 0, boatPlanRevisionRef.current[key] ?? 0)
+      const saved = await saveDayBoatPlan({ ...plan, revision })
+      boatPlanRevisionRef.current[key] = saved.revision
       setDayBoatPlans((current) => {
         const existing = current[key]
         if (!existing) return current
@@ -907,6 +920,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       const message = error instanceof Error ? error.message : 'Failed to save boat plan'
       const conflict = /another device|conflict/i.test(message)
       if (conflict) {
+        delete boatPlanRevisionRef.current[key]
         try {
           const next = await fetchDayBoatPlans()
           setDayBoatPlans(next)
@@ -929,10 +943,14 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     vehiclePlanLatestRef.current[key] = plan
     vehiclePlanSaveGenerationRef.current += 1
     vehiclePlanWritePendingRef.current += 1
-    const run = vehiclePlanSaveChainRef.current.then(
-      () => saveDayVehiclePlan(vehiclePlanLatestRef.current[key] ?? plan),
-      () => saveDayVehiclePlan(vehiclePlanLatestRef.current[key] ?? plan),
-    )
+    const saveLatest = async () => {
+      const latest = vehiclePlanLatestRef.current[key] ?? plan
+      const revision = Math.max(latest.revision ?? 0, vehiclePlanRevisionRef.current[key] ?? 0)
+      const saved = await saveDayVehiclePlan({ ...latest, revision })
+      vehiclePlanRevisionRef.current[key] = saved.revision
+      return saved
+    }
+    const run = vehiclePlanSaveChainRef.current.then(saveLatest, saveLatest)
     vehiclePlanSaveChainRef.current = run.then(
       (saved) => {
         setDayVehiclePlans((current) => {
@@ -946,6 +964,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         console.error('[supabase] saveDayVehiclePlan', error)
         const message = error instanceof Error ? error.message : 'Failed to save van plan'
         if (/another device|conflict/i.test(message)) {
+          delete vehiclePlanRevisionRef.current[key]
           try {
             const next = await fetchDayVehiclePlans()
             setDayVehiclePlans(next)
@@ -1282,9 +1301,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (cancelled || busy || boatPlanWritePendingRef.current > 0) return
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       busy = true
+      const generation = boatPlanSaveGenerationRef.current
       try {
         const next = await fetchDayBoatPlans()
         if (cancelled || boatPlanWritePendingRef.current > 0) return
+        if (boatPlanSaveGenerationRef.current !== generation) return
         setDayBoatPlans((current) => {
           const fromDate = todayISO()
           const incoming = { ...next }
@@ -1911,6 +1932,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const key = dayBoatPlanKey(date, program)
         const base = current[key] ?? emptyDayBoatPlan(date, program)
         const next = updater(base)
+        if (next === base) return current
         if (persist) {
           boatPlanDirtyKeysRef.current.delete(key)
           persistBoatPlanWrite(next)
@@ -1959,6 +1981,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             }
           : base
         const next = updater(resolved)
+        if (next === resolved) return current
         persistVehiclePlanWrite(next)
         return { ...current, [key]: next }
       })
@@ -2200,54 +2223,58 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       boatAssignments: DayBoatPlan['assignments'],
     ) => {
       const boatPlan = { ...getDayBoatPlan(date, program), assignments: boatAssignments }
-      const vehicle = getDayVehiclePlan(date, program)
-      const assignments = { ...vehicle.assignments }
-      let changed = false
-      let needDummy = false
+      const dayBookings = activeDayBookings(date, program)
 
-      for (const booking of activeDayBookings(date, program)) {
-        const onPartner = bookingOnPartnerBoat(boatPlan, booking.code)
-        const needVan = !isNoTransfer(booking.pickupZone)
-        const legs = assignments[booking.code]
-        const onDummy = Boolean(legs?.some((leg) => isDummyVan(leg.van)))
-        const hasRealVan = Boolean(legs?.some((leg) => !isVirtualVan(leg.van)))
+      upsertVehiclePlan(date, program, (plan) => {
+        const assignments = { ...plan.assignments }
+        let changed = false
 
-        if (onPartner && needVan) {
-          if (!hasRealVan && !onDummy) {
-            assignments[booking.code] = [
-              {
-                van: DUMMY_VAN_NUMBER,
-                pax: totalPassengers(booking),
-                sortOrder: nextSortOrderForVan(assignments, DUMMY_VAN_NUMBER),
-              },
-            ]
+        for (const booking of dayBookings) {
+          const onPartner = bookingOnPartnerBoat(boatPlan, booking.code)
+          const needVan = !isNoTransfer(booking.pickupZone)
+          const legs = assignments[booking.code]
+          const onDummy = Boolean(legs?.some((leg) => isDummyVan(leg.van)))
+          const hasRealVan = Boolean(legs?.some((leg) => !isVirtualVan(leg.van)))
+
+          if (onPartner && needVan) {
+            if (!hasRealVan && !onDummy) {
+              assignments[booking.code] = [
+                {
+                  van: DUMMY_VAN_NUMBER,
+                  pax: totalPassengers(booking),
+                  sortOrder: nextSortOrderForVan(assignments, DUMMY_VAN_NUMBER),
+                },
+              ]
+              changed = true
+            }
+          } else if (onDummy && !onPartner) {
+            delete assignments[booking.code]
             changed = true
           }
-          if (!hasRealVan) needDummy = true
-        } else if (onDummy && !onPartner) {
-          delete assignments[booking.code]
-          changed = true
         }
-      }
 
-      needDummy =
-        needDummy ||
-        Object.values(assignments).some((legs) => legs.some((leg) => isDummyVan(leg.van)))
+        const needDummy = Object.values(assignments).some((legs) =>
+          legs.some((leg) => isDummyVan(leg.van)),
+        )
+        const dummyKey = String(DUMMY_VAN_NUMBER)
+        const metaMissing = needDummy && plan.vanMeta[dummyKey]?.plate !== DUMMY_VAN_LABEL
+        if (!changed && !metaMissing) return plan
 
-      if (!changed && !needDummy) return
-
-      upsertVehiclePlan(date, program, (plan) => ({
-        ...plan,
-        assignments,
-        vanMeta: {
-          ...plan.vanMeta,
-          [String(DUMMY_VAN_NUMBER)]: {
-            ...dummyVanMeta(),
-            ...plan.vanMeta[String(DUMMY_VAN_NUMBER)],
-            plate: DUMMY_VAN_LABEL,
-          },
-        },
-      }))
+        return {
+          ...plan,
+          assignments,
+          vanMeta: needDummy
+            ? {
+                ...plan.vanMeta,
+                [dummyKey]: {
+                  ...dummyVanMeta(),
+                  ...plan.vanMeta[dummyKey],
+                  plate: DUMMY_VAN_LABEL,
+                },
+              }
+            : plan.vanMeta,
+        }
+      })
     }
 
     const withVirtualVanMeta = (
@@ -2430,17 +2457,20 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         input.bookingCode,
       )
       if (isGuide) {
-        const guideName = getCheckInGroupGuide(
-          checkInGroupGuides,
-          input.date,
-          input.program,
-          input.bookingCode,
-        ).trim()
-        if (!guideName) {
+        const guideSlots = parseGroupGuideNames(
+          getCheckInGroupGuide(checkInGroupGuides, input.date, input.program, input.bookingCode),
+        ).length
+        if (guideSlots === 0) {
           return { ok: false, error: 'No tour group guide was added for this booking.' }
         }
-        if (findGuideEnrollment(existing)) {
-          return { ok: false, error: 'Tour group guide is already checked in.' }
+        if (guideEnrollmentCount(existing) >= guideSlots) {
+          return {
+            ok: false,
+            error:
+              guideSlots === 1
+                ? 'Tour group guide is already checked in.'
+                : 'All tour group guides are already checked in.',
+          }
         }
       } else {
         const already = enrolledSeatCount(existing)
@@ -3941,18 +3971,24 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         })
       },
       assignBookingToBoat: (date, program, bookingCode, boat, options) => {
+        const key = dayBoatPlanKey(date, program)
+        const rendered = getDayBoatPlan(date, program)
+        // Several moves in one tick must build on each other, not on the rendered plan.
+        const currentBoat = {
+          ...rendered,
+          assignments: boatAssignmentsPendingRef.current[key] ?? rendered.assignments,
+        }
         // No-show bookings stay assignable — admin moves them between boats.
         if (boat !== null) {
           const booking = bookings.find((item) => item.code === bookingCode)
           if (!booking) return
-          const plan = getDayBoatPlan(date, program)
           const countable = activeDayBookings(date, program)
-          if (!canFitBookingOnBoat(plan, countable, boat, booking).ok) return
+          if (!canFitBookingOnBoat(currentBoat, countable, boat, booking).ok) return
         }
-        const currentBoat = getDayBoatPlan(date, program)
         const nextBoatAssignments = { ...currentBoat.assignments }
         if (boat === null) delete nextBoatAssignments[bookingCode]
         else nextBoatAssignments[bookingCode] = boat
+        boatAssignmentsPendingRef.current[key] = nextBoatAssignments
         upsertPlan(
           date,
           program,

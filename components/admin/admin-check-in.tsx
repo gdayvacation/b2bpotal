@@ -54,6 +54,12 @@ import {
   guestDisplayName,
   type CheckInEnrollment,
 } from '@/lib/check-in-enrollment'
+import {
+  MAX_GROUP_GUIDES,
+  defaultGroupGuideName,
+  formatGroupGuideNames,
+  parseGroupGuideNames,
+} from '@/lib/check-in-group-guide'
 import { matchNationality } from '@/lib/nationalities'
 import {
   isEnglishName,
@@ -69,11 +75,12 @@ import {
 } from '@/lib/check-in-sequence'
 import { getArrivedPaxSnapshot } from '@/lib/check-in-arrived-pax'
 import { formatGuestPaxParts, hasPartialNoShow, originalBookedPax } from '@/lib/check-in-booked-pax'
+import { publicOrigin } from '@/lib/public-origin'
+import { fetchGuestQrToken } from '@/lib/supabase/guest-qr-db'
 import {
   DEFAULT_HELPER_BOARD_HOURS,
   helperBoardHoursValid,
   helperBoardIssueDate,
-  helperBoardQrImageUrl,
   helperBoardUrl,
   isHelperBoardClosed,
   isHelperBoardNotYetOpen,
@@ -82,10 +89,8 @@ import {
   saveHelperBoardHours,
   type HelperBoardHours,
 } from '@/lib/check-in-helper'
-import {
-  guestCheckInQrImageUrl,
-  guestCheckInUrl,
-} from '@/lib/check-in-qr'
+import { guestCheckInUrl } from '@/lib/check-in-qr'
+import { useQrDataUrl } from '@/lib/use-qr-data-url'
 import {
   CHECK_IN_SERVICE_KINDS,
   checkInServiceLabel,
@@ -386,7 +391,7 @@ export function AdminCheckIn() {
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
-    setOrigin(window.location.origin)
+    setOrigin(publicOrigin())
   }, [])
 
   const headerDate = tab === 'qr' ? portalToday : boardDate
@@ -494,11 +499,10 @@ function QrTab() {
   const todayOpen = isHelperBoardOpen(today, now, hours)
   const helperUrl =
     origin && hoursOk && helperKey ? helperBoardUrl(origin, issueDate, hours, helperKey) : ''
-  const qrSrc =
-    origin && hoursOk && helperKey ? helperBoardQrImageUrl(origin, issueDate, 512, hours, helperKey) : ''
+  const qrSrc = useQrDataUrl(helperUrl)
 
   useEffect(() => {
-    setOrigin(window.location.origin)
+    setOrigin(publicOrigin())
     setHours(loadHelperBoardHours())
     const id = window.setInterval(() => setNow(new Date()), 15_000)
     return () => window.clearInterval(id)
@@ -2026,8 +2030,33 @@ function DriverGroupCard({
     )
   }, [group.lines, searchQuery, sequences])
 
-  const qrUrl = qrBooking && origin ? guestCheckInUrl(origin, qrBooking.code) : ''
-  const qrSrc = qrUrl ? guestCheckInQrImageUrl(qrUrl, 512) : ''
+  const [qrToken, setQrToken] = useState<{ code: string; token: string } | null>(null)
+  const [qrFailure, setQrFailure] = useState<{ code: string; message: string } | null>(null)
+  const qrCode = qrBooking?.code ?? ''
+  const qrReadyToken = qrToken && qrToken.code === qrCode ? qrToken.token : ''
+  const qrError = qrFailure && qrFailure.code === qrCode ? qrFailure.message : ''
+  const qrUrl = qrCode && origin && qrReadyToken ? guestCheckInUrl(origin, qrCode, qrReadyToken) : ''
+  const qrSrc = useQrDataUrl(qrUrl)
+
+  useEffect(() => {
+    if (!qrCode) return
+    let cancelled = false
+    fetchGuestQrToken(qrCode)
+      .then((token) => {
+        if (!cancelled) setQrToken({ code: qrCode, token })
+      })
+      .catch((caught: unknown) => {
+        if (!cancelled) {
+          setQrFailure({
+            code: qrCode,
+            message: caught instanceof Error ? caught.message : 'Could not create check-in QR.',
+          })
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [qrCode])
 
   function toggleExpanded(code: string) {
     setExpandedCodes((current) => ({ ...current, [code]: !current[code] }))
@@ -2355,10 +2384,10 @@ function DriverGroupCard({
                   ) : (
                     <p className="text-[12px] text-teal-900/45">No guests checked in yet.</p>
                   )}
-                  {line.status === 'waiting' && line.checkedInCount < line.seatsTotal ? (
+                  {line.status === 'waiting' && line.checkedInCount < line.bookingSeats ? (
                     <p className="text-[12px] text-amber-900/70">
-                      {line.seatsTotal - line.checkedInCount} seat
-                      {line.seatsTotal - line.checkedInCount === 1 ? '' : 's'} still waiting
+                      {line.bookingSeats - line.checkedInCount} seat
+                      {line.bookingSeats - line.checkedInCount === 1 ? '' : 's'} still waiting
                     </p>
                   ) : null}
                   {isHelper ? null : (
@@ -2708,10 +2737,10 @@ function DriverGroupCard({
                           ) : (
                             <p className="text-[11px] text-teal-900/45">No guests checked in yet.</p>
                           )}
-                          {line.status === 'waiting' && line.checkedInCount < line.seatsTotal ? (
+                          {line.status === 'waiting' && line.checkedInCount < line.bookingSeats ? (
                             <p className="text-[11px] text-amber-900/70">
-                              {line.seatsTotal - line.checkedInCount} seat
-                              {line.seatsTotal - line.checkedInCount === 1 ? '' : 's'} still waiting
+                              {line.bookingSeats - line.checkedInCount} seat
+                              {line.bookingSeats - line.checkedInCount === 1 ? '' : 's'} still waiting
                             </p>
                           ) : null}
                           {isHelper ? null : (
@@ -2971,6 +3000,10 @@ function DriverGroupCard({
                     height={512}
                     className="aspect-square h-auto w-full object-contain"
                   />
+                ) : qrError ? (
+                  <div className="flex aspect-square items-center justify-center px-6 text-center text-sm text-rose-700">
+                    {qrError}
+                  </div>
                 ) : (
                   <div className="flex aspect-square items-center justify-center text-sm text-teal-900/40">
                     Preparing QR…
@@ -3406,8 +3439,9 @@ function GuestEditDialog({
   const savedGuideName = booking
     ? getCheckInGroupGuide(booking.date, booking.program, booking.code)
     : ''
-  const guideEnrollment = enrollments.find((item) => item.scope === 'guide') ?? null
-  const [guideDraft, setGuideDraft] = useState('')
+  const guideEnrollments = enrollments.filter((item) => item.scope === 'guide')
+  const savedGuideNames = parseGroupGuideNames(savedGuideName)
+  const [guideDrafts, setGuideDrafts] = useState<string[]>([])
   const [guideSaved, setGuideSaved] = useState(false)
   const [activeId, setActiveId] = useState<string | null>(null)
   const [draft, setDraft] = useState({
@@ -3428,7 +3462,7 @@ function GuestEditDialog({
       setGuideSaved(false)
       return
     }
-    setGuideDraft(savedGuideName)
+    setGuideDrafts(parseGroupGuideNames(savedGuideName))
   }, [open, savedGuideName, booking?.code])
 
   function startEdit(enrollment: CheckInEnrollment) {
@@ -3455,9 +3489,34 @@ function GuestEditDialog({
     )
   }
 
+  const guideDraftText = formatGroupGuideNames(
+    guideDrafts.map((name, index) => name.trim() || defaultGroupGuideName(index)),
+  )
+  const guideDirty = guideDraftText !== formatGroupGuideNames(savedGuideNames)
+
+  function setGuideCount(count: number) {
+    const next = Math.max(0, Math.min(MAX_GROUP_GUIDES, Math.floor(count) || 0))
+    setGuideDrafts((current) =>
+      Array.from({ length: next }, (_, index) => current[index] ?? defaultGroupGuideName(index)),
+    )
+    setGuideSaved(false)
+  }
+
+  function updateGuideDraft(index: number, value: string) {
+    setGuideDrafts((current) => current.map((name, i) => (i === index ? value : name)))
+    setGuideSaved(false)
+  }
+
+  function removeGuideDraft(index: number) {
+    setGuideDrafts((current) => current.filter((_, i) => i !== index))
+    setGuideSaved(false)
+  }
+
   function saveGuide() {
     if (!booking) return
-    setCheckInGroupGuide(booking.date, booking.program, booking.code, guideDraft)
+    const filled = guideDrafts.map((name, index) => name.trim() || defaultGroupGuideName(index))
+    setCheckInGroupGuide(booking.date, booking.program, booking.code, formatGroupGuideNames(filled))
+    setGuideDrafts(filled)
     setGuideSaved(true)
   }
 
@@ -3524,57 +3583,133 @@ function GuestEditDialog({
         {booking ? (
           <div className="shrink-0 space-y-2 rounded-xl border border-violet-200/80 bg-violet-50/50 px-3 py-2.5">
             <div className="flex items-center justify-between gap-2">
-              <Label htmlFor="group-guide-name" className="text-[11px] font-semibold text-violet-950">
-                Tour Group Guide
+              <Label htmlFor="group-guide-count" className="text-[11px] font-semibold text-violet-950">
+                Tour Group Guides
               </Label>
-              {guideEnrollment ? (
-                <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-900">
-                  Checked in
-                </span>
-              ) : savedGuideName.trim() ? (
-                <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900">
-                  On QR
+              {savedGuideNames.length > 0 ? (
+                <span
+                  className={cn(
+                    'rounded-md px-1.5 py-0.5 text-[10px] font-semibold tabular-nums',
+                    guideEnrollments.length >= savedGuideNames.length
+                      ? 'bg-emerald-100 text-emerald-900'
+                      : 'bg-amber-100 text-amber-900',
+                  )}
+                >
+                  {guideEnrollments.length}/{savedGuideNames.length} checked in
                 </span>
               ) : null}
             </div>
             <p className="text-[11px] leading-snug text-violet-900/65">
-              Separate from Boat Guide. This is the agency/tour leader traveling with these
-              guests. After you save, they refresh the QR and use Tour Group Guide Check-in —
-              then they appear on Insurance.
+              Separate from Boat Guide. Agency guides traveling with these guests — free, no park
+              fee. After you save, each guide refreshes the QR and uses Tour Group Guide Check-in,
+              then appears on Insurance.
             </p>
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-violet-900/70">How many</span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 w-8 p-0"
+                onClick={() => setGuideCount(guideDrafts.length - 1)}
+                disabled={guideDrafts.length === 0}
+                aria-label="One less guide"
+              >
+                −
+              </Button>
               <Input
-                id="group-guide-name"
-                className="h-9"
-                value={guideDraft}
-                onChange={(event) => {
-                  setGuideDraft(event.target.value)
-                  setGuideSaved(false)
-                }}
-                placeholder="Tour group guide full name"
-                aria-label="Tour Group Guide name"
+                id="group-guide-count"
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={MAX_GROUP_GUIDES}
+                className="h-8 w-14 text-center tabular-nums"
+                value={guideDrafts.length}
+                onChange={(event) => setGuideCount(Number(event.target.value))}
               />
               <Button
                 type="button"
+                variant="outline"
                 size="sm"
-                className="h-9 shrink-0"
+                className="h-8 w-8 p-0"
+                onClick={() => setGuideCount(guideDrafts.length + 1)}
+                disabled={guideDrafts.length >= MAX_GROUP_GUIDES}
+                aria-label="One more guide"
+              >
+                +
+              </Button>
+            </div>
+            {guideDrafts.length > 0 ? (
+              <div className="max-h-40 space-y-1.5 overflow-y-auto pr-0.5">
+                {guideDrafts.map((name, index) => {
+                  const checked = guideEnrollments[index]
+                  return (
+                    <div key={index} className="flex items-center gap-2">
+                      <Input
+                        className="h-8"
+                        value={name}
+                        onChange={(event) => updateGuideDraft(index, event.target.value)}
+                        placeholder={defaultGroupGuideName(index)}
+                        aria-label={`Tour group guide ${index + 1} name`}
+                      />
+                      {checked ? (
+                        <Check className="size-4 shrink-0 text-emerald-700" aria-label="Checked in" />
+                      ) : null}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 shrink-0 p-0 text-teal-900/50 hover:text-red-700"
+                        onClick={() => removeGuideDraft(index)}
+                        aria-label={`Remove guide ${index + 1}`}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : null}
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8"
+                onClick={() => setGuideCount(guideDrafts.length + 1)}
+                disabled={guideDrafts.length >= MAX_GROUP_GUIDES}
+              >
+                <Plus className="size-3.5" />
+                Add guide
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                className="ml-auto h-8"
                 onClick={saveGuide}
-                disabled={guideDraft.trim() === savedGuideName.trim()}
+                disabled={!guideDirty}
               >
                 Save
               </Button>
             </div>
             {guideSaved ? (
               <p className="text-[11px] font-medium text-emerald-800">
-                Tour Group Guide saved — ask them to refresh the QR page.
+                {savedGuideNames.length > 0
+                  ? 'Tour Group Guides saved — ask them to refresh the QR page.'
+                  : 'Tour Group Guides removed.'}
               </p>
             ) : null}
-            {guideEnrollment ? (
-              <p className="truncate text-[11px] text-teal-900/55">
-                Passport: {guestDisplayName(guideEnrollment)}
-                {guideEnrollment.passportNumber ? ` · ${guideEnrollment.passportNumber}` : ''}
+            {guideDrafts.length < guideEnrollments.length ? (
+              <p className="text-[11px] font-medium text-amber-800">
+                {guideEnrollments.length} guides already checked in — keep at least that many.
               </p>
             ) : null}
+            {guideEnrollments.map((enrollment) => (
+              <p key={enrollment.id} className="truncate text-[11px] text-teal-900/55">
+                Passport: {guestDisplayName(enrollment)}
+                {enrollment.passportNumber ? ` · ${enrollment.passportNumber}` : ''}
+              </p>
+            ))}
           </div>
         ) : null}
 

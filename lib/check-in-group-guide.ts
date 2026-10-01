@@ -4,9 +4,33 @@ export const CHECK_IN_GROUP_GUIDE_STORAGE_KEY = 'gday-check-in-group-guides'
 
 const STORAGE_KEY = CHECK_IN_GROUP_GUIDE_STORAGE_KEY
 
-/** date|program → booking code → tour group guide display name (admin-assigned on booking QR).
+/** date|program → booking code → tour group guide names, one per line (admin-assigned on booking QR).
  * Separate from boat guides on DayBoatPlan — those are marina boat staff. */
 export type DayCheckInGroupGuideMap = Record<string, Record<string, string>>
+
+export const MAX_GROUP_GUIDES = 10
+const MAX_GUIDE_NAME_LENGTH = 80
+
+export function parseGroupGuideNames(value: string | null | undefined): string[] {
+  return String(value ?? '')
+    .split('\n')
+    .map((name) => name.trim().slice(0, MAX_GUIDE_NAME_LENGTH))
+    .filter(Boolean)
+    .slice(0, MAX_GROUP_GUIDES)
+}
+
+export function formatGroupGuideNames(names: string[]): string {
+  return parseGroupGuideNames(names.join('\n')).join('\n')
+}
+
+export function defaultGroupGuideName(index: number) {
+  return `Guide ${index + 1}`
+}
+
+/** Auto names like "Guide 2" are slots, not real names — do not prefill the passport form. */
+export function isPlaceholderGuideName(name: string) {
+  return /^guide\s*\d+$/i.test(name.trim())
+}
 
 export function loadCheckInGroupGuideMap(): DayCheckInGroupGuideMap {
   if (typeof window === 'undefined') return {}
@@ -20,8 +44,8 @@ export function loadCheckInGroupGuideMap(): DayCheckInGroupGuideMap {
       if (!row || typeof row !== 'object') continue
       const guides: Record<string, string> = {}
       for (const [code, value] of Object.entries(row as Record<string, unknown>)) {
-        const text = typeof value === 'string' ? value.trim() : ''
-        if (text) guides[code] = text.slice(0, 80)
+        const text = typeof value === 'string' ? formatGroupGuideNames([value]) : ''
+        if (text) guides[code] = text
       }
       if (Object.keys(guides).length > 0) next[dayKey] = guides
     }
@@ -58,7 +82,7 @@ export function withCheckInGroupGuide(
 ): DayCheckInGroupGuideMap {
   const key = dayBoatPlanKey(date, program)
   const day = { ...(map[key] ?? {}) }
-  const text = name.trim().slice(0, 80)
+  const text = formatGroupGuideNames([name])
   if (!text) delete day[bookingCode]
   else day[bookingCode] = text
   const next = { ...map }

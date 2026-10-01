@@ -113,6 +113,10 @@ export function findGuideEnrollment(enrollments: CheckInEnrollment[]) {
   return enrollments.find((item) => isGuideEnrollment(item)) ?? null
 }
 
+export function guideEnrollmentCount(enrollments: CheckInEnrollment[]) {
+  return enrollments.filter((item) => isGuideEnrollment(item)).length
+}
+
 export function withCheckInEnrollment(
   map: DayCheckInEnrollmentMap,
   date: string,

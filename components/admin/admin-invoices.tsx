@@ -88,6 +88,7 @@ import {
   type Program,
 } from '@/lib/types'
 import { bookingNotesForInvoice } from '@/lib/check-in-pax-edit'
+import { isGuideEnrollment } from '@/lib/check-in-enrollment'
 import { addDaysISO, dateFromISO, formatShortDate, thaiParkSeatsFromGuests, todayISO, toISODate } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 
@@ -625,15 +626,13 @@ export function AdminInvoices() {
     })
   }
 
-  function bookingInvoiceItems(booking: Booking) {
+  function bookingInvoiceItems(booking: Booking, otherService = includeOtherService) {
+    const enrollments = getCheckInEnrollments(booking.date, booking.program, booking.code)
     return buildInvoiceItemsForBooking(booking, ratesForAgent(store.rates, booking.agentSlug), {
-      includeOtherService,
+      includeOtherService: otherService,
       attendance: getCheckInAttendance(booking.date, booking.program, booking.code),
-      thaiGuests: thaiParkSeatsFromGuests(
-        booking.adults,
-        booking.children,
-        getCheckInEnrollments(booking.date, booking.program, booking.code),
-      ),
+      thaiGuests: thaiParkSeatsFromGuests(booking.adults, booking.children, enrollments),
+      groupGuides: enrollments.filter(isGuideEnrollment).length,
     })
   }
 
@@ -2445,17 +2444,7 @@ export function AdminInvoices() {
         liveItemsForCodes={(codes) =>
           bookings
             .filter((booking) => codes.includes(booking.code))
-            .flatMap((booking) =>
-              buildInvoiceItemsForBooking(booking, ratesForAgent(store.rates, booking.agentSlug), {
-                includeOtherService: false,
-                attendance: getCheckInAttendance(booking.date, booking.program, booking.code),
-                thaiGuests: thaiParkSeatsFromGuests(
-                  booking.adults,
-                  booking.children,
-                  getCheckInEnrollments(booking.date, booking.program, booking.code),
-                ),
-              }),
-            )
+            .flatMap((booking) => bookingInvoiceItems(booking, false))
         }
       />
 

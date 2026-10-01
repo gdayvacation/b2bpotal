@@ -3,11 +3,12 @@
 import { useState } from 'react'
 import { Check, Copy, Printer } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { publicOrigin } from '@/lib/public-origin'
 import { cn } from '@/lib/utils'
 
 export function voucherUrl(slug: string, code: string) {
   if (typeof window === 'undefined') return `/agent/${slug}/voucher/${code}`
-  return `${window.location.origin}/agent/${slug}/voucher/${code}`
+  return `${publicOrigin()}/agent/${slug}/voucher/${code}`
 }
 
 export function VoucherShareActions({

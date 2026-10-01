@@ -23,8 +23,17 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { CheckInI18nProvider, CheckInLanguageSwitch, useCheckInI18n } from '@/components/check-in/check-in-i18n'
 import { NationalityCombobox } from '@/components/check-in/nationality-combobox'
-import { enrolledSeatCount, findGuideEnrollment, guestDisplayName } from '@/lib/check-in-enrollment'
-import { splitGuideDisplayName } from '@/lib/check-in-group-guide'
+import {
+  enrolledSeatCount,
+  findGuideEnrollment,
+  guestDisplayName,
+  guideEnrollmentCount,
+} from '@/lib/check-in-enrollment'
+import {
+  isPlaceholderGuideName,
+  parseGroupGuideNames,
+  splitGuideDisplayName,
+} from '@/lib/check-in-group-guide'
 import {
   CHECK_IN_SERVICE_KINDS,
   checkInServiceLabel,
@@ -365,8 +374,10 @@ function GuestCheckInForm({
         selectedBooking.code,
       ).trim()
     : ''
-  const guideCheckedIn = Boolean(findGuideEnrollment(enrolled))
-  const guideCheckInAvailable = Boolean(groupGuideName) && !guideCheckedIn
+  const groupGuideNames = parseGroupGuideNames(groupGuideName)
+  const guidesCheckedIn = guideEnrollmentCount(enrolled)
+  const guideCheckInAvailable = guidesCheckedIn < groupGuideNames.length
+  const nextGuideName = groupGuideNames[guidesCheckedIn] ?? ''
   const marinaPaid = Boolean(
     selectedBooking &&
       getCheckInPayment(selectedBooking.date, selectedBooking.program, selectedBooking.code) ===
@@ -448,11 +459,9 @@ function GuestCheckInForm({
       booking.program,
       booking.code,
     ).trim()
-    const guideDone = Boolean(
-      findGuideEnrollment(
-        getCheckInEnrollments(booking.date, booking.program, booking.code),
-      ),
-    )
+    const guideDone =
+      guideEnrollmentCount(getCheckInEnrollments(booking.date, booking.program, booking.code)) >=
+      parseGroupGuideNames(guideName).length
     const guestsDone = attendance === 'checked' || already >= seats
     if (guestsDone && !(guideName && !guideDone)) {
       setDoneGuideOnly(false)
@@ -543,7 +552,8 @@ function GuestCheckInForm({
         lockedBooking.program,
         lockedBooking.code,
       ).trim()
-      const guideDone = Boolean(findGuideEnrollment(enrolledList))
+      const guideDone =
+        guideEnrollmentCount(enrolledList) >= parseGroupGuideNames(guideName).length
       const guestsDone = attendance === 'checked' || already >= seats
       if (guestsDone && !(guideName && !guideDone)) {
         setDoneNeedsPayment(
@@ -584,7 +594,9 @@ function GuestCheckInForm({
 
   function beginGuideCheckIn() {
     if (!selectedBooking || !guideCheckInAvailable) return
-    const split = splitGuideDisplayName(groupGuideName)
+    const split = isPlaceholderGuideName(nextGuideName)
+      ? { firstName: '', lastName: '' }
+      : splitGuideDisplayName(nextGuideName)
     setPartySize(1)
     setScope('guide')
     setGuests([
@@ -611,7 +623,8 @@ function GuestCheckInForm({
       booking.program,
       booking.code,
     ).trim()
-    const guideDone = Boolean(findGuideEnrollment(enrolledList))
+    const guideDone =
+      guideEnrollmentCount(enrolledList) >= parseGroupGuideNames(guideName).length
     const guestsDone = attendance === 'checked' || enrolledCount >= seats
     setBookingCode(code)
     if (guestsDone && !(guideName && !guideDone)) {
@@ -1047,7 +1060,14 @@ function GuestCheckInForm({
                   <p className="text-sm font-semibold text-violet-950">{t('groupGuideCheckIn')}</p>
                   <p className="mt-1 text-xs text-violet-900/70">{t('groupGuideCheckInSub')}</p>
                 </div>
-                <p className="text-sm font-medium text-violet-950">{groupGuideName}</p>
+                <p className="text-sm font-medium text-violet-950">
+                  {nextGuideName}
+                  {groupGuideNames.length > 1 ? (
+                    <span className="ml-2 tabular-nums text-violet-900/60">
+                      {guidesCheckedIn + 1}/{groupGuideNames.length}
+                    </span>
+                  ) : null}
+                </p>
                 <Button
                   className="h-12 w-full bg-violet-800 text-base text-white hover:bg-violet-700"
                   onClick={beginGuideCheckIn}
@@ -1527,9 +1547,9 @@ function GuestCheckInForm({
                             selectedBooking.program,
                             selectedBooking.code,
                           ),
-                        ) ?? { firstName: groupGuideName, lastName: '' },
+                        ) ?? { firstName: groupGuideNames[0] ?? '', lastName: '' },
                       )
-                    : groupGuideName
+                    : (groupGuideNames[0] ?? '')
               }
               onAgain={startOver}
             />

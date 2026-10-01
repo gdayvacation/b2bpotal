@@ -1,5 +1,6 @@
 import { addDaysISO, todayISO } from '@/lib/format'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
+import { selectAllPaged } from '@/lib/supabase/paged'
 import {
   DEFAULT_BOOKING_CUTOFFS,
   normalizeBeforeDays,
@@ -32,7 +33,7 @@ import {
 } from '@/lib/check-in-sequence'
 import type { DayCheckInGuestEditMap } from '@/lib/check-in-guest-edit'
 import type { DayCheckInNoteMap } from '@/lib/check-in-notes'
-import type { DayCheckInGroupGuideMap } from '@/lib/check-in-group-guide'
+import { formatGroupGuideNames, type DayCheckInGroupGuideMap } from '@/lib/check-in-group-guide'
 import {
   DEFAULT_DRIVERS,
   mergeDriverRoster,
@@ -643,12 +644,12 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     supabase.from('pickup_zones').select('*').order('sort_order'),
     supabase.from('hotels').select('*').order('name'),
     fetchBookingsInDateRange(operationalBookingsFromDate()),
-    supabase.from('availability').select('*').order('date'),
-    supabase.from('day_boat_plans').select('*'),
-    supabase.from('boat_assignments').select('*'),
-    supabase.from('day_vehicle_plans').select('*'),
-    supabase.from('van_meta').select('*'),
-    supabase.from('van_assignments').select('*'),
+    selectAllPaged<AvailabilityRow>('availability', ['date']),
+    selectAllPaged<BoatPlanRow>('day_boat_plans', ['date', 'program']),
+    selectAllPaged<BoatAssignmentRow>('boat_assignments', ['date', 'program', 'booking_code', 'boat_number']),
+    selectAllPaged<VehiclePlanRow>('day_vehicle_plans', ['date', 'program']),
+    selectAllPaged<VanMetaRow>('van_meta', ['date', 'program', 'van_number']),
+    selectAllPaged<VanAssignmentRow>('van_assignments', ['id']),
     supabase.from('fleet_vans').select('*').order('van_number'),
     supabase.from('drivers').select('*').order('name'),
     supabase.from('booking_cutoffs').select('*').eq('id', 'default').maybeSingle(),
@@ -657,7 +658,6 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
 
   await assertOk('agents', agentsRes.error, agentsRes.data)
   await assertOk('pickup_zones', zonesRes.error, zonesRes.data)
-  const bookingsRes = { data: bookingRows, error: null }
   await assertOk('availability', availabilityRes.error, availabilityRes.data)
   await assertOk('day_boat_plans', boatPlansRes.error, boatPlansRes.data)
   await assertOk('boat_assignments', boatAssignRes.error, boatAssignRes.data)
@@ -742,7 +742,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     agents: (agentsRes.data as AgentRow[]).map(mapAgent),
     zones: (zonesRes.data as ZoneRow[]).map(mapZone),
     hotels,
-    bookings: (bookingsRes.data as BookingRow[]).map(mapBooking),
+    bookings: bookingRows,
     availability: (availabilityRes.data as AvailabilityRow[]).map(mapAvailability),
     dayBoatPlans: buildBoatPlans(
       boatPlansRes.data as BoatPlanRow[],
@@ -956,7 +956,7 @@ export async function fetchAvailabilitySettings(): Promise<{
 }> {
   const supabase = getSupabaseBrowserClient()
   const [availabilityRes, cutoffsRes, closuresRes] = await Promise.all([
-    supabase.from('availability').select('*').order('date'),
+    selectAllPaged<AvailabilityRow>('availability', ['date']),
     supabase.from('booking_cutoffs').select('*').eq('id', 'default').maybeSingle(),
     supabase.from('booking_closures').select('*').order('date'),
   ])
@@ -993,9 +993,9 @@ export async function fetchAvailabilitySettings(): Promise<{
 export async function fetchDayVehiclePlans(): Promise<Record<string, DayVehiclePlan>> {
   const supabase = getSupabaseBrowserClient()
   const [vehiclePlansRes, vanMetaRes, vanAssignRes] = await Promise.all([
-    supabase.from('day_vehicle_plans').select('*'),
-    supabase.from('van_meta').select('*'),
-    supabase.from('van_assignments').select('*'),
+    selectAllPaged<VehiclePlanRow>('day_vehicle_plans', ['date', 'program']),
+    selectAllPaged<VanMetaRow>('van_meta', ['date', 'program', 'van_number']),
+    selectAllPaged<VanAssignmentRow>('van_assignments', ['id']),
   ])
   await assertOk('day_vehicle_plans', vehiclePlansRes.error, vehiclePlansRes.data)
   await assertOk('van_meta', vanMetaRes.error, vanMetaRes.data)
@@ -1011,8 +1011,8 @@ export async function fetchDayVehiclePlans(): Promise<Record<string, DayVehicleP
 export async function fetchDayBoatPlans(): Promise<Record<string, DayBoatPlan>> {
   const supabase = getSupabaseBrowserClient()
   const [boatPlansRes, boatAssignRes] = await Promise.all([
-    supabase.from('day_boat_plans').select('*'),
-    supabase.from('boat_assignments').select('*'),
+    selectAllPaged<BoatPlanRow>('day_boat_plans', ['date', 'program']),
+    selectAllPaged<BoatAssignmentRow>('boat_assignments', ['date', 'program', 'booking_code', 'boat_number']),
   ])
   await assertOk('day_boat_plans', boatPlansRes.error, boatPlansRes.data)
   await assertOk('boat_assignments', boatAssignRes.error, boatAssignRes.data)
@@ -1985,11 +1985,11 @@ function buildCheckInGroupGuideMap(rows: CheckInGroupGuideRow[]): DayCheckInGrou
   for (const row of rows) {
     if (!isProgram(row.program)) continue
     const bookingCode = String(row.booking_code ?? '').trim()
-    const guideName = String(row.guide_name ?? '').trim()
+    const guideName = formatGroupGuideNames([String(row.guide_name ?? '')])
     if (!bookingCode || !guideName) continue
     const key = dayBoatPlanKey(asDateString(row.date), row.program)
     const day = next[key] ?? {}
-    day[bookingCode] = guideName.slice(0, 80)
+    day[bookingCode] = guideName
     next[key] = day
   }
   return next

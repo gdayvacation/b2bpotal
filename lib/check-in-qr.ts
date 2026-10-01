@@ -1,16 +1,15 @@
 /** Per-booking marina guest check-in QR helpers. */
 
-export function guestCheckInPath(bookingCode: string) {
+export function guestCheckInPath(bookingCode: string, token = '') {
   const code = bookingCode.trim()
   if (!code) return '/check-in'
-  return `/check-in?b=${encodeURIComponent(code)}`
+  const params = new URLSearchParams({ b: code })
+  const t = token.trim()
+  if (t) params.set('t', t)
+  return `/check-in?${params.toString()}`
 }
 
-export function guestCheckInUrl(origin: string, bookingCode: string) {
+export function guestCheckInUrl(origin: string, bookingCode: string, token = '') {
   const base = origin.replace(/\/$/, '')
-  return `${base}${guestCheckInPath(bookingCode)}`
-}
-
-export function guestCheckInQrImageUrl(checkInUrl: string, size = 512) {
-  return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=16&data=${encodeURIComponent(checkInUrl)}`
+  return `${base}${guestCheckInPath(bookingCode, token)}`
 }

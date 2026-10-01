@@ -2,6 +2,9 @@
  * Safe marina check-in / board stress test.
  * Uses only LOADTEST-#### bookings, then cleans them up.
  *
+ * The loadtest_* RPCs are service-role only. Put SUPABASE_SERVICE_ROLE_KEY in
+ * .env.local (never a NEXT_PUBLIC_ variable, never in Vercel) and run locally.
+ *
  * Usage:
  *   node scripts/load-test-check-in.mjs
  *   node scripts/load-test-check-in.mjs --count=200
@@ -28,6 +31,20 @@ function loadEnvLocal() {
     env[m[1]] = v
   }
   return env
+}
+
+function serviceClient(env) {
+  if (Object.keys(env).some((key) => key.startsWith('NEXT_PUBLIC_') && key.includes('SERVICE_ROLE'))) {
+    throw new Error('Remove NEXT_PUBLIC_*SERVICE_ROLE* from .env.local — that would ship the key to browsers.')
+  }
+  const url = env.NEXT_PUBLIC_SUPABASE_URL
+  const serviceKey = env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !serviceKey) {
+    throw new Error('Missing NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY in .env.local')
+  }
+  return createClient(url, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  })
 }
 
 function argInt(name, fallback) {
@@ -89,14 +106,7 @@ function summarize(label, results) {
 async function main() {
   const count = Math.max(10, Math.min(argInt('count', 200), 250))
   const concurrency = Math.max(5, Math.min(argInt('concurrency', 40), 80))
-  const env = loadEnvLocal()
-  const url = env.NEXT_PUBLIC_SUPABASE_URL
-  const anon = env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  if (!url || !anon) throw new Error('Missing NEXT_PUBLIC_SUPABASE_URL / ANON_KEY in .env.local')
-
-  const supabase = createClient(url, anon, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  })
+  const supabase = serviceClient(loadEnvLocal())
 
   console.log(`Load test starting: ${count} guests, concurrency=${concurrency}`)
   console.log('Only LOADTEST-* rows are created; cleanup runs at the end.\n')
@@ -236,11 +246,13 @@ async function main() {
 
 main().catch((error) => {
   console.error('\nLOAD TEST CRASHED:', error)
-  createClient(
-    loadEnvLocal().NEXT_PUBLIC_SUPABASE_URL,
-    loadEnvLocal().NEXT_PUBLIC_SUPABASE_ANON_KEY,
-    { auth: { persistSession: false, autoRefreshToken: false } },
-  )
+  let client
+  try {
+    client = serviceClient(loadEnvLocal())
+  } catch {
+    process.exit(1)
+  }
+  client
     .rpc('loadtest_cleanup')
     .then(({ error }) => {
       if (error) console.error('cleanup after crash failed:', error.message)

@@ -157,6 +157,13 @@ export async function validateStaffDeviceSession(parts: StaffSessionParts): Prom
   return data === true
 }
 
+/** Route guard: the staff cookie must be a live device session for `role`. */
+export async function hasStaffSession(cookieValue: string | undefined | null, role: StaffRole) {
+  const parts = parseStaffCookie(cookieValue)
+  if (!parts || parts.role !== role) return false
+  return validateStaffDeviceSession(parts)
+}
+
 export async function closeStaffDeviceSession(parts: StaffSessionParts | null) {
   if (!parts) return
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()

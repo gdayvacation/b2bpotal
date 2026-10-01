@@ -153,14 +153,14 @@ export function parkFeeTotal(
   return adults * rates.adult + children * rates.child
 }
 
-/** Thai AD + CH seats that pay 40 THB instead of the foreigner park rate. */
+/** Thai AD + CH seats that pay 40 THB instead of the foreigner park rate. Group guides never count. */
 export function thaiParkSeatsFromGuests(
   adults: number,
   children: number,
-  guests: Array<{ nationality?: string | null; seats?: number | null }>,
+  guests: Array<{ nationality?: string | null; seats?: number | null; scope?: string | null }>,
 ) {
   const chargeable = Math.max(0, Math.floor(adults)) + Math.max(0, Math.floor(children))
-  return Math.min(chargeable, thaiGuestCount(guests))
+  return Math.min(chargeable, thaiGuestCount(guests.filter((guest) => guest.scope !== 'guide')))
 }
 
 /**

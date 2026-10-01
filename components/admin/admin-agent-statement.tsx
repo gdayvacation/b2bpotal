@@ -19,10 +19,11 @@ import {
   formatInvoiceDate,
   formatInvoiceMoney,
   invoiceAmountForBooking,
+  invoicePaidTotal,
   type InvoiceDocument,
 } from '@/lib/invoice'
 import { daysInMonthISO, formatMonthLabel, startOfThisMonth, toISODate } from '@/lib/format'
-import { formatPaxBreakdown, type Booking } from '@/lib/types'
+import { formatPaxBreakdown, isActiveBooking, type Booking } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 type StatementRow = {
@@ -33,8 +34,11 @@ type StatementRow = {
   program: string
   pax: string
   invoiceNo: string
-  status: 'Paid' | 'Unpaid' | 'Open'
+  status: 'Paid' | 'Partial' | 'Unpaid' | 'Credited' | 'Open' | 'Cancelled'
+  /** Billed to the agent for this booking, after linked credit notes. */
   amount: number
+  /** Share of `amount` already received (pro-rata for part-paid invoices). */
+  paid: number
 }
 
 export function AdminAgentStatement({ onBack }: { onBack: () => void }) {
@@ -75,14 +79,16 @@ export function AdminAgentStatement({ onBack }: { onBack: () => void }) {
       .filter((booking) => booking.agentSlug === resolvedSlug && booking.date.startsWith(monthPrefix))
       .sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code))
 
-    return monthBookings.map((booking) => toStatementRow(booking, store.invoices))
+    return monthBookings
+      .map((booking) => toStatementRow(booking, store.invoices))
+      .filter((row): row is StatementRow => row !== null)
   }, [bookings, monthPrefix, resolvedSlug, store.invoices])
 
-  const invoicedRows = rows.filter((row) => row.status !== 'Open')
-  const paidTotal = rows.filter((row) => row.status === 'Paid').reduce((sum, row) => sum + row.amount, 0)
-  const unpaidTotal = rows.filter((row) => row.status === 'Unpaid').reduce((sum, row) => sum + row.amount, 0)
-  const openTotal = rows.filter((row) => row.status === 'Open').reduce((sum, row) => sum + row.amount, 0)
-  const billedTotal = paidTotal + unpaidTotal
+  const invoicedRows = rows.filter((row) => row.invoiceNo)
+  const billedTotal = rows.reduce((sum, row) => sum + row.amount, 0)
+  const paidTotal = rows.reduce((sum, row) => sum + row.paid, 0)
+  const unpaidTotal = Math.max(0, billedTotal - paidTotal)
+  const notBilledCount = rows.filter((row) => row.status === 'Open').length
 
   function shiftMonth(delta: number) {
     setMonthIso(toISODate(new Date(monthObj.getFullYear(), monthObj.getMonth() + delta, 1)))
@@ -171,7 +177,11 @@ export function AdminAgentStatement({ onBack }: { onBack: () => void }) {
           <SummaryCard label="Bookings" value={String(rows.length)} detail={monthLabel} />
           <SummaryCard label="Invoiced" value={formatInvoiceMoney(billedTotal)} detail={`${invoicedRows.length} bills`} />
           <SummaryCard label="Paid" value={formatInvoiceMoney(paidTotal)} detail="Receipts" />
-          <SummaryCard label="Still open" value={formatInvoiceMoney(unpaidTotal + openTotal)} detail="Unpaid + not billed" />
+          <SummaryCard
+            label="Still open"
+            value={formatInvoiceMoney(unpaidTotal)}
+            detail={`Unpaid · ${notBilledCount} not billed yet`}
+          />
         </div>
 
         <Surface className="overflow-hidden">
@@ -202,8 +212,8 @@ export function AdminAgentStatement({ onBack }: { onBack: () => void }) {
               <span className="font-semibold text-teal-950">{formatInvoiceMoney(billedTotal)}</span>
             </p>
             <p>
-              Paid {formatInvoiceMoney(paidTotal)} · unpaid {formatInvoiceMoney(unpaidTotal)} · open{' '}
-              {formatInvoiceMoney(openTotal)}
+              Paid {formatInvoiceMoney(paidTotal)} · unpaid {formatInvoiceMoney(unpaidTotal)} ·{' '}
+              {notBilledCount} not billed yet
             </p>
           </div>
         </div>
@@ -227,7 +237,10 @@ export function AdminAgentStatement({ onBack }: { onBack: () => void }) {
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={row.id} className={cn(row.status === 'Open' && 'text-teal-900/55')}>
+                <tr
+                  key={row.id}
+                  className={cn((row.status === 'Open' || row.status === 'Cancelled') && 'text-teal-900/55')}
+                >
                   <td className="border border-teal-900/10 px-1.5 py-1">{formatInvoiceDate(row.date)}</td>
                   <td className="border border-teal-900/10 px-1.5 py-1 font-medium">{row.code}</td>
                   <td className="border border-teal-900/10 px-1.5 py-1">{row.guest}</td>
@@ -245,7 +258,7 @@ export function AdminAgentStatement({ onBack }: { onBack: () => void }) {
                   Total
                 </td>
                 <td className="border border-teal-900/15 px-1.5 py-1.5 text-right tabular-nums">
-                  {formatInvoiceMoney(billedTotal + openTotal)}
+                  {formatInvoiceMoney(billedTotal)}
                 </td>
               </tr>
             </tbody>
@@ -305,7 +318,10 @@ function StatementTable({ rows }: { rows: StatementRow[] }) {
         </TableHeader>
         <TableBody>
           {rows.map((row) => (
-            <TableRow key={row.id} className={cn(row.status === 'Open' && 'opacity-70')}>
+            <TableRow
+              key={row.id}
+              className={cn((row.status === 'Open' || row.status === 'Cancelled') && 'opacity-70')}
+            >
               <TableCell className="whitespace-nowrap">{formatInvoiceDate(row.date)}</TableCell>
               <TableCell className="font-medium text-teal-950">{row.code}</TableCell>
               <TableCell>{row.guest}</TableCell>
@@ -350,19 +366,30 @@ function SummaryCard({
   )
 }
 
-function toStatementRow(booking: Booking, invoices: InvoiceDocument[]): StatementRow {
+function toStatementRow(booking: Booking, invoices: InvoiceDocument[]): StatementRow | null {
   const invoice = invoices.find(
     (doc) =>
       doc.kind === 'invoice' && doc.items.some((item) => item.bookingCode === booking.code),
   )
-  const amount = invoice
-    ? invoiceAmountForBooking(invoice, booking.code)
-    : 0
-  const status: StatementRow['status'] = invoice
-    ? invoice.status === 'paid'
-      ? 'Paid'
-      : 'Unpaid'
-    : 'Open'
+  if (!invoice && !isActiveBooking(booking)) return null
+
+  let amount = 0
+  let paid = 0
+  let status: StatementRow['status'] = isActiveBooking(booking) ? 'Open' : 'Cancelled'
+  if (invoice) {
+    const billed = invoiceAmountForBooking(invoice, booking.code)
+    const credited = invoices
+      .filter((doc) => doc.kind === 'credit_note' && doc.linkedInvoiceIds.includes(invoice.id))
+      .reduce((sum, doc) => sum + invoiceAmountForBooking(doc, booking.code), 0)
+    amount = Math.max(0, billed + credited)
+    const grand = Number(invoice.grandTotal) || 0
+    const ratio = grand > 0 ? Math.min(1, invoicePaidTotal(invoice) / grand) : 0
+    paid = Math.round(amount * ratio * 100) / 100
+    if (amount <= 0.009) status = 'Credited'
+    else if (paid + 0.009 >= amount) status = 'Paid'
+    else if (paid > 0.009) status = 'Partial'
+    else status = 'Unpaid'
+  }
 
   return {
     id: booking.code,
@@ -374,5 +401,6 @@ function toStatementRow(booking: Booking, invoices: InvoiceDocument[]): Statemen
     invoiceNo: invoice?.number ?? '',
     status,
     amount,
+    paid,
   }
 }
