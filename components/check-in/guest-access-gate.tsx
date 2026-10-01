@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { BrandMark } from '@/components/brand-mark'
 import { readStaffSession } from '@/lib/staff-auth'
 import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/client'
+import { fetchBookingByCode } from '@/lib/supabase/portal-db'
 
 async function applySession(accessToken?: string, refreshToken?: string) {
   if (!accessToken || !refreshToken || !hasSupabaseConfig()) return
@@ -33,6 +34,19 @@ async function partnerSession() {
   return String(data.session?.user.app_metadata?.role ?? '') === 'partner'
 }
 
+/**
+ * Staff / helper / partner sessions are scoped (a helper only sees their own date, a partner only
+ * their agent), so a leftover session on the phone can be unable to read this guest's booking.
+ * Only trust such a session when it can actually load the booking; otherwise open the guest QR.
+ */
+async function canReadBooking(code: string) {
+  try {
+    return (await fetchBookingByCode(code)) !== null
+  } catch {
+    return false
+  }
+}
+
 export function GuestAccessGate({
   bookingCode,
   token = '',
@@ -54,15 +68,19 @@ export function GuestAccessGate({
     let cancelled = false
 
     async function unlock() {
-      const staff = await readStaffSession()
-      if (cancelled) return
-      if (staff || (await helperOnDuty()) || (await partnerSession())) {
-        setState('ok')
-        return
-      }
       if (await guestOwnsCode(code)) {
         setState('ok')
         return
+      }
+      const staff = await readStaffSession()
+      if (cancelled) return
+      if (staff || (await helperOnDuty()) || (await partnerSession())) {
+        const readable = await canReadBooking(code)
+        if (cancelled) return
+        if (readable) {
+          setState('ok')
+          return
+        }
       }
 
       const response = await fetch('/api/check-in/guest/enter', {
