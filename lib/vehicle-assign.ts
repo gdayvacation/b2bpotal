@@ -145,7 +145,38 @@ export function paxBreakdownTotal(pax: PaxBreakdown) {
   return pax.adults + pax.children + pax.infants + pax.tourLeaders
 }
 
-function takePaxTypes(from: PaxBreakdown, n: number): PaxBreakdown {
+export function emptyPaxBreakdown(): PaxBreakdown {
+  return { adults: 0, children: 0, infants: 0, tourLeaders: 0 }
+}
+
+export function addPaxBreakdown(a: PaxBreakdown, b: PaxBreakdown): PaxBreakdown {
+  return {
+    adults: a.adults + b.adults,
+    children: a.children + b.children,
+    infants: a.infants + b.infants,
+    tourLeaders: a.tourLeaders + b.tourLeaders,
+  }
+}
+
+/**
+ * Compact ops readout: adults first, then only non-zero C / I / T.
+ * Examples: `2`, `2+1I`, `2+1C`, `48+3C+4I`
+ */
+export function formatPaxShort(pax: PaxBreakdown) {
+  const adults = Math.max(0, Math.floor(pax.adults))
+  const children = Math.max(0, Math.floor(pax.children))
+  const infants = Math.max(0, Math.floor(pax.infants))
+  const tourLeaders = Math.max(0, Math.floor(pax.tourLeaders))
+  if (adults + children + infants + tourLeaders <= 0) return '0'
+  let out = String(adults)
+  if (children > 0) out += `+${children}C`
+  if (infants > 0) out += `+${infants}I`
+  if (tourLeaders > 0) out += `+${tourLeaders}T`
+  return out
+}
+
+/** Take the first n heads in AD → CH → INF → TL order. */
+export function takePaxBreakdown(from: PaxBreakdown, n: number): PaxBreakdown {
   let left = Math.max(0, Math.floor(n))
   const adults = Math.min(from.adults, left)
   left -= adults
@@ -155,6 +186,10 @@ function takePaxTypes(from: PaxBreakdown, n: number): PaxBreakdown {
   left -= infants
   const tourLeaders = Math.min(from.tourLeaders, left)
   return { adults, children, infants, tourLeaders }
+}
+
+function takePaxTypes(from: PaxBreakdown, n: number): PaxBreakdown {
+  return takePaxBreakdown(from, n)
 }
 
 function subtractPax(from: PaxBreakdown, take: PaxBreakdown): PaxBreakdown {

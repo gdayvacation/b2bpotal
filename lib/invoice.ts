@@ -1244,6 +1244,104 @@ export function itemsGrandTotal(items: Pick<InvoiceItem, 'amount'>[]) {
   return items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0)
 }
 
+type InvoiceLinePriceFields = Pick<
+  InvoiceItem,
+  | 'adults'
+  | 'children'
+  | 'infants'
+  | 'tourLeaders'
+  | 'adultPrice'
+  | 'childPrice'
+  | 'infantPrice'
+  | 'tourLeaderPrice'
+  | 'amount'
+>
+
+/** Display / edit unit price for a line (AD rate, else CH / IF / TL, else amount ÷ qty). */
+export function invoiceLineUnitPrice(item: InvoiceLinePriceFields) {
+  if (item.adults > 0 && item.adultPrice !== 0) return item.adultPrice
+  if (item.children > 0 && item.childPrice !== 0) return item.childPrice
+  if (item.infants > 0 && item.infantPrice !== 0) return item.infantPrice
+  if (item.tourLeaders > 0 && item.tourLeaderPrice !== 0) return item.tourLeaderPrice
+  if (item.adultPrice !== 0) return item.adultPrice
+  if (item.childPrice !== 0) return item.childPrice
+  if (item.infantPrice !== 0) return item.infantPrice
+  if (item.tourLeaderPrice !== 0) return item.tourLeaderPrice
+  const qty =
+    Math.max(0, item.adults) +
+    Math.max(0, item.children) +
+    Math.max(0, item.infants) +
+    Math.max(0, item.tourLeaders)
+  if (qty > 0 && item.amount !== 0) {
+    return Math.round((item.amount / qty) * 100) / 100
+  }
+  return item.amount !== 0 ? item.amount : 0
+}
+
+/** Amount from qty × rates. Flat fee (no heads) uses adultPrice as the line amount. */
+export function invoiceLineComputedAmount(item: InvoiceLinePriceFields) {
+  const adults = Math.max(0, Math.floor(Number(item.adults) || 0))
+  const children = Math.max(0, Math.floor(Number(item.children) || 0))
+  const infants = Math.max(0, Math.floor(Number(item.infants) || 0))
+  const tourLeaders = Math.max(0, Math.floor(Number(item.tourLeaders) || 0))
+  const qty = adults + children + infants + tourLeaders
+  if (qty > 0) {
+    return (
+      Math.round(
+        (adults * (Number(item.adultPrice) || 0) +
+          children * (Number(item.childPrice) || 0) +
+          infants * (Number(item.infantPrice) || 0) +
+          tourLeaders * (Number(item.tourLeaderPrice) || 0)) *
+          100,
+      ) / 100
+    )
+  }
+  return Math.round((Number(item.adultPrice) || 0) * 100) / 100
+}
+
+/** Apply a single Price/Unit to the line and recompute amount. */
+export function withInvoiceLineUnitPrice(item: InvoiceItem, unitPrice: number): InvoiceItem {
+  const price = Number.isFinite(unitPrice) ? unitPrice : 0
+  const next: InvoiceItem = { ...item }
+  if (item.adults > 0 || (item.children <= 0 && item.infants <= 0 && item.tourLeaders <= 0)) {
+    next.adultPrice = price
+  }
+  if (item.children > 0) {
+    // Keep CH in sync when it was unused or matched the previous AD rate.
+    if (item.childPrice === 0 || item.childPrice === item.adultPrice || item.adults <= 0) {
+      next.childPrice = price
+    }
+  }
+  if (item.infants > 0 && (item.infantPrice === 0 || item.infantPrice === item.adultPrice)) {
+    next.infantPrice = price
+  }
+  if (
+    item.tourLeaders > 0 &&
+    (item.tourLeaderPrice === 0 || item.tourLeaderPrice === item.adultPrice)
+  ) {
+    next.tourLeaderPrice = price
+  }
+  if (
+    item.adults <= 0 &&
+    item.children <= 0 &&
+    item.infants <= 0 &&
+    item.tourLeaders <= 0
+  ) {
+    next.adultPrice = price
+  }
+  next.amount = invoiceLineComputedAmount(next)
+  return next
+}
+
+export function withInvoiceLineRecalc(
+  item: InvoiceItem,
+  patch: Partial<InvoiceItem>,
+): InvoiceItem {
+  const next = { ...item, ...patch }
+  next.amount = invoiceLineComputedAmount(next)
+  return next
+}
+
 export function isGuestCollectLine(item: Pick<InvoiceItem, 'lineKind'>) {
   return item.lineKind === 'park_guest'
 }

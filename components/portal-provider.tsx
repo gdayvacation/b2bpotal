@@ -129,9 +129,13 @@ import {
   loadPickupNoShowMap,
   moveOwnArrival,
   movePickupNoShow,
+  paxEqual,
   paxTotal,
   recordOwnArrival as recordOwnArrivalLocal,
   recordPickupNoShow as recordPickupNoShowLocal,
+  replaceOwnArrival as replaceOwnArrivalLocal,
+  replacePickupNoShow as replacePickupNoShowLocal,
+  repairPickupMarinaLedgers as repairPickupMarinaLedgersLocal,
   saveOwnArrivalMap,
   savePickupNoShowMap,
 } from '@/lib/pickup-marina-sync'
@@ -190,11 +194,14 @@ import {
   loadPortalSnapshot,
   persistQuietly,
   pushCheckInMaps,
+  recordCheckInEnrollmentsAtomic,
   replaceCheckInEnrollmentsForBooking,
   replaceCheckInServicesForBooking,
   saveDayBoatPlan,
   saveDayVehiclePlan,
   subscribeBookings,
+  subscribeCheckInChanges,
+  subscribeDayPlanChanges,
   type CheckInMapsSnapshot,
   updateBookingDate,
   updateBookingDetails,
@@ -221,6 +228,7 @@ import {
   upsertHotel,
   upsertZone,
 } from '@/lib/supabase/portal-db'
+import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/client'
 import {
   loadLocalDrivers,
   mergeDriverRoster,
@@ -289,6 +297,8 @@ import {
   bookingTransferKind,
   canonicalVanOutsourceCompany,
   compactBoatAssignment,
+  rescaleBoatAssignmentToPax,
+  rescaleVanAssignmentToPax,
   isDummyVan,
   isNoTransferVan,
   isVirtualVan,
@@ -535,6 +545,12 @@ type PortalContextValue = {
     bookingCode: string,
     ns: BookedPaxSnapshot,
   ) => BookedPaxSnapshot
+  replacePickupNoShow: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    ns: BookedPaxSnapshot,
+  ) => BookedPaxSnapshot
   getOwnArrival: (date: string, program: Program, bookingCode: string) => BookedPaxSnapshot
   recordOwnArrival: (
     date: string,
@@ -542,6 +558,19 @@ type PortalContextValue = {
     bookingCode: string,
     arrived: BookedPaxSnapshot,
   ) => BookedPaxSnapshot
+  replaceOwnArrival: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    arrived: BookedPaxSnapshot,
+  ) => BookedPaxSnapshot
+  repairPickupMarinaLedgers: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    original: BookedPaxSnapshot,
+    current: BookedPaxSnapshot,
+  ) => { ns: BookedPaxSnapshot; taxi: BookedPaxSnapshot; derivedNs: BookedPaxSnapshot }
   getJobOrderAction: (
     date: string,
     program: Program,
@@ -576,7 +605,7 @@ type PortalContextValue = {
     nationality: string
     birthday: string
     passportNumber: string
-  }) => { ok: true; enrollment: CheckInEnrollment } | { ok: false; error: string }
+  }) => Promise<{ ok: true; enrollment: CheckInEnrollment } | { ok: false; error: string }>
   recordGuestCheckIns: (input: {
     date: string
     program: Program
@@ -589,7 +618,7 @@ type PortalContextValue = {
       birthday: string
       passportNumber: string
     }>
-  }) => { ok: true; count: number } | { ok: false; error: string }
+  }) => Promise<{ ok: true; count: number } | { ok: false; error: string }>
   assignBookingToBoat: (
     date: string,
     program: Program,
@@ -789,6 +818,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [bookingEventsByCode, setBookingEventsByCode] = useState<Record<string, BookingEvent[]>>({})
   const checkInCloudEnabledRef = useRef(false)
   const checkInWritePendingRef = useRef(0)
+  /** Bumped on every local check-in write so in-flight polls cannot overwrite fresher state. */
+  const checkInSyncEpochRef = useRef(0)
+  const checkInSyncInFlightRef = useRef(false)
   const bookingWritePendingRef = useRef(0)
   const boatPlanWritePendingRef = useRef(0)
   const boatPlanSaveChainRef = useRef(Promise.resolve())
@@ -812,7 +844,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     )
   }
 
-  function enqueueBoatPlanSave(task: () => Promise<void>): Promise<void> {
+  function enqueueBoatPlanSave<T>(task: () => Promise<T>): Promise<T> {
     boatPlanWritePendingRef.current += 1
     const run = boatPlanSaveChainRef.current.then(task, task)
     boatPlanSaveChainRef.current = run.then(
@@ -825,9 +857,31 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   }
 
   function persistBoatPlanWrite(plan: DayBoatPlan) {
-    void enqueueBoatPlanSave(() => saveDayBoatPlan(plan)).catch((error) => {
+    const key = dayBoatPlanKey(plan.date, plan.program)
+    void enqueueBoatPlanSave(async () => {
+      const saved = await saveDayBoatPlan(plan)
+      setDayBoatPlans((current) => {
+        const existing = current[key]
+        if (!existing) return current
+        if ((existing.revision ?? 0) === saved.revision) return current
+        return { ...current, [key]: { ...existing, revision: saved.revision } }
+      })
+    }).catch(async (error) => {
       console.error('[supabase] saveDayBoatPlan', error)
       const message = error instanceof Error ? error.message : 'Failed to save boat plan'
+      const conflict = /another device|conflict/i.test(message)
+      if (conflict) {
+        try {
+          const next = await fetchDayBoatPlans()
+          setDayBoatPlans(next)
+        } catch (refreshError) {
+          console.error('[portal] boat plan conflict refresh failed', refreshError)
+        }
+        if (typeof window !== 'undefined') {
+          window.alert(message)
+        }
+        return
+      }
       if (/boat.?guides|add-boat-guides/i.test(message)) {
         setLoadError(message)
       }
@@ -844,15 +898,31 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       () => saveDayVehiclePlan(vehiclePlanLatestRef.current[key] ?? plan),
     )
     vehiclePlanSaveChainRef.current = run.then(
-      () => undefined,
-      () => undefined,
+      (saved) => {
+        setDayVehiclePlans((current) => {
+          const existing = current[key]
+          if (!existing) return current
+          if ((existing.revision ?? 0) === saved.revision) return current
+          return { ...current, [key]: { ...existing, revision: saved.revision } }
+        })
+      },
+      async (error) => {
+        console.error('[supabase] saveDayVehiclePlan', error)
+        const message = error instanceof Error ? error.message : 'Failed to save van plan'
+        if (/another device|conflict/i.test(message)) {
+          try {
+            const next = await fetchDayVehiclePlans()
+            setDayVehiclePlans(next)
+          } catch (refreshError) {
+            console.error('[portal] van plan conflict refresh failed', refreshError)
+          }
+          if (typeof window !== 'undefined') window.alert(message)
+        }
+      },
     )
-    persistQuietly(
-      'saveDayVehiclePlan',
-      run.finally(() => {
-        vehiclePlanWritePendingRef.current = Math.max(0, vehiclePlanWritePendingRef.current - 1)
-      }),
-    )
+    void run.finally(() => {
+      vehiclePlanWritePendingRef.current = Math.max(0, vehiclePlanWritePendingRef.current - 1)
+    })
   }
 
   function persistSettingsWrite(label: string, task: Promise<unknown>) {
@@ -891,8 +961,96 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     })
   }
 
+  /** Keep older history; replace day-keys on/after sinceDate from the cloud patch. */
+  function mergeRecentDayMaps<T>(
+    base: Record<string, T>,
+    patch: Record<string, T>,
+    sinceDate: string,
+  ): Record<string, T> {
+    const next: Record<string, T> = {}
+    for (const [key, value] of Object.entries(base)) {
+      const day = key.slice(0, 10)
+      if (day < sinceDate) next[key] = value
+    }
+    for (const [key, value] of Object.entries(patch)) {
+      next[key] = value
+    }
+    return next
+  }
+
+  function applyCheckInMapsPartial(patch: CheckInMapsSnapshot, sinceDate: string) {
+    const next: CheckInMapsSnapshot = {
+      enrollments: mergeRecentDayMaps(loadCheckInEnrollmentMap(), patch.enrollments, sinceDate),
+      attendance: mergeRecentDayMaps(loadCheckInAttendanceMap(), patch.attendance, sinceDate),
+      payments: mergeRecentDayMaps(loadCheckInPaymentMap(), patch.payments, sinceDate),
+      tickets: mergeRecentDayMaps(loadCheckInTicketMap(), patch.tickets, sinceDate),
+      services: mergeRecentDayMaps(loadCheckInServiceMap(), patch.services, sinceDate),
+      sequences: mergeRecentDayMaps(loadCheckInSequenceMap(), patch.sequences, sinceDate),
+      guestEdits: mergeRecentDayMaps(loadCheckInGuestEditMap(), patch.guestEdits, sinceDate),
+      notes: mergeRecentDayMaps(loadCheckInNoteMap(), patch.notes, sinceDate),
+      groupGuides: mergeRecentDayMaps(loadCheckInGroupGuideMap(), patch.groupGuides, sinceDate),
+    }
+    applyCheckInMaps(next)
+  }
+
+  /** Replace only one calendar day from cloud; keep every other day untouched. */
+  function applyCheckInMapsForDay(patch: CheckInMapsSnapshot, onDate: string) {
+    const day = onDate.slice(0, 10)
+    function mergeDay<T>(base: Record<string, T>, part: Record<string, T>): Record<string, T> {
+      const next: Record<string, T> = {}
+      for (const [key, value] of Object.entries(base)) {
+        if (key.slice(0, 10) !== day) next[key] = value
+      }
+      for (const [key, value] of Object.entries(part)) {
+        if (key.slice(0, 10) === day) next[key] = value
+      }
+      return next
+    }
+    applyCheckInMaps({
+      enrollments: mergeDay(loadCheckInEnrollmentMap(), patch.enrollments),
+      attendance: mergeDay(loadCheckInAttendanceMap(), patch.attendance),
+      payments: mergeDay(loadCheckInPaymentMap(), patch.payments),
+      tickets: mergeDay(loadCheckInTicketMap(), patch.tickets),
+      services: mergeDay(loadCheckInServiceMap(), patch.services),
+      sequences: mergeDay(loadCheckInSequenceMap(), patch.sequences),
+      guestEdits: mergeDay(loadCheckInGuestEditMap(), patch.guestEdits),
+      notes: mergeDay(loadCheckInNoteMap(), patch.notes),
+      groupGuides: mergeDay(loadCheckInGroupGuideMap(), patch.groupGuides),
+    })
+  }
+
+  /**
+   * Guest-safe merge: overlay only booking keys returned by RLS.
+   * Never wipe other bookings / days (same browser may also be used by staff).
+   */
+  function applyCheckInMapsOverlay(patch: CheckInMapsSnapshot) {
+    function overlayDayBookings<T>(
+      base: Record<string, Record<string, T>>,
+      part: Record<string, Record<string, T>>,
+    ): Record<string, Record<string, T>> {
+      const next: Record<string, Record<string, T>> = { ...base }
+      for (const [dayKey, byCode] of Object.entries(part)) {
+        next[dayKey] = { ...(next[dayKey] ?? {}), ...byCode }
+      }
+      return next
+    }
+    const next: CheckInMapsSnapshot = {
+      enrollments: overlayDayBookings(loadCheckInEnrollmentMap(), patch.enrollments),
+      attendance: overlayDayBookings(loadCheckInAttendanceMap(), patch.attendance),
+      payments: overlayDayBookings(loadCheckInPaymentMap(), patch.payments),
+      tickets: overlayDayBookings(loadCheckInTicketMap(), patch.tickets),
+      services: overlayDayBookings(loadCheckInServiceMap(), patch.services),
+      sequences: { ...loadCheckInSequenceMap(), ...patch.sequences },
+      guestEdits: overlayDayBookings(loadCheckInGuestEditMap(), patch.guestEdits),
+      notes: overlayDayBookings(loadCheckInNoteMap(), patch.notes),
+      groupGuides: overlayDayBookings(loadCheckInGroupGuideMap(), patch.groupGuides),
+    }
+    applyCheckInMaps(next)
+  }
+
   function persistCheckInWrite(label: string, task: Promise<unknown>) {
     if (!checkInCloudEnabledRef.current) return
+    checkInSyncEpochRef.current += 1
     checkInWritePendingRef.current += 1
     persistQuietly(
       label,
@@ -999,6 +1157,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
     let busy = false
     let cancelled = false
+    let poll: number | undefined
+    let unsubscribeRealtime: (() => void) | undefined
 
     async function refreshBookings() {
       if (cancelled || busy || bookingWritePendingRef.current > 0) return
@@ -1021,26 +1181,45 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('focus', onVisible)
-    const poll = window.setInterval(() => {
-      void refreshBookings()
-    }, 4000)
 
-    let unsubscribeRealtime: (() => void) | undefined
-    try {
-      unsubscribeRealtime = subscribeBookings(() => {
+    void (async () => {
+      let role = ''
+      if (hasSupabaseConfig()) {
+        try {
+          const { data } = await getSupabaseBrowserClient().auth.getSession()
+          role = String(data.session?.user.app_metadata?.role ?? '')
+        } catch {
+          role = ''
+        }
+      }
+      if (cancelled) return
+
+      // Guests only see one booking via RLS — no need for aggressive live polling.
+      if (role === 'guest') {
         void refreshBookings()
-      })
-    } catch (error) {
-      console.error('[portal] bookings realtime subscribe failed', error)
-    }
+        return
+      }
 
-    void refreshBookings()
+      poll = window.setInterval(() => {
+        void refreshBookings()
+      }, 4000)
+
+      try {
+        unsubscribeRealtime = subscribeBookings(() => {
+          void refreshBookings()
+        })
+      } catch (error) {
+        console.error('[portal] bookings realtime subscribe failed', error)
+      }
+
+      void refreshBookings()
+    })()
 
     return () => {
       cancelled = true
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
-      window.clearInterval(poll)
+      if (poll != null) window.clearInterval(poll)
       unsubscribeRealtime?.()
     }
   }, [hydrated])
@@ -1086,17 +1265,40 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('focus', onVisible)
-    const poll = window.setInterval(() => {
-      void refreshDayBoatPlans()
-    }, 4000)
 
-    void refreshDayBoatPlans()
+    let boatPoll: number | undefined
+    let unsubscribeRealtime: (() => void) | undefined
+    void (async () => {
+      let role = ''
+      if (hasSupabaseConfig()) {
+        try {
+          const { data } = await getSupabaseBrowserClient().auth.getSession()
+          role = String(data.session?.user.app_metadata?.role ?? '')
+        } catch {
+          role = ''
+        }
+      }
+      if (cancelled) return
+      void refreshDayBoatPlans()
+      if (role === 'guest') return
+      try {
+        unsubscribeRealtime = subscribeDayPlanChanges(() => {
+          void refreshDayBoatPlans()
+        })
+      } catch (error) {
+        console.error('[portal] day boat plans realtime subscribe failed', error)
+      }
+      boatPoll = window.setInterval(() => {
+        void refreshDayBoatPlans()
+      }, 4000)
+    })()
 
     return () => {
       cancelled = true
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
-      window.clearInterval(poll)
+      if (boatPoll != null) window.clearInterval(boatPoll)
+      unsubscribeRealtime?.()
     }
   }, [hydrated])
 
@@ -1130,17 +1332,40 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('focus', onVisible)
-    const poll = window.setInterval(() => {
-      void refreshDayVehiclePlans()
-    }, 4000)
 
-    void refreshDayVehiclePlans()
+    let vehiclePoll: number | undefined
+    let unsubscribeRealtime: (() => void) | undefined
+    void (async () => {
+      let role = ''
+      if (hasSupabaseConfig()) {
+        try {
+          const { data } = await getSupabaseBrowserClient().auth.getSession()
+          role = String(data.session?.user.app_metadata?.role ?? '')
+        } catch {
+          role = ''
+        }
+      }
+      if (cancelled) return
+      void refreshDayVehiclePlans()
+      if (role === 'guest') return
+      try {
+        unsubscribeRealtime = subscribeDayPlanChanges(() => {
+          void refreshDayVehiclePlans()
+        })
+      } catch (error) {
+        console.error('[portal] day vehicle plans realtime subscribe failed', error)
+      }
+      vehiclePoll = window.setInterval(() => {
+        void refreshDayVehiclePlans()
+      }, 4000)
+    })()
 
     return () => {
       cancelled = true
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
-      window.clearInterval(poll)
+      if (vehiclePoll != null) window.clearInterval(vehiclePoll)
+      unsubscribeRealtime?.()
     }
   }, [hydrated])
 
@@ -1174,17 +1399,31 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('focus', onVisible)
-    const poll = window.setInterval(() => {
-      void refreshAvailabilitySettings()
-    }, 4000)
 
-    void refreshAvailabilitySettings()
+    let settingsPoll: number | undefined
+    void (async () => {
+      let role = ''
+      if (hasSupabaseConfig()) {
+        try {
+          const { data } = await getSupabaseBrowserClient().auth.getSession()
+          role = String(data.session?.user.app_metadata?.role ?? '')
+        } catch {
+          role = ''
+        }
+      }
+      if (cancelled) return
+      void refreshAvailabilitySettings()
+      if (role === 'guest') return
+      settingsPoll = window.setInterval(() => {
+        void refreshAvailabilitySettings()
+      }, 4000)
+    })()
 
     return () => {
       cancelled = true
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
-      window.clearInterval(poll)
+      if (settingsPoll != null) window.clearInterval(settingsPoll)
     }
   }, [hydrated])
 
@@ -1210,10 +1449,52 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       setJobOrderActionMap(loadJobOrderActionMap())
     }
 
-    async function syncCheckInFromCloud(allowMigrate: boolean) {
-      if (cancelled || checkInWritePendingRef.current > 0) return
+    type SyncProfile = {
+      role: string
+      helperDate: string | null
+    }
+
+    async function readSyncProfile(): Promise<SyncProfile> {
+      if (!hasSupabaseConfig()) return { role: '', helperDate: null }
       try {
-        const remote = await fetchCheckInMaps()
+        const { data } = await getSupabaseBrowserClient().auth.getSession()
+        const meta = data.session?.user.app_metadata ?? {}
+        return {
+          role: String(meta.role ?? ''),
+          helperDate: String(meta.helper_date ?? '').trim().slice(0, 10) || null,
+        }
+      } catch {
+        return { role: '', helperDate: null }
+      }
+    }
+
+    async function syncCheckInFromCloud(
+      allowMigrate: boolean,
+      options?: { partial?: boolean; profile?: SyncProfile },
+    ) {
+      if (cancelled || checkInWritePendingRef.current > 0 || checkInSyncInFlightRef.current) return
+      checkInSyncInFlightRef.current = true
+      const syncEpoch = checkInSyncEpochRef.current
+      const partial = options?.partial === true
+      const profile = options?.profile ?? (await readSyncProfile())
+      const isGuest = profile.role === 'guest'
+      const isHelper = profile.role === 'helper'
+      // Guests must never migrate localStorage → cloud (RLS makes remote look empty).
+      const canMigrate = allowMigrate && !isGuest
+      try {
+        const boardDate =
+          isHelper && profile.helperDate
+            ? profile.helperDate
+            : partial
+              ? todayISO()
+              : undefined
+        const remote = await fetchCheckInMaps(
+          boardDate
+            ? { onDate: boardDate }
+            : partial
+              ? { sinceDate: todayISO() }
+              : undefined,
+        )
         if (cancelled) return
         if (remote === null) {
           checkInCloudEnabledRef.current = false
@@ -1222,7 +1503,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         checkInCloudEnabledRef.current = true
 
         let next = remote
-        if (allowMigrate && !migrateAttempted) {
+        if (canMigrate && !migrateAttempted) {
           migrateAttempted = true
           const local: CheckInMapsSnapshot = {
             enrollments: loadCheckInEnrollmentMap(),
@@ -1237,6 +1518,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           }
           // First cloud sync: upload this browser's local-only check-ins when remote is empty.
           if (!checkInMapsHaveData(remote) && checkInMapsHaveData(local)) {
+            checkInSyncEpochRef.current += 1
             checkInWritePendingRef.current += 1
             try {
               await pushCheckInMaps(local)
@@ -1250,14 +1532,33 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        if (cancelled || checkInWritePendingRef.current > 0) return
-        applyCheckInMaps(next)
+        if (
+          cancelled ||
+          checkInWritePendingRef.current > 0 ||
+          syncEpoch !== checkInSyncEpochRef.current
+        ) {
+          return
+        }
+        if (isGuest) applyCheckInMapsOverlay(next)
+        else if (boardDate) applyCheckInMapsForDay(next, boardDate)
+        else if (partial) applyCheckInMapsPartial(next, todayISO())
+        else applyCheckInMaps(next)
+
+        // Guests only need enrollment/attendance for their booking — skip heavy side maps.
+        if (isGuest) return
 
         const remotePax = await fetchCheckInBookedPax()
-        if (cancelled || checkInWritePendingRef.current > 0) return
+        if (
+          cancelled ||
+          checkInWritePendingRef.current > 0 ||
+          syncEpoch !== checkInSyncEpochRef.current
+        ) {
+          return
+        }
         if (remotePax) {
           const localPax = loadBookedPaxMap()
-          if (allowMigrate && Object.keys(remotePax).length === 0 && Object.keys(localPax).length > 0) {
+          if (canMigrate && Object.keys(remotePax).length === 0 && Object.keys(localPax).length > 0) {
+            checkInSyncEpochRef.current += 1
             checkInWritePendingRef.current += 1
             try {
               await pushCheckInBookedPax(localPax)
@@ -1272,14 +1573,21 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
 
         const remoteArrived = await fetchCheckInArrivedPax()
-        if (cancelled || checkInWritePendingRef.current > 0) return
+        if (
+          cancelled ||
+          checkInWritePendingRef.current > 0 ||
+          syncEpoch !== checkInSyncEpochRef.current
+        ) {
+          return
+        }
         if (remoteArrived) {
           const localArrived = loadArrivedPaxMap()
           if (
-            allowMigrate &&
+            canMigrate &&
             Object.keys(remoteArrived).length === 0 &&
             Object.keys(localArrived).length > 0
           ) {
+            checkInSyncEpochRef.current += 1
             checkInWritePendingRef.current += 1
             try {
               await pushCheckInArrivedPax(localArrived)
@@ -1305,7 +1613,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             ownArrivals: loadOwnArrivalMap(),
             jobOrderActions: loadJobOrderActionMap(),
           }
-          if (allowMigrate && !dayOpsMapsHaveData(remoteOps) && dayOpsMapsHaveData(localOps)) {
+          if (canMigrate && !dayOpsMapsHaveData(remoteOps) && dayOpsMapsHaveData(localOps)) {
             dayOpsWritePendingRef.current += 1
             try {
               await pushDayOpsMaps(localOps)
@@ -1328,6 +1636,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
       } catch (error) {
         console.error('[portal] check-in sync failed', error)
+      } finally {
+        checkInSyncInFlightRef.current = false
+        // A write or realtime event landed while this sync was in flight — refresh again.
+        if (!cancelled && syncEpoch !== checkInSyncEpochRef.current) {
+          void syncCheckInFromCloud(false, { partial: true, profile })
+        }
       }
     }
 
@@ -1352,26 +1666,68 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    let debounceTimer: number | null = null
+    let cachedProfile: SyncProfile | null = null
+
+    function schedulePartialSync() {
+      if (debounceTimer != null) window.clearTimeout(debounceTimer)
+      debounceTimer = window.setTimeout(() => {
+        debounceTimer = null
+        void syncCheckInFromCloud(false, {
+          partial: true,
+          profile: cachedProfile ?? undefined,
+        })
+      }, 1000)
+    }
+
     function onVisible() {
       if (document.visibilityState === 'visible') {
-        void syncCheckInFromCloud(false)
+        schedulePartialSync()
       }
     }
 
-    void syncCheckInFromCloud(true)
     window.addEventListener('storage', onStorage)
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('focus', onVisible)
-    const poll = window.setInterval(() => {
-      void syncCheckInFromCloud(false)
-    }, 4000)
+
+    let unsubCheckIn: (() => void) | undefined
+    let poll: number | undefined
+
+    void (async () => {
+      const profile = await readSyncProfile()
+      if (cancelled) return
+      cachedProfile = profile
+      const isGuest = profile.role === 'guest'
+
+      // Guest: one load + refresh when tab focuses. No poll / realtime storm under 100–200 phones.
+      if (isGuest) {
+        void syncCheckInFromCloud(false, { profile })
+        return
+      }
+
+      void syncCheckInFromCloud(true, { profile })
+      try {
+        unsubCheckIn = subscribeCheckInChanges(() => {
+          checkInSyncEpochRef.current += 1
+          schedulePartialSync()
+        })
+      } catch (error) {
+        console.error('[portal] check-in realtime subscribe failed', error)
+      }
+      // Staff/helper: day-scoped poll as fallback; realtime (debounced) covers the rush.
+      poll = window.setInterval(() => {
+        schedulePartialSync()
+      }, 15_000)
+    })()
 
     return () => {
       cancelled = true
       window.removeEventListener('storage', onStorage)
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
-      window.clearInterval(poll)
+      if (debounceTimer != null) window.clearTimeout(debounceTimer)
+      if (poll != null) window.clearInterval(poll)
+      unsubCheckIn?.()
     }
   }, [hydrated])
 
@@ -1919,7 +2275,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    const recordGuestCheckInsInternal = (input: {
+    const recordGuestCheckInsInternal = async (input: {
       date: string
       program: Program
       bookingCode: string
@@ -1931,7 +2287,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         birthday: string
         passportNumber: string
       }>
-    }): { ok: true; count: number } | { ok: false; error: string } => {
+    }): Promise<{ ok: true; count: number } | { ok: false; error: string }> => {
       if (!input.guests.length) return { ok: false, error: 'Add at least one guest.' }
       const isGuide = input.scope === 'guide'
       if (isGuide && input.guests.length !== 1) {
@@ -1981,6 +2337,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         return { ok: false, error: 'Booking not found for this date and program.' }
       }
 
+      if (
+        getCheckInAttendance(checkInAttendance, input.date, input.program, input.bookingCode) ===
+        'no-show'
+      ) {
+        return {
+          ok: false,
+          error:
+            'Marked no-show at pickup. Ask admin to allow late check-in if guests arrived.',
+        }
+      }
+
       const existing = getCheckInEnrollments(
         checkInEnrollment,
         input.date,
@@ -2015,6 +2382,66 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
       }
 
+      let markChecked = false
+      if (checkInCloudEnabledRef.current) {
+        checkInSyncEpochRef.current += 1
+        checkInWritePendingRef.current += 1
+        try {
+          const remote = await recordCheckInEnrollmentsAtomic(
+            input.date,
+            input.program,
+            input.bookingCode,
+            cleaned,
+          )
+          if (!remote.ok) return remote
+          markChecked = remote.fullyChecked
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          const rpcMissing =
+            /portal_record_check_in_enrollments/i.test(message) ||
+            /Could not find the function/i.test(message) ||
+            /schema cache/i.test(message)
+          if (!rpcMissing) {
+            return {
+              ok: false,
+              error: 'Check-in failed because the marina is busy. Please try again.',
+            }
+          }
+          try {
+            await upsertCheckInEnrollments(
+              input.date,
+              input.program,
+              input.bookingCode,
+              cleaned,
+            )
+            if (!isGuide) {
+              const already = enrolledSeatCount(existing)
+              const seatsTotal = totalPassengers(booking)
+              markChecked = already + cleaned.length >= seatsTotal
+              if (markChecked) {
+                await upsertCheckInAttendanceRow(
+                  input.date,
+                  input.program,
+                  input.bookingCode,
+                  'checked',
+                )
+              }
+            }
+          } catch {
+            return {
+              ok: false,
+              error: 'Check-in failed because the marina is busy. Please try again.',
+            }
+          }
+        } finally {
+          checkInWritePendingRef.current = Math.max(0, checkInWritePendingRef.current - 1)
+        }
+      } else if (!isGuide) {
+        const already = enrolledSeatCount(existing)
+        const seatsTotal = totalPassengers(booking)
+        markChecked = already + cleaned.length >= seatsTotal
+      }
+
       setCheckInEnrollmentMap((current) => {
         let next = current
         for (const enrollment of cleaned) {
@@ -2029,31 +2456,19 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         saveCheckInEnrollmentMap(next)
         return next
       })
-      persistCheckInWrite(
-        'upsertCheckInEnrollments',
-        upsertCheckInEnrollments(input.date, input.program, input.bookingCode, cleaned),
-      )
 
-      if (!isGuide) {
-        const already = enrolledSeatCount(existing)
-        const seatsTotal = totalPassengers(booking)
-        if (already + cleaned.length >= seatsTotal) {
-          setCheckInAttendanceMap((current) => {
-            const next = withCheckInAttendance(
-              current,
-              input.date,
-              input.program,
-              input.bookingCode,
-              'checked',
-            )
-            saveCheckInAttendanceMap(next)
-            return next
-          })
-          persistCheckInWrite(
-            'upsertCheckInAttendance',
-            upsertCheckInAttendanceRow(input.date, input.program, input.bookingCode, 'checked'),
+      if (markChecked) {
+        setCheckInAttendanceMap((current) => {
+          const next = withCheckInAttendance(
+            current,
+            input.date,
+            input.program,
+            input.bookingCode,
+            'checked',
           )
-        }
+          saveCheckInAttendanceMap(next)
+          return next
+        })
       }
 
       return { ok: true, count: cleaned.length }
@@ -2096,15 +2511,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             upsertCheckInAttendanceRow(date, program, bookingCode, status),
           )
         }
-        // No-show frees the boat seat. Keep the van — late arrivals still need a ride back.
-        if (status === 'no-show') {
-          upsertPlan(date, program, (plan) => {
-            if (!plan.assignments[bookingCode]) return plan
-            const assignments = { ...plan.assignments }
-            delete assignments[bookingCode]
-            return { ...plan, assignments }
-          })
-        }
+        // Keep boat assignment on no-show so load counts stay complete.
+        // Admin moves guests between boats/vans manually; board shows red NS.
       },
       getCheckInPayment: (date, program, bookingCode) =>
         getCheckInPayment(checkInPayment, date, program, bookingCode),
@@ -2327,6 +2735,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         setPickupNoShowMap(loadPickupNoShowMap())
         return snapshot
       },
+      replacePickupNoShow: (date, program, bookingCode, ns) => {
+        const snapshot = replacePickupNoShowLocal(date, program, bookingCode, ns)
+        setPickupNoShowMap(loadPickupNoShowMap())
+        return snapshot
+      },
       getOwnArrival: (date, program, bookingCode) =>
         getPaxFromMap(ownArrivalMap, date, program, bookingCode),
       recordOwnArrival: (date, program, bookingCode, arrived) => {
@@ -2334,6 +2747,32 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const snapshot = recordOwnArrivalLocal(date, program, bookingCode, arrived)
         setOwnArrivalMap(loadOwnArrivalMap())
         return snapshot
+      },
+      replaceOwnArrival: (date, program, bookingCode, arrived) => {
+        const snapshot = replaceOwnArrivalLocal(date, program, bookingCode, arrived)
+        setOwnArrivalMap(loadOwnArrivalMap())
+        return snapshot
+      },
+      repairPickupMarinaLedgers: (date, program, bookingCode, original, current) => {
+        const beforeNs = getPaxFromMap(pickupNoShowMap, date, program, bookingCode)
+        const beforeTaxi = getPaxFromMap(ownArrivalMap, date, program, bookingCode)
+        const repaired = repairPickupMarinaLedgersLocal(
+          date,
+          program,
+          bookingCode,
+          original,
+          current,
+        )
+        if (paxTotal(repaired.ns) !== paxTotal(beforeNs) || !paxEqual(repaired.ns, beforeNs)) {
+          setPickupNoShowMap(loadPickupNoShowMap())
+        }
+        if (
+          paxTotal(repaired.taxi) !== paxTotal(beforeTaxi) ||
+          !paxEqual(repaired.taxi, beforeTaxi)
+        ) {
+          setOwnArrivalMap(loadOwnArrivalMap())
+        }
+        return repaired
       },
       getJobOrderAction: (date, program, bookingCode) =>
         getJobOrderAction(jobOrderActionMap, date, program, bookingCode),
@@ -2381,8 +2820,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       trimCheckInEnrollments: (date, program, bookingCode, maxSeats) => {
         trimEnrollmentsNow(date, program, bookingCode, maxSeats)
       },
-      recordGuestCheckIn: (input) => {
-        const batch = recordGuestCheckInsInternal({
+      recordGuestCheckIn: async (input) => {
+        const batch = await recordGuestCheckInsInternal({
           date: input.date,
           program: input.program,
           bookingCode: input.bookingCode,
@@ -2398,20 +2837,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           ],
         })
         if (!batch.ok) return batch
-        return {
-          ok: true,
-          enrollment: {
-            id: newEnrollmentId(),
-            firstName: input.firstName.trim(),
-            lastName: input.lastName.trim(),
-            nationality: input.nationality.trim(),
-            birthday: input.birthday.trim(),
-            passportNumber: input.passportNumber.trim(),
-            scope: input.scope,
-            seats: 1,
-            checkedInAt: new Date().toISOString(),
-          },
+        const enrollment = getCheckInEnrollments(
+          // Read from storage — map state may not have flushed yet in this tick.
+          loadCheckInEnrollmentMap(),
+          input.date,
+          input.program,
+          input.bookingCode,
+        ).at(-1)
+        if (!enrollment) {
+          return { ok: false, error: 'Check-in saved but could not reload guest details.' }
         }
+        return { ok: true, enrollment }
       },
       recordGuestCheckIns: (input) => recordGuestCheckInsInternal(input),
       getDayVehiclePlan,
@@ -3065,6 +3501,24 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
         if (newPax < oldPax) {
           trimEnrollmentsNow(existing.date, existing.program, code, newPax)
+          upsertVehiclePlan(existing.date, existing.program, (plan) => {
+            const legs = plan.assignments[code]
+            if (!legs) return plan
+            const nextLegs = rescaleVanAssignmentToPax(legs, newPax)
+            const assignments = { ...plan.assignments }
+            if (!nextLegs) delete assignments[code]
+            else assignments[code] = nextLegs
+            return { ...plan, assignments }
+          })
+          upsertPlan(existing.date, existing.program, (plan) => {
+            const current = plan.assignments[code]
+            if (current == null) return plan
+            const nextAssign = rescaleBoatAssignmentToPax(current, newPax)
+            const assignments = { ...plan.assignments }
+            if (nextAssign == null) delete assignments[code]
+            else assignments[code] = nextAssign
+            return { ...plan, assignments }
+          })
         }
         return { ok: true, booking: next }
       },
@@ -3411,20 +3865,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         })
       },
       assignBookingToBoat: (date, program, bookingCode, boat, options) => {
-        if (
-          boat !== null &&
-          getCheckInAttendance(checkInAttendance, date, program, bookingCode) === 'no-show'
-        ) {
-          return
-        }
+        // No-show bookings stay assignable — admin moves them between boats.
         if (boat !== null) {
           const booking = bookings.find((item) => item.code === bookingCode)
           if (!booking) return
           const plan = getDayBoatPlan(date, program)
-          const countable = activeDayBookings(date, program).filter(
-            (item) =>
-              getCheckInAttendance(checkInAttendance, date, program, item.code) !== 'no-show',
-          )
+          const countable = activeDayBookings(date, program)
           if (!canFitBookingOnBoat(plan, countable, boat, booking).ok) return
         }
         const currentBoat = getDayBoatPlan(date, program)
@@ -3700,8 +4146,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const key = dayBoatPlanKey(date, program)
         const plan = getDayBoatPlan(date, program)
         try {
-          await enqueueBoatPlanSave(() => saveDayBoatPlan(plan))
+          const result = await enqueueBoatPlanSave(async () => {
+            const saved = await saveDayBoatPlan(plan)
+            setDayBoatPlans((current) => {
+              const existing = current[key] ?? plan
+              return { ...current, [key]: { ...existing, revision: saved.revision } }
+            })
+            return saved
+          })
           boatPlanDirtyKeysRef.current.delete(key)
+          void result
           return { ok: true as const }
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Failed to save boat plan'

@@ -93,3 +93,68 @@ export async function upsertAgentAllotmentDaily(input: {
   if (error) throw new Error(error.message)
   return mapRow(data as AgentAllotmentDailyRow)
 }
+
+export type AgentBookingDayPax = {
+  day: string
+  adults: number
+  children: number
+  totalDeduct: number
+}
+
+/**
+ * Active booking AD+CH heads by tour date for one agent.
+ * Paginates past the API 1000-row cap so allotment FIFO can backfill days
+ * before Daily checker rows exist.
+ */
+export async function fetchAgentBookingDayPax(agentSlug: string): Promise<AgentBookingDayPax[]> {
+  const supabase = requireSupabase()
+  const slug = agentSlug.trim()
+  if (!slug) return []
+
+  const pageSize = 1000
+  let from = 0
+  const byDay = new Map<string, { adults: number; children: number }>()
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('bookings')
+      .select('date,adults,children,status')
+      .eq('agent_slug', slug)
+      .neq('status', 'Cancelled')
+      .order('date', { ascending: true })
+      .order('code', { ascending: true })
+      .range(from, from + pageSize - 1)
+
+    if (error) throw new Error(error.message)
+
+    const rows = (data ?? []) as {
+      date: string
+      adults: number | string | null
+      children: number | string | null
+      status: string
+    }[]
+
+    for (const row of rows) {
+      const day = String(row.date ?? '').slice(0, 10)
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue
+      const adults = Math.max(0, Math.floor(Number(row.adults) || 0))
+      const children = Math.max(0, Math.floor(Number(row.children) || 0))
+      const current = byDay.get(day) ?? { adults: 0, children: 0 }
+      current.adults += adults
+      current.children += children
+      byDay.set(day, current)
+    }
+
+    if (rows.length < pageSize) break
+    from += pageSize
+  }
+
+  return [...byDay.entries()]
+    .map(([day, pax]) => ({
+      day,
+      adults: pax.adults,
+      children: pax.children,
+      totalDeduct: pax.adults + pax.children,
+    }))
+    .sort((a, b) => a.day.localeCompare(b.day))
+}

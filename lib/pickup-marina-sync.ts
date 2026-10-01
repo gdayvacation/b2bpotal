@@ -35,6 +35,60 @@ export function paxTotal(row: BookedPaxSnapshot) {
   return row.adults + row.children + row.infants + row.tourLeaders
 }
 
+export function clampPax(row: BookedPaxSnapshot, cap: BookedPaxSnapshot): BookedPaxSnapshot {
+  return {
+    adults: Math.min(Math.max(0, row.adults), Math.max(0, cap.adults)),
+    children: Math.min(Math.max(0, row.children), Math.max(0, cap.children)),
+    infants: Math.min(Math.max(0, row.infants), Math.max(0, cap.infants)),
+    tourLeaders: Math.min(Math.max(0, row.tourLeaders), Math.max(0, cap.tourLeaders)),
+  }
+}
+
+export function paxEqual(a: BookedPaxSnapshot, b: BookedPaxSnapshot) {
+  return (
+    a.adults === b.adults &&
+    a.children === b.children &&
+    a.infants === b.infants &&
+    a.tourLeaders === b.tourLeaders
+  )
+}
+
+export function subtractPax(from: BookedPaxSnapshot, take: BookedPaxSnapshot): BookedPaxSnapshot {
+  return {
+    adults: Math.max(0, from.adults - take.adults),
+    children: Math.max(0, from.children - take.children),
+    infants: Math.max(0, from.infants - take.infants),
+    tourLeaders: Math.max(0, from.tourLeaders - take.tourLeaders),
+  }
+}
+
+function setStoredPax(
+  storageKey: string,
+  kind: 'pickup' | 'arrival',
+  date: string,
+  program: Program,
+  bookingCode: string,
+  next: BookedPaxSnapshot,
+) {
+  const map = loadMap(storageKey)
+  const key = bookingPaxKey(date, program, bookingCode)
+  if (paxTotal(next) < 1) {
+    delete map[key]
+    saveMap(storageKey, map)
+    persistQuietly(
+      kind === 'pickup' ? 'delete pickup no-show' : 'delete own arrival',
+      kind === 'pickup'
+        ? deletePickupNoShow(date, program, bookingCode)
+        : deleteOwnArrival(date, program, bookingCode),
+    )
+    return emptyPax()
+  }
+  map[key] = { ...next }
+  saveMap(storageKey, map)
+  persistPax(kind, date, program, bookingCode, map[key]!)
+  return map[key]!
+}
+
 export function bookingPaxKey(date: string, program: Program, bookingCode: string) {
   return `${dayBoatPlanKey(date, program)}|${bookingCode}`
 }
@@ -147,6 +201,75 @@ export function recordOwnArrival(
 ) {
   if (paxTotal(arrived) < 1) return getOwnArrival(date, program, bookingCode)
   return addStoredPax(OWN_ARRIVAL_KEY, 'arrival', date, program, bookingCode, arrived)
+}
+
+/** Overwrite pickup NS ledger (absolute). Use to repair inflated counters. */
+export function replacePickupNoShow(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  next: BookedPaxSnapshot,
+) {
+  return setStoredPax(PICKUP_NS_KEY, 'pickup', date, program, bookingCode, next)
+}
+
+/** Overwrite own-arrival ledger (absolute). Use to repair inflated counters. */
+export function replaceOwnArrival(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  next: BookedPaxSnapshot,
+) {
+  return setStoredPax(OWN_ARRIVAL_KEY, 'arrival', date, program, bookingCode, next)
+}
+
+/**
+ * Repair pickup/taxi ledgers that accumulated past the original booking
+ * (e.g. repeated Open seats clicks). Authoritative NS = original − current.
+ */
+export function repairPickupMarinaLedgers(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  original: BookedPaxSnapshot,
+  current: BookedPaxSnapshot,
+) {
+  const derivedNs = clampPax(subtractPax(original, current), original)
+  const ns = getPickupNoShow(date, program, bookingCode)
+  const taxi = getOwnArrival(date, program, bookingCode)
+  let nextNs = ns
+  let nextTaxi = taxi
+
+  if (paxTotal(ns) > paxTotal(original) || paxTotal(ns) > paxTotal(derivedNs)) {
+    nextNs = replacePickupNoShow(date, program, bookingCode, derivedNs)
+  } else {
+    const clamped = clampPax(ns, original)
+    if (
+      clamped.adults !== ns.adults ||
+      clamped.children !== ns.children ||
+      clamped.infants !== ns.infants ||
+      clamped.tourLeaders !== ns.tourLeaders
+    ) {
+      nextNs = replacePickupNoShow(date, program, bookingCode, clamped)
+    }
+  }
+
+  // Fully restored (or never reduced): clear taxi inflation.
+  if (paxTotal(derivedNs) === 0 && paxTotal(taxi) > 0) {
+    nextTaxi = replaceOwnArrival(date, program, bookingCode, emptyPax())
+  } else {
+    const taxiCap = clampPax(taxi, original)
+    if (
+      taxiCap.adults !== taxi.adults ||
+      taxiCap.children !== taxi.children ||
+      taxiCap.infants !== taxi.infants ||
+      taxiCap.tourLeaders !== taxi.tourLeaders
+    ) {
+      nextTaxi = replaceOwnArrival(date, program, bookingCode, taxiCap)
+    }
+  }
+
+  return { ns: nextNs, taxi: nextTaxi, derivedNs }
 }
 
 export function movePaxMapEntry(

@@ -20,7 +20,8 @@ const COPY = {
       'Please ask marina staff to show the QR code for your booking, then scan it with your phone.',
     invalidQr: 'This check-in QR is not valid. Please ask marina staff for a new code.',
     cancelledBooking: 'This booking is cancelled. Please ask marina staff for help.',
-    noShowBooking: 'This booking was marked no-show. Please ask marina staff for help.',
+    noShowBooking:
+      'This booking was marked no-show at pickup. Ask marina staff to allow late check-in if you arrived.',
     partnerSent:
       'This booking was sent to another company. Please ask marina staff for help — there is no guest check-in QR.',
     programMismatch: 'Program does not match this booking. Please start again.',

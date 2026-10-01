@@ -19,12 +19,15 @@ import {
   formatInvoiceLineDescription,
   formatInvoiceMoney,
   invoiceLineKindLabel,
+  invoiceLineUnitPrice,
   isInvoiceAmountStale,
   isLateReduceFeeLine,
   itemsAgentTotal,
   itemsGuestTotal,
   lateReduceFeeDisplay,
   parseSignedMoneyInput,
+  withInvoiceLineRecalc,
+  withInvoiceLineUnitPrice,
   type InvoiceDocument,
   type InvoiceItem,
   type InvoiceLineKind,
@@ -114,14 +117,14 @@ export function InvoiceEditDialog({
   const [draft, setDraft] = useState<InvoiceDocument | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [amountDrafts, setAmountDrafts] = useState<Record<string, string>>({})
+  const [priceDrafts, setPriceDrafts] = useState<Record<string, string>>({})
 
   useEffect(() => {
     if (!open || !doc) {
       setDraft(null)
       setError('')
       setSaving(false)
-      setAmountDrafts({})
+      setPriceDrafts({})
       return
     }
     setDraft({
@@ -142,7 +145,7 @@ export function InvoiceEditDialog({
     })
     setError('')
     setSaving(false)
-    setAmountDrafts({})
+    setPriceDrafts({})
   }, [doc, open])
 
   const total = useMemo(() => (draft ? itemsAgentTotal(draft.items) : 0), [draft])
@@ -219,11 +222,35 @@ export function InvoiceEditDialog({
   }
 
   function patchItem(id: string, next: Partial<InvoiceItem>) {
+    const affectsAmount =
+      'adults' in next ||
+      'children' in next ||
+      'infants' in next ||
+      'tourLeaders' in next ||
+      'adultPrice' in next ||
+      'childPrice' in next ||
+      'infantPrice' in next ||
+      'tourLeaderPrice' in next
     setDraft((current) => {
       if (!current) return current
       return {
         ...current,
-        items: current.items.map((item) => (item.id === id ? { ...item, ...next } : item)),
+        items: current.items.map((item) => {
+          if (item.id !== id) return item
+          return affectsAmount ? withInvoiceLineRecalc(item, next) : { ...item, ...next }
+        }),
+      }
+    })
+  }
+
+  function patchItemUnitPrice(id: string, unitPrice: number) {
+    setDraft((current) => {
+      if (!current) return current
+      return {
+        ...current,
+        items: current.items.map((item) =>
+          item.id === id ? withInvoiceLineUnitPrice(item, unitPrice) : item,
+        ),
       }
     })
   }
@@ -385,7 +412,7 @@ export function InvoiceEditDialog({
               Line items
             </p>
             <div className="overflow-x-auto rounded-xl border border-teal-900/12">
-              <table className="w-full min-w-[48rem] text-sm">
+              <table className="w-full min-w-[52rem] text-sm">
                 <thead>
                   <tr className="border-b border-teal-900/10 bg-teal-950/[0.04] text-left text-xs font-bold text-teal-950">
                     <th className="w-8 px-2 py-2.5 text-center font-bold text-teal-900/40">#</th>
@@ -393,12 +420,15 @@ export function InvoiceEditDialog({
                     <th className="w-24 px-2 py-2.5 font-bold" title="Pax, Box, Pcs, Van">Unit</th>
                     <th className="w-14 px-1 py-2.5 text-right font-bold" title="Adults">AD</th>
                     <th className="w-14 px-1 py-2.5 text-right font-bold" title="Children">CH</th>
+                    <th className="w-28 px-2 py-2.5 text-right font-bold">Price/Unit</th>
                     <th className="w-32 px-2 py-2.5 text-right font-bold">Amount (THB)</th>
                     <th className="w-10 px-2 py-2.5" />
                   </tr>
                 </thead>
                 <tbody>
-                  {draft.items.map((item, index) => (
+                  {draft.items.map((item, index) => {
+                    const unitPrice = invoiceLineUnitPrice(item)
+                    return (
                     <tr key={item.id} className="border-b border-teal-900/8 last:border-0">
                       <td className="px-2 py-1.5 text-center text-xs tabular-nums text-teal-900/35">
                         {index + 1}
@@ -443,21 +473,20 @@ export function InvoiceEditDialog({
                           type="text"
                           inputMode="decimal"
                           value={
-                            amountDrafts[item.id] ??
-                            (item.amount === 0 ? '' : String(item.amount))
+                            priceDrafts[item.id] ?? (unitPrice === 0 ? '' : String(unitPrice))
                           }
                           onChange={(event) => {
                             const raw = event.target.value.replace(/,/g, '')
                             if (raw !== '' && !/^-?\d*\.?\d*$/.test(raw)) return
-                            setAmountDrafts((current) => ({ ...current, [item.id]: raw }))
+                            setPriceDrafts((current) => ({ ...current, [item.id]: raw }))
                             if (raw === '' || raw === '-' || raw === '.' || raw === '-.') return
-                            patchItem(item.id, { amount: parseSignedMoneyInput(raw) })
+                            patchItemUnitPrice(item.id, parseSignedMoneyInput(raw))
                           }}
                           onBlur={() => {
-                            const raw = amountDrafts[item.id]
+                            const raw = priceDrafts[item.id]
                             if (raw !== undefined) {
-                              patchItem(item.id, { amount: parseSignedMoneyInput(raw) })
-                              setAmountDrafts((current) => {
+                              patchItemUnitPrice(item.id, parseSignedMoneyInput(raw))
+                              setPriceDrafts((current) => {
                                 const next = { ...current }
                                 delete next[item.id]
                                 return next
@@ -466,10 +495,19 @@ export function InvoiceEditDialog({
                           }}
                           className={cn(
                             'h-8 border-transparent bg-transparent px-1.5 text-right font-medium tabular-nums shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white',
-                            item.amount < 0 && 'text-rose-700',
+                            unitPrice < 0 && 'text-rose-700',
                           )}
-                          title="Type freely — use minus for agent cash-on-tour deduct. Prebuy no-show has no amount."
+                          title="Price per unit. Amount = Price/Unit × AD/CH (auto)."
                         />
+                      </td>
+                      <td
+                        className={cn(
+                          'px-2 py-1.5 text-right font-medium tabular-nums',
+                          item.amount < 0 ? 'text-rose-700' : 'text-teal-950',
+                        )}
+                        title="Auto-calculated from Price/Unit × AD/CH"
+                      >
+                        {item.amount === 0 ? '—' : formatInvoiceMoney(item.amount)}
                       </td>
                       <td className="px-2 py-1.5">
                         <Button
@@ -489,10 +527,11 @@ export function InvoiceEditDialog({
                         </Button>
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                   {draft.items.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="px-3 py-8 text-center text-sm text-teal-900/45">
+                      <td colSpan={8} className="px-3 py-8 text-center text-sm text-teal-900/45">
                         No lines yet. Add a line or refresh from the booking.
                       </td>
                     </tr>

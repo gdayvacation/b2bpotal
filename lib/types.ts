@@ -270,6 +270,8 @@ export type DayBoatPlan = {
   guides: BoatGuide[]
   /** booking code → boat number, or split legs when a group sits on more than one boat */
   assignments: Record<string, BoatNumber | BoatSplit[]>
+  /** Server revision for conflict detection when two staff save the board. */
+  revision?: number
 }
 
 /** One booking split onto a boat (pax on that boat). */
@@ -331,7 +333,20 @@ export function bookingPaxOnBoat(
     booking.adults + booking.children + booking.infants + booking.tourLeaders
   const legs = normalizeBoatAssignment(value, total)
   if (legs.length === 0) return 0
-  return legs.filter((leg) => leg.boat === boat).reduce((sum, leg) => sum + leg.pax, 0)
+  const assigned = legs.reduce((sum, leg) => sum + leg.pax, 0)
+  if (assigned <= total) {
+    return legs.filter((leg) => leg.boat === boat).reduce((sum, leg) => sum + leg.pax, 0)
+  }
+  // Partial pickup NS can leave stale split legs — clamp to live booking total.
+  let left = total
+  let onBoat = 0
+  for (const leg of legs) {
+    const take = Math.min(leg.pax, left)
+    if (leg.boat === boat) onBoat += take
+    left -= take
+    if (left <= 0) break
+  }
+  return onBoat
 }
 
 /** Place `pax` of a booking onto destBoat, keeping leftover pax on other boats. */
@@ -618,6 +633,7 @@ export function emptyDayBoatPlan(date: string, program: Program): DayBoatPlan {
     kinds: defaultBoatKinds(capacities.length),
     guides: defaultBoatGuides(capacities.length),
     assignments: {},
+    revision: 0,
   }
 }
 
@@ -875,6 +891,8 @@ export type DayVehiclePlan = {
   assignments: Record<string, VanSplit[]>
   /** Per-van ops fields keyed by van number string */
   vanMeta: Record<string, VanMeta>
+  /** Server revision for conflict detection when two staff save the board. */
+  revision?: number
 }
 
 export function dayVehiclePlanKey(date: string, program: Program) {
@@ -888,7 +906,52 @@ export function emptyDayVehiclePlan(date: string, program: Program): DayVehicleP
     vanCapacity: DEFAULT_VAN_CAPACITY,
     assignments: {},
     vanMeta: {},
+    revision: 0,
   }
+}
+
+/** Shrink multi-leg boat splits so stored pax never exceeds the live booking total. */
+export function rescaleBoatAssignmentToPax(
+  value: BoatNumber | BoatSplit[] | undefined,
+  newTotal: number,
+): BoatNumber | BoatSplit[] | undefined {
+  const total = Math.max(0, Math.floor(newTotal))
+  const legs = normalizeBoatAssignment(value)
+  if (legs.length === 0 || total <= 0) return undefined
+  if (legs.length === 1) return legs[0]!.boat
+  let left = total
+  const next: BoatSplit[] = []
+  for (let i = 0; i < legs.length; i += 1) {
+    const leg = legs[i]!
+    const isLast = i === legs.length - 1
+    const take = isLast ? left : Math.min(Math.max(0, leg.pax), left)
+    if (take > 0) next.push({ boat: leg.boat, pax: take })
+    left -= take
+  }
+  return compactBoatAssignment(next)
+}
+
+/** Shrink multi-leg van splits so stored pax never exceeds the live booking total. */
+export function rescaleVanAssignmentToPax(
+  legs: VanSplit[] | undefined,
+  newTotal: number,
+): VanSplit[] | undefined {
+  if (!legs || legs.length === 0) return undefined
+  const total = Math.max(0, Math.floor(newTotal))
+  if (total <= 0) return undefined
+  if (legs.length === 1) {
+    return [{ ...legs[0]!, pax: total }]
+  }
+  let left = total
+  const next: VanSplit[] = []
+  for (let i = 0; i < legs.length; i += 1) {
+    const leg = legs[i]!
+    const isLast = i === legs.length - 1
+    const take = isLast ? left : Math.min(Math.max(0, leg.pax), left)
+    if (take > 0) next.push({ ...leg, pax: take })
+    left -= take
+  }
+  return next.length > 0 ? next : undefined
 }
 
 export function emptyVanMeta(): VanMeta {

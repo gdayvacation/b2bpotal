@@ -150,6 +150,7 @@ type BoatPlanRow = {
   boat_kinds?: Array<string> | string | null
   boat_labels?: string[] | string | null
   boat_guides?: unknown
+  revision?: number | null
 }
 
 type BoatAssignmentRow = {
@@ -164,6 +165,7 @@ type VehiclePlanRow = {
   date: string
   program: Program
   van_capacity: number
+  revision?: number | null
 }
 
 type VanMetaRow = {
@@ -460,6 +462,7 @@ function buildBoatPlans(
     const date = asDateString(plan.date)
     const key = dayBoatPlanKey(date, plan.program)
     const capacities = parseBoatCapacities(plan)
+    const revision = Math.max(0, Math.floor(Number(plan.revision) || 0))
     next[key] = hydrateDayBoatPlan({
       date,
       program: plan.program,
@@ -469,6 +472,7 @@ function buildBoatPlans(
       kinds: normalizeBoatKinds(parseJsonStringArray(plan.boat_kinds), capacities.length),
       guides: parseBoatGuides(plan, capacities.length),
       assignments: {},
+      revision,
     })
   }
   for (const row of assignments) {
@@ -514,6 +518,7 @@ function buildVehiclePlans(
       vanCapacity: plan.van_capacity,
       assignments: {},
       vanMeta: {},
+      revision: Math.max(0, Math.floor(Number(plan.revision) || 0)),
     }
   }
   for (const meta of metas) {
@@ -994,6 +999,98 @@ export function subscribeBookings(onChange: () => void) {
   }
 }
 
+/** Live marina check-in updates (requires Realtime on enrollments + attendance). */
+export function subscribeCheckInChanges(onChange: () => void) {
+  const supabase = getSupabaseBrowserClient()
+  const channel = supabase
+    .channel(`portal-check-in-${Date.now()}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'check_in_enrollments' },
+      () => {
+        onChange()
+      },
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'check_in_attendance' },
+      () => {
+        onChange()
+      },
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'check_in_booked_pax' },
+      () => {
+        onChange()
+      },
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'pickup_no_shows' },
+      () => {
+        onChange()
+      },
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'check_in_arrived_pax' },
+      () => {
+        onChange()
+      },
+    )
+    .subscribe()
+  return () => {
+    void supabase.removeChannel(channel)
+  }
+}
+
+/** Live van/boat board updates across admin tablets (requires Realtime on plan tables). */
+export function subscribeDayPlanChanges(onChange: () => void) {
+  const supabase = getSupabaseBrowserClient()
+  const channel = supabase
+    .channel(`portal-day-plans-${Date.now()}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'day_boat_plans' },
+      () => {
+        onChange()
+      },
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'boat_assignments' },
+      () => {
+        onChange()
+      },
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'day_vehicle_plans' },
+      () => {
+        onChange()
+      },
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'van_assignments' },
+      () => {
+        onChange()
+      },
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'van_meta' },
+      () => {
+        onChange()
+      },
+    )
+    .subscribe()
+  return () => {
+    void supabase.removeChannel(channel)
+  }
+}
+
 export async function upsertAgent(agent: Agent) {
   const supabase = getSupabaseBrowserClient()
   const { error } = await supabase.from('agents').upsert({
@@ -1076,7 +1173,11 @@ export async function upsertAvailabilityRows(rows: Availability[]) {
   if (error) throw new Error(`upsert availability rows: ${error.message}`)
 }
 
-export async function saveDayBoatPlan(plan: DayBoatPlan) {
+export type SaveDayBoatPlanResult = {
+  revision: number
+}
+
+export async function saveDayBoatPlan(plan: DayBoatPlan): Promise<SaveDayBoatPlanResult> {
   const supabase = getSupabaseBrowserClient()
   const hydrated = hydrateDayBoatPlan(plan)
   const capacities = hydrated.capacities
@@ -1084,6 +1185,62 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
   const boat_guides = normalizeBoatGuides(hydrated.guides, capacities.length)
   const boat_kinds = hydrated.kinds
   const boat_labels = hydrated.labels
+  const maxBoat = capacities.length
+  const assignmentRows: Array<{
+    booking_code: string
+    boat_number: number
+    pax?: number
+  }> = []
+  for (const [booking_code, assignment] of Object.entries(plan.assignments ?? {})) {
+    const legs = normalizeBoatAssignment(assignment)
+    if (legs.length === 0) {
+      const boat = Math.max(1, Math.floor(Number(assignment) || 0))
+      if (boat >= 1 && boat <= maxBoat) {
+        assignmentRows.push({ booking_code, boat_number: boat })
+      }
+      continue
+    }
+    for (const leg of legs) {
+      if (leg.boat < 1 || leg.boat > maxBoat) continue
+      assignmentRows.push({
+        booking_code,
+        boat_number: leg.boat,
+        ...(leg.pax > 0 ? { pax: leg.pax } : {}),
+      })
+    }
+  }
+
+  const expectedRevision = Math.max(0, Math.floor(Number(plan.revision) || 0))
+  const { data: rpcData, error: rpcError } = await supabase.rpc('portal_save_day_boat_plan', {
+    p_date: plan.date,
+    p_program: plan.program,
+    p_expected_revision: expectedRevision,
+    p_capacities: capacities,
+    p_boat_names: boat_names,
+    p_boat_guides: boat_guides,
+    p_boat_kinds: boat_kinds,
+    p_boat_labels: boat_labels,
+    p_assignments: assignmentRows,
+  })
+
+  if (!rpcError) {
+    const row = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as {
+      ok?: unknown
+      error?: unknown
+      conflict?: unknown
+      revision?: unknown
+    } | null
+    if (row?.ok === true) {
+      return { revision: Math.max(1, Math.floor(Number(row.revision) || expectedRevision + 1)) }
+    }
+    const message = String(row?.error || 'Failed to save boat plan')
+    throw new Error(message)
+  }
+
+  // Fallback for older DBs without the revision RPC — still prefer locked-ish upsert path.
+  if (!/portal_save_day_boat_plan|Could not find the function|schema cache/i.test(rpcError.message)) {
+    throw new Error(`save boat plan: ${rpcError.message}`)
+  }
 
   const legacyCaps = {
     date: plan.date,
@@ -1096,7 +1253,15 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
   const warnings: string[] = []
   let planError: { message: string } | null = null
 
-  const withKinds = { ...legacyCaps, capacities, boat_names, boat_guides, boat_kinds, boat_labels }
+  const withKinds = {
+    ...legacyCaps,
+    capacities,
+    boat_names,
+    boat_guides,
+    boat_kinds,
+    boat_labels,
+    revision: Math.max(1, expectedRevision + 1),
+  }
   const fullRow = { ...legacyCaps, capacities, boat_names, boat_guides }
   const withoutGuides = { ...legacyCaps, capacities, boat_names }
   const withoutNames = { ...legacyCaps, capacities }
@@ -1140,34 +1305,13 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
     .eq('program', plan.program)
   if (delError) throw new Error(`clear boat assignments: ${delError.message}`)
 
-  const maxBoat = capacities.length
-  const rows: Array<{
-    date: string
-    program: Program
-    booking_code: string
-    boat_number: number
-    pax?: number
-  }> = []
-  for (const [booking_code, assignment] of Object.entries(plan.assignments ?? {})) {
-    const legs = normalizeBoatAssignment(assignment)
-    if (legs.length === 0) {
-      const boat = Math.max(1, Math.floor(Number(assignment) || 0))
-      if (boat >= 1 && boat <= maxBoat) {
-        rows.push({ date: plan.date, program: plan.program, booking_code, boat_number: boat })
-      }
-      continue
-    }
-    for (const leg of legs) {
-      if (leg.boat < 1 || leg.boat > maxBoat) continue
-      rows.push({
-        date: plan.date,
-        program: plan.program,
-        booking_code,
-        boat_number: leg.boat,
-        ...(leg.pax > 0 ? { pax: leg.pax } : {}),
-      })
-    }
-  }
+  const rows = assignmentRows.map((row) => ({
+    date: plan.date,
+    program: plan.program,
+    booking_code: row.booking_code,
+    boat_number: row.boat_number,
+    ...(row.pax && row.pax > 0 ? { pax: row.pax } : {}),
+  }))
   if (rows.length > 0) {
     const { error: insertError } = await supabase.from('boat_assignments').insert(rows)
     if (insertError) {
@@ -1193,6 +1337,7 @@ export async function saveDayBoatPlan(plan: DayBoatPlan) {
       `Boat arrangement saved, but some fields need a DB update — ${warnings.join(' ')} Then save again.`,
     )
   }
+  return { revision: Math.max(1, expectedRevision + 1) }
 }
 
 function vanMetaColumnsFromError(message: string) {
@@ -1241,8 +1386,77 @@ async function insertVanMetaRows(rows: VanMetaRow[]) {
   throw new Error(`insert van meta: ${error.message}`)
 }
 
-export async function saveDayVehiclePlan(plan: DayVehiclePlan) {
+export type SaveDayVehiclePlanResult = {
+  revision: number
+}
+
+export async function saveDayVehiclePlan(plan: DayVehiclePlan): Promise<SaveDayVehiclePlanResult> {
   const supabase = getSupabaseBrowserClient()
+  const expectedRevision = Math.max(0, Math.floor(Number(plan.revision) || 0))
+
+  const metaPayload = Object.entries(plan.vanMeta ?? {}).map(([van, meta]) => {
+    const typed = meta as VanMeta
+    const capacity = Number(typed.capacity)
+    return {
+      van_number: Number(van),
+      plate: packVanPlate(typed.label ?? '', typed.plate ?? ''),
+      driver: typed.driver ?? '',
+      phone: typed.phone ?? '',
+      outsourced: typed.outsourced === true,
+      outsource_company:
+        typed.outsourced === true ? canonicalVanOutsourceCompany(typed.outsourceCompany ?? '') : '',
+      special_kind: isSpecialTransferKind(typed.specialKind) ? typed.specialKind : '',
+      transfer_in: typed.transferIn === true,
+      transfer_out: typed.transferOut === true,
+      charge_amount: normalizeChargeAmount(typed.chargeAmount),
+      ...(Number.isFinite(capacity) && capacity >= 1 ? { capacity: Math.floor(capacity) } : {}),
+    }
+  })
+
+  const assignPayload: Array<{
+    booking_code: string
+    van_number: number
+    pax: number
+    sort_order: number
+  }> = []
+  for (const [booking_code, legs] of Object.entries(plan.assignments ?? {})) {
+    for (const leg of legs as VanSplit[]) {
+      assignPayload.push({
+        booking_code,
+        van_number: leg.van,
+        pax: leg.pax,
+        sort_order: leg.sortOrder ?? 0,
+      })
+    }
+  }
+
+  const { data: rpcData, error: rpcError } = await supabase.rpc('portal_save_day_vehicle_plan', {
+    p_date: plan.date,
+    p_program: plan.program,
+    p_expected_revision: expectedRevision,
+    p_van_capacity: plan.vanCapacity,
+    p_van_meta: metaPayload,
+    p_assignments: assignPayload,
+  })
+
+  if (!rpcError) {
+    const row = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as {
+      ok?: unknown
+      error?: unknown
+      conflict?: unknown
+      revision?: unknown
+    } | null
+    if (row?.ok === true) {
+      return { revision: Math.max(1, Math.floor(Number(row.revision) || expectedRevision + 1)) }
+    }
+    throw new Error(String(row?.error || 'Failed to save van plan'))
+  }
+
+  if (!/portal_save_day_vehicle_plan|Could not find the function|schema cache/i.test(rpcError.message)) {
+    throw new Error(`save vehicle plan: ${rpcError.message}`)
+  }
+
+  // Legacy fallback without revision RPC.
   const { error: planError } = await supabase.from('day_vehicle_plans').upsert({
     date: plan.date,
     program: plan.program,
@@ -1289,30 +1503,16 @@ export async function saveDayVehiclePlan(plan: DayVehiclePlan) {
     await insertVanMetaRows(metaRows)
   }
 
-  const assignRows: Array<{
-    date: string
-    program: Program
-    booking_code: string
-    van_number: number
-    pax: number
-    sort_order: number
-  }> = []
-  for (const [booking_code, legs] of Object.entries(plan.assignments ?? {})) {
-    for (const leg of legs as VanSplit[]) {
-      assignRows.push({
-        date: plan.date,
-        program: plan.program,
-        booking_code,
-        van_number: leg.van,
-        pax: leg.pax,
-        sort_order: leg.sortOrder ?? 0,
-      })
-    }
+  const assignRows = assignPayload.map((row) => ({
+    date: plan.date,
+    program: plan.program,
+    ...row,
+  }))
+  if (assignRows.length > 0) {
+    const { error: insertError } = await supabase.from('van_assignments').insert(assignRows)
+    if (insertError) throw new Error(`insert van assignments: ${insertError.message}`)
   }
-  if (assignRows.length === 0) return
-
-  const { error: insertError } = await supabase.from('van_assignments').insert(assignRows)
-  if (insertError) throw new Error(`insert van assignments: ${insertError.message}`)
+  return { revision: Math.max(1, expectedRevision + 1) }
 }
 
 export async function upsertBookingCutoffs(settings: BookingCutoffSettings) {
@@ -1865,20 +2065,65 @@ function flattenCheckInServiceMap(map: DayCheckInServiceMap): CheckInServiceRow[
   return rows
 }
 
-/** Returns null when core check-in tables are missing (migration not run yet). */
-export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
+type FetchCheckInMapsOptions = {
+  /** When set, only rows on/after this YYYY-MM-DD are fetched (for lighter polls). */
+  sinceDate?: string
+  /** When set, only this exact YYYY-MM-DD (helper / live board day). */
+  onDate?: string
+}
+
+async function fetchAllCheckInRows<T>(
+  table: string,
+  options?: { sinceDate?: string; onDate?: string },
+): Promise<{ data: T[] | null; error: { message: string } | null }> {
   const supabase = getSupabaseBrowserClient()
-  const [enrollmentsRes, attendanceRes, paymentsRes, servicesRes, sequencesRes, guestEditsRes, notesRes, groupGuidesRes] =
-    await Promise.all([
-      supabase.from('check_in_enrollments').select('*'),
-      supabase.from('check_in_attendance').select('*'),
-      supabase.from('check_in_payments').select('*'),
-      supabase.from('check_in_services').select('*'),
-      supabase.from('check_in_sequences').select('*'),
-      supabase.from('check_in_guest_edits').select('*'),
-      supabase.from('check_in_notes').select('*'),
-      supabase.from('check_in_group_guides').select('*'),
-    ])
+  const pageSize = 1000
+  const rows: T[] = []
+  let from = 0
+  const onDate = options?.onDate?.slice(0, 10) || undefined
+  const sinceDate = options?.sinceDate?.slice(0, 10) || undefined
+
+  while (true) {
+    let query = supabase.from(table).select('*').range(from, from + pageSize - 1)
+    if (onDate) query = query.eq('date', onDate)
+    else if (sinceDate) query = query.gte('date', sinceDate)
+    const { data, error } = await query
+    if (error) return { data: null, error }
+    const chunk = (data ?? []) as T[]
+    rows.push(...chunk)
+    if (chunk.length < pageSize) break
+    from += pageSize
+  }
+
+  return { data: rows, error: null }
+}
+
+/** Returns null when core check-in tables are missing (migration not run yet). */
+export async function fetchCheckInMaps(
+  options?: FetchCheckInMapsOptions,
+): Promise<CheckInMapsSnapshot | null> {
+  const sinceDate = options?.sinceDate?.slice(0, 10) || undefined
+  const onDate = options?.onDate?.slice(0, 10) || undefined
+  const range = onDate ? { onDate } : sinceDate ? { sinceDate } : undefined
+  const [
+    enrollmentsRes,
+    attendanceRes,
+    paymentsRes,
+    servicesRes,
+    sequencesRes,
+    guestEditsRes,
+    notesRes,
+    groupGuidesRes,
+  ] = await Promise.all([
+    fetchAllCheckInRows<CheckInEnrollmentRow>('check_in_enrollments', range),
+    fetchAllCheckInRows<CheckInAttendanceRow>('check_in_attendance', range),
+    fetchAllCheckInRows<CheckInPaymentRow>('check_in_payments', range),
+    fetchAllCheckInRows<CheckInServiceRow>('check_in_services', range),
+    fetchAllCheckInRows<CheckInSequenceRow>('check_in_sequences', range),
+    fetchAllCheckInRows<CheckInGuestEditRow>('check_in_guest_edits', range),
+    fetchAllCheckInRows<CheckInNoteRow>('check_in_notes', range),
+    fetchAllCheckInRows<CheckInGroupGuideRow>('check_in_group_guides', range),
+  ])
 
   if (enrollmentsRes.error || attendanceRes.error || paymentsRes.error) {
     const message =
@@ -1900,7 +2145,7 @@ export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
       servicesRes.error.message,
     )
   } else {
-    services = buildCheckInServiceMap(servicesRes.data as CheckInServiceRow[])
+    services = buildCheckInServiceMap((servicesRes.data ?? []) as CheckInServiceRow[])
   }
 
   let sequences: DayCheckInSequenceMap = {}
@@ -1910,7 +2155,7 @@ export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
       sequencesRes.error.message,
     )
   } else {
-    sequences = buildCheckInSequenceMap(sequencesRes.data as CheckInSequenceRow[])
+    sequences = buildCheckInSequenceMap((sequencesRes.data ?? []) as CheckInSequenceRow[])
   }
 
   let guestEdits: DayCheckInGuestEditMap = {}
@@ -1920,7 +2165,7 @@ export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
       guestEditsRes.error.message,
     )
   } else {
-    guestEdits = buildCheckInGuestEditMap(guestEditsRes.data as CheckInGuestEditRow[])
+    guestEdits = buildCheckInGuestEditMap((guestEditsRes.data ?? []) as CheckInGuestEditRow[])
   }
 
   let notes: DayCheckInNoteMap = {}
@@ -1930,7 +2175,7 @@ export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
       notesRes.error.message,
     )
   } else {
-    notes = buildCheckInNoteMap(notesRes.data as CheckInNoteRow[])
+    notes = buildCheckInNoteMap((notesRes.data ?? []) as CheckInNoteRow[])
   }
 
   let groupGuides: DayCheckInGroupGuideMap = {}
@@ -1940,18 +2185,18 @@ export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
       groupGuidesRes.error.message,
     )
   } else {
-    groupGuides = buildCheckInGroupGuideMap(groupGuidesRes.data as CheckInGroupGuideRow[])
+    groupGuides = buildCheckInGroupGuideMap((groupGuidesRes.data ?? []) as CheckInGroupGuideRow[])
   }
 
-  const paymentRows = paymentsRes.data as CheckInPaymentRow[]
+  const paymentRows = (paymentsRes.data ?? []) as CheckInPaymentRow[]
   const split = adoptLegacyPaymentsAsTickets(
     buildCheckInPaymentMap(paymentRows),
     buildCheckInTicketMap(paymentRows),
   )
 
   const snapshot: CheckInMapsSnapshot = {
-    enrollments: buildCheckInEnrollmentMap(enrollmentsRes.data as CheckInEnrollmentRow[]),
-    attendance: buildCheckInAttendanceMap(attendanceRes.data as CheckInAttendanceRow[]),
+    enrollments: buildCheckInEnrollmentMap((enrollmentsRes.data ?? []) as CheckInEnrollmentRow[]),
+    attendance: buildCheckInAttendanceMap((attendanceRes.data ?? []) as CheckInAttendanceRow[]),
     payments: split.payments,
     tickets: split.tickets,
     services,
@@ -1971,6 +2216,59 @@ export async function fetchCheckInMaps(): Promise<CheckInMapsSnapshot | null> {
   }
 
   return snapshot
+}
+
+export type RecordCheckInEnrollmentsResult =
+  | { ok: true; count: number; fullyChecked: boolean }
+  | { ok: false; error: string }
+
+/** Atomic seat-checked insert via RPC (preferred under concurrent morning check-in). */
+export async function recordCheckInEnrollmentsAtomic(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  enrollments: CheckInEnrollment[],
+): Promise<RecordCheckInEnrollmentsResult> {
+  if (enrollments.length === 0) return { ok: false, error: 'Add at least one guest.' }
+  const supabase = getSupabaseBrowserClient()
+  const payload = enrollments.map((item) => ({
+    id: item.id,
+    first_name: item.firstName,
+    last_name: item.lastName,
+    nationality: item.nationality,
+    birthday: item.birthday,
+    passport_number: item.passportNumber,
+    scope: item.scope,
+    seats: item.seats,
+    checked_in_at: item.checkedInAt,
+  }))
+  const { data, error } = await supabase.rpc('portal_record_check_in_enrollments', {
+    p_date: date,
+    p_program: program,
+    p_booking_code: bookingCode,
+    p_enrollments: payload,
+  })
+  if (error) {
+    // Older projects without the RPC — caller may fall back to direct upsert.
+    throw new Error(`record check-in enrollments: ${error.message}`)
+  }
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | { ok?: unknown; count?: unknown; fully_checked?: unknown; error?: unknown }
+    | null
+  if (!row || typeof row !== 'object') {
+    return { ok: false, error: 'Check-in failed. Please try again.' }
+  }
+  if (row.ok === true) {
+    return {
+      ok: true,
+      count: Math.max(0, Math.floor(Number(row.count) || enrollments.length)),
+      fullyChecked: row.fully_checked === true,
+    }
+  }
+  return {
+    ok: false,
+    error: String(row.error ?? 'Check-in failed. Please try again.'),
+  }
 }
 
 export async function upsertCheckInEnrollments(

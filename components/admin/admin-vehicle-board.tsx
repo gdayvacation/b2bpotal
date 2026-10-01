@@ -92,15 +92,23 @@ import {
   type VanSplit,
 } from '@/lib/types'
 import {
+  addPaxBreakdown,
   allocatePaxBreakdown,
   bookingPaxOnVan,
   currentPaxOnVan,
+  emptyPaxBreakdown,
+  formatPaxShort,
   listFleetVanNumbers,
+  paxBreakdownTotal,
   primaryVan,
   sortOrderOnVan,
   suggestVanSplit,
+  takePaxBreakdown,
+  type PaxBreakdown,
 } from '@/lib/vehicle-assign'
 import { bookingPaxOnVanAndBoat } from '@/lib/boat-load'
+import { originalBookedPax } from '@/lib/check-in-booked-pax'
+import { paxTotal } from '@/lib/pickup-marina-sync'
 import { cn } from '@/lib/utils'
 
 const DRAG_MIME = 'application/x-gday-van-codes'
@@ -108,8 +116,81 @@ const DRAG_MIME = 'application/x-gday-van-codes'
 const DEFAULT_DAY_VAN_COUNT = 3
 const SEAT_PRESETS = [12, 20, 24, 30, 40] as const
 
-function formatVanPaxMix(pax: { adults: number; children: number; infants: number; tourLeaders: number }) {
-  return `${pax.adults}A ${pax.children}C ${pax.infants}I ${pax.tourLeaders}T`
+function formatVanPaxMix(pax: PaxBreakdown) {
+  return formatPaxShort(pax)
+}
+
+/** NS heads: max(pickup ledger, booked snapshot − live booking). Same source as Guest Pick up. */
+function bookingNoShowCount(
+  date: string,
+  program: Program,
+  booking: Booking,
+  pickupNs: PaxBreakdown,
+  wholeNoShow: boolean,
+) {
+  if (wholeNoShow) {
+    return Math.max(
+      paxTotal(pickupNs),
+      paxBreakdownTotal(originalBookedPax(date, program, booking)),
+      totalPassengers(booking),
+    )
+  }
+  const booked = originalBookedPax(date, program, booking)
+  const fromBooked = Math.max(
+    0,
+    booked.adults -
+      booking.adults +
+      (booked.children - booking.children) +
+      (booked.infants - booking.infants) +
+      (booked.tourLeaders - booking.tourLeaders),
+  )
+  return Math.max(paxTotal(pickupNs), fromBooked)
+}
+
+/** Live boarding count + orange NS delta (same language as Guest Pick up). */
+function PaxShortWithNoShow({
+  current,
+  noShowCount,
+  wholeNoShow = false,
+}: {
+  current: PaxBreakdown
+  noShowCount: number
+  wholeNoShow?: boolean
+}) {
+  const label = formatPaxShort(current)
+  if (wholeNoShow) {
+    return (
+      <span className="inline-flex shrink-0 items-baseline gap-1 tabular-nums">
+        <span>{label}</span>
+        <span className="text-[10px] font-semibold text-rose-700">-all</span>
+      </span>
+    )
+  }
+  const missing = Math.max(0, Math.floor(noShowCount))
+  if (missing <= 0) return <span className="shrink-0 tabular-nums">{label}</span>
+  return (
+    <span className="inline-flex shrink-0 items-baseline gap-1 tabular-nums">
+      <span>{label}</span>
+      <span className="text-[10px] font-semibold text-rose-700">-{missing}</span>
+    </span>
+  )
+}
+
+function bookingMixOnBoat(
+  booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>,
+  boatAssign: DayBoatPlan['assignments'][string] | undefined,
+  boat: BoatNumber,
+  vanLegs?: VanSplit[] | undefined,
+  van?: number | null,
+): PaxBreakdown {
+  const onBoat =
+    van != null && van > 0
+      ? bookingPaxOnVanAndBoat(booking, vanLegs, boatAssign, van, boat)
+      : bookingPaxOnBoat(booking, boatAssign, boat)
+  if (onBoat <= 0) return emptyPaxBreakdown()
+  const base =
+    van != null && van > 0 ? allocatePaxBreakdown(booking, vanLegs, van) : { ...booking }
+  return takePaxBreakdown(base, onBoat)
 }
 
 function insertCodeInList(codes: string[], fromIndex: number, insertAt: number) {
@@ -1101,6 +1182,8 @@ function VehicleBoard({
     setBoatGuide,
     assignBookingToBoat,
     getCheckInServices,
+    getCheckInAttendance,
+    getPickupNoShow,
   } = usePortal()
   const [openVan, setOpenVan] = useState<number | null>(null)
   const [splitCode, setSplitCode] = useState<string | null>(null)
@@ -1535,11 +1618,19 @@ function VehicleBoard({
     const items = bookings.filter((booking) =>
       bookingAssignedToBoat(boatPlan.assignments[booking.code], boat),
     )
-    const pax = items.reduce(
-      (sum, booking) => sum + bookingPaxOnBoat(booking, boatPlan.assignments[booking.code], boat),
-      0,
+    const mix = items.reduce(
+      (acc, booking) =>
+        addPaxBreakdown(
+          acc,
+          bookingMixOnBoat(booking, boatPlan.assignments[booking.code], boat),
+        ),
+      emptyPaxBreakdown(),
     )
-    const groupMap = new Map<number | 'loose', { van: number | null; items: Booking[]; pax: number }>()
+    const pax = paxBreakdownTotal(mix)
+    const groupMap = new Map<
+      number | 'loose',
+      { van: number | null; items: Booking[]; pax: number; mix: PaxBreakdown }
+    >()
     for (const booking of items) {
       const legs = plan.assignments[booking.code]
       const vansOnBoat = [
@@ -1552,24 +1643,37 @@ function VehicleBoard({
         .sort((a, b) => a - b)
 
       if (vansOnBoat.length === 0) {
-        const current = groupMap.get('loose') ?? { van: null, items: [], pax: 0 }
+        const slice = bookingMixOnBoat(booking, boatPlan.assignments[booking.code], boat)
+        const current = groupMap.get('loose') ?? {
+          van: null,
+          items: [],
+          pax: 0,
+          mix: emptyPaxBreakdown(),
+        }
         current.items.push(booking)
-        current.pax += bookingPaxOnBoat(booking, boatPlan.assignments[booking.code], boat)
+        current.mix = addPaxBreakdown(current.mix, slice)
+        current.pax = paxBreakdownTotal(current.mix)
         groupMap.set('loose', current)
         continue
       }
 
       for (const van of vansOnBoat) {
-        const onVanBoat = bookingPaxOnVanAndBoat(
+        const slice = bookingMixOnBoat(
           booking,
-          legs,
           boatPlan.assignments[booking.code],
-          van,
           boat,
+          legs,
+          van,
         )
-        const current = groupMap.get(van) ?? { van, items: [], pax: 0 }
+        const current = groupMap.get(van) ?? {
+          van,
+          items: [],
+          pax: 0,
+          mix: emptyPaxBreakdown(),
+        }
         current.items.push(booking)
-        current.pax += onVanBoat
+        current.mix = addPaxBreakdown(current.mix, slice)
+        current.pax = paxBreakdownTotal(current.mix)
         groupMap.set(van, current)
       }
     }
@@ -1579,7 +1683,7 @@ function VehicleBoard({
       if (isNoTransferVan(a.van) !== isNoTransferVan(b.van)) return isNoTransferVan(a.van) ? 1 : -1
       return a.van - b.van
     })
-    return { boat, capacity: capacityBoat, items, pax, over: pax > capacityBoat, groups }
+    return { boat, capacity: capacityBoat, items, pax, mix, over: pax > capacityBoat, groups }
   })
   const boatAssignedCount = bookings.filter((b) => boatPlan.assignments[b.code]).length
   const boatUnassignedPax = bookings.reduce((sum, booking) => {
@@ -2067,11 +2171,25 @@ function VehicleBoard({
                                 </span>
                                 <span
                                   className={cn(
-                                    'tabular-nums font-medium',
+                                    'font-medium',
                                     largeGroup ? 'text-amber-950' : 'text-teal-900',
                                   )}
                                 >
-                                  {formatVanPaxMix(booking)}
+                                  <PaxShortWithNoShow
+                                    current={booking}
+                                    noShowCount={bookingNoShowCount(
+                                      date,
+                                      program,
+                                      booking,
+                                      getPickupNoShow(date, program, booking.code),
+                                      getCheckInAttendance(date, program, booking.code) ===
+                                        'no-show',
+                                    )}
+                                    wholeNoShow={
+                                      getCheckInAttendance(date, program, booking.code) ===
+                                      'no-show'
+                                    }
+                                  />
                                 </span>
                                 <TransferKindBadge kind={transferKind} />
                                 {booking.note ? (
@@ -2457,8 +2575,25 @@ function VehicleBoard({
                                     <span className="tabular-nums text-teal-900/60">
                                       {booking.pickupTime}
                                     </span>
-                                    <span className="tabular-nums font-medium text-teal-900" title={`${legPax} pax on this van`}>
-                                      {formatVanPaxMix(mix)}
+                                    <span
+                                      className="font-medium text-teal-900"
+                                      title={`${legPax} pax on this van`}
+                                    >
+                                      <PaxShortWithNoShow
+                                        current={mix}
+                                        noShowCount={bookingNoShowCount(
+                                          date,
+                                          program,
+                                          booking,
+                                          getPickupNoShow(date, program, booking.code),
+                                          getCheckInAttendance(date, program, booking.code) ===
+                                            'no-show',
+                                        )}
+                                        wholeNoShow={
+                                          getCheckInAttendance(date, program, booking.code) ===
+                                          'no-show'
+                                        }
+                                      />
                                     </span>
                                   </div>
                                 </LongPressCard>
@@ -2688,10 +2823,25 @@ function VehicleBoard({
               <div className="mt-4 grid gap-3 sm:grid-cols-3">
                 {byBoat
                   .filter(({ boat }) => partnerBoatLinkedToVan(plan, boatPlan, boat))
-                  .map(({ boat, capacity: boatCap, pax, items, over, groups }) => {
+                  .map(({ boat, capacity: boatCap, pax, mix: boatMix, items, over, groups }) => {
                   const partner = isPartnerBoat(boatPlan, boat)
                   const theme = boatThemeFor(boatPlan, boat)
                   const boatDrop = dropTarget === `boat-${boat}`
+                  const boatLoadLabel = `${formatPaxShort(boatMix)}/${boatCap}`
+                  const boatNoShow = items.reduce((sum, booking) => {
+                    const whole =
+                      getCheckInAttendance(date, program, booking.code) === 'no-show'
+                    return (
+                      sum +
+                      bookingNoShowCount(
+                        date,
+                        program,
+                        booking,
+                        getPickupNoShow(date, program, booking.code),
+                        whole,
+                      )
+                    )
+                  }, 0)
                   return (
                   <div
                     key={boat}
@@ -2784,7 +2934,8 @@ function VehicleBoard({
                         </div>
                         <div className="flex items-center justify-between gap-2">
                           <p className="text-xs text-neutral-500">
-                            {items.length} booking{items.length === 1 ? '' : 's'} · {pax} pax
+                            {items.length} booking{items.length === 1 ? '' : 's'} ·{' '}
+                            {formatPaxShort(boatMix)}
                           </p>
                           {selectedList.length > 0 ? (
                             <Button
@@ -2807,25 +2958,18 @@ function VehicleBoard({
                                 <p className="text-[11px] font-semibold text-neutral-800">
                                   {group.van !== null ? vanBoardLabel(group.van, plan) : 'Guests'}
                                   <span className="ml-1 font-medium text-neutral-500">
-                                    · {group.pax} pax
+                                    · {formatPaxShort(group.mix)}
                                   </span>
                                 </p>
                                 <ul className="mt-1 space-y-0.5">
                                   {group.items.map((booking) => {
-                                    const onBoat =
-                                      group.van !== null
-                                        ? bookingPaxOnVanAndBoat(
-                                            booking,
-                                            plan.assignments[booking.code],
-                                            boatPlan.assignments[booking.code],
-                                            group.van,
-                                            boat,
-                                          )
-                                        : bookingPaxOnBoat(
-                                            booking,
-                                            boatPlan.assignments[booking.code],
-                                            boat,
-                                          )
+                                    const onBoatMix = bookingMixOnBoat(
+                                      booking,
+                                      boatPlan.assignments[booking.code],
+                                      boat,
+                                      plan.assignments[booking.code],
+                                      group.van,
+                                    )
                                     const vanSplit =
                                       (plan.assignments[booking.code]?.length ?? 0) > 1
                                     const boatSplit =
@@ -2838,10 +2982,32 @@ function VehicleBoard({
                                         className="flex items-center justify-between gap-2 text-xs text-neutral-800"
                                         onLongPress={() => setSplitCode(booking.code)}
                                       >
-                                      <span className="min-w-0 truncate">
-                                        {booking.pickupHotel || booking.leadGuest} · {onBoat}
-                                        {vanSplit ? ' van split' : ''}
-                                        {boatSplit ? ' boat split' : ''}
+                                      <span className="flex min-w-0 items-baseline gap-1">
+                                        <span className="min-w-0 truncate">
+                                          {booking.pickupHotel || booking.leadGuest}
+                                        </span>
+                                        <span className="shrink-0">·</span>
+                                        <PaxShortWithNoShow
+                                          current={onBoatMix}
+                                          noShowCount={bookingNoShowCount(
+                                            date,
+                                            program,
+                                            booking,
+                                            getPickupNoShow(date, program, booking.code),
+                                            getCheckInAttendance(date, program, booking.code) ===
+                                              'no-show',
+                                          )}
+                                          wholeNoShow={
+                                            getCheckInAttendance(date, program, booking.code) ===
+                                            'no-show'
+                                          }
+                                        />
+                                        {vanSplit ? (
+                                          <span className="shrink-0 text-neutral-500">van split</span>
+                                        ) : null}
+                                        {boatSplit ? (
+                                          <span className="shrink-0 text-neutral-500">boat split</span>
+                                        ) : null}
                                       </span>
                                       <button
                                         type="button"
@@ -2910,37 +3076,45 @@ function VehicleBoard({
                           ) : null}
                         </div>
                       </div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <span
-                          className={cn(
-                            'rounded-md px-2 py-0.5 text-xs font-semibold tabular-nums',
-                            over ? 'bg-amber-100 text-amber-900' : 'bg-white/80 text-teal-800',
-                          )}
-                        >
-                          {pax}/{boatCap}
-                        </span>
-                        <button
-                          type="button"
-                          className="rounded-md p-1 text-teal-800/35 hover:bg-white/70 hover:text-rose-700"
-                          title="Remove boat"
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            if (
-                              !confirmRemoveBoat({
-                                boatPlan,
-                                boat,
-                                bookingCount: items.length,
-                                pax,
-                                totalBoats: boatNumbers.length,
-                              })
-                            ) {
-                              return
-                            }
-                            removeDayBoat(date, program, boat)
-                          }}
-                        >
-                          <Trash2 className="size-3.5" />
-                        </button>
+                      <div className="flex shrink-0 flex-col items-end gap-0.5">
+                        <div className="flex items-center gap-1">
+                          <span
+                            className={cn(
+                              'rounded-md px-2 py-0.5 text-xs font-semibold tabular-nums',
+                              over ? 'bg-amber-100 text-amber-900' : 'bg-white/80 text-teal-800',
+                            )}
+                            title={`${pax} of ${boatCap} seats`}
+                          >
+                            {boatLoadLabel}
+                          </span>
+                          <button
+                            type="button"
+                            className="rounded-md p-1 text-teal-800/35 hover:bg-white/70 hover:text-rose-700"
+                            title="Remove boat"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              if (
+                                !confirmRemoveBoat({
+                                  boatPlan,
+                                  boat,
+                                  bookingCount: items.length,
+                                  pax,
+                                  totalBoats: boatNumbers.length,
+                                })
+                              ) {
+                                return
+                              }
+                              removeDayBoat(date, program, boat)
+                            }}
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </div>
+                        {boatNoShow > 0 ? (
+                          <span className="rounded-md bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-rose-800">
+                            NS -{boatNoShow}
+                          </span>
+                        ) : null}
                       </div>
                     </div>
                     <div
@@ -3071,25 +3245,18 @@ function VehicleBoard({
                             <p className="text-[11px] font-semibold text-teal-950">
                               {group.van !== null ? vanBoardLabel(group.van, plan) : 'Guests'}
                               <span className="ml-1 font-medium text-teal-900/50">
-                                · {group.pax} pax
+                                · {formatPaxShort(group.mix)}
                               </span>
                             </p>
                             <ul className="mt-1 space-y-0.5">
                               {group.items.map((booking) => {
-                                const onBoat =
-                                  group.van !== null
-                                    ? bookingPaxOnVanAndBoat(
-                                        booking,
-                                        plan.assignments[booking.code],
-                                        boatPlan.assignments[booking.code],
-                                        group.van,
-                                        boat,
-                                      )
-                                    : bookingPaxOnBoat(
-                                        booking,
-                                        boatPlan.assignments[booking.code],
-                                        boat,
-                                      )
+                                const onBoatMix = bookingMixOnBoat(
+                                  booking,
+                                  boatPlan.assignments[booking.code],
+                                  boat,
+                                  plan.assignments[booking.code],
+                                  group.van,
+                                )
                                 const vanSplit =
                                   (plan.assignments[booking.code]?.length ?? 0) > 1
                                 const boatSplit =
@@ -3101,10 +3268,32 @@ function VehicleBoard({
                                     className="flex items-center justify-between gap-2 text-xs text-teal-950"
                                     onLongPress={() => setSplitCode(booking.code)}
                                   >
-                                  <span className="min-w-0 truncate">
-                                    {booking.pickupHotel || booking.leadGuest} · {onBoat}
-                                    {vanSplit ? ' van split' : ''}
-                                    {boatSplit ? ' boat split' : ''}
+                                  <span className="flex min-w-0 items-baseline gap-1">
+                                    <span className="min-w-0 truncate">
+                                      {booking.pickupHotel || booking.leadGuest}
+                                    </span>
+                                    <span className="shrink-0">·</span>
+                                    <PaxShortWithNoShow
+                                      current={onBoatMix}
+                                      noShowCount={bookingNoShowCount(
+                                        date,
+                                        program,
+                                        booking,
+                                        getPickupNoShow(date, program, booking.code),
+                                        getCheckInAttendance(date, program, booking.code) ===
+                                          'no-show',
+                                      )}
+                                      wholeNoShow={
+                                        getCheckInAttendance(date, program, booking.code) ===
+                                        'no-show'
+                                      }
+                                    />
+                                    {vanSplit ? (
+                                      <span className="shrink-0 text-teal-900/45">van split</span>
+                                    ) : null}
+                                    {boatSplit ? (
+                                      <span className="shrink-0 text-teal-900/45">boat split</span>
+                                    ) : null}
                                   </span>
                                   <button
                                     type="button"

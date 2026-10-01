@@ -34,7 +34,12 @@ import {
   getOrCaptureBookedPaxSnapshot,
   type BookedPaxSnapshot,
 } from '@/lib/check-in-booked-pax'
-import { addPax, formatPaxOrDash, paxTotal } from '@/lib/pickup-marina-sync'
+import {
+  clampPax,
+  formatPaxOrDash,
+  paxTotal,
+  subtractPax,
+} from '@/lib/pickup-marina-sync'
 
 type PanelAction = 'ns-whole' | 'ns-some' | 'date' | 'own-arrival'
 
@@ -62,8 +67,10 @@ export function AdminCheckInBookingPanel({
     setCheckInAttendance,
     assignBookingToVan,
     getPickupNoShow,
+    recordPickupNoShow,
     getOwnArrival,
     recordOwnArrival,
+    repairPickupMarinaLedgers,
   } = usePortal()
 
   const [original, setOriginal] = useState<BookedPaxSnapshot | null>(null)
@@ -94,31 +101,31 @@ export function AdminCheckInBookingPanel({
 
   useEffect(() => {
     if (!booking || !open) return
-    const existing = getBookedPaxSnapshot(today, booking.program, booking.code)
-    if (existing) {
-      setOriginal(existing)
-      return
+    const current = {
+      adults: booking.adults,
+      children: booking.children,
+      infants: booking.infants,
+      tourLeaders: booking.tourLeaders,
     }
-    const ns = getPickupNoShow(today, booking.program, booking.code)
-    const taxi = getOwnArrival(today, booking.program, booking.code)
-    if (paxTotal(ns) > 0) {
-      setOriginal({
-        adults: booking.adults - taxi.adults + ns.adults,
-        children: booking.children - taxi.children + ns.children,
-        infants: booking.infants - taxi.infants + ns.infants,
-        tourLeaders: booking.tourLeaders - taxi.tourLeaders + ns.tourLeaders,
-      })
-      return
+    const booked = getOrCaptureBookedPaxSnapshot(today, booking.program, booking.code, current)
+    // Never trust inflated NS/taxi math for "original" — snapshot/current only.
+    const safeOriginal = {
+      adults: Math.max(booked.adults, current.adults),
+      children: Math.max(booked.children, current.children),
+      infants: Math.max(booked.infants, current.infants),
+      tourLeaders: Math.max(booked.tourLeaders, current.tourLeaders),
     }
-    setOriginal(
-      getOrCaptureBookedPaxSnapshot(today, booking.program, booking.code, {
-        adults: booking.adults,
-        children: booking.children,
-        infants: booking.infants,
-        tourLeaders: booking.tourLeaders,
-      }),
+    setOriginal(safeOriginal)
+    repairPickupMarinaLedgers(
+      today,
+      booking.program,
+      booking.code,
+      safeOriginal,
+      current,
     )
-  }, [booking, open, today])
+    // Repair once when the dialog opens for this booking (avoid depending on unstable fn identity).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookingCode, open, today, booking?.adults, booking?.children, booking?.infants, booking?.tourLeaders, booking?.program])
 
   useEffect(() => {
     if (!open || !bookingCode) return
@@ -209,11 +216,24 @@ export function AdminCheckInBookingPanel({
   function markWholeNoShow() {
     if (!booking) return
     setError('')
+    getOrCaptureBookedPaxSnapshot(today, booking.program, booking.code, {
+      adults: booking.adults,
+      children: booking.children,
+      infants: booking.infants,
+      tourLeaders: booking.tourLeaders,
+    })
+    recordPickupNoShow(today, booking.program, booking.code, {
+      adults: booking.adults,
+      children: booking.children,
+      infants: booking.infants,
+      tourLeaders: booking.tourLeaders,
+    })
     setCheckInAttendance(today, booking.program, booking.code, 'no-show')
   }
 
   function clearWholeNoShow() {
     if (!booking) return
+    // Unlock QR check-in for late arrivals; keep boat/van assignments for admin to move.
     setCheckInAttendance(today, booking.program, booking.code, null)
   }
 
@@ -228,6 +248,19 @@ export function AdminCheckInBookingPanel({
       setError('No-show counts cannot exceed the current booking.')
       return
     }
+
+    getOrCaptureBookedPaxSnapshot(today, booking.program, booking.code, {
+      adults: booking.adults,
+      children: booking.children,
+      infants: booking.infants,
+      tourLeaders: booking.tourLeaders,
+    })
+    recordPickupNoShow(today, booking.program, booking.code, {
+      adults: nsAdults,
+      children: nsChildren,
+      infants: nsInfants,
+      tourLeaders: nsTourLeaders,
+    })
 
     const nextAdults = booking.adults - nsAdults
     const nextChildren = booking.children - nsChildren
@@ -435,14 +468,51 @@ export function AdminCheckInBookingPanel({
       return
     }
 
+    // Only restore seats that pickup NS removed — never grow past the original booking.
+    const bookedCap = original ?? {
+      adults: booking.adults,
+      children: booking.children,
+      infants: booking.infants,
+      tourLeaders: booking.tourLeaders,
+    }
+    const room = {
+      adults: Math.max(0, bookedCap.adults - booking.adults),
+      children: Math.max(0, bookedCap.children - booking.children),
+      infants: Math.max(0, bookedCap.infants - booking.infants),
+      tourLeaders: Math.max(0, bookedCap.tourLeaders - booking.tourLeaders),
+    }
     const arrived = {
-      adults: arrAdults,
-      children: arrChildren,
-      infants: arrInfants,
-      tourLeaders: arrTourLeaders,
+      adults: Math.min(arrAdults, canRestoreSeats ? room.adults : arrAdults),
+      children: Math.min(arrChildren, canRestoreSeats ? room.children : arrChildren),
+      infants: Math.min(arrInfants, canRestoreSeats ? room.infants : arrInfants),
+      tourLeaders: Math.min(arrTourLeaders, canRestoreSeats ? room.tourLeaders : arrTourLeaders),
+    }
+    if (paxTotal(arrived) < 1) {
+      setArrivalError(
+        canRestoreSeats
+          ? 'Those seats are already open. Nothing left to restore.'
+          : 'Choose how many AD / CH / INF / TL came to the marina.',
+      )
+      return
     }
     const arrivedLabel = formatGuestPaxParts(arrived)
-    recordOwnArrival(today, booking.program, booking.code, arrived)
+    // Cap taxi ledger at original booked size so repeated clicks cannot show 35AD.
+    const alreadyTaxi = getOwnArrival(today, booking.program, booking.code)
+    const taxiRoom = {
+      adults: Math.max(0, bookedCap.adults - alreadyTaxi.adults),
+      children: Math.max(0, bookedCap.children - alreadyTaxi.children),
+      infants: Math.max(0, bookedCap.infants - alreadyTaxi.infants),
+      tourLeaders: Math.max(0, bookedCap.tourLeaders - alreadyTaxi.tourLeaders),
+    }
+    const taxiAdd = {
+      adults: Math.min(arrived.adults, taxiRoom.adults),
+      children: Math.min(arrived.children, taxiRoom.children),
+      infants: Math.min(arrived.infants, taxiRoom.infants),
+      tourLeaders: Math.min(arrived.tourLeaders, taxiRoom.tourLeaders),
+    }
+    if (paxTotal(taxiAdd) > 0) {
+      recordOwnArrival(today, booking.program, booking.code, taxiAdd)
+    }
     const noteLine = `Own arrival ${arrivedLabel} — missed hotel pickup, came to marina`
     const note = booking.note.includes(noteLine)
       ? booking.note.trim()
@@ -457,10 +527,10 @@ export function AdminCheckInBookingPanel({
       const result = updateBookingDetails(
         booking.code,
         {
-          adults: booking.adults + arrAdults,
-          children: booking.children + arrChildren,
-          infants: booking.infants + arrInfants,
-          tourLeaders: booking.tourLeaders + arrTourLeaders,
+          adults: Math.min(bookedCap.adults, booking.adults + arrived.adults),
+          children: Math.min(bookedCap.children, booking.children + arrived.children),
+          infants: Math.min(bookedCap.infants, booking.infants + arrived.infants),
+          tourLeaders: Math.min(bookedCap.tourLeaders, booking.tourLeaders + arrived.tourLeaders),
           note,
         },
         { actor },
@@ -471,16 +541,16 @@ export function AdminCheckInBookingPanel({
         return
       }
     } else {
-      const arrivedAll = arrTotal >= currentTotal
+      const arrivedAll = paxTotal(arrived) >= currentTotal
       const result = updateBookingDetails(
         booking.code,
         {
           ...(attendance === 'no-show' && !arrivedAll
             ? {
-                adults: arrAdults,
-                children: arrChildren,
-                infants: arrInfants,
-                tourLeaders: arrTourLeaders,
+                adults: arrived.adults,
+                children: arrived.children,
+                infants: arrived.infants,
+                tourLeaders: arrived.tourLeaders,
               }
             : {}),
           ...(arrivedAll || attendance === 'no-show'
@@ -527,10 +597,30 @@ export function AdminCheckInBookingPanel({
 
   const isWholeNoShow = attendance === 'no-show'
   const isOwnArrival = /own arrival/i.test(booking.note)
-  const recordedPickupNs = getPickupNoShow(today, booking.program, booking.code)
-  const recordedTaxi = getOwnArrival(today, booking.program, booking.code)
+  const bookedCap = original ?? {
+    adults: booking.adults,
+    children: booking.children,
+    infants: booking.infants,
+    tourLeaders: booking.tourLeaders,
+  }
+  const derivedPickupNs = clampPax(subtractPax(bookedCap, {
+    adults: booking.adults,
+    children: booking.children,
+    infants: booking.infants,
+    tourLeaders: booking.tourLeaders,
+  }), bookedCap)
+  const recordedPickupNs = clampPax(
+    getPickupNoShow(today, booking.program, booking.code),
+    bookedCap,
+  )
+  const recordedTaxi = clampPax(getOwnArrival(today, booking.program, booking.code), bookedCap)
+  // Prefer live booking delta; ledger only for whole-NS (booking pax not reduced).
   const pickupNoShowPax =
-    paxTotal(recordedPickupNs) > 0 ? recordedPickupNs : addPax(missingPax, recordedTaxi)
+    paxTotal(derivedPickupNs) > 0
+      ? derivedPickupNs
+      : isWholeNoShow
+        ? recordedPickupNs
+        : missingPax
   const pickupNoShowLabel = formatPaxOrDash(pickupNoShowPax)
   const taxiLabel = formatPaxOrDash(recordedTaxi)
   const qrSeats = currentTotal
@@ -611,9 +701,14 @@ export function AdminCheckInBookingPanel({
 
               {isWholeNoShow ? (
                 <div className="flex items-center justify-between gap-2 rounded-xl bg-rose-50 px-3 py-2.5 text-sm text-rose-900 ring-1 ring-rose-200/70">
-                  Whole booking no-show
+                  <span>
+                    Whole booking no-show
+                    <span className="mt-0.5 block text-[11px] font-normal text-rose-900/70">
+                      QR check-in blocked until you allow late arrival
+                    </span>
+                  </span>
                   <Button size="sm" variant="outline" onClick={clearWholeNoShow}>
-                    Undo
+                    Allow late check-in
                   </Button>
                 </div>
               ) : null}
@@ -670,8 +765,8 @@ export function AdminCheckInBookingPanel({
                 <div className="rounded-xl px-3 py-3 ring-1 ring-rose-200/70">
                   <p className="text-sm font-semibold text-rose-950">No-show all</p>
                   <p className="mt-1 text-xs text-rose-900/70">
-                    Marks All NS on Guest Pick up and Check-in. Frees the boat seat. Do not give
-                    tickets.
+                    Marks All NS on Guest Pick up and Check-in. Stays on the boat board (red NS) so
+                    admin can move them. QR check-in stays blocked until Allow late check-in.
                   </p>
                   <Button size="sm" className="mt-3" onClick={markWholeNoShow}>
                     Mark whole booking no-show
@@ -803,8 +898,9 @@ export function AdminCheckInBookingPanel({
                 <div className="rounded-xl px-3 py-3 ring-1 ring-sky-200/80">
                   <p className="text-sm font-semibold text-sky-950">Came to marina</p>
                   <p className="mt-1 text-xs text-teal-900/60">
-                    They missed hotel pickup and took a taxi. This is not a no-show. Opening seats
-                    puts them back on the booking for QR check-in, invoice, and reports.
+                    Use only when pickup no-show guests later came by taxi. It unlocks QR check-in
+                    and restores only the seats that were removed — it should not grow the booking
+                    past the original pax.
                   </p>
                   <p className="mt-2 text-xs text-teal-900/55">
                     Original {originalLabel}

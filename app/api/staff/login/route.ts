@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server'
 import {
   createStaffSupabaseSession,
+  encodeStaffCookie,
   isStaffRole,
+  openStaffDeviceSession,
   staffCookieOptions,
+  staffMaxSessions,
   staffPinConfigured,
   STAFF_COOKIE,
   verifyStaffPin,
@@ -29,11 +32,30 @@ export async function POST(request: Request) {
   }
 
   const session = await createStaffSupabaseSession(role)
+  if (!session?.accessToken || !session.refreshToken) {
+    return NextResponse.json(
+      { error: 'Could not create staff session. Check STAFF_SUPABASE_PASSWORD.' },
+      { status: 500 },
+    )
+  }
+
+  const device = await openStaffDeviceSession(role, session.accessToken)
+  if (!device) {
+    return NextResponse.json(
+      {
+        error:
+          'Could not register this device session. Run supabase/add-staff-session-limit.sql then try again.',
+      },
+      { status: 500 },
+    )
+  }
+
   const response = NextResponse.json({
     role,
-    accessToken: session?.accessToken,
-    refreshToken: session?.refreshToken,
+    accessToken: session.accessToken,
+    refreshToken: session.refreshToken,
+    maxSessions: staffMaxSessions(role),
   })
-  response.cookies.set(STAFF_COOKIE, role, staffCookieOptions())
+  response.cookies.set(STAFF_COOKIE, encodeStaffCookie(device), staffCookieOptions())
   return response
 }

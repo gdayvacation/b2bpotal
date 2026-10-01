@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 're
 import {
   ArrowLeft,
   CalendarCheck2,
+  ChevronDown,
   ChevronRight,
   History,
   Pencil,
@@ -14,6 +15,7 @@ import {
 import { AdminAgentAllotmentDailyChecker } from '@/components/admin/admin-agent-allotment-daily'
 import { AdminAgentAllotmentHistory } from '@/components/admin/admin-agent-allotment-history'
 import { usePortal } from '@/components/portal-provider'
+import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { PageHeader, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
 import {
@@ -34,24 +36,38 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import {
+  allocateDailyHeadsFifo,
+  lotUsageMap,
+  type LotUsageSummary,
+} from '@/lib/allotment-lot-fifo'
 import { formatShortDate, todayISO, uniqueAgentSlug } from '@/lib/format'
 import {
+  addAgentAllotmentPayment,
   allotmentBalance,
   allotmentPaidTotal,
+  allotmentPayments,
   allotmentPayStatus,
   allotmentTotalAmount,
   createAgentAllotment,
   deleteAgentAllotment,
   formatAllotmentParkFee,
   listAgentAllotments,
+  removeLastAgentAllotmentPayment,
   updateAgentAllotment,
   type AgentAllotment,
   type AgentAllotmentParkFee,
   type AgentAllotmentPayStatus,
 } from '@/lib/supabase/agent-allotment-db'
+import {
+  fetchAgentBookingDayPax,
+  listAgentAllotmentDaily,
+  type AgentAllotmentDaily,
+  type AgentBookingDayPax,
+} from '@/lib/supabase/agent-allotment-daily-db'
 import { cn } from '@/lib/utils'
 
-type View = 'hub' | 'add' | 'history' | 'daily' | 'agent'
+type View = 'hub' | 'add' | 'history' | 'daily' | 'agent' | 'lot'
 
 type Draft = {
   agentSlug: string
@@ -59,26 +75,24 @@ type Draft = {
   adultPrice: string
   childPrice: string
   parkFee: AgentAllotmentParkFee
-  /** Shared AD+CH head pool for this top-up line. */
+  /** Shared AD+CH head pool for this lot. */
   heads: string
   paidAmount: string
   paidDate: string
   note: string
 }
 
-type LedgerLine = {
-  key: string
-  allotmentId: string
-  date: string
-  description: string
-  amount: number
-  heads: number
-  balanceHeads: number
-  adultPrice: number
-  childPrice: number
-  parkFee: AgentAllotmentParkFee
-  row: AgentAllotment
+type PaymentDraft = {
+  amount: string
+  paidDate: string
+  note: string
 }
+
+const emptyPaymentDraft = (): PaymentDraft => ({
+  amount: '',
+  paidDate: todayISO(),
+  note: '',
+})
 
 const NEW_AGENT_VALUE = '__new__'
 
@@ -152,11 +166,211 @@ function payStatusClass(status: AgentAllotmentPayStatus) {
   return 'bg-rose-50 text-rose-800 ring-rose-700/15'
 }
 
+/** Split FIFO-allocated heads into AD/CH using that day's booking mix (proportional). */
+function splitAllocatedPax(allocated: number, dayAdults: number, dayChildren: number) {
+  const heads = Math.max(0, Math.floor(allocated))
+  if (heads <= 0) return { adults: 0, children: 0 }
+  const dayTotal = Math.max(0, dayAdults) + Math.max(0, dayChildren)
+  if (dayTotal <= 0) {
+    // Daily checker only — price as AD (same as lot head pool).
+    return { adults: heads, children: 0 }
+  }
+  let adults = Math.round((Math.max(0, dayAdults) * heads) / dayTotal)
+  adults = Math.min(heads, Math.max(0, adults))
+  return { adults, children: heads - adults }
+}
+
+/** e.g. 5A+2C breakdown + total heads */
+function dailyUseHeadParts(adults: number, children: number, heads: number) {
+  return {
+    detail: `${Math.max(0, adults)}A+${Math.max(0, children)}C`,
+    total: Math.max(0, heads),
+  }
+}
+
+function DailyUseHeadCell({
+  adults,
+  children,
+  heads,
+}: {
+  adults: number
+  children: number
+  heads: number
+}) {
+  const { detail, total } = dailyUseHeadParts(adults, children, heads)
+  return (
+    <div className="inline-flex items-baseline justify-end gap-1.5 tabular-nums">
+      <span className="text-[10px] font-normal text-teal-900/40">{detail}</span>
+      <span className="text-sm font-bold text-teal-950">{total}</span>
+    </div>
+  )
+}
+
+/** Clear per-lot money + heads snapshot for transfer / usage cards. */
+/** Header badge: Due (red) or Over paid (green). */
+function LotCardCashBadge({ paid, lotTotal }: { paid: number; lotTotal: number }) {
+  const due = Math.round(Math.max(0, lotTotal - paid) * 100) / 100
+  const overPaid = Math.round(Math.max(0, paid - lotTotal) * 100) / 100
+  if (due > 0.009) {
+    return (
+      <div className="shrink-0 text-right">
+        <p className="text-[10px] font-semibold tracking-wide text-rose-600/80 uppercase">Due</p>
+        <p className="text-base font-bold tabular-nums text-rose-600">
+          {formatMoney(due)}
+          <span className="ml-0.5 text-xs font-semibold">THB</span>
+        </p>
+      </div>
+    )
+  }
+  if (overPaid > 0.009) {
+    return (
+      <div className="shrink-0 text-right">
+        <p className="text-[10px] font-semibold tracking-wide text-emerald-700/80 uppercase">
+          Over paid
+        </p>
+        <p className="text-base font-bold tabular-nums text-emerald-700">
+          {formatMoney(overPaid)}
+          <span className="ml-0.5 text-xs font-semibold">THB</span>
+        </p>
+      </div>
+    )
+  }
+  return null
+}
+
+function LotCardStats({
+  paid,
+  lotHeads,
+  lotTotal,
+  usedAmount,
+  usedHeads,
+  usedAdults,
+  usedChildren,
+  headsLeft,
+  isActive = false,
+}: {
+  paid: number
+  lotHeads: number
+  lotTotal: number
+  usedAmount: number
+  usedHeads: number
+  usedAdults: number
+  usedChildren: number
+  headsLeft: number
+  /** Orange highlight — lot still has remaining money/heads (in use). */
+  isActive?: boolean
+}) {
+  const moneyLeft = Math.round((paid - usedAmount) * 100) / 100
+  const paxDetail = dailyUseHeadParts(usedAdults, usedChildren, usedHeads).detail
+  const moneyLeftClass =
+    moneyLeft < 0
+      ? 'text-rose-700'
+      : isActive || moneyLeft > 0
+        ? 'text-orange-600'
+        : 'text-teal-800'
+  const headsLeftClass =
+    headsLeft < 0
+      ? 'text-rose-700'
+      : isActive || headsLeft > 0
+        ? 'text-orange-600'
+        : 'text-teal-800'
+
+  return (
+    <div className="space-y-1">
+      <div
+        className={cn(
+          'grid grid-cols-3 gap-x-2 gap-y-0.5 rounded-lg px-2.5 py-1.5',
+          isActive ? 'bg-orange-50/90 ring-1 ring-orange-500/25' : 'bg-teal-950/[0.03]',
+        )}
+      >
+        <div className="min-w-0">
+          <p className="text-[9px] font-medium tracking-wide text-teal-900/40 uppercase">
+            Topped up
+          </p>
+          <p className="text-[13px] font-bold leading-tight tabular-nums text-teal-800">
+            {formatMoney(paid)}
+            <span className="ml-0.5 text-[10px] font-semibold text-teal-900/45">THB</span>
+          </p>
+        </div>
+        <div className="min-w-0">
+          <p className="text-[9px] font-medium tracking-wide text-teal-900/40 uppercase">
+            Lot heads
+          </p>
+          <p className="text-[13px] font-bold leading-tight tabular-nums text-teal-950">
+            {lotHeads}
+            <span className="ml-1 text-[9px] font-normal text-teal-900/40">
+              / {formatMoney(lotTotal)}
+            </span>
+          </p>
+        </div>
+        <div className="min-w-0">
+          <p
+            className={cn(
+              'text-[9px] font-medium tracking-wide uppercase',
+              isActive || moneyLeft > 0 ? 'text-orange-700/70' : 'text-teal-900/40',
+            )}
+          >
+            Money left
+          </p>
+          <p className={cn('text-[13px] font-bold leading-tight tabular-nums', moneyLeftClass)}>
+            {formatMoney(moneyLeft)}
+            <span className="ml-0.5 text-[10px] font-semibold opacity-70">THB</span>
+          </p>
+        </div>
+      </div>
+
+      <div
+        className={cn(
+          'grid grid-cols-3 gap-x-2 gap-y-0.5 rounded-lg px-2.5 py-1.5 ring-1',
+          isActive ? 'bg-orange-50/50 ring-orange-500/20' : 'bg-white/70 ring-teal-900/8',
+        )}
+      >
+        <div className="min-w-0">
+          <p className="text-[9px] font-medium tracking-wide text-teal-900/40 uppercase">
+            Used money
+          </p>
+          <p className="text-[13px] font-bold leading-tight tabular-nums text-teal-950">
+            {formatMoney(usedAmount)}
+            <span className="ml-0.5 text-[10px] font-semibold text-teal-900/45">THB</span>
+          </p>
+        </div>
+        <div className="min-w-0">
+          <p className="text-[9px] font-medium tracking-wide text-teal-900/40 uppercase">
+            Used heads
+          </p>
+          <p className="inline-flex items-baseline gap-1 text-[13px] font-bold leading-tight tabular-nums text-teal-950">
+            {usedHeads}
+            <span className="text-[9px] font-normal text-teal-900/40">{paxDetail}</span>
+          </p>
+        </div>
+        <div className="min-w-0">
+          <p
+            className={cn(
+              'text-[9px] font-medium tracking-wide uppercase',
+              isActive || headsLeft > 0 ? 'text-orange-700/70' : 'text-teal-900/40',
+            )}
+          >
+            Heads left
+          </p>
+          <p className={cn('text-[13px] font-bold leading-tight tabular-nums', headsLeftClass)}>
+            {headsLeft}
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function AdminAgentAllotment() {
   const { agents, addAgent } = usePortal()
+  const today = usePortalTodayISO()
   const [view, setView] = useState<View>('hub')
   const [selectedAgentSlug, setSelectedAgentSlug] = useState('')
+  const [selectedLotId, setSelectedLotId] = useState('')
   const [rows, setRows] = useState<AgentAllotment[]>([])
+  const [dailyRows, setDailyRows] = useState<AgentAllotmentDaily[]>([])
+  const [bookingDayPax, setBookingDayPax] = useState<AgentBookingDayPax[]>([])
+  const [advanceExpanded, setAdvanceExpanded] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [draft, setDraft] = useState<Draft>(emptyDraft)
@@ -169,11 +383,22 @@ export function AdminAgentAllotment() {
   const [ledgerDraft, setLedgerDraft] = useState<Draft>(emptyDraft)
   const [ledgerError, setLedgerError] = useState('')
   const [savingLedger, setSavingLedger] = useState(false)
+  const [paymentDraftByLot, setPaymentDraftByLot] = useState<Record<string, PaymentDraft>>({})
+  const [paymentErrorByLot, setPaymentErrorByLot] = useState<Record<string, string>>({})
+  const [savingPaymentLotId, setSavingPaymentLotId] = useState<string | null>(null)
 
   const agentOptions = useMemo(
     () => [...agents].sort((a, b) => a.name.localeCompare(b.name)),
     [agents],
   )
+
+  const deductedByAgent = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const row of dailyRows) {
+      map.set(row.agentSlug, (map.get(row.agentSlug) ?? 0) + row.totalDeduct)
+    }
+    return map
+  }, [dailyRows])
 
   const agentSummaries = useMemo(() => {
     const map = new Map<
@@ -183,6 +408,8 @@ export function AdminAgentAllotment() {
         name: string
         purchases: number
         seats: number
+        used: number
+        remaining: number
         totalAmount: number
         paidAmount: number
         balance: number
@@ -196,6 +423,8 @@ export function AdminAgentAllotment() {
         name: row.agentName,
         purchases: 0,
         seats: 0,
+        used: 0,
+        remaining: 0,
         totalAmount: 0,
         paidAmount: 0,
         balance: 0,
@@ -212,54 +441,211 @@ export function AdminAgentAllotment() {
       if (row.childPrice > 0) current.childPrice = row.childPrice
       map.set(row.agentSlug, current)
     }
+    for (const summary of map.values()) {
+      summary.used = deductedByAgent.get(summary.slug) ?? 0
+      summary.remaining = summary.seats - summary.used
+    }
     return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
-  }, [rows])
+  }, [rows, deductedByAgent])
 
   const selectedAgentRows = useMemo(
     () =>
       rows
         .filter((row) => row.agentSlug === selectedAgentSlug)
         .sort((a, b) => {
-          const aKey = a.paidDate || a.createdAt.slice(0, 10)
-          const bKey = b.paidDate || b.createdAt.slice(0, 10)
-          return aKey.localeCompare(bKey) || a.createdAt.localeCompare(b.createdAt)
+          const aOpen = (a.paidDate || a.createdAt).slice(0, 10)
+          const bOpen = (b.paidDate || b.createdAt).slice(0, 10)
+          return (
+            aOpen.localeCompare(bOpen) ||
+            a.createdAt.localeCompare(b.createdAt) ||
+            a.id.localeCompare(b.id)
+          )
         }),
     [rows, selectedAgentSlug],
   )
 
+  const selectedAgentDaily = useMemo(
+    () => dailyRows.filter((row) => row.agentSlug === selectedAgentSlug),
+    [dailyRows, selectedAgentSlug],
+  )
+
+  const earliestLotOpen = useMemo(
+    () =>
+      selectedAgentRows
+        .map((row) => (row.paidDate || row.createdAt).slice(0, 10))
+        .sort((a, b) => a.localeCompare(b))[0] ?? '',
+    [selectedAgentRows],
+  )
+
+  /**
+   * Committed head usage for FIFO only: tour dates that have already begun
+   * (day ≤ today Bangkok). Future / advance bookings stay out of real deduct
+   * until that calendar day arrives at midnight.
+   */
+  const selectedAgentDailyForFifo = useMemo(() => {
+    const byDay = new Map<string, number>()
+    for (const row of bookingDayPax) {
+      if (earliestLotOpen && row.day < earliestLotOpen) continue
+      if (row.day > today) continue
+      if (row.totalDeduct > 0) byDay.set(row.day, row.totalDeduct)
+    }
+    for (const row of selectedAgentDaily) {
+      if (earliestLotOpen && row.day < earliestLotOpen) continue
+      if (row.day > today) continue
+      byDay.set(row.day, row.totalDeduct)
+    }
+    return [...byDay.entries()]
+      .map(([day, totalDeduct]) => ({ day, totalDeduct }))
+      .sort((a, b) => a.day.localeCompare(b.day))
+  }, [selectedAgentDaily, bookingDayPax, earliestLotOpen, today])
+
+  /** Future tour dates — preview only, not deducted from allotment yet. */
+  const advanceBookingPreview = useMemo(() => {
+    const days = bookingDayPax
+      .filter((row) => {
+        if (row.totalDeduct <= 0) return false
+        if (earliestLotOpen && row.day < earliestLotOpen) return false
+        return row.day > today
+      })
+      .map((row) => ({
+        day: row.day,
+        adults: row.adults,
+        children: row.children,
+        heads: row.totalDeduct,
+      }))
+      .sort((a, b) => a.day.localeCompare(b.day))
+
+    return {
+      days,
+      heads: days.reduce((sum, row) => sum + row.heads, 0),
+      adults: days.reduce((sum, row) => sum + row.adults, 0),
+      children: days.reduce((sum, row) => sum + row.children, 0),
+    }
+  }, [bookingDayPax, earliestLotOpen, today])
+
+  const selectedAgentFifo = useMemo(
+    () =>
+      allocateDailyHeadsFifo(
+        selectedAgentRows.map((row) => ({
+          id: row.id,
+          seats: row.seats,
+          // Business lot date (not DB insert time) so backfilled history FIFO correctly.
+          openedAt: row.paidDate || row.createdAt.slice(0, 10),
+          createdAt: row.createdAt,
+        })),
+        selectedAgentDailyForFifo,
+      ),
+    [selectedAgentRows, selectedAgentDailyForFifo],
+  )
+
+  const selectedAgentUsageByLot = useMemo(
+    () => lotUsageMap(selectedAgentFifo.summaries),
+    [selectedAgentFifo.summaries],
+  )
+
   const selectedAgentSummary = agentSummaries.find((row) => row.slug === selectedAgentSlug) ?? null
 
-  const ledgerLines = useMemo<LedgerLine[]>(() => {
-    let runningHeads = 0
-    return selectedAgentRows.map((row) => {
-      const heads = Math.max(row.seats, row.adultSeats + row.childSeats)
-      runningHeads += heads
-      const paid = allotmentPaidTotal(row)
-      const description =
-        row.note.trim() ||
-        `${heads} heads · AD ${formatMoney(row.adultPrice)} / CH ${formatMoney(row.childPrice)}`
+  const selectedLot = useMemo(
+    () => rows.find((row) => row.id === selectedLotId) ?? null,
+    [rows, selectedLotId],
+  )
+
+  const selectedLotUsage: LotUsageSummary | null = useMemo(() => {
+    if (!selectedLot) return null
+    return (
+      selectedAgentUsageByLot.get(selectedLot.id) ?? {
+        allotmentId: selectedLot.id,
+        purchased: selectedLot.seats,
+        used: 0,
+        remaining: selectedLot.seats,
+      }
+    )
+  }, [selectedLot, selectedAgentUsageByLot])
+
+  const agentDayPax = useMemo(() => {
+    const map = new Map<string, { adults: number; children: number }>()
+    for (const row of bookingDayPax) {
+      map.set(row.day, { adults: row.adults, children: row.children })
+    }
+    return map
+  }, [bookingDayPax])
+
+  /** Latest 3 lots for the agent — history panels on lot detail (no page hop). */
+  const recentLotsHistory = useMemo(() => {
+    const newestFirst = [...selectedAgentRows].reverse().slice(0, 3)
+    return newestFirst.map((lot) => {
+      const usage = selectedAgentUsageByLot.get(lot.id) ?? {
+        allotmentId: lot.id,
+        purchased: lot.seats,
+        used: 0,
+        remaining: lot.seats,
+      }
+      let seatLeft = usage.purchased
+      let totalAdults = 0
+      let totalChildren = 0
+      let totalAmount = 0
+      const dayUsage = (selectedAgentFifo.byLotId.get(lot.id) ?? []).map((item) => {
+        seatLeft -= item.heads
+        const dayPax = agentDayPax.get(item.day) ?? { adults: 0, children: 0 }
+        const split = splitAllocatedPax(item.heads, dayPax.adults, dayPax.children)
+        const amount =
+          split.adults * Math.max(0, lot.adultPrice) +
+          split.children * Math.max(0, lot.childPrice)
+        totalAdults += split.adults
+        totalChildren += split.children
+        totalAmount += amount
+        return {
+          day: item.day,
+          heads: item.heads,
+          seatLeftBalance: seatLeft,
+          adults: split.adults,
+          children: split.children,
+          amount,
+        }
+      })
       return {
-        key: row.id,
-        allotmentId: row.id,
-        date: row.paidDate || row.createdAt.slice(0, 10),
-        description,
-        amount: paid > 0 ? paid : row.totalAmount,
-        heads,
-        balanceHeads: runningHeads,
-        adultPrice: row.adultPrice,
-        childPrice: row.childPrice,
-        parkFee: row.parkFee,
-        row,
+        lot,
+        usage,
+        payments: [...allotmentPayments(lot)].sort((a, b) => a.paidDate.localeCompare(b.paidDate)),
+        dayUsage,
+        usageTotals: {
+          heads: dayUsage.reduce((sum, row) => sum + row.heads, 0),
+          adults: totalAdults,
+          children: totalChildren,
+          amount: totalAmount,
+        },
+        paid: allotmentPaidTotal(lot),
+        due: allotmentBalance(lot),
+        status: allotmentPayStatus(lot),
+        date: lot.paidDate || lot.createdAt.slice(0, 10),
+        isCurrent: lot.id === selectedLotId,
       }
     })
-  }, [selectedAgentRows])
+  }, [
+    selectedAgentRows,
+    selectedAgentUsageByLot,
+    selectedAgentFifo.byLotId,
+    selectedLotId,
+    agentDayPax,
+  ])
+
+  /** Oldest lot that still has heads left (FIFO in progress); else newest if overdrawn. */
+  const activeWorkingLotId = useMemo(() => {
+    const summaries = selectedAgentFifo.summaries
+    if (summaries.length === 0) return ''
+    const withLeft = summaries.find((row) => row.remaining > 0)
+    if (withLeft) return withLeft.allotmentId
+    const overdrawn = [...summaries].reverse().find((row) => row.remaining < 0)
+    return overdrawn?.allotmentId ?? summaries[summaries.length - 1]!.allotmentId
+  }, [selectedAgentFifo.summaries])
 
   function openAgent(slug: string) {
     const summary = agentSummaries.find((row) => row.slug === slug)
     const latest = rows
       .filter((row) => row.agentSlug === slug)
-      .sort((a, b) => (b.paidDate || b.createdAt).localeCompare(a.paidDate || a.createdAt))[0]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
     setSelectedAgentSlug(slug)
+    setSelectedLotId('')
     setLedgerError('')
     setLedgerDraft({
       ...emptyDraft(),
@@ -271,9 +657,36 @@ export function AdminAgentAllotment() {
     setView('agent')
   }
 
+  function openLot(row: AgentAllotment) {
+    setSelectedAgentSlug(row.agentSlug)
+    setSelectedLotId(row.id)
+    setPaymentErrorByLot((current) => {
+      const next = { ...current }
+      delete next[row.id]
+      return next
+    })
+    setPaymentDraftByLot((current) => ({
+      ...current,
+      [row.id]: current[row.id] ?? emptyPaymentDraft(),
+    }))
+    setView('lot')
+  }
+
+  function paymentDraftFor(lotId: string) {
+    return paymentDraftByLot[lotId] ?? emptyPaymentDraft()
+  }
+
+  function patchPaymentDraft(lotId: string, patch: Partial<PaymentDraft>) {
+    setPaymentDraftByLot((current) => ({
+      ...current,
+      [lotId]: { ...(current[lotId] ?? emptyPaymentDraft()), ...patch },
+    }))
+  }
+
   async function refresh() {
-    const next = await listAgentAllotments()
+    const [next, daily] = await Promise.all([listAgentAllotments(), listAgentAllotmentDaily()])
     setRows(next)
+    setDailyRows(daily)
   }
 
   useEffect(() => {
@@ -282,8 +695,11 @@ export function AdminAgentAllotment() {
       setLoading(true)
       setLoadError('')
       try {
-        const next = await listAgentAllotments()
-        if (!cancelled) setRows(next)
+        const [next, daily] = await Promise.all([listAgentAllotments(), listAgentAllotmentDaily()])
+        if (!cancelled) {
+          setRows(next)
+          setDailyRows(daily)
+        }
       } catch (caught) {
         if (!cancelled) {
           setLoadError(caught instanceof Error ? caught.message : 'Could not load allotments.')
@@ -297,6 +713,26 @@ export function AdminAgentAllotment() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!selectedAgentSlug) {
+      setBookingDayPax([])
+      return
+    }
+    setAdvanceExpanded(false)
+    void fetchAgentBookingDayPax(selectedAgentSlug)
+      .then((rows) => {
+        if (!cancelled) setBookingDayPax(rows)
+      })
+      .catch((caught) => {
+        console.error('[allotment] booking day pax failed', caught)
+        if (!cancelled) setBookingDayPax([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedAgentSlug])
 
   function resolveExistingAgent(slug: string) {
     const agent = agentOptions.find((item) => item.slug === slug)
@@ -345,24 +781,26 @@ export function AdminAgentAllotment() {
       return
     }
     if (!Number.isFinite(heads) || heads <= 0) {
-      setAddError('Enter total heads for this top-up.')
+      setAddError('Enter total heads for this lot.')
       return
     }
     if (!isIsoDate(draft.paidDate)) {
-      setAddError('Enter the date of this payment / top-up.')
+      setAddError('Enter the lot / first transfer date.')
       return
     }
     const totals = draftTotals(draft)
-    const paidAmountRaw = draft.paidAmount.trim()
-      ? parseMoney(draft.paidAmount)
-      : totals.totalAmount
-    if (!Number.isFinite(paidAmountRaw) || paidAmountRaw <= 0) {
-      setAddError('Enter the amount transferred for this top-up.')
+    const paidAmountRaw = draft.paidAmount.trim() ? parseMoney(draft.paidAmount) : 0
+    if (!Number.isFinite(paidAmountRaw) || paidAmountRaw < 0) {
+      setAddError('Enter a valid paid amount (0 if not transferred yet).')
+      return
+    }
+    if (paidAmountRaw - totals.totalAmount > 0.009) {
+      setAddError('Paid now cannot exceed the lot total.')
       return
     }
     setAdding(true)
     try {
-      await createAgentAllotment({
+      const created = await createAgentAllotment({
         agentSlug: agent.slug,
         agentName: agent.name,
         adultSeats: heads,
@@ -376,7 +814,7 @@ export function AdminAgentAllotment() {
       })
       setDraft(emptyDraft())
       await refresh()
-      openAgent(agent.slug)
+      openLot(created)
     } catch (caught) {
       setAddError(caught instanceof Error ? caught.message : 'Could not save allotment.')
     } finally {
@@ -428,24 +866,26 @@ export function AdminAgentAllotment() {
       return
     }
     if (!Number.isFinite(heads) || heads <= 0) {
-      setLedgerError('Enter total heads for this top-up.')
+      setLedgerError('Enter total heads for this lot.')
       return
     }
     if (!isIsoDate(ledgerDraft.paidDate)) {
-      setLedgerError('Enter the transfer date.')
+      setLedgerError('Enter the lot / first transfer date.')
       return
     }
     const totals = draftTotals(ledgerDraft)
-    const paidAmountRaw = ledgerDraft.paidAmount.trim()
-      ? parseMoney(ledgerDraft.paidAmount)
-      : totals.totalAmount
-    if (!Number.isFinite(paidAmountRaw) || paidAmountRaw <= 0) {
-      setLedgerError('Enter the amount transferred for this top-up.')
+    const paidAmountRaw = ledgerDraft.paidAmount.trim() ? parseMoney(ledgerDraft.paidAmount) : 0
+    if (!Number.isFinite(paidAmountRaw) || paidAmountRaw < 0) {
+      setLedgerError('Enter a valid paid amount (0 if not transferred yet).')
+      return
+    }
+    if (paidAmountRaw - totals.totalAmount > 0.009) {
+      setLedgerError('Paid now cannot exceed the lot total.')
       return
     }
     setSavingLedger(true)
     try {
-      await createAgentAllotment({
+      const created = await createAgentAllotment({
         agentSlug: agent.slug,
         agentName: agent.name,
         adultSeats: heads,
@@ -465,10 +905,66 @@ export function AdminAgentAllotment() {
         parkFee: current.parkFee,
       }))
       await refresh()
+      openLot(created)
     } catch (caught) {
-      setLedgerError(caught instanceof Error ? caught.message : 'Could not save top-up.')
+      setLedgerError(caught instanceof Error ? caught.message : 'Could not save allotment.')
     } finally {
       setSavingLedger(false)
+    }
+  }
+
+  async function handleAddPaymentForLot(lotId: string, event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const draft = paymentDraftFor(lotId)
+    setPaymentErrorByLot((current) => {
+      const next = { ...current }
+      delete next[lotId]
+      return next
+    })
+    const amount = parseMoney(draft.amount)
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setPaymentErrorByLot((current) => ({
+        ...current,
+        [lotId]: 'Enter a payment amount greater than 0.',
+      }))
+      return
+    }
+    if (!isIsoDate(draft.paidDate)) {
+      setPaymentErrorByLot((current) => ({
+        ...current,
+        [lotId]: 'Enter a valid transfer date.',
+      }))
+      return
+    }
+    setSavingPaymentLotId(lotId)
+    try {
+      await addAgentAllotmentPayment(lotId, {
+        amount,
+        paidDate: draft.paidDate.trim(),
+        note: draft.note,
+      })
+      setPaymentDraftByLot((current) => ({
+        ...current,
+        [lotId]: emptyPaymentDraft(),
+      }))
+      await refresh()
+    } catch (caught) {
+      setPaymentErrorByLot((current) => ({
+        ...current,
+        [lotId]: caught instanceof Error ? caught.message : 'Could not save payment.',
+      }))
+    } finally {
+      setSavingPaymentLotId(null)
+    }
+  }
+
+  async function handleRemoveLastPaymentForLot(lotId: string) {
+    if (!window.confirm('Remove the latest payment on this lot?')) return
+    try {
+      await removeLastAgentAllotmentPayment(lotId)
+      await refresh()
+    } catch (caught) {
+      window.alert(caught instanceof Error ? caught.message : 'Could not remove payment.')
     }
   }
 
@@ -492,7 +988,7 @@ export function AdminAgentAllotment() {
       return
     }
     if (!Number.isFinite(heads) || heads <= 0) {
-      setEditError('Enter total heads for this top-up.')
+      setEditError('Enter total heads for this lot.')
       return
     }
     setSavingEdit(true)
@@ -521,12 +1017,16 @@ export function AdminAgentAllotment() {
   }
 
   async function handleDelete(row: AgentAllotment) {
-    if (!window.confirm(`Remove allotment for ${row.agentName}?`)) return
+    if (!window.confirm(`Remove this lot for ${row.agentName}?`)) return
     try {
       await deleteAgentAllotment(row.id)
+      if (selectedLotId === row.id) {
+        setSelectedLotId('')
+        setView('agent')
+      }
       await refresh()
     } catch (caught) {
-      window.alert(caught instanceof Error ? caught.message : 'Could not remove allotment.')
+      window.alert(caught instanceof Error ? caught.message : 'Could not remove lot.')
     }
   }
 
@@ -535,14 +1035,14 @@ export function AdminAgentAllotment() {
       <div className="w-full">
         <PageHeader
           title="Agent Allotment"
-          description="Prebuy seats by agent — add a purchase, check daily heads, or review booking usage and balance left."
+          description="Open lots per agent, record transfers on each lot, and track heads used (FIFO from oldest lot)."
         />
         <div className="grid gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-3">
           <AllotmentModeCard
             tone="teal"
-            title="Add allotment"
-            subtitle="Open an agent ledger — record top-ups anytime. No need to set a full target first."
-            meta="Top-ups"
+            title="Lots & payments"
+            subtitle="Open a new lot, add transfers on that lot, and see paid / due / heads used / overage."
+            meta="Lots"
             icon={<Plus className="size-7" strokeWidth={1.75} />}
             onClick={() => {
               setDraft(emptyDraft())
@@ -588,20 +1088,677 @@ export function AdminAgentAllotment() {
     )
   }
 
-  if (view === 'agent') {
+  if (view === 'lot' && selectedLot && selectedLotUsage) {
+    const paid = allotmentPaidTotal(selectedLot)
+    const due = allotmentBalance(selectedLot)
+    const status = allotmentPayStatus(selectedLot)
+    const lotDate = selectedLot.paidDate || selectedLot.createdAt.slice(0, 10)
+    const overage =
+      selectedLotUsage.remaining < 0 ? Math.abs(selectedLotUsage.remaining) : 0
+
+    return (
+      <div className="w-full">
+        <PageHeader
+          title={selectedLot.note.trim() || `Lot · ${formatShortDate(lotDate)}`}
+          description={`${selectedLot.agentName} — heads, transfers, and usage for this lot (FIFO from oldest).`}
+          actions={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setSelectedLotId('')
+                setView('agent')
+              }}
+            >
+              <ArrowLeft className="size-3.5" />
+              Back to agent
+            </Button>
+          }
+        />
+
+        <div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          <Surface className="px-4 py-3">
+            <p className="text-xs text-teal-900/45">Lot heads</p>
+            <p className="mt-1 text-lg font-semibold tabular-nums text-teal-950">
+              {selectedLotUsage.purchased}
+            </p>
+            <p className="mt-0.5 text-[11px] text-teal-900/45">
+              {formatMoney(selectedLot.totalAmount)} THB · Park Fee{' '}
+              {formatAllotmentParkFee(selectedLot.parkFee)}
+            </p>
+          </Surface>
+          <Surface className="px-4 py-3">
+            <p className="text-xs text-teal-900/45">Used / left</p>
+            <p className="mt-1 text-lg font-semibold tabular-nums text-teal-950">
+              {selectedLotUsage.used}
+              <span className="mx-1 text-teal-900/30">/</span>
+              <span
+                className={cn(
+                  selectedLotUsage.remaining < 0 ? 'text-rose-700' : 'text-teal-800',
+                )}
+              >
+                {selectedLotUsage.remaining}
+              </span>
+            </p>
+            {overage > 0 ? (
+              <p className="mt-0.5 text-[11px] font-medium text-rose-700">Over by {overage}</p>
+            ) : (
+              <p className="mt-0.5 text-[11px] text-teal-900/45">FIFO from older lots first</p>
+            )}
+          </Surface>
+          <Surface className="px-4 py-3">
+            <p className="text-xs text-teal-900/45">Paid</p>
+            <p className="mt-1 text-lg font-semibold tabular-nums text-teal-800">
+              {formatMoney(paid)} THB
+            </p>
+            <span
+              className={cn(
+                'mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase ring-1 ring-inset',
+                payStatusClass(status),
+              )}
+            >
+              {payStatusLabel(status)}
+            </span>
+          </Surface>
+          <Surface className="px-4 py-3">
+            <p className="text-xs text-teal-900/45">Still due</p>
+            <p
+              className={cn(
+                'mt-1 text-lg font-semibold tabular-nums',
+                due > 0.009 ? 'text-amber-800' : 'text-teal-800',
+              )}
+            >
+              {formatMoney(due)} THB
+            </p>
+            <p className="mt-0.5 text-[11px] text-teal-900/45">
+              of {formatMoney(selectedLot.totalAmount)} lot total
+            </p>
+          </Surface>
+        </div>
+
+        <div className="mb-4 flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => openAgent(selectedLot.agentSlug)}
+          >
+            <Plus data-icon="inline-start" />
+            Add allotment
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => openEdit(selectedLot)}>
+            <Pencil data-icon="inline-start" />
+            Edit lot
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="text-neutral-500 hover:text-red-600"
+            onClick={() => void handleDelete(selectedLot)}
+          >
+            <Trash2 data-icon="inline-start" />
+            Delete lot
+          </Button>
+        </div>
+
+        <div className="mb-5 grid gap-4 lg:grid-cols-2">
+          <div>
+            <div className="mb-2">
+              <h2 className="text-sm font-semibold text-teal-950">Transfers</h2>
+              <p className="text-xs text-teal-900/45">
+                Latest {recentLotsHistory.length} lot
+                {recentLotsHistory.length === 1 ? '' : 's'} — partial pay on each card.
+              </p>
+            </div>
+            {recentLotsHistory.length === 0 ? (
+              <Surface className="p-5 text-sm text-teal-900/55">No lots yet.</Surface>
+            ) : (
+              <div className="space-y-3">
+                {recentLotsHistory.map((entry) => (
+                  <Surface
+                    key={`pay-${entry.lot.id}`}
+                    className={cn(
+                      'overflow-hidden p-0',
+                      entry.lot.id === activeWorkingLotId
+                        ? 'ring-2 ring-orange-500/35'
+                        : entry.isCurrent && 'ring-2 ring-teal-700/20',
+                    )}
+                  >
+                    <div className="space-y-2 border-b border-teal-900/8 px-4 py-3">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-semibold text-teal-950">
+                              {entry.lot.note.trim() || `Lot · ${formatShortDate(entry.date)}`}
+                            </p>
+                            {entry.isCurrent ? (
+                              <span className="rounded-full bg-teal-950/6 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-teal-800 uppercase">
+                                Current
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                className="text-[11px] font-semibold text-teal-700 underline-offset-2 hover:underline"
+                                onClick={() => openLot(entry.lot)}
+                              >
+                                Open
+                              </button>
+                            )}
+                            {entry.lot.id === activeWorkingLotId ? (
+                              <span className="rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-orange-700 uppercase ring-1 ring-inset ring-orange-500/25">
+                                In use
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="mt-0.5 text-[11px] text-teal-900/45">
+                            Opened {formatShortDate(entry.date)} · AD{' '}
+                            {formatMoney(entry.lot.adultPrice)} / CH{' '}
+                            {formatMoney(entry.lot.childPrice)} · Park{' '}
+                            {formatAllotmentParkFee(entry.lot.parkFee)}
+                          </p>
+                        </div>
+                        <LotCardCashBadge paid={entry.paid} lotTotal={entry.lot.totalAmount} />
+                      </div>
+                      <LotCardStats
+                        paid={entry.paid}
+                        lotHeads={entry.lot.seats}
+                        lotTotal={entry.lot.totalAmount}
+                        usedAmount={entry.usageTotals.amount}
+                        usedHeads={entry.usageTotals.heads}
+                        usedAdults={entry.usageTotals.adults}
+                        usedChildren={entry.usageTotals.children}
+                        headsLeft={entry.usage.remaining}
+                        isActive={entry.lot.id === activeWorkingLotId}
+                      />
+                    </div>
+                    {entry.payments.length === 0 ? (
+                      <p className="px-4 py-3 text-sm text-teal-900/50">No transfers yet.</p>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="hover:bg-transparent">
+                            <TableHead className="px-4 text-teal-700/45">Date</TableHead>
+                            <TableHead className="text-teal-700/45">Note</TableHead>
+                            <TableHead className="text-right text-teal-700/45">Amount</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {entry.payments.map((payment) => (
+                            <TableRow key={payment.id}>
+                              <TableCell className="px-4 whitespace-nowrap">
+                                {formatShortDate(payment.paidDate)}
+                              </TableCell>
+                              <TableCell className="text-teal-900/70">
+                                {payment.note || '—'}
+                              </TableCell>
+                              <TableCell className="text-right font-semibold tabular-nums">
+                                {formatMoney(payment.amount)}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                    <div className="border-t border-teal-900/8 px-4 py-3">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-xs font-semibold text-teal-950">Partial pay</p>
+                          <span
+                            className={cn(
+                              'inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase ring-1 ring-inset',
+                              payStatusClass(entry.status),
+                            )}
+                          >
+                            {payStatusLabel(entry.status)}
+                          </span>
+                        </div>
+                        {entry.payments.length > 0 ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void handleRemoveLastPaymentForLot(entry.lot.id)}
+                          >
+                            Undo last
+                          </Button>
+                        ) : null}
+                      </div>
+                      {entry.due <= 0.009 ? (
+                        <p className="text-xs text-teal-900/45">This lot is fully paid.</p>
+                      ) : (
+                        <form
+                          className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4"
+                          onSubmit={(event) => void handleAddPaymentForLot(entry.lot.id, event)}
+                        >
+                          <div className="space-y-1">
+                            <Label className="text-[11px] text-neutral-400">Date</Label>
+                            <Input
+                              type="date"
+                              required
+                              value={paymentDraftFor(entry.lot.id).paidDate}
+                              onChange={(event) =>
+                                patchPaymentDraft(entry.lot.id, {
+                                  paidDate: event.target.value,
+                                })
+                              }
+                              className="h-9"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-[11px] text-neutral-400">Amount</Label>
+                            <Input
+                              type="number"
+                              min={0}
+                              step={1}
+                              required
+                              value={paymentDraftFor(entry.lot.id).amount}
+                              onChange={(event) =>
+                                patchPaymentDraft(entry.lot.id, {
+                                  amount: event.target.value,
+                                })
+                              }
+                              placeholder={String(entry.due)}
+                              className="h-9"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-[11px] text-neutral-400">Note</Label>
+                            <Input
+                              value={paymentDraftFor(entry.lot.id).note}
+                              onChange={(event) =>
+                                patchPaymentDraft(entry.lot.id, {
+                                  note: event.target.value,
+                                })
+                              }
+                              placeholder="Transfer note"
+                              className="h-9"
+                            />
+                          </div>
+                          <div className="flex items-end">
+                            <Button
+                              type="submit"
+                              disabled={savingPaymentLotId === entry.lot.id}
+                              className="h-9 w-full"
+                              size="sm"
+                            >
+                              <Plus data-icon="inline-start" />
+                              {savingPaymentLotId === entry.lot.id ? 'Saving…' : 'Add pay'}
+                            </Button>
+                          </div>
+                        </form>
+                      )}
+                      {paymentErrorByLot[entry.lot.id] ? (
+                        <p className="mt-2 text-sm text-red-600">
+                          {paymentErrorByLot[entry.lot.id]}
+                        </p>
+                      ) : null}
+                    </div>
+                  </Surface>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <div className="mb-2">
+              <h2 className="text-sm font-semibold text-teal-950">Heads used</h2>
+              <p className="text-xs text-teal-900/45">
+                Latest {recentLotsHistory.length} lot
+                {recentLotsHistory.length === 1 ? '' : 's'} — Daily use Head & Seat Left Balance.
+              </p>
+            </div>
+            {recentLotsHistory.length === 0 ? (
+              <Surface className="p-5 text-sm text-teal-900/55">No lots yet.</Surface>
+            ) : (
+              <div className="space-y-3">
+                {recentLotsHistory.map((entry) => (
+                  <Surface
+                    key={`use-${entry.lot.id}`}
+                    className={cn(
+                      'overflow-hidden p-0',
+                      entry.lot.id === activeWorkingLotId
+                        ? 'ring-2 ring-orange-500/35'
+                        : entry.isCurrent && 'ring-2 ring-teal-700/20',
+                    )}
+                  >
+                    <div className="space-y-2 border-b border-teal-900/8 px-4 py-3">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-semibold text-teal-950">
+                              {entry.lot.note.trim() || `Lot · ${formatShortDate(entry.date)}`}
+                            </p>
+                            {entry.isCurrent ? (
+                              <span className="rounded-full bg-teal-950/6 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-teal-800 uppercase">
+                                Current
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                className="text-[11px] font-semibold text-teal-700 underline-offset-2 hover:underline"
+                                onClick={() => openLot(entry.lot)}
+                              >
+                                Open
+                              </button>
+                            )}
+                            {entry.lot.id === activeWorkingLotId ? (
+                              <span className="rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-orange-700 uppercase ring-1 ring-inset ring-orange-500/25">
+                                In use
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="mt-0.5 text-[11px] text-teal-900/45">
+                            Opened {formatShortDate(entry.date)} · AD{' '}
+                            {formatMoney(entry.lot.adultPrice)} / CH{' '}
+                            {formatMoney(entry.lot.childPrice)} · Park{' '}
+                            {formatAllotmentParkFee(entry.lot.parkFee)}
+                          </p>
+                        </div>
+                        <LotCardCashBadge paid={entry.paid} lotTotal={entry.lot.totalAmount} />
+                      </div>
+                      <LotCardStats
+                        paid={entry.paid}
+                        lotHeads={entry.lot.seats}
+                        lotTotal={entry.lot.totalAmount}
+                        usedAmount={entry.usageTotals.amount}
+                        usedHeads={entry.usageTotals.heads}
+                        usedAdults={entry.usageTotals.adults}
+                        usedChildren={entry.usageTotals.children}
+                        headsLeft={entry.usage.remaining}
+                        isActive={entry.lot.id === activeWorkingLotId}
+                      />
+                    </div>
+                    {entry.dayUsage.length === 0 &&
+                    !(
+                      entry.lot.id === activeWorkingLotId && advanceBookingPreview.heads > 0
+                    ) ? (
+                      <p className="px-4 py-3 text-sm text-teal-900/50">No usage on this lot yet.</p>
+                    ) : (
+                      <>
+                        <Table>
+                          <TableHeader>
+                            <TableRow className="hover:bg-transparent">
+                              <TableHead className="h-8 px-3 py-1 text-xs text-teal-700/45">
+                                Tour date
+                              </TableHead>
+                              <TableHead className="h-8 py-1 text-right text-xs text-teal-700/45">
+                                Daily use Head
+                              </TableHead>
+                              <TableHead className="h-8 py-1 text-right text-xs text-teal-700/45">
+                                Seat Left Balance
+                              </TableHead>
+                              <TableHead className="h-8 py-1 text-right text-xs text-teal-700/45">
+                                Amount
+                              </TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {[...entry.dayUsage].reverse().map((item) => (
+                              <TableRow key={`${entry.lot.id}-${item.day}`} className="h-8">
+                                <TableCell className="px-3 py-1 text-sm whitespace-nowrap">
+                                  {formatShortDate(item.day)}
+                                </TableCell>
+                                <TableCell className="py-1 text-right">
+                                  <DailyUseHeadCell
+                                    adults={item.adults}
+                                    children={item.children}
+                                    heads={item.heads}
+                                  />
+                                </TableCell>
+                                <TableCell
+                                  className={cn(
+                                    'py-1 text-right text-sm font-semibold tabular-nums',
+                                    item.seatLeftBalance < 0
+                                      ? 'text-rose-700'
+                                      : 'text-teal-800',
+                                  )}
+                                >
+                                  {item.seatLeftBalance}
+                                </TableCell>
+                                <TableCell className="py-1 text-right text-sm font-semibold tabular-nums text-teal-950">
+                                  {formatMoney(item.amount)} THB
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                            {entry.lot.id === activeWorkingLotId &&
+                            advanceBookingPreview.heads > 0 ? (
+                              <>
+                                <TableRow className="h-9 border-t border-dashed border-amber-500/25 bg-amber-50/40 hover:bg-amber-50/55">
+                                  <TableCell className="px-3 py-1" colSpan={1}>
+                                    <button
+                                      type="button"
+                                      className="inline-flex max-w-full items-center gap-1.5 text-left"
+                                      onClick={() => setAdvanceExpanded((open) => !open)}
+                                      aria-expanded={advanceExpanded}
+                                    >
+                                      {advanceExpanded ? (
+                                        <ChevronDown className="size-3.5 shrink-0 text-amber-700" />
+                                      ) : (
+                                        <ChevronRight className="size-3.5 shrink-0 text-amber-700" />
+                                      )}
+                                      <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-amber-800 uppercase ring-1 ring-inset ring-amber-500/25">
+                                        Advance
+                                      </span>
+                                      <span className="truncate text-[11px] text-amber-900/55">
+                                        not deducted yet · {advanceBookingPreview.days.length} day
+                                        {advanceBookingPreview.days.length === 1 ? '' : 's'}
+                                      </span>
+                                    </button>
+                                  </TableCell>
+                                  <TableCell className="py-1 text-right">
+                                    <DailyUseHeadCell
+                                      adults={advanceBookingPreview.adults}
+                                      children={advanceBookingPreview.children}
+                                      heads={advanceBookingPreview.heads}
+                                    />
+                                  </TableCell>
+                                  <TableCell className="py-1 text-right text-xs font-medium text-amber-800/55">
+                                    —
+                                  </TableCell>
+                                  <TableCell className="py-1 text-right text-xs font-medium text-amber-800/55">
+                                    —
+                                  </TableCell>
+                                </TableRow>
+                                {advanceExpanded
+                                  ? [...advanceBookingPreview.days].reverse().map((item) => (
+                                      <TableRow
+                                        key={`advance-${entry.lot.id}-${item.day}`}
+                                        className="h-8 bg-amber-50/20 hover:bg-amber-50/35"
+                                      >
+                                        <TableCell className="px-3 py-1 pl-9 text-sm whitespace-nowrap text-teal-900/70">
+                                          {formatShortDate(item.day)}
+                                        </TableCell>
+                                        <TableCell className="py-1 text-right">
+                                          <DailyUseHeadCell
+                                            adults={item.adults}
+                                            children={item.children}
+                                            heads={item.heads}
+                                          />
+                                        </TableCell>
+                                        <TableCell className="py-1 text-right text-xs text-teal-900/35">
+                                          —
+                                        </TableCell>
+                                        <TableCell className="py-1 text-right text-xs text-teal-900/35">
+                                          —
+                                        </TableCell>
+                                      </TableRow>
+                                    ))
+                                  : null}
+                              </>
+                            ) : null}
+                            <TableRow className="h-8 border-t-2 border-teal-900/15 bg-teal-950/[0.03] hover:bg-teal-950/[0.03]">
+                              <TableCell className="px-3 py-1 text-sm font-semibold text-teal-950">
+                                Summary
+                              </TableCell>
+                              <TableCell className="py-1 text-right">
+                                <DailyUseHeadCell
+                                  adults={entry.usageTotals.adults}
+                                  children={entry.usageTotals.children}
+                                  heads={entry.usageTotals.heads}
+                                />
+                              </TableCell>
+                              <TableCell
+                                className={cn(
+                                  'py-1 text-right text-sm font-semibold tabular-nums',
+                                  entry.usage.remaining < 0 ? 'text-rose-700' : 'text-teal-800',
+                                )}
+                              >
+                                {entry.usage.remaining}
+                              </TableCell>
+                              <TableCell className="py-1 text-right text-sm font-semibold tabular-nums text-teal-950">
+                                {formatMoney(entry.usageTotals.amount)} THB
+                              </TableCell>
+                            </TableRow>
+                          </TableBody>
+                        </Table>
+                        <p className="border-t border-teal-900/8 px-4 py-2 text-[11px] text-teal-900/45">
+                          Amount = AD × {formatMoney(entry.lot.adultPrice)} + CH ×{' '}
+                          {formatMoney(entry.lot.childPrice)} (this lot’s rates). Future tour dates
+                          stay under Advance until that day begins (midnight Bangkok) — not deducted
+                          while still changeable.
+                        </p>
+                      </>
+                    )}
+                  </Surface>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <Dialog
+          open={editing !== null}
+          onOpenChange={(open) => {
+            if (!open) setEditing(null)
+          }}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Edit lot</DialogTitle>
+              <DialogDescription>
+                Update heads, prices, and note. Existing transfers stay as recorded.
+              </DialogDescription>
+            </DialogHeader>
+            <form
+              className="space-y-4"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void handleEditSave()
+              }}
+            >
+              <div className="space-y-1.5">
+                <Label htmlFor="edit-lot-note">Note</Label>
+                <Input
+                  id="edit-lot-note"
+                  value={editDraft.note}
+                  onChange={(event) =>
+                    setEditDraft((current) => ({ ...current, note: event.target.value }))
+                  }
+                  placeholder="e.g. March set"
+                  className="h-10"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-lot-adult-price">Price / head AD</Label>
+                  <Input
+                    id="edit-lot-adult-price"
+                    type="number"
+                    min={0}
+                    step={1}
+                    required
+                    value={editDraft.adultPrice}
+                    onChange={(event) =>
+                      setEditDraft((current) => ({ ...current, adultPrice: event.target.value }))
+                    }
+                    className="h-10"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-lot-child-price">Price / head CH</Label>
+                  <Input
+                    id="edit-lot-child-price"
+                    type="number"
+                    min={0}
+                    step={1}
+                    required
+                    value={editDraft.childPrice}
+                    onChange={(event) =>
+                      setEditDraft((current) => ({ ...current, childPrice: event.target.value }))
+                    }
+                    className="h-10"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-lot-park-fee">Park Fee</Label>
+                  <select
+                    id="edit-lot-park-fee"
+                    value={editDraft.parkFee}
+                    onChange={(event) =>
+                      setEditDraft((current) => ({
+                        ...current,
+                        parkFee: event.target.value as AgentAllotmentParkFee,
+                      }))
+                    }
+                    className={selectClassName}
+                  >
+                    <option value="inc">Inc</option>
+                    <option value="exc">Exc</option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-lot-heads">Heads</Label>
+                  <Input
+                    id="edit-lot-heads"
+                    type="number"
+                    min={1}
+                    step={1}
+                    required
+                    value={editDraft.heads}
+                    onChange={(event) =>
+                      setEditDraft((current) => ({ ...current, heads: event.target.value }))
+                    }
+                    className="h-10"
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Lot total</Label>
+                <div className="flex h-10 items-center rounded-xl border border-teal-900/10 bg-teal-950/[0.03] px-3 text-sm font-semibold tabular-nums text-teal-950">
+                  {formatMoney(draftTotals(editDraft).totalAmount)} THB
+                </div>
+              </div>
+              {editError ? <p className="text-sm text-red-600">{editError}</p> : null}
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setEditing(null)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={savingEdit}>
+                  {savingEdit ? 'Saving…' : 'Save'}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      </div>
+    )
+  }
+
+  if (view === 'agent' || (view === 'lot' && !selectedLot)) {
     const agentName =
       selectedAgentSummary?.name ||
       selectedAgentRows[0]?.agentName ||
       agents.find((agent) => agent.slug === selectedAgentSlug)?.name ||
       selectedAgentSlug
     const ledgerTotals = draftTotals(ledgerDraft)
-    const newestLine = ledgerLines.at(-1) ?? null
+    const lotsNewestFirst = [...selectedAgentRows].reverse()
 
     return (
       <div className="w-full">
         <PageHeader
-          title={agentName || 'Agent allotment'}
-          description="Top-up history for this agent. Add each transfer as a new line — no need to set a full buy target first."
+          title={agentName || 'Agent Allotment'}
+          description="Each lot is a buy set. Open a lot to record transfers and see heads used / overage."
           actions={
             <Button type="button" variant="outline" size="sm" onClick={() => setView('add')}>
               <ArrowLeft className="size-3.5" />
@@ -610,43 +1767,56 @@ export function AdminAgentAllotment() {
           }
         />
 
-        <div className="mb-4 grid gap-2 sm:grid-cols-3">
+        <div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           <Surface className="px-4 py-3">
-            <p className="text-xs text-teal-900/45">Paid total</p>
+            <p className="text-xs text-teal-900/45">Paid / due</p>
             <p className="mt-1 text-lg font-semibold tabular-nums text-teal-800">
-              {formatMoney(selectedAgentSummary?.paidAmount ?? 0)} THB
+              {formatMoney(selectedAgentSummary?.paidAmount ?? 0)}
+              <span className="mx-1 text-sm font-normal text-teal-900/35">/</span>
+              <span className="text-amber-800">
+                {formatMoney(selectedAgentSummary?.balance ?? 0)}
+              </span>
             </p>
           </Surface>
           <Surface className="px-4 py-3">
-            <p className="text-xs text-teal-900/45">Total heads</p>
+            <p className="text-xs text-teal-900/45">Purchased heads</p>
             <p className="mt-1 text-lg font-semibold tabular-nums text-teal-950">
               {selectedAgentSummary?.seats ?? 0}
             </p>
           </Surface>
           <Surface className="px-4 py-3">
-            <p className="text-xs text-teal-900/45">Top-ups</p>
+            <p className="text-xs text-teal-900/45">Used / left</p>
             <p className="mt-1 text-lg font-semibold tabular-nums text-teal-950">
-              {ledgerLines.length}
+              {selectedAgentSummary?.used ?? 0}
+              <span className="mx-1 text-teal-900/30">/</span>
+              <span
+                className={cn(
+                  (selectedAgentSummary?.remaining ?? 0) < 0 ? 'text-rose-700' : 'text-teal-800',
+                )}
+              >
+                {selectedAgentSummary?.remaining ?? 0}
+              </span>
             </p>
-            {newestLine ? (
-              <p className="mt-0.5 text-[11px] text-teal-900/45">
-                Latest {formatShortDate(newestLine.date)}
-              </p>
-            ) : null}
+          </Surface>
+          <Surface className="px-4 py-3">
+            <p className="text-xs text-teal-900/45">Lots</p>
+            <p className="mt-1 text-lg font-semibold tabular-nums text-teal-950">
+              {selectedAgentRows.length}
+            </p>
           </Surface>
         </div>
 
         <Surface className="mb-4 p-4 sm:p-5">
           <div className="mb-3 flex items-center gap-2">
             <Wallet className="size-4 text-teal-800" />
-            <h2 className="text-sm font-semibold text-teal-950">Add top-up</h2>
+            <h2 className="text-sm font-semibold text-teal-950">Open new lot</h2>
           </div>
           <form
             className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8"
             onSubmit={handleLedgerTopUp}
           >
             <div className="space-y-1.5">
-              <Label className="text-xs text-neutral-400">Date</Label>
+              <Label className="text-xs text-neutral-400">Lot date</Label>
               <Input
                 type="date"
                 required
@@ -658,13 +1828,13 @@ export function AdminAgentAllotment() {
               />
             </div>
             <div className="space-y-1.5 sm:col-span-2 xl:col-span-2">
-              <Label className="text-xs text-neutral-400">Description</Label>
+              <Label className="text-xs text-neutral-400">Note</Label>
               <Input
                 value={ledgerDraft.note}
                 onChange={(event) =>
                   setLedgerDraft((current) => ({ ...current, note: event.target.value }))
                 }
-                placeholder="e.g. Bank transfer / deposit"
+                placeholder="e.g. March set ~100 heads"
                 className="h-10"
               />
             </div>
@@ -728,7 +1898,7 @@ export function AdminAgentAllotment() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-xs text-neutral-400">Amount (THB)</Label>
+              <Label className="text-xs text-neutral-400">Paid now (THB)</Label>
               <Input
                 type="number"
                 min={0}
@@ -737,9 +1907,7 @@ export function AdminAgentAllotment() {
                 onChange={(event) =>
                   setLedgerDraft((current) => ({ ...current, paidAmount: event.target.value }))
                 }
-                placeholder={
-                  ledgerTotals.totalAmount > 0 ? String(ledgerTotals.totalAmount) : '0'
-                }
+                placeholder="0"
                 className="h-10"
               />
             </div>
@@ -747,11 +1915,11 @@ export function AdminAgentAllotment() {
               <div className="flex w-full flex-wrap items-center gap-3">
                 <Button type="submit" disabled={savingLedger} className="h-10">
                   <Plus data-icon="inline-start" />
-                  {savingLedger ? 'Saving…' : 'Add top-up'}
+                  {savingLedger ? 'Saving…' : 'Open lot'}
                 </Button>
                 <p className="text-xs text-teal-900/45">
-                  Auto {formatMoney(ledgerTotals.totalAmount)} THB ({ledgerTotals.seats} heads × AD
-                  price). AD + CH bookings deduct from the same head pool.
+                  Lot total {formatMoney(ledgerTotals.totalAmount)} THB. Paid now can be partial —
+                  add more transfers inside the lot.
                 </p>
               </div>
             </div>
@@ -765,147 +1933,174 @@ export function AdminAgentAllotment() {
           </p>
         ) : null}
 
-        {loading ? <p className="text-sm text-teal-900/50">Loading top-up history…</p> : null}
+        {loading ? <p className="text-sm text-teal-900/50">Loading lots…</p> : null}
 
-        {!loading && ledgerLines.length === 0 ? (
+        {!loading && selectedAgentRows.length === 0 ? (
           <Surface className="p-6 text-sm text-teal-900/55">
-            No top-ups yet. Add the first transfer above.
+            No lots yet. Open the first lot above.
           </Surface>
         ) : null}
 
-        {ledgerLines.length > 0 ? (
+        {lotsNewestFirst.length > 0 ? (
           <>
-            <div className="mb-2 flex items-end justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-semibold text-teal-950">Top-up history</h2>
-                <p className="text-xs text-teal-900/45">
-                  One line per transfer. Balance heads = cumulative heads after that line.
-                </p>
-              </div>
+            <div className="mb-2">
+              <h2 className="text-sm font-semibold text-teal-950">Lots</h2>
+              <p className="text-xs text-teal-900/45">
+                Click a lot for transfers and head usage. Usage fills oldest lots first.
+              </p>
             </div>
 
             <div className="space-y-2 md:hidden">
-              {[...ledgerLines].reverse().map((line) => (
-                <Surface key={line.key} className="p-4">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <p className="text-xs text-teal-900/45">{formatShortDate(line.date)}</p>
-                      <p className="mt-0.5 font-medium text-teal-950">{line.description}</p>
+              {lotsNewestFirst.map((row) => {
+                const usage = selectedAgentUsageByLot.get(row.id)
+                const status = allotmentPayStatus(row)
+                const date = row.paidDate || row.createdAt.slice(0, 10)
+                return (
+                  <button
+                    key={row.id}
+                    type="button"
+                    onClick={() => openLot(row)}
+                    className="w-full rounded-[1.2rem] border border-teal-900/10 bg-white/80 p-4 text-left transition hover:border-teal-600/30 hover:bg-teal-50/40"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-xs text-teal-900/45">{formatShortDate(date)}</p>
+                        <p className="mt-0.5 font-medium text-teal-950">
+                          {row.note.trim() || `${row.seats} Heads`}
+                        </p>
+                      </div>
+                      <span
+                        className={cn(
+                          'inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase ring-1 ring-inset',
+                          payStatusClass(status),
+                        )}
+                      >
+                        {payStatusLabel(status)}
+                      </span>
                     </div>
-                    <p className="font-semibold tabular-nums text-teal-950">
-                      {formatMoney(line.amount)}
-                    </p>
-                  </div>
-                  <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-                    <div>
-                      <p className="text-teal-900/40">Park Fee</p>
-                      <p className="font-semibold text-teal-950">
-                        {formatAllotmentParkFee(line.parkFee)}
-                      </p>
+                    <div className="mt-3 grid grid-cols-4 gap-2 text-xs">
+                      <div>
+                        <p className="text-teal-900/40">Heads</p>
+                        <p className="font-semibold tabular-nums">{row.seats}</p>
+                      </div>
+                      <div>
+                        <p className="text-teal-900/40">Used</p>
+                        <p className="font-semibold tabular-nums">{usage?.used ?? 0}</p>
+                      </div>
+                      <div>
+                        <p className="text-teal-900/40">Left</p>
+                        <p
+                          className={cn(
+                            'font-semibold tabular-nums',
+                            (usage?.remaining ?? 0) < 0 ? 'text-rose-700' : 'text-teal-800',
+                          )}
+                        >
+                          {usage?.remaining ?? row.seats}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-teal-900/40">Due</p>
+                        <p className="font-semibold tabular-nums text-amber-800">
+                          {formatMoney(allotmentBalance(row))}
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-teal-900/40">Heads this line</p>
-                      <p className="font-semibold tabular-nums text-teal-950">{line.heads}</p>
-                    </div>
-                    <div>
-                      <p className="text-teal-900/40">Balance heads</p>
-                      <p className="font-semibold tabular-nums text-teal-800">
-                        {line.balanceHeads}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-3 flex justify-end gap-2">
-                    <Button variant="outline" size="sm" onClick={() => openEdit(line.row)}>
-                      <Pencil data-icon="inline-start" />
-                      Edit
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="icon-sm"
-                      className="text-neutral-400 hover:text-red-600"
-                      aria-label="Delete top-up"
-                      onClick={() => void handleDelete(line.row)}
-                    >
-                      <Trash2 />
-                    </Button>
-                  </div>
-                </Surface>
-              ))}
+                  </button>
+                )
+              })}
             </div>
 
             <Surface className="hidden overflow-x-auto md:block">
               <Table>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
-                    <TableHead className="px-4 text-teal-700/45">Date</TableHead>
-                    <TableHead className="text-teal-700/45">Description</TableHead>
-                    <TableHead className="text-center text-teal-700/45">Park Fee</TableHead>
-                    <TableHead className="text-right text-teal-700/45">Amount</TableHead>
+                    <TableHead className="px-4 text-teal-700/45">Opened</TableHead>
+                    <TableHead className="text-teal-700/45">Lot</TableHead>
                     <TableHead className="text-right text-teal-700/45">Heads</TableHead>
-                    <TableHead className="text-right text-teal-700/45">Balance heads</TableHead>
+                    <TableHead className="text-right text-teal-700/45">Used</TableHead>
+                    <TableHead className="text-right text-teal-700/45">Left</TableHead>
+                    <TableHead className="text-right text-teal-700/45">Paid</TableHead>
+                    <TableHead className="text-right text-teal-700/45">Due</TableHead>
+                    <TableHead className="text-teal-700/45">Status</TableHead>
                     <TableHead className="text-right text-teal-700/45" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {[...ledgerLines].reverse().map((line) => (
-                    <TableRow key={line.key}>
-                      <TableCell className="px-4 whitespace-nowrap">
-                        {formatShortDate(line.date)}
-                      </TableCell>
-                      <TableCell>
-                        <p className="font-medium text-teal-950">{line.description}</p>
-                        <p className="text-[11px] text-teal-900/40">
-                          Price AD {formatMoney(line.adultPrice)} · CH{' '}
-                          {formatMoney(line.childPrice)} · Park{' '}
-                          {formatAllotmentParkFee(line.parkFee)}
-                        </p>
-                      </TableCell>
-                      <TableCell className="text-center tabular-nums font-medium">
-                        {formatAllotmentParkFee(line.parkFee)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums font-semibold">
-                        {formatMoney(line.amount)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums font-medium">
-                        {line.heads}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums font-semibold text-teal-800">
-                        {line.balanceHeads}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-2">
-                          <Button variant="outline" size="sm" onClick={() => openEdit(line.row)}>
-                            <Pencil data-icon="inline-start" />
-                            Edit
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="icon-sm"
-                            className="text-neutral-400 hover:text-red-600"
-                            aria-label="Delete top-up"
-                            onClick={() => void handleDelete(line.row)}
+                  {lotsNewestFirst.map((row) => {
+                    const usage = selectedAgentUsageByLot.get(row.id)
+                    const status = allotmentPayStatus(row)
+                    const date = row.paidDate || row.createdAt.slice(0, 10)
+                    return (
+                      <TableRow
+                        key={row.id}
+                        className="cursor-pointer"
+                        onClick={() => openLot(row)}
+                      >
+                        <TableCell className="px-4 whitespace-nowrap">
+                          {formatShortDate(date)}
+                        </TableCell>
+                        <TableCell>
+                          <p className="font-medium text-teal-950">
+                            {row.note.trim() || `${row.seats} Heads`}
+                          </p>
+                          <p className="text-[11px] text-teal-900/40">
+                            AD {formatMoney(row.adultPrice)} · CH {formatMoney(row.childPrice)} ·
+                            Park {formatAllotmentParkFee(row.parkFee)}
+                          </p>
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums font-medium">
+                          {row.seats}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {usage?.used ?? 0}
+                        </TableCell>
+                        <TableCell
+                          className={cn(
+                            'text-right tabular-nums font-semibold',
+                            (usage?.remaining ?? 0) < 0 ? 'text-rose-700' : 'text-teal-800',
+                          )}
+                        >
+                          {usage?.remaining ?? row.seats}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {formatMoney(allotmentPaidTotal(row))}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums text-amber-800">
+                          {formatMoney(allotmentBalance(row))}
+                        </TableCell>
+                        <TableCell>
+                          <span
+                            className={cn(
+                              'inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase ring-1 ring-inset',
+                              payStatusClass(status),
+                            )}
                           >
-                            <Trash2 />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  <TableRow className="border-t-2 border-teal-900/15 bg-teal-950/[0.03] hover:bg-teal-950/[0.03]">
-                    <TableCell className="px-4 font-semibold text-teal-950" colSpan={3}>
-                      Current total
-                    </TableCell>
-                    <TableCell className="text-right font-semibold tabular-nums text-teal-950">
-                      {formatMoney(selectedAgentSummary?.paidAmount ?? 0)}
-                    </TableCell>
-                    <TableCell className="text-right font-semibold tabular-nums text-teal-950">
-                      {selectedAgentSummary?.seats ?? 0}
-                    </TableCell>
-                    <TableCell className="text-right font-semibold tabular-nums text-teal-800">
-                      {newestLine?.balanceHeads ?? 0}
-                    </TableCell>
-                    <TableCell />
-                  </TableRow>
+                            {payStatusLabel(status)}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right" onClick={(event) => event.stopPropagation()}>
+                          <div className="flex justify-end gap-2">
+                            <Button variant="outline" size="sm" onClick={() => openLot(row)}>
+                              Open
+                            </Button>
+                            <Button variant="outline" size="sm" onClick={() => openEdit(row)}>
+                              <Pencil data-icon="inline-start" />
+                              Edit
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="icon-sm"
+                              className="text-neutral-400 hover:text-red-600"
+                              aria-label="Delete lot"
+                              onClick={() => void handleDelete(row)}
+                            >
+                              <Trash2 />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
                 </TableBody>
               </Table>
             </Surface>
@@ -920,9 +2115,9 @@ export function AdminAgentAllotment() {
         >
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
-              <DialogTitle>Edit top-up</DialogTitle>
+              <DialogTitle>Edit lot</DialogTitle>
               <DialogDescription>
-                Update prices, heads, and description for this transfer line.
+                Update prices, heads, and note. Transfers on this lot are kept.
               </DialogDescription>
             </DialogHeader>
             <form
@@ -933,22 +2128,22 @@ export function AdminAgentAllotment() {
               }}
             >
               <div className="space-y-1.5">
-                <Label htmlFor="edit-ledger-note">Description</Label>
+                <Label htmlFor="edit-agent-lot-note">Note</Label>
                 <Input
-                  id="edit-ledger-note"
+                  id="edit-agent-lot-note"
                   value={editDraft.note}
                   onChange={(event) =>
                     setEditDraft((current) => ({ ...current, note: event.target.value }))
                   }
-                  placeholder="e.g. Bank transfer"
+                  placeholder="e.g. March set"
                   className="h-10"
                 />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
-                  <Label htmlFor="edit-ledger-adult-price">Price / head AD</Label>
+                  <Label htmlFor="edit-agent-lot-adult-price">Price / head AD</Label>
                   <Input
-                    id="edit-ledger-adult-price"
+                    id="edit-agent-lot-adult-price"
                     type="number"
                     min={0}
                     step={1}
@@ -961,9 +2156,9 @@ export function AdminAgentAllotment() {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="edit-ledger-child-price">Price / head CH</Label>
+                  <Label htmlFor="edit-agent-lot-child-price">Price / head CH</Label>
                   <Input
-                    id="edit-ledger-child-price"
+                    id="edit-agent-lot-child-price"
                     type="number"
                     min={0}
                     step={1}
@@ -976,9 +2171,9 @@ export function AdminAgentAllotment() {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="edit-ledger-park-fee">Park Fee</Label>
+                  <Label htmlFor="edit-agent-lot-park-fee">Park Fee</Label>
                   <select
-                    id="edit-ledger-park-fee"
+                    id="edit-agent-lot-park-fee"
                     value={editDraft.parkFee}
                     onChange={(event) =>
                       setEditDraft((current) => ({
@@ -993,9 +2188,9 @@ export function AdminAgentAllotment() {
                   </select>
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="edit-ledger-heads">Heads (AD + CH pool)</Label>
+                  <Label htmlFor="edit-agent-lot-heads">Heads</Label>
                   <Input
-                    id="edit-ledger-heads"
+                    id="edit-agent-lot-heads"
                     type="number"
                     min={1}
                     step={1}
@@ -1009,13 +2204,10 @@ export function AdminAgentAllotment() {
                 </div>
               </div>
               <div className="space-y-1.5">
-                <Label>Line amount</Label>
+                <Label>Lot total</Label>
                 <div className="flex h-10 items-center rounded-xl border border-teal-900/10 bg-teal-950/[0.03] px-3 text-sm font-semibold tabular-nums text-teal-950">
                   {formatMoney(draftTotals(editDraft).totalAmount)} THB
                 </div>
-                <p className="text-xs text-teal-900/45">
-                  Heads × AD price. CH bookings use the same head balance.
-                </p>
               </div>
               {editError ? <p className="text-sm text-red-600">{editError}</p> : null}
               <DialogFooter>
@@ -1038,8 +2230,8 @@ export function AdminAgentAllotment() {
   return (
     <div className="w-full">
       <PageHeader
-        title="Add allotment"
-        description="Record a top-up, or click an agent to open their ledger history. No need to set a full buy target first."
+        title="Lots & payments"
+        description="Open a new lot, or click an agent to manage lots, transfers, and head usage."
         actions={
           <Button type="button" variant="outline" size="sm" onClick={() => setView('hub')}>
             <ArrowLeft className="size-3.5" />
@@ -1187,13 +2379,13 @@ export function AdminAgentAllotment() {
                 setDraft((current) => ({ ...current, paidAmount: event.target.value }))
                 if (addError) setAddError('')
               }}
-              placeholder={addTotals.totalAmount ? String(addTotals.totalAmount) : '0'}
+              placeholder="0"
               className="h-10"
             />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="allotment-paid-date" className="text-xs text-neutral-400">
-              Paid date
+              Lot date
             </Label>
             <Input
               id="allotment-paid-date"
@@ -1210,13 +2402,13 @@ export function AdminAgentAllotment() {
           <div className="flex items-end sm:col-span-2 xl:col-span-9">
             <Button type="submit" disabled={adding} className="h-10 w-full sm:w-auto">
               <Plus data-icon="inline-start" />
-              {adding ? 'Saving…' : 'Save allotment'}
+              {adding ? 'Saving…' : 'Open lot'}
             </Button>
           </div>
         </form>
         <p className="mt-3 text-xs text-teal-900/45">
-          Each save becomes one history line. Prefer opening an agent card below to manage ongoing
-          top-ups in a ledger.
+          Lot total {formatMoney(addTotals.totalAmount)} THB. Paid now can be 0 or partial — add
+          more transfers inside the lot afterward.
         </p>
         {addError ? <p className="mt-3 text-sm text-red-600">{addError}</p> : null}
       </Surface>
@@ -1231,9 +2423,9 @@ export function AdminAgentAllotment() {
 
       {!loading && agentSummaries.length > 0 ? (
         <div className="mt-5">
-          <h2 className="mb-2 text-sm font-semibold text-teal-950">Agents</h2>
+          <h2 className="mb-2 text-sm font-semibold text-teal-950">Agent</h2>
           <p className="mb-3 text-xs text-teal-900/50">
-            Click an agent to view top-up history and add the next transfer.
+            Click an agent to open lots, record transfers, and see heads used.
           </p>
           <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
             {agentSummaries.map((summary) => {
@@ -1254,7 +2446,7 @@ export function AdminAgentAllotment() {
                     <div className="min-w-0">
                       <p className="truncate font-semibold text-teal-950">{summary.name}</p>
                       <p className="mt-0.5 text-xs text-teal-900/45">
-                        {summary.purchases} purchase{summary.purchases === 1 ? '' : 's'} ·{' '}
+                        {summary.purchases} lots ·{' '}
                         {summary.seats} heads
                       </p>
                     </div>
@@ -1267,7 +2459,7 @@ export function AdminAgentAllotment() {
                       {payStatusLabel(status)}
                     </span>
                   </div>
-                  <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                  <div className="mt-3 grid grid-cols-4 gap-2 text-xs">
                     <div>
                       <p className="text-teal-900/40">Paid</p>
                       <p className="font-semibold tabular-nums text-teal-800">
@@ -1275,18 +2467,29 @@ export function AdminAgentAllotment() {
                       </p>
                     </div>
                     <div>
-                      <p className="text-teal-900/40">Heads</p>
-                      <p className="font-semibold tabular-nums text-teal-950">{summary.seats}</p>
+                      <p className="text-teal-900/40">Due</p>
+                      <p className="font-semibold tabular-nums text-amber-800">
+                        {formatMoney(summary.balance)}
+                      </p>
                     </div>
                     <div>
-                      <p className="text-teal-900/40">Lines</p>
-                      <p className="font-semibold tabular-nums text-teal-950">
-                        {summary.purchases}
+                      <p className="text-teal-900/40">Used</p>
+                      <p className="font-semibold tabular-nums text-teal-950">{summary.used}</p>
+                    </div>
+                    <div>
+                      <p className="text-teal-900/40">Left</p>
+                      <p
+                        className={cn(
+                          'font-semibold tabular-nums',
+                          summary.remaining < 0 ? 'text-rose-700' : 'text-teal-800',
+                        )}
+                      >
+                        {summary.remaining}
                       </p>
                     </div>
                   </div>
                   <p className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold tracking-wide text-teal-800 uppercase">
-                    Open ledger
+                    Open lots
                     <ChevronRight className="size-3.5" />
                   </p>
                 </button>
@@ -1298,9 +2501,9 @@ export function AdminAgentAllotment() {
 
       {!loading && rows.length > 0 ? (
         <div className="mt-5">
-          <h2 className="mb-2 text-sm font-semibold text-teal-950">Recent top-ups</h2>
+          <h2 className="mb-2 text-sm font-semibold text-teal-950">Recent lots</h2>
           <p className="mb-3 text-xs text-teal-900/50">
-            Each transfer line. Click the agent name for the full ledger.
+            Click Open to view transfers and head usage on that lot.
           </p>
           <Surface className="overflow-x-auto">
             <Table>
@@ -1311,8 +2514,9 @@ export function AdminAgentAllotment() {
                   <TableHead className="text-right text-teal-700/45">Price CH</TableHead>
                   <TableHead className="text-center text-teal-700/45">Park Fee</TableHead>
                   <TableHead className="text-right text-teal-700/45">Heads</TableHead>
-                  <TableHead className="text-right text-teal-700/45">Total</TableHead>
+                  <TableHead className="text-right text-teal-700/45">Amount</TableHead>
                   <TableHead className="text-right text-teal-700/45">Paid</TableHead>
+                  <TableHead className="text-right text-teal-700/45">Due</TableHead>
                   <TableHead className="text-teal-700/45">Status</TableHead>
                   <TableHead className="text-right text-teal-700/45" />
                 </TableRow>
@@ -1349,6 +2553,9 @@ export function AdminAgentAllotment() {
                       <TableCell className="text-right tabular-nums">
                         {formatMoney(allotmentPaidTotal(row))}
                       </TableCell>
+                      <TableCell className="text-right tabular-nums text-amber-800">
+                        {formatMoney(allotmentBalance(row))}
+                      </TableCell>
                       <TableCell>
                         <span
                           className={cn(
@@ -1361,8 +2568,8 @@ export function AdminAgentAllotment() {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-2">
-                          <Button variant="outline" size="sm" onClick={() => openAgent(row.agentSlug)}>
-                            Ledger
+                          <Button variant="outline" size="sm" onClick={() => openLot(row)}>
+                            Open
                           </Button>
                           <Button variant="outline" size="sm" onClick={() => openEdit(row)}>
                             <Pencil data-icon="inline-start" />
@@ -1372,7 +2579,7 @@ export function AdminAgentAllotment() {
                             variant="outline"
                             size="icon-sm"
                             className="text-neutral-400 hover:text-red-600"
-                            aria-label={`Delete allotment for ${row.agentName}`}
+                            aria-label={`Remove this lot for ${row.agentName}`}
                             onClick={() => void handleDelete(row)}
                           >
                             <Trash2 />
@@ -1395,12 +2602,12 @@ export function AdminAgentAllotment() {
         }}
       >
         <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Edit allotment</DialogTitle>
-            <DialogDescription>
-              Update agent, AD/CH prices and heads. Total recalculates automatically.
-            </DialogDescription>
-          </DialogHeader>
+            <DialogHeader>
+              <DialogTitle>Edit lot</DialogTitle>
+              <DialogDescription>
+                Update agent, AD/CH prices and heads. Existing transfers stay as recorded.
+              </DialogDescription>
+            </DialogHeader>
           <form
             className="space-y-4"
             onSubmit={(event) => {

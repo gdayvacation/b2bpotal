@@ -484,7 +484,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
             </span>
             <span>·</span>
             <span>
-              No show <span className="font-semibold text-teal-950">{dayTotals.noShow}</span>
+              No Show <span className="font-semibold text-teal-950">{dayTotals.noShow}</span>
             </span>
             <span>·</span>
             <span>
@@ -492,7 +492,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
             </span>
             <span>·</span>
             <span>
-              Total deduct <span className="font-semibold text-teal-950">{dayTotals.deduct}</span>
+              Total Deduct <span className="font-semibold text-teal-950">{dayTotals.deduct}</span>
             </span>
           </div>
 
@@ -526,7 +526,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
                             </span>
                           </>
                         ) : (
-                          <span className="text-teal-900/40">No allotment yet</span>
+                          <span className="text-teal-900/40">No lots yet.</span>
                         )}
                       </p>
                     </div>

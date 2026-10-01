@@ -246,6 +246,7 @@ function GuestCheckInForm({
   const [partySize, setPartySize] = useState(1)
   const [guests, setGuests] = useState<GuestDraft[]>([emptyGuestDraft()])
   const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
   const [detailsAttempted, setDetailsAttempted] = useState(false)
   const [doneNeedsPayment, setDoneNeedsPayment] = useState(false)
   const [doneGuideOnly, setDoneGuideOnly] = useState(false)
@@ -629,8 +630,8 @@ function GuestCheckInForm({
     setStep('scope')
   }
 
-  function submitCheckIn() {
-    if (!selectedBooking || !scope) return
+  async function submitCheckIn() {
+    if (!selectedBooking || !scope || submitting) return
     setError('')
 
     if (program && selectedBooking.program !== program) {
@@ -646,39 +647,44 @@ function GuestCheckInForm({
       passportNumber: guest.passportNumber,
     }))
 
-    const result = recordGuestCheckIns({
-      date: selectedBooking.date,
-      program: selectedBooking.program,
-      bookingCode: selectedBooking.code,
-      scope,
-      guests: payload,
-    })
-    if (!result.ok) {
-      setError(result.error)
-      return
-    }
+    setSubmitting(true)
+    try {
+      const result = await recordGuestCheckIns({
+        date: selectedBooking.date,
+        program: selectedBooking.program,
+        bookingCode: selectedBooking.code,
+        scope,
+        guests: payload,
+      })
+      if (!result.ok) {
+        setError(result.error)
+        return
+      }
 
-    if (scope === 'guide') {
-      setDoneNeedsPayment(false)
-      setDoneGuideOnly(true)
+      if (scope === 'guide') {
+        setDoneNeedsPayment(false)
+        setDoneGuideOnly(true)
+        setStep('done')
+        return
+      }
+
+      setDoneGuideOnly(false)
+      setDoneNeedsPayment(
+        paymentDue(
+          selectedBooking,
+          getCheckInEnrollments(
+            selectedBooking.date,
+            selectedBooking.program,
+            selectedBooking.code,
+          )
+            .filter((item) => item.scope !== 'guide')
+            .map((item) => item.nationality),
+        ).needsStaff,
+      )
       setStep('done')
-      return
+    } finally {
+      setSubmitting(false)
     }
-
-    setDoneGuideOnly(false)
-    setDoneNeedsPayment(
-      paymentDue(
-        selectedBooking,
-        getCheckInEnrollments(
-          selectedBooking.date,
-          selectedBooking.program,
-          selectedBooking.code,
-        )
-          .filter((item) => item.scope !== 'guide')
-          .map((item) => item.nationality),
-      ).needsStaff,
-    )
-    setStep('done')
   }
 
   function submitGuideDetails() {
@@ -688,7 +694,7 @@ function GuestCheckInForm({
       return
     }
     setError('')
-    submitCheckIn()
+    void submitCheckIn()
   }
 
   function beginGuestEdit(enrollmentId?: string) {
@@ -1335,6 +1341,7 @@ function GuestCheckInForm({
               ) : null}
               <Button
                 className="h-12 w-full text-base"
+                disabled={submitting}
                 onClick={() => {
                   if (scope === 'guide') {
                     submitGuideDetails()
@@ -1349,8 +1356,10 @@ function GuestCheckInForm({
                   setStep('confirm')
                 }}
               >
-                {scope === 'guide' ? t('groupGuideFinish') : t('next')}
-                <ChevronRight data-icon="inline-end" />
+                {submitting && scope === 'guide' ? t('loading') : scope === 'guide' ? t('groupGuideFinish') : t('next')}
+                {!(submitting && scope === 'guide') ? (
+                  <ChevronRight data-icon="inline-end" />
+                ) : null}
               </Button>
             </div>
           </section>
@@ -1362,7 +1371,10 @@ function GuestCheckInForm({
             guests={guests}
             scope={scope}
             error={error}
-            onConfirm={submitCheckIn}
+            submitting={submitting}
+            onConfirm={() => {
+              void submitCheckIn()
+            }}
           />
         ) : null}
 
@@ -1742,12 +1754,14 @@ function ConfirmStep({
   guests,
   scope,
   error,
+  submitting = false,
   onConfirm,
 }: {
   booking: Booking
   guests: GuestDraft[]
   scope: Scope
   error: string
+  submitting?: boolean
   onConfirm: () => void
 }) {
   const { t } = useCheckInI18n()
@@ -1865,8 +1879,12 @@ function ConfirmStep({
 
         {error ? <p className="text-sm text-rose-700">{error}</p> : null}
 
-        <Button className="h-12 w-full text-base" onClick={onConfirm}>
-          {t('confirmFinish')}
+        <Button
+          className="h-12 w-full text-base"
+          disabled={submitting}
+          onClick={onConfirm}
+        >
+          {submitting ? t('loading') : t('confirmFinish')}
         </Button>
       </div>
     </section>

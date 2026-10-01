@@ -175,10 +175,6 @@ function latestPaidDate(payments: AgentAllotmentPayment[]) {
   return [...payments].sort((a, b) => a.paidDate.localeCompare(b.paidDate)).at(-1)?.paidDate ?? null
 }
 
-function todayFallback() {
-  return new Date().toISOString().slice(0, 10)
-}
-
 /** Real payment rows for writes (materialize legacy synthetic if needed). */
 function writablePayments(row: AgentAllotment): AgentAllotmentPayment[] {
   if (row.payments.length > 0) return row.payments
@@ -233,7 +229,8 @@ function toRowPayload(input: AgentAllotmentInput, payments: AgentAllotmentPaymen
     child_price: childPrice,
     park_fee: parseAllotmentParkFee(input.parkFee),
     total_amount: totalAmount,
-    paid_date: latestPaidDate(payments) ?? (input.paidDate.trim() || null),
+    // paid_date is the lot open / business date — not the latest transfer date.
+    paid_date: input.paidDate.trim() || latestPaidDate(payments) || null,
     payments: paymentsToJson(payments),
     note: input.note?.trim() || '',
   }
@@ -312,23 +309,9 @@ export async function updateAgentAllotment(
 ): Promise<AgentAllotment> {
   const supabase = requireSupabase()
   const existing = await getAgentAllotment(id)
+  // Keep instalment history intact when editing heads/prices on a lot.
   const preserved = writablePayments(existing)
-  const nextTotal = allotmentTotalAmount(input)
-  // Ledger-style rows usually have one payment — keep it in sync with heads × price.
-  const syncedPayments =
-    preserved.length <= 1
-      ? nextTotal > 0
-        ? [
-            {
-              id: preserved[0]?.id || crypto.randomUUID(),
-              amount: nextTotal,
-              paidDate: preserved[0]?.paidDate || input.paidDate.trim() || todayFallback(),
-              note: preserved[0]?.note || '',
-            },
-          ]
-        : []
-      : preserved
-  const payload = toRowPayload(input, syncedPayments)
+  const payload = toRowPayload(input, preserved)
   const { data, error } = await supabase
     .from('agent_allotments')
     .update(payload)
@@ -393,7 +376,8 @@ export async function addAgentAllotmentPayment(
     .from('agent_allotments')
     .update({
       payments: paymentsToJson(nextPayments),
-      paid_date: latestPaidDate(nextPayments),
+      // Keep lot open date; only fill paid_date if the lot never had one.
+      ...(existing.paidDate ? {} : { paid_date: latestPaidDate(nextPayments) }),
     })
     .eq('id', id)
     .select('*')
@@ -413,7 +397,7 @@ export async function removeLastAgentAllotmentPayment(id: string): Promise<Agent
     .from('agent_allotments')
     .update({
       payments: paymentsToJson(nextPayments),
-      paid_date: latestPaidDate(nextPayments),
+      ...(existing.paidDate ? {} : { paid_date: latestPaidDate(nextPayments) }),
     })
     .eq('id', id)
     .select('*')

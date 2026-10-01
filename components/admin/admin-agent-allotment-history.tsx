@@ -797,25 +797,25 @@ export function AdminAgentAllotmentHistory({
               <p className="text-sm font-semibold text-teal-950">{row.name}</p>
               <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
                 <div>
-                  <p className="text-teal-900/45">AD price</p>
+                  <p className="text-teal-900/45">Price AD</p>
                   <p className="font-semibold tabular-nums text-teal-950">
                     {row.adultPrice > 0 ? `${formatMoney(row.adultPrice)} THB` : '—'}
                   </p>
                 </div>
                 <div>
-                  <p className="text-teal-900/45">CH price</p>
+                  <p className="text-teal-900/45">Price CH</p>
                   <p className="font-semibold tabular-nums text-teal-950">
                     {row.childPrice > 0 ? `${formatMoney(row.childPrice)} THB` : '—'}
                   </p>
                 </div>
                 <div>
-                  <p className="text-teal-900/45">Allotment amount</p>
+                  <p className="text-teal-900/45">Lot total</p>
                   <p className="font-semibold tabular-nums text-teal-950">
                     {row.totalAmount > 0 ? `${formatMoney(row.totalAmount)} THB` : '—'}
                   </p>
                 </div>
                 <div>
-                  <p className="text-teal-900/45">Heads left</p>
+                  <p className="text-teal-900/45">Seat Left Balance</p>
                   <p
                     className={cn(
                       'font-semibold tabular-nums',
@@ -968,7 +968,7 @@ export function AdminAgentAllotmentHistory({
                     Total Amount
                   </TableHead>
                   <TableHead className="w-[4.5rem] px-2 text-right text-teal-700/45">Heads</TableHead>
-                  <TableHead className="w-[5rem] px-2 text-right text-teal-700/45">Balance</TableHead>
+                  <TableHead className="w-[5rem] px-2 text-right text-teal-700/45">Left</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
