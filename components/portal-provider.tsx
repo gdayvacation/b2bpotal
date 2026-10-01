@@ -1564,6 +1564,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
     let cancelled = false
     let migrateAttempted = false
+    /** Consecutive failed cloud syncs — drives retry backoff so a struggling DB is not hammered. */
+    let syncFailures = 0
 
     function reloadCheckInMapsFromStorage() {
       setCheckInAttendanceMap(loadCheckInAttendanceMap())
@@ -1628,6 +1630,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         )
         if (cancelled) return
         if (remote === null) {
+          syncFailures += 1
           checkInCloudEnabledRef.current = false
           return
         }
@@ -1765,12 +1768,14 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             setJobOrderActionMap(remoteOps.jobOrderActions)
           }
         }
+        syncFailures = 0
       } catch (error) {
+        syncFailures += 1
         console.error('[portal] check-in sync failed', error)
       } finally {
         checkInSyncInFlightRef.current = false
         // A write or realtime event landed while this sync was in flight — refresh again.
-        if (!cancelled && syncEpoch !== checkInSyncEpochRef.current) {
+        if (!cancelled && syncFailures === 0 && syncEpoch !== checkInSyncEpochRef.current) {
           void syncCheckInFromCloud(false, { partial: true, profile })
         }
       }
@@ -1804,6 +1809,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     // device would otherwise refetch ~12 tables each second. One refetch per 4s window is enough.
     function schedulePartialSync() {
       if (debounceTimer != null) return
+      // After failures (e.g. DB timeouts) wait longer each time: 8s, 16s, 32s … max 2 min.
+      const delay =
+        syncFailures > 0 ? Math.min(120_000, 4000 * 2 ** Math.min(syncFailures, 5)) : 4000
       debounceTimer = window.setTimeout(() => {
         debounceTimer = null
         if (document.visibilityState === 'hidden') return
@@ -1811,7 +1819,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           partial: true,
           profile: cachedProfile ?? undefined,
         })
-      }, 4000)
+      }, delay)
     }
 
     function onVisible() {
