@@ -105,7 +105,9 @@ import {
   CHECK_IN_BOOKED_PAX_STORAGE_KEY,
   hydrateBookedPaxMap,
   loadBookedPaxMap,
+  dropBookedPaxSnapshot,
   moveBookedPaxSnapshot,
+  originalBookedPax,
   type BookedPaxMap,
   type BookedPaxSnapshot,
 } from '@/lib/check-in-booked-pax'
@@ -134,7 +136,10 @@ import {
 import {
   OWN_ARRIVAL_STORAGE_KEY,
   PICKUP_NS_STORAGE_KEY,
+  clampPax,
+  dropPickupMarinaLedgers,
   getPaxFromMap,
+  subtractPax,
   loadOwnArrivalMap,
   loadPickupNoShowMap,
   moveOwnArrival,
@@ -2007,13 +2012,26 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     ) => {
       if (oldDate === newDate) return
 
+      // A no-show belongs to the day it was marked. Moving the booking to another date gives it a
+      // clean slate there: no no-show attendance, pickup NS ledger, own-arrival ledger or NS action.
+      const wasNoShow =
+        getCheckInAttendance(checkInAttendance, oldDate, program, bookingCode) === 'no-show'
+      const hadNoShow =
+        wasNoShow ||
+        paxTotal(getPaxFromMap(pickupNoShowMap, oldDate, program, bookingCode)) > 0 ||
+        getJobOrderAction(jobOrderActionMap, oldDate, program, bookingCode) === 'no-show'
+
       setCheckInEnrollmentMap((current) => {
         const next = moveDayBookingEntry(current, oldDate, newDate, program, bookingCode)
         saveCheckInEnrollmentMap(next)
         return next
       })
       setCheckInAttendanceMap((current) => {
-        const next = moveDayBookingEntry(current, oldDate, newDate, program, bookingCode)
+        const base =
+          getCheckInAttendance(current, oldDate, program, bookingCode) === 'no-show'
+            ? withCheckInAttendance(current, oldDate, program, bookingCode, null)
+            : current
+        const next = moveDayBookingEntry(base, oldDate, newDate, program, bookingCode)
         saveCheckInAttendanceMap(next)
         return next
       })
@@ -2062,15 +2080,32 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       })
       persistCheckInWrite(
         'moveCheckInBookingDate',
-        moveCheckInBookingDate(oldDate, newDate, program, bookingCode),
+        (async () => {
+          // Delete the no-show row first so the date move cannot carry it to the new day.
+          if (wasNoShow) await deleteCheckInAttendanceRow(oldDate, program, bookingCode)
+          await moveCheckInBookingDate(oldDate, newDate, program, bookingCode)
+        })(),
       )
-      moveBookedPaxSnapshot(oldDate, newDate, program, bookingCode)
       moveArrivedPaxSnapshot(oldDate, newDate, program, bookingCode)
-      movePickupNoShow(oldDate, newDate, program, bookingCode)
-      moveOwnArrival(oldDate, newDate, program, bookingCode)
+      if (hadNoShow) {
+        dropBookedPaxSnapshot(oldDate, program, bookingCode)
+        dropPickupMarinaLedgers(oldDate, program, bookingCode)
+      } else {
+        moveBookedPaxSnapshot(oldDate, newDate, program, bookingCode)
+        movePickupNoShow(oldDate, newDate, program, bookingCode)
+        moveOwnArrival(oldDate, newDate, program, bookingCode)
+      }
       setPickupNoShowMap(loadPickupNoShowMap())
       setOwnArrivalMap(loadOwnArrivalMap())
-      setJobOrderActionMap((current) => moveJobOrderAction(current, oldDate, newDate, program, bookingCode))
+      setJobOrderActionMap((current) => {
+        if (getJobOrderAction(current, oldDate, program, bookingCode) === 'no-show') {
+          const next = withJobOrderAction(current, oldDate, program, bookingCode, null)
+          saveJobOrderActionMap(next)
+          persistJobOrderAction(oldDate, program, bookingCode, null)
+          return next
+        }
+        return moveJobOrderAction(current, oldDate, newDate, program, bookingCode)
+      })
     }
 
     const trimEnrollmentsNow = (
@@ -2614,6 +2649,36 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       getCheckInAttendance: (date, program, bookingCode) =>
         getCheckInAttendance(checkInAttendance, date, program, bookingCode),
       setCheckInAttendance: (date, program, bookingCode, status) => {
+        // Undoing a whole no-show (guests came to the marina): the pickup NS ledger still holds
+        // the whole booking, which kept a stale red "-N" on the van board. Re-derive it from
+        // booked snapshot − live booking so only genuinely missing guests stay counted.
+        if (
+          status !== 'no-show' &&
+          getCheckInAttendance(checkInAttendance, date, program, bookingCode) === 'no-show'
+        ) {
+          const booking = bookings.find((item) => item.code === bookingCode)
+          const ledger = getPaxFromMap(pickupNoShowMap, date, program, bookingCode)
+          if (booking && paxTotal(ledger) > 0) {
+            const live = {
+              adults: booking.adults,
+              children: booking.children,
+              infants: booking.infants,
+              tourLeaders: booking.tourLeaders,
+            }
+            const snapshot = originalBookedPax(date, program, booking)
+            const original = {
+              adults: Math.max(snapshot.adults, live.adults),
+              children: Math.max(snapshot.children, live.children),
+              infants: Math.max(snapshot.infants, live.infants),
+              tourLeaders: Math.max(snapshot.tourLeaders, live.tourLeaders),
+            }
+            const derived = clampPax(subtractPax(original, live), original)
+            if (!paxEqual(ledger, derived)) {
+              replacePickupNoShowLocal(date, program, bookingCode, derived)
+              setPickupNoShowMap(loadPickupNoShowMap())
+            }
+          }
+        }
         setCheckInAttendanceMap((current) => {
           const next = withCheckInAttendance(current, date, program, bookingCode, status)
           saveCheckInAttendanceMap(next)

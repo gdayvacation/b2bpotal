@@ -120,7 +120,13 @@ function formatVanPaxMix(pax: PaxBreakdown) {
   return formatPaxShort(pax)
 }
 
-/** NS heads: max(pickup ledger, booked snapshot − live booking). Same source as Guest Pick up. */
+/**
+ * NS heads shown as the red "-N" on a guest card.
+ * - Whole no-show: the whole booking (ledger / snapshot / live pax).
+ * - Otherwise: booked snapshot − live booking only. The pickup NS ledger is NOT used here — it is
+ *   an add-only counter that is not reduced when guests come to the marina or the van is
+ *   cleared, so using it left a stale "-N" after guests were restored.
+ */
 function bookingNoShowCount(
   date: string,
   program: Program,
@@ -144,7 +150,7 @@ function bookingNoShowCount(
       (booked.infants - booking.infants) +
       (booked.tourLeaders - booking.tourLeaders),
   )
-  return Math.max(paxTotal(pickupNs), fromBooked)
+  return fromBooked
 }
 
 /** Live boarding count + orange NS delta (same language as Guest Pick up). */

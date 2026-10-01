@@ -154,6 +154,19 @@ export function getOrCaptureBookedPaxSnapshot(
   return existing
 }
 
+/** Forget the booked-pax baseline for a day (it is re-captured from the live booking when needed). */
+export function dropBookedPaxSnapshot(date: string, program: Program, bookingCode: string) {
+  const map = loadMap()
+  const key = bookingKey(date, program, bookingCode)
+  if (!(key in map)) return
+  delete map[key]
+  saveMap(map)
+  persistQuietly(
+    'delete check-in booked pax',
+    deleteCheckInBookedPax(date, program, bookingCode),
+  )
+}
+
 export function moveBookedPaxSnapshot(
   oldDate: string,
   newDate: string,

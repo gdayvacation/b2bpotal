@@ -291,6 +291,12 @@ export function movePaxMapEntry(
   return existing
 }
 
+/** Remove the pickup no-show and own-arrival ledgers for one day (used when a booking changes date). */
+export function dropPickupMarinaLedgers(date: string, program: Program, bookingCode: string) {
+  setStoredPax(PICKUP_NS_KEY, 'pickup', date, program, bookingCode, emptyPax())
+  setStoredPax(OWN_ARRIVAL_KEY, 'arrival', date, program, bookingCode, emptyPax())
+}
+
 export function movePickupNoShow(oldDate: string, newDate: string, program: Program, bookingCode: string) {
   const moved = movePaxMapEntry(PICKUP_NS_KEY, oldDate, newDate, program, bookingCode)
   if (!moved) return
