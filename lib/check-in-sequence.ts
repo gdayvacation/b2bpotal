@@ -200,10 +200,35 @@ export function buildGuestSequenceMap(input: {
   const result: Record<string, GuestSequenceBlock> = {}
   let cursor = starts.start
 
+  // Pinned (frozen / manual) blocks keep their numbers; everyone else flows around them.
+  const reserved: Array<{ code: string; start: number; end: number }> = []
+  for (const booking of ordered) {
+    const pinned = normalizeStart(starts.bookings[booking.code])
+    if (pinned == null) continue
+    reserved.push({
+      code: booking.code,
+      start: pinned,
+      end: pinned + Math.max(1, totalPassengers(booking)) - 1,
+    })
+  }
+
   for (const booking of ordered) {
     const seats = Math.max(1, totalPassengers(booking))
     const override = normalizeStart(starts.bookings[booking.code])
-    const start = override ?? cursor
+    let start = override ?? cursor
+    if (override == null && reserved.length > 0) {
+      let moved = true
+      while (moved) {
+        moved = false
+        for (const block of reserved) {
+          if (block.code === booking.code) continue
+          if (block.start <= start + seats - 1 && block.end >= start) {
+            start = block.end + 1
+            moved = true
+          }
+        }
+      }
+    }
     const end = start + seats - 1
     result[booking.code] = {
       start,

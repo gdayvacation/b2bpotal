@@ -143,6 +143,7 @@ type BookingRow = {
   moved_out_tour_leaders?: number | null
   moved_from_code?: string | null
   moved_from_date?: string | null
+  updated_at?: string | null
 }
 
 type AvailabilityRow = {
@@ -295,6 +296,56 @@ export async function fetchBookingsInDateRange(
       .range(start, end)
   })
   return data.map(mapBooking)
+}
+
+/**
+ * Cheap poll: only bookings changed since `sinceIso` (uses bookings.updated_at, maintained by a
+ * DB trigger). Bookings are never hard-deleted by the app, so no full table is needed per poll.
+ * Returns the newest updated_at seen so the caller can advance its cursor.
+ */
+export async function fetchBookingsChangedSince(
+  fromDate: string,
+  sinceIso: string,
+): Promise<{ bookings: Booking[]; latestUpdatedAt: string | null }> {
+  const supabase = getSupabaseBrowserClient()
+  const from = asDateString(fromDate)
+  const data = await fetchAllPaged<BookingRow>('bookings', (start, end) =>
+    supabase
+      .from('bookings')
+      .select('*')
+      .gte('date', from)
+      .gt('updated_at', sinceIso)
+      .order('updated_at', { ascending: true })
+      .order('code', { ascending: true })
+      .range(start, end),
+  )
+  let latest: string | null = null
+  for (const row of data) {
+    if (row.updated_at && (!latest || row.updated_at > latest)) latest = row.updated_at
+  }
+  return { bookings: data.map(mapBooking), latestUpdatedAt: latest }
+}
+
+/** Full ops-window fetch that also returns the updated_at cursor for incremental polls. */
+export async function fetchBookingsWithCursor(
+  fromDate: string,
+): Promise<{ bookings: Booking[]; latestUpdatedAt: string | null }> {
+  const supabase = getSupabaseBrowserClient()
+  const from = asDateString(fromDate)
+  const data = await fetchAllPaged<BookingRow>('bookings', (start, end) =>
+    supabase
+      .from('bookings')
+      .select('*')
+      .gte('date', from)
+      .order('date', { ascending: false })
+      .order('code', { ascending: true })
+      .range(start, end),
+  )
+  let latest: string | null = null
+  for (const row of data) {
+    if (row.updated_at && (!latest || row.updated_at > latest)) latest = row.updated_at
+  }
+  return { bookings: data.map(mapBooking), latestUpdatedAt: latest }
 }
 
 /**
@@ -717,6 +768,18 @@ async function assertOk<T>(label: string, error: { message: string } | null, dat
 export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
   const supabase = getSupabaseBrowserClient()
 
+  // Guest QR phones never show agents / pickup zones / hotels, so skip those three queries.
+  // (With 100–200 guests scanning at once this saves hundreds of requests and the biggest payload.)
+  let guestLite = false
+  try {
+    const { data } = await supabase.auth.getSession()
+    guestLite = String(data.session?.user.app_metadata?.role ?? '') === 'guest'
+  } catch {
+    guestLite = false
+  }
+  const emptyRows = () =>
+    Promise.resolve({ data: [] as unknown[], error: null as { message: string } | null })
+
   const [
     agentsRes,
     zonesRes,
@@ -733,9 +796,9 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     cutoffsRes,
     closuresRes,
   ] = await Promise.all([
-    supabase.from('agents').select('*').order('name'),
-    supabase.from('pickup_zones').select('*').order('sort_order'),
-    supabase.from('hotels').select('*').order('name'),
+    guestLite ? emptyRows() : supabase.from('agents').select('*').order('name'),
+    guestLite ? emptyRows() : supabase.from('pickup_zones').select('*').order('sort_order'),
+    guestLite ? emptyRows() : supabase.from('hotels').select('*').order('name'),
     fetchBookingsInDateRange(operationalBookingsFromDate()),
     selectAllPaged<AvailabilityRow>('availability', ['date']),
     selectAllPaged<BoatPlanRow>('day_boat_plans', ['date', 'program']),

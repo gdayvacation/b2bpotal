@@ -199,7 +199,8 @@ import {
   deleteZone,
   fetchBookingEvents,
   fetchBookingByCode,
-  fetchBookings,
+  fetchBookingsChangedSince,
+  fetchBookingsWithCursor,
   fetchBookingsInDateRange,
   fetchCheckInMaps,
   fetchAvailabilitySettings,
@@ -1228,16 +1229,40 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     let busy = false
     let cancelled = false
     let poll: number | undefined
+    let realtimeTimer: number | undefined
     let unsubscribeRealtime: (() => void) | undefined
+    /** Newest bookings.updated_at seen; polls only fetch rows changed after it. */
+    let cursor: string | null = null
+    let lastFullAt = 0
+    const FULL_BOOKINGS_REFRESH_MS = 10 * 60_000
 
     async function refreshBookings() {
       if (cancelled || busy || bookingWritePendingRef.current > 0) return
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       busy = true
       try {
-        const next = await fetchBookings()
-        if (cancelled || bookingWritePendingRef.current > 0) return
         const opsFrom = operationalBookingsFromDate()
+        const now = Date.now()
+        const cursorMs = cursor ? Date.parse(cursor) : Number.NaN
+
+        if (cursor && Number.isFinite(cursorMs) && now - lastFullAt < FULL_BOOKINGS_REFRESH_MS) {
+          // Cheap poll: only rows changed since the last one (60s overlap for late commits).
+          const since = new Date(cursorMs - 60_000).toISOString()
+          const changed = await fetchBookingsChangedSince(opsFrom, since)
+          if (cancelled || bookingWritePendingRef.current > 0) return
+          if (changed.bookings.length > 0) {
+            setBookings((current) => mergeBookingsByCode(current, changed.bookings))
+          }
+          if (changed.latestUpdatedAt && changed.latestUpdatedAt > cursor) {
+            cursor = changed.latestUpdatedAt
+          }
+          return
+        }
+
+        // Full refresh: first load and then every few minutes (also catches manual DB deletes).
+        const full = await fetchBookingsWithCursor(opsFrom)
+        if (cancelled || bookingWritePendingRef.current > 0) return
+        const next = full.bookings
         // Keep lazily loaded history; only refresh the ops window.
         setBookings((current) => {
           const older = current.filter((booking) => booking.date < opsFrom)
@@ -1246,6 +1271,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         if (!bookingRangeCovered(bookingsLoadedRangesRef.current, opsFrom, '9999-12-31')) {
           bookingsLoadedRangesRef.current.push({ from: opsFrom, to: '9999-12-31' })
         }
+        cursor = full.latestUpdatedAt ?? cursor
+        lastFullAt = now
       } catch (error) {
         console.error('[portal] bookings refresh failed', error)
       } finally {
@@ -1278,13 +1305,19 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         return
       }
 
+      // Realtime pushes changes instantly; the interval is only a safety net (saves Supabase quota).
       poll = window.setInterval(() => {
         void refreshBookings()
-      }, 4000)
+      }, 20000)
 
       try {
+        // Coalesce bursts of realtime events (many guests checking in) into one refetch.
         unsubscribeRealtime = subscribeBookings(() => {
-          void refreshBookings()
+          if (realtimeTimer != null) return
+          realtimeTimer = window.setTimeout(() => {
+            realtimeTimer = undefined
+            void refreshBookings()
+          }, 1500)
         })
       } catch (error) {
         console.error('[portal] bookings realtime subscribe failed', error)
@@ -1298,6 +1331,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
       if (poll != null) window.clearInterval(poll)
+      if (realtimeTimer != null) window.clearTimeout(realtimeTimer)
       unsubscribeRealtime?.()
     }
   }, [hydrated])
@@ -1370,7 +1404,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       }
       boatPoll = window.setInterval(() => {
         void refreshDayBoatPlans()
-      }, 4000)
+      }, 20000)
     })()
 
     return () => {
@@ -1437,7 +1471,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       }
       vehiclePoll = window.setInterval(() => {
         void refreshDayVehiclePlans()
-      }, 4000)
+      }, 20000)
     })()
 
     return () => {
@@ -1496,7 +1530,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (role === 'guest') return
       settingsPoll = window.setInterval(() => {
         void refreshAvailabilitySettings()
-      }, 4000)
+      }, 30000)
     })()
 
     return () => {
@@ -1749,15 +1783,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     let debounceTimer: number | null = null
     let cachedProfile: SyncProfile | null = null
 
+    // Throttle (not debounce): during a guest rush realtime fires constantly, and every admin
+    // device would otherwise refetch ~12 tables each second. One refetch per 4s window is enough.
     function schedulePartialSync() {
-      if (debounceTimer != null) window.clearTimeout(debounceTimer)
+      if (debounceTimer != null) return
       debounceTimer = window.setTimeout(() => {
         debounceTimer = null
+        if (document.visibilityState === 'hidden') return
         void syncCheckInFromCloud(false, {
           partial: true,
           profile: cachedProfile ?? undefined,
         })
-      }, 1000)
+      }, 4000)
     }
 
     function onVisible() {
@@ -1797,7 +1834,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       // Staff/helper: day-scoped poll as fallback; realtime (debounced) covers the rush.
       poll = window.setInterval(() => {
         schedulePartialSync()
-      }, 15_000)
+      }, 30_000)
     })()
 
     return () => {
