@@ -984,7 +984,17 @@ export function buildInvoiceItemsForBooking(
     }
   } else {
     const original = originalBookedPax(booking.date, booking.program, booking)
-    const noShow = noShowPaxForInvoice(booking, original, options?.attendance)
+    const noShowBeforeMove = noShowPaxForInvoice(booking, original, options?.attendance)
+    // Guests moved to another date are billed on that date (plus the change-date charge), not here.
+    const movedOut = booking.movedOutPax
+    const noShow = movedOut
+      ? {
+          adults: Math.max(0, noShowBeforeMove.adults - movedOut.adults),
+          children: Math.max(0, noShowBeforeMove.children - movedOut.children),
+          infants: Math.max(0, noShowBeforeMove.infants - movedOut.infants),
+          tourLeaders: Math.max(0, noShowBeforeMove.tourLeaders - movedOut.tourLeaders),
+        }
+      : noShowBeforeMove
     const wholeNoShow = options?.attendance === 'no-show'
     const tourPax = wholeNoShow
       ? emptySnapshot()
@@ -1093,11 +1103,14 @@ export function buildInvoiceItemsForBooking(
       bookingCode: booking.code,
       travelDate: booking.date,
       voucherNo,
-      description: lateReduceFeeDescription({
-        amount: reduceFee,
-        adults: heads,
-        adultPrice: perPerson,
-      }),
+      description: booking.movedFrom
+        ? // Guests moved here from another date at marina check-in (extra charge per person).
+          `Moved to this date · extra charge${heads > 0 ? `, ${heads}Pax` : ''} (from ${booking.movedFrom.code} · ${booking.movedFrom.date})`
+        : lateReduceFeeDescription({
+            amount: reduceFee,
+            adults: heads,
+            adultPrice: perPerson,
+          }),
       adults: heads,
       children: 0,
       infants: 0,

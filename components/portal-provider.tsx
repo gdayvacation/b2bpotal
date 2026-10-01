@@ -340,6 +340,7 @@ import {
   PARTNER_BOAT_CAPACITY,
   normalizeChargeAmount,
   privateTransferPriceFor,
+  bookedPaxOf,
   totalPassengers,
 } from '@/lib/types'
 
@@ -3188,8 +3189,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           code,
           pickupTime,
           status: pending ? 'Pending Pickup Time' : 'Confirmed',
-          lateChangeFee: 0,
+          // Guests moved in from another date at marina check-in carry the change-date charge.
+          lateChangeFee: Math.max(0, Math.floor(options?.moveFee ?? 0)),
           lateDateChange: false,
+          movedFrom: options?.movedFrom ?? null,
         }
         setBookings((current) => [booking, ...current])
         persistBookingWrite(
@@ -3327,6 +3330,13 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               ? options.lateChangeFee > 0
               : autoLateDateChange
         const nextLateDateChange = existing.lateDateChange === true || chargeLateDateChange
+        // Marina check-in move: bill the change-date charge on this booking (new date) and mark
+        // where it came from.
+        const trackedMove = options?.moveFee !== undefined
+        const moveFee = trackedMove ? Math.max(0, Math.floor(options?.moveFee ?? 0)) : 0
+        const nextLateChangeFee = (existing.lateChangeFee ?? 0) + moveFee
+        // Every date change leaves a "Moved from <old date>" note on the booking.
+        const movedFrom = { code, date: oldDate }
 
         setBookings((current) =>
           current.map((booking) =>
@@ -3335,6 +3345,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
                   ...booking,
                   date: trimmedDate,
                   lateDateChange: nextLateDateChange,
+                  movedFrom,
+                  ...(trackedMove ? { lateChangeFee: nextLateChangeFee } : {}),
                 }
               : booking,
           ),
@@ -3343,12 +3355,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           'updateBookingDate',
           updateBookingDate(code, trimmedDate, {
             lateDateChange: nextLateDateChange,
+            movedFrom,
+            ...(trackedMove ? { lateChangeFee: nextLateChangeFee } : {}),
           }),
         )
         logBookingEvent(
           code,
           'date_changed',
-          chargeLateDateChange
+          trackedMove
+            ? `Date changed ${oldDate} → ${trimmedDate} · moved at marina check-in · extra charge ${moveFee.toLocaleString('en-US')} THB`
+            : chargeLateDateChange
             ? `Date changed ${oldDate} → ${trimmedDate} · late change · full charge (Invoice) / head deduct (Prebuy)`
             : options?.lateDateChange === false || options?.lateChangeFee === 0
               ? `Date changed ${oldDate} → ${trimmedDate} · late change waived`
@@ -3585,6 +3601,51 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const newPax = totalPassengers(next)
         if (newPax < 1) return { ok: false, error: 'At least 1 passenger is required.' }
 
+        // Keep the booking as originally booked. Marina no-show / own arrival (`opsAdjust`) only
+        // change the LIVE counts; a real amendment (admin/agent edit) moves the original too.
+        const livePaxChanged =
+          next.adults !== existing.adults ||
+          next.children !== existing.children ||
+          next.infants !== existing.infants ||
+          next.tourLeaders !== existing.tourLeaders
+        if (livePaxChanged) {
+          const prior = bookedPaxOf(existing)
+          const proposed = options?.opsAdjust
+            ? prior
+            : {
+                adults: prior.adults + (next.adults - existing.adults),
+                children: prior.children + (next.children - existing.children),
+                infants: prior.infants + (next.infants - existing.infants),
+                tourLeaders: prior.tourLeaders + (next.tourLeaders - existing.tourLeaders),
+              }
+          const original = {
+            adults: Math.max(next.adults, proposed.adults),
+            children: Math.max(next.children, proposed.children),
+            infants: Math.max(next.infants, proposed.infants),
+            tourLeaders: Math.max(next.tourLeaders, proposed.tourLeaders),
+          }
+          const sameAsLive =
+            original.adults === next.adults &&
+            original.children === next.children &&
+            original.infants === next.infants &&
+            original.tourLeaders === next.tourLeaders
+          next.originalPax = sameAsLive ? null : original
+        }
+
+        // Guests moved to another date from marina check-in: remember them on this booking so it
+        // keeps the original count ("7>3") and is billed only for who stays.
+        const movedOutNow = options?.movedOut
+        const writeMovedOut = Boolean(movedOutNow)
+        if (movedOutNow) {
+          const prev = existing.movedOutPax
+          next.movedOutPax = {
+            adults: (prev?.adults ?? 0) + movedOutNow.adults,
+            children: (prev?.children ?? 0) + movedOutNow.children,
+            infants: (prev?.infants ?? 0) + movedOutNow.infants,
+            tourLeaders: (prev?.tourLeaders ?? 0) + movedOutNow.tourLeaders,
+          }
+        }
+
         const oldPax = totalPassengers(existing)
         const delta = newPax - oldPax
         if (delta > 0) {
@@ -3617,6 +3678,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               ? `pax ${oldPax}→${newPax}`
               : `pax mix ${existing.adults}AD/${existing.children}CH→${next.adults}AD/${next.children}CH`,
           )
+        }
+        if (movedOutNow) {
+          const movedCount =
+            movedOutNow.adults + movedOutNow.children + movedOutNow.infants + movedOutNow.tourLeaders
+          changes.push(`${movedCount} guest${movedCount === 1 ? '' : 's'} moved to another date`)
         }
         if (next.pickupZone !== existing.pickupZone) {
           changes.push(
@@ -3668,7 +3734,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         setBookings((current) =>
           current.map((booking) => (booking.code === code ? next : booking)),
         )
-        persistBookingWrite('updateBookingDetails', updateBookingDetails(next))
+        persistBookingWrite(
+          'updateBookingDetails',
+          updateBookingDetails(next, { writeOriginalPax: livePaxChanged, writeMovedOut }),
+        )
         logBookingEvent(
           code,
           'details_edited',

@@ -119,7 +119,7 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
       `${SHEET_TITLES.monthly}!A${bookingsQueryRow}`,
       [
         ['Bookings for selected month'],
-        [`=IF(B1="","Select a month",QUERY(Bookings!A:AC,"select * where Col1 = '"&B1&"'",1))`],
+        [`=IF(B1="","Select a month",QUERY(Bookings!A:AD,"select * where Col1 = '"&B1&"'",1))`],
       ],
       'USER_ENTERED',
     ),

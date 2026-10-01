@@ -76,6 +76,7 @@ import {
     primaryBoatNumber,
     specialTransferDirectionLabel,
   specialTransferKindLabel,
+  totalMovedOut,
   totalPassengers,
   vanOutsourceLabel,
   vanSeatCapacity,
@@ -134,11 +135,16 @@ function bookingNoShowCount(
   pickupNs: PaxBreakdown,
   wholeNoShow: boolean,
 ) {
+  // Guests moved to another date left this booking on purpose — they are not no-shows here.
+  const movedOut = totalMovedOut(booking)
   if (wholeNoShow) {
     return Math.max(
-      paxTotal(pickupNs),
-      paxBreakdownTotal(originalBookedPax(date, program, booking)),
-      totalPassengers(booking),
+      0,
+      Math.max(
+        paxTotal(pickupNs),
+        paxBreakdownTotal(originalBookedPax(date, program, booking)),
+        totalPassengers(booking),
+      ) - movedOut,
     )
   }
   const booked = originalBookedPax(date, program, booking)
@@ -148,7 +154,8 @@ function bookingNoShowCount(
       booking.adults +
       (booked.children - booking.children) +
       (booked.infants - booking.infants) +
-      (booked.tourLeaders - booking.tourLeaders),
+      (booked.tourLeaders - booking.tourLeaders) -
+      movedOut,
   )
   return fromBooked
 }

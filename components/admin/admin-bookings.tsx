@@ -57,7 +57,15 @@ import { formatShortDate, startOfToday, toISODate } from '@/lib/format'
 import { bookingTourAmount, ratesForAgent } from '@/lib/invoice'
 import { formatThbAmount, isLateAmendmentForDate } from '@/lib/booking-cutoffs'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
-import { isNoTransfer, isPrivateTransfer, totalPassengers, type Booking, type Program } from '@/lib/types'
+import {
+  isNoTransfer,
+  isPrivateTransfer,
+  totalBookedPassengers,
+  totalMovedOut,
+  totalPassengers,
+  type Booking,
+  type Program,
+} from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 /** Wider window when searching text fields; code search ignores this. */
@@ -377,6 +385,25 @@ function BookingStatusMenu({
   )
 }
 
+function bookingPaxTitle(booking: Booking) {
+  const booked = totalBookedPassengers(booking)
+  const live = totalPassengers(booking)
+  const movedOut = totalMovedOut(booking)
+  const parts: string[] = []
+  if (movedOut > 0) {
+    parts.push(`Booked ${booked} · ${movedOut} moved to another date (billed there + extra charge)`)
+    parts.push(`${Math.max(0, booked - movedOut)} stay on this date`)
+  } else if (booked !== live) {
+    parts.push(`Booked ${booked} · live on tour ${live} (marina no-show / own arrival)`)
+  }
+  if (booking.movedFrom) {
+    parts.push(
+      `Moved from ${booking.movedFrom.date}${booking.movedFrom.code !== booking.code ? ` (${booking.movedFrom.code})` : ''}`,
+    )
+  }
+  return parts.length ? parts.join(' · ') : undefined
+}
+
 export function AdminBookings() {
   const { bookings, bookingCutoffs, cancelBooking, hydrated, setBookingPickupTime } = usePortal()
   const invoiceStore = useInvoiceStore()
@@ -478,7 +505,9 @@ export function AdminBookings() {
     () =>
       list.reduce(
         (sum, booking) =>
-          booking.status === 'Cancelled' ? sum : sum + totalPassengers(booking),
+          booking.status === 'Cancelled'
+            ? sum
+            : sum + totalBookedPassengers(booking) - totalMovedOut(booking),
         0,
       ),
     [list],
@@ -858,6 +887,7 @@ export function AdminBookings() {
                     className={cn(
                       'cursor-pointer',
                       createdCode === booking.code && 'bg-emerald-50/70',
+                      booking.movedFrom && booking.status !== 'Cancelled' && 'bg-amber-50/70',
                       booking.status === 'Cancelled' && 'bg-rose-50/70 text-rose-900/80',
                     )}
                     onClick={() => setVoucherTarget(booking)}
@@ -886,11 +916,31 @@ export function AdminBookings() {
                     >
                       {booking.agentRef?.trim() ? booking.agentRef : '—'}
                     </TableCell>
-                    <TableCell className="truncate px-2 hover:underline" title={booking.leadGuest}>
+                    <TableCell
+                      className="truncate px-2 hover:underline"
+                      title={
+                        booking.movedFrom
+                          ? `${booking.leadGuest} · moved from ${booking.movedFrom.date}${booking.movedFrom.code !== booking.code ? ` (${booking.movedFrom.code})` : ''}`
+                          : booking.leadGuest
+                      }
+                    >
+                      {booking.movedFrom ? (
+                        <span className="mr-1 rounded bg-amber-100 px-1 py-px text-[10px] font-semibold text-amber-900 uppercase">
+                          Moved {formatShortDate(booking.movedFrom.date)}
+                        </span>
+                      ) : null}
                       {booking.leadGuest}
                     </TableCell>
-                    <TableCell className="px-1 text-center tabular-nums">
-                      {totalPassengers(booking)}
+                    <TableCell
+                      className="px-1 text-center tabular-nums"
+                      title={bookingPaxTitle(booking)}
+                    >
+                      {totalBookedPassengers(booking)}
+                      {totalMovedOut(booking) > 0 ? (
+                        <span className="font-semibold text-amber-700">
+                          &gt;{totalMovedOut(booking)}
+                        </span>
+                      ) : null}
                     </TableCell>
                     <TableCell
                       className="truncate px-2"

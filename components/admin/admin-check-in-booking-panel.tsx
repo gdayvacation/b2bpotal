@@ -24,10 +24,16 @@ import {
   formatIncludeShort,
   formatLongDate,
   formatShortDate,
-  parseCashOnTourAmount,
 } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { NO_TRANSFER_TIME, NO_TRANSFER_ZONE, totalPassengers, type Booking } from '@/lib/types'
+import {
+  NO_TRANSFER_TIME,
+  NO_TRANSFER_ZONE,
+  bookedPaxOf,
+  totalPassengers,
+  type Booking,
+} from '@/lib/types'
+import { clearArrivedPaxSnapshot } from '@/lib/check-in-arrived-pax'
 import {
   formatGuestPaxParts,
   getBookedPaxSnapshot,
@@ -41,7 +47,7 @@ import {
   subtractPax,
 } from '@/lib/pickup-marina-sync'
 
-type PanelAction = 'ns-whole' | 'ns-some' | 'date' | 'own-arrival'
+type PanelAction = 'ns-whole' | 'ns-some' | 'date' | 'own-arrival' | 'ns-undo'
 
 export function AdminCheckInBookingPanel({
   open,
@@ -59,7 +65,9 @@ export function AdminCheckInBookingPanel({
   const {
     updateBookingDetails,
     addBooking,
+    cancelBooking,
     changeBookingDate,
+    bookingCutoffs,
     getCheckInEnrollments,
     getCheckInAttendance,
     removeCheckInEnrollment,
@@ -68,6 +76,7 @@ export function AdminCheckInBookingPanel({
     assignBookingToVan,
     getPickupNoShow,
     recordPickupNoShow,
+    replacePickupNoShow,
     getOwnArrival,
     recordOwnArrival,
     repairPickupMarinaLedgers,
@@ -109,11 +118,13 @@ export function AdminCheckInBookingPanel({
     }
     const booked = getOrCaptureBookedPaxSnapshot(today, booking.program, booking.code, current)
     // Never trust inflated NS/taxi math for "original" — snapshot/current only.
+    // The booking row keeps the originally booked counts even if the day snapshot was overwritten.
+    const recorded = bookedPaxOf(booking)
     const safeOriginal = {
-      adults: Math.max(booked.adults, current.adults),
-      children: Math.max(booked.children, current.children),
-      infants: Math.max(booked.infants, current.infants),
-      tourLeaders: Math.max(booked.tourLeaders, current.tourLeaders),
+      adults: Math.max(booked.adults, current.adults, recorded.adults),
+      children: Math.max(booked.children, current.children, recorded.children),
+      infants: Math.max(booked.infants, current.infants, recorded.infants),
+      tourLeaders: Math.max(booked.tourLeaders, current.tourLeaders, recorded.tourLeaders),
     }
     setOriginal(safeOriginal)
     repairPickupMarinaLedgers(
@@ -163,15 +174,40 @@ export function AdminCheckInBookingPanel({
   const nsTotal = nsAdults + nsChildren + nsInfants + nsTourLeaders
   const remainingAfterNs = currentTotal - nsTotal
   const moveTotal = moveAdults + moveChildren + moveInfants + moveTourLeaders
-  const extraChargeAmount = Math.max(0, Math.floor(Number(extraCharge.replace(/,/g, '')) || 0))
+  // Change-date charge is per adult/child (infants and TL are free), on the date they move to.
+  const movedChargeHeads =
+    dateMode === 'whole'
+      ? (booking?.adults ?? 0) + (booking?.children ?? 0)
+      : moveAdults + moveChildren
+  const defaultMoveFee = movedChargeHeads * Math.max(0, bookingCutoffs.dateChangeFeePerPerson)
+  const extraChargeAmount =
+    extraCharge.trim() === ''
+      ? defaultMoveFee
+      : Math.max(0, Math.floor(Number(extraCharge.replace(/,/g, '')) || 0))
   const arrTotal = arrAdults + arrChildren + arrInfants + arrTourLeaders
+  // Guests moved to another date are not "missing" — they left this booking on purpose.
+  const movedOutPax = booking?.movedOutPax ?? { adults: 0, children: 0, infants: 0, tourLeaders: 0 }
+  const movedOutTotal = paxTotal(movedOutPax)
   const missingPax = {
-    adults: Math.max(0, (original?.adults ?? booking?.adults ?? 0) - (booking?.adults ?? 0)),
-    children: Math.max(0, (original?.children ?? booking?.children ?? 0) - (booking?.children ?? 0)),
-    infants: Math.max(0, (original?.infants ?? booking?.infants ?? 0) - (booking?.infants ?? 0)),
+    adults: Math.max(
+      0,
+      (original?.adults ?? booking?.adults ?? 0) - (booking?.adults ?? 0) - movedOutPax.adults,
+    ),
+    children: Math.max(
+      0,
+      (original?.children ?? booking?.children ?? 0) -
+        (booking?.children ?? 0) -
+        movedOutPax.children,
+    ),
+    infants: Math.max(
+      0,
+      (original?.infants ?? booking?.infants ?? 0) - (booking?.infants ?? 0) - movedOutPax.infants,
+    ),
     tourLeaders: Math.max(
       0,
-      (original?.tourLeaders ?? booking?.tourLeaders ?? 0) - (booking?.tourLeaders ?? 0),
+      (original?.tourLeaders ?? booking?.tourLeaders ?? 0) -
+        (booking?.tourLeaders ?? 0) -
+        movedOutPax.tourLeaders,
     ),
   }
   const missingTotal =
@@ -210,6 +246,31 @@ export function AdminCheckInBookingPanel({
         tourLeaders: booking.tourLeaders,
       })
     : '—'
+
+  // Booked guests that are still missing from the live count (no-show entered by mistake).
+  const bookedByRecord = booking ? bookedPaxOf(booking) : null
+  const undoTarget =
+    booking && bookedByRecord
+      ? {
+          adults: Math.max(booking.adults, bookedByRecord.adults - movedOutPax.adults),
+          children: Math.max(booking.children, bookedByRecord.children - movedOutPax.children),
+          infants: Math.max(booking.infants, bookedByRecord.infants - movedOutPax.infants),
+          tourLeaders: Math.max(
+            booking.tourLeaders,
+            bookedByRecord.tourLeaders - movedOutPax.tourLeaders,
+          ),
+        }
+      : null
+  const undoRestore =
+    booking && undoTarget
+      ? {
+          adults: undoTarget.adults - booking.adults,
+          children: undoTarget.children - booking.children,
+          infants: undoTarget.infants - booking.infants,
+          tourLeaders: undoTarget.tourLeaders - booking.tourLeaders,
+        }
+      : null
+  const canUndoNoShow = undoRestore !== null && paxTotal(undoRestore) > 0
 
   if (!booking) return null
 
@@ -292,7 +353,8 @@ export function AdminCheckInBookingPanel({
         infants: nextInfants,
         tourLeaders: nextTourLeaders,
       },
-      { actor, bypassCutoff: true, lateChangeFee: 0 },
+      // No-show lowers the live count only; the booking keeps its original booked guests.
+      { actor, bypassCutoff: true, lateChangeFee: 0, opsAdjust: true },
     )
     setSaving(false)
     if (!result.ok) {
@@ -317,102 +379,57 @@ export function AdminCheckInBookingPanel({
       return
     }
 
+    const movesEveryone =
+      dateMode === 'whole' ||
+      (moveAdults >= booking.adults &&
+        moveChildren >= booking.children &&
+        moveInfants >= booking.infants &&
+        moveTourLeaders >= booking.tourLeaders)
+
+    if (dateMode === 'partial') {
+      if (moveTotal < 1) {
+        setDateError('Choose how many AD / CH / INF / TL to move to the new date.')
+        return
+      }
+      if (
+        moveAdults > booking.adults ||
+        moveChildren > booking.children ||
+        moveInfants > booking.infants ||
+        moveTourLeaders > booking.tourLeaders
+      ) {
+        setDateError('Move counts cannot exceed the current booking.')
+        return
+      }
+    }
+
     setDateSaving(true)
 
-    if (dateMode === 'whole') {
+    // Everyone moves: the whole booking goes to the new date and carries the extra charge there.
+    if (movesEveryone) {
       const moved = changeBookingDate(booking.code, newDate, {
         bypassCutoff: true,
         actor,
-        lateChangeFee: extraChargeAmount,
+        lateDateChange: false,
+        moveFee: extraChargeAmount,
       })
+      setDateSaving(false)
       if (!moved.ok) {
-        setDateSaving(false)
         setDateError(moved.error)
         return
       }
-      if (extraChargeAmount > 0) {
-        const paid = updateBookingDetails(
-          booking.code,
-          { cashOnTour: mergeCashOnTour(booking.cashOnTour, extraChargeAmount) },
-          { actor },
-        )
-        if (!paid.ok) {
-          setDateSaving(false)
-          setDateError(paid.error)
-          return
-        }
-      }
-      setDateSaving(false)
       setNewDate('')
       setExtraCharge('')
       onOpenChange(false)
       return
     }
 
-    if (moveTotal < 1) {
-      setDateSaving(false)
-      setDateError('Choose how many AD / CH / INF / TL to move to the new date.')
-      return
-    }
-    if (
-      moveAdults > booking.adults ||
-      moveChildren > booking.children ||
-      moveInfants > booking.infants ||
-      moveTourLeaders > booking.tourLeaders
-    ) {
-      setDateSaving(false)
-      setDateError('Move counts cannot exceed the current booking.')
-      return
-    }
-
+    // Some guests move: they become a booking on the new date (billed there + extra charge);
+    // this booking keeps the original count, remembers who moved, and is billed for who stays.
     const stayAdults = booking.adults - moveAdults
     const stayChildren = booking.children - moveChildren
     const stayInfants = booking.infants - moveInfants
     const stayTourLeaders = booking.tourLeaders - moveTourLeaders
     const stayTotal = stayAdults + stayChildren + stayInfants + stayTourLeaders
-
-    if (stayTotal < 1) {
-      const moved = changeBookingDate(booking.code, newDate, {
-        bypassCutoff: true,
-        actor,
-        lateChangeFee: extraChargeAmount,
-      })
-      if (!moved.ok) {
-        setDateSaving(false)
-        setDateError(moved.error)
-        return
-      }
-      if (extraChargeAmount > 0) {
-        updateBookingDetails(
-          booking.code,
-          { cashOnTour: mergeCashOnTour(booking.cashOnTour, extraChargeAmount) },
-          { actor },
-        )
-      }
-      setDateSaving(false)
-      onOpenChange(false)
-      return
-    }
-
-    if (stayTotal < enrolled) {
-      trimCheckInEnrollments(today, booking.program, booking.code, stayTotal)
-    }
-
-    const shrink = updateBookingDetails(
-      booking.code,
-      {
-        adults: stayAdults,
-        children: stayChildren,
-        infants: stayInfants,
-        tourLeaders: stayTourLeaders,
-      },
-      { actor, bypassCutoff: true, lateChangeFee: 0 },
-    )
-    if (!shrink.ok) {
-      setDateSaving(false)
-      setDateError(shrink.error)
-      return
-    }
 
     const created = addBooking(
       {
@@ -431,16 +448,67 @@ export function AdminCheckInBookingPanel({
         pickupZone: booking.pickupZone,
         pickupHotel: booking.pickupHotel,
         roomNumber: booking.roomNumber,
-        note: `Date change from ${booking.code} (${booking.date})`,
-        cashOnTour:
-          extraChargeAmount > 0 ? `${extraChargeAmount.toLocaleString('en-US')} THB` : '',
+        note: `Moved from ${booking.code} (${booking.date})`,
+        cashOnTour: '',
         pickupTime: booking.pickupTime,
       },
-      { bypassCutoff: true, actor },
+      {
+        bypassCutoff: true,
+        actor,
+        moveFee: extraChargeAmount,
+        movedFrom: { code: booking.code, date: booking.date },
+      },
+    )
+    if (!created.ok) {
+      setDateSaving(false)
+      setDateError(created.error)
+      return
+    }
+
+    if (stayTotal < enrolled) {
+      trimCheckInEnrollments(today, booking.program, booking.code, stayTotal)
+    }
+
+    const movedLabel = formatGuestPaxParts({
+      adults: moveAdults,
+      children: moveChildren,
+      infants: moveInfants,
+      tourLeaders: moveTourLeaders,
+    })
+    const shrink = updateBookingDetails(
+      booking.code,
+      {
+        adults: stayAdults,
+        children: stayChildren,
+        infants: stayInfants,
+        tourLeaders: stayTourLeaders,
+        note: [booking.note.trim(), `Moved ${movedLabel} → ${newDate} (${created.booking.code})`]
+          .filter(Boolean)
+          .join(' · '),
+      },
+      {
+        actor,
+        bypassCutoff: true,
+        lateChangeFee: 0,
+        // Moving guests lowers the live count only; the booking keeps its original booked guests.
+        opsAdjust: true,
+        movedOut: {
+          adults: moveAdults,
+          children: moveChildren,
+          infants: moveInfants,
+          tourLeaders: moveTourLeaders,
+        },
+      },
     )
     setDateSaving(false)
-    if (!created.ok) {
-      setDateError(created.error)
+    if (!shrink.ok) {
+      cancelBooking(created.booking.code, {
+        bypassCutoff: true,
+        actor,
+        lateCancel: false,
+        cancelFee: 0,
+      })
+      setDateError(shrink.error)
       return
     }
     setMoveAdults(0)
@@ -449,6 +517,35 @@ export function AdminCheckInBookingPanel({
     setMoveTourLeaders(0)
     setNewDate('')
     setExtraCharge('')
+  }
+
+  function undoNoShow() {
+    if (!booking || !undoTarget || !undoRestore || !canUndoNoShow) return
+    setError('')
+    setSaving(true)
+    const result = updateBookingDetails(
+      booking.code,
+      { ...undoTarget },
+      { actor, bypassCutoff: true, lateChangeFee: 0, opsAdjust: true },
+    )
+    setSaving(false)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    replacePickupNoShow(today, booking.program, booking.code, {
+      adults: 0,
+      children: 0,
+      infants: 0,
+      tourLeaders: 0,
+    })
+    getOrCaptureBookedPaxSnapshot(today, booking.program, booking.code, undoTarget)
+    // A manual "arrived" count from before no longer describes the restored booking.
+    clearArrivedPaxSnapshot(today, booking.program, booking.code)
+    if (attendance === 'no-show') {
+      setCheckInAttendance(today, booking.program, booking.code, null)
+    }
+    setAction(null)
   }
 
   function applyOwnArrival() {
@@ -533,13 +630,20 @@ export function AdminCheckInBookingPanel({
           tourLeaders: Math.min(bookedCap.tourLeaders, booking.tourLeaders + arrived.tourLeaders),
           note,
         },
-        { actor },
+        { actor, opsAdjust: true },
       )
       setArrivalSaving(false)
       if (!result.ok) {
         setArrivalError(result.error)
         return
       }
+      // Everyone is back: drop the stale manual "arrived" count so no "-N" is left on the row.
+      const restoredAll =
+        booking.adults + arrived.adults >= bookedCap.adults &&
+        booking.children + arrived.children >= bookedCap.children &&
+        booking.infants + arrived.infants >= bookedCap.infants &&
+        booking.tourLeaders + arrived.tourLeaders >= bookedCap.tourLeaders
+      if (restoredAll) clearArrivedPaxSnapshot(today, booking.program, booking.code)
     } else {
       const arrivedAll = paxTotal(arrived) >= currentTotal
       const result = updateBookingDetails(
@@ -562,7 +666,7 @@ export function AdminCheckInBookingPanel({
             : {}),
           note,
         },
-        { actor },
+        { actor, opsAdjust: true },
       )
       if (arrivedAll || attendance === 'no-show') {
         assignBookingToVan(today, booking.program, booking.code, null)
@@ -603,12 +707,15 @@ export function AdminCheckInBookingPanel({
     infants: booking.infants,
     tourLeaders: booking.tourLeaders,
   }
-  const derivedPickupNs = clampPax(subtractPax(bookedCap, {
-    adults: booking.adults,
-    children: booking.children,
-    infants: booking.infants,
-    tourLeaders: booking.tourLeaders,
-  }), bookedCap)
+  const derivedPickupNs = clampPax(
+    subtractPax(subtractPax(bookedCap, movedOutPax), {
+      adults: booking.adults,
+      children: booking.children,
+      infants: booking.infants,
+      tourLeaders: booking.tourLeaders,
+    }),
+    bookedCap,
+  )
   const recordedPickupNs = clampPax(
     getPickupNoShow(today, booking.program, booking.code),
     bookedCap,
@@ -619,7 +726,7 @@ export function AdminCheckInBookingPanel({
     paxTotal(derivedPickupNs) > 0
       ? derivedPickupNs
       : isWholeNoShow
-        ? recordedPickupNs
+        ? clampPax(subtractPax(recordedPickupNs, movedOutPax), bookedCap)
         : missingPax
   const pickupNoShowLabel = formatPaxOrDash(pickupNoShowPax)
   const taxiLabel = formatPaxOrDash(recordedTaxi)
@@ -671,6 +778,22 @@ export function AdminCheckInBookingPanel({
               <dt>Original booked</dt>
               <dd className="font-semibold text-teal-950">{originalLabel}</dd>
             </div>
+            {movedOutTotal > 0 ? (
+              <div className="col-span-2 flex justify-between gap-2">
+                <dt>Moved to other date</dt>
+                <dd className="font-semibold text-amber-800">
+                  {formatGuestPaxParts(movedOutPax)} (extra charge billed there)
+                </dd>
+              </div>
+            ) : null}
+            {booking.movedFrom ? (
+              <div className="col-span-2 flex justify-between gap-2">
+                <dt>Moved from</dt>
+                <dd className="font-semibold text-amber-800">
+                  {booking.movedFrom.code} · {formatShortDate(booking.movedFrom.date)}
+                </dd>
+              </div>
+            ) : null}
             <div className="flex justify-between gap-2">
               <dt>No-show pickup</dt>
               <dd className="font-semibold text-rose-800">{pickupNoShowLabel}</dd>
@@ -734,9 +857,17 @@ export function AdminCheckInBookingPanel({
                 title="Change date"
                 hint="Move whole booking or some guests"
                 tone="teal"
-                disabled={isWholeNoShow}
                 onSelect={() => selectAction('date')}
               />
+              {canUndoNoShow ? (
+                <ActionChoice
+                  icon={<UserX className="size-3.5" />}
+                  title="Undo no-show"
+                  hint={`Entered by mistake — put ${formatGuestPaxParts(undoRestore)} back, clear NS`}
+                  tone="teal"
+                  onSelect={() => selectAction('ns-undo')}
+                />
+              ) : null}
               <ActionChoice
                 icon={<CarFront className="size-3.5" />}
                 title="Came to marina"
@@ -861,13 +992,13 @@ export function AdminCheckInBookingPanel({
                     </div>
                     <div>
                       <p className="mb-1.5 text-[11px] font-semibold tracking-wide text-teal-800/55 uppercase">
-                        Extra charge (THB)
+                        Extra charge (THB) · {bookingCutoffs.dateChangeFeePerPerson}/pax
                       </p>
                       <Input
                         type="number"
                         min={0}
                         inputMode="numeric"
-                        placeholder="0"
+                        placeholder={String(defaultMoveFee)}
                         value={extraCharge}
                         onChange={(event) => setExtraCharge(event.target.value)}
                         className="h-10"
@@ -890,6 +1021,22 @@ export function AdminCheckInBookingPanel({
                     onClick={applyDateChange}
                   >
                     Apply date change
+                  </Button>
+                </div>
+              ) : null}
+
+              {action === 'ns-undo' && undoRestore ? (
+                <div className="rounded-xl px-3 py-3 ring-1 ring-teal-900/10">
+                  <p className="text-sm font-semibold text-teal-950">Undo no-show</p>
+                  <p className="mt-1 text-xs text-teal-900/65">
+                    Puts {formatGuestPaxParts(undoRestore)} back on this booking (
+                    {formatGuestPaxParts(undoTarget ?? undoRestore)} total) and clears the pickup
+                    no-show, so the red minus disappears. Use "Came to marina" instead if they
+                    really missed pickup and took a taxi.
+                  </p>
+                  {error ? <p className="text-sm text-rose-700">{error}</p> : null}
+                  <Button size="sm" className="mt-2" disabled={saving} onClick={undoNoShow}>
+                    Undo no-show
                   </Button>
                 </div>
               ) : null}
@@ -1167,9 +1314,3 @@ function formatCheckInTime(iso: string) {
   })
 }
 
-function mergeCashOnTour(existing: string, extra: number) {
-  if (extra <= 0) return existing.trim()
-  const current = parseCashOnTourAmount(existing)
-  const total = current + extra
-  return `${total.toLocaleString('en-US')} THB`
-}

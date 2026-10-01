@@ -1,5 +1,5 @@
 import type { Booking } from '@/lib/types'
-import { formatPaxBreakdown, totalPassengers } from '@/lib/types'
+import { bookingMoveNote, formatPaxBreakdown, totalPassengers } from '@/lib/types'
 import { formatIncludeLabel, formatCollectTotal } from '@/lib/format'
 
 export type ReportExportRow = {
@@ -22,6 +22,7 @@ export type ReportExportRow = {
   Canoe: string
   Note: string
   'Transfer extra': string
+  Moved: string
 }
 
 const HEADERS = [
@@ -44,6 +45,7 @@ const HEADERS = [
   'Canoe',
   'Note',
   'Transfer extra',
+  'Moved',
 ] as const satisfies readonly (keyof ReportExportRow)[]
 
 export function bookingsToReportRows(bookings: Booking[]): ReportExportRow[] {
@@ -73,6 +75,7 @@ export function bookingsToReportRows(bookings: Booking[]): ReportExportRow[] {
     Canoe: booking.canoe ? formatIncludeLabel(booking.canoe) : '',
     Note: booking.note,
     'Transfer extra': booking.transferExtraCharge,
+    Moved: bookingMoveNote(booking),
   }))
 }
 

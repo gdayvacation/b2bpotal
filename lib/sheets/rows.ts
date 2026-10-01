@@ -10,6 +10,7 @@ import { collectTotal, formatIncludeLabel, formatMonthLabel } from '@/lib/format
 import { formatPaymentChannel } from '@/lib/invoice'
 import { assignmentKey, type SheetsBackupSource } from '@/lib/sheets/source-data'
 import {
+  bookedPaxOf,
   formatPaxBreakdown,
   isActiveBooking,
   totalPassengers,
@@ -46,6 +47,7 @@ export const BOOKING_HEADERS = [
   'Cancel fee',
   'Private transfer',
   'Note',
+  'Moved',
 ] as const
 
 export const GUEST_HEADERS = [
@@ -201,44 +203,70 @@ function mergeStatus(
   return 'waiting'
 }
 
+/** "7>3 moved to other date" / "Moved from 2026-10-01 (PP2610-0001)" for the Bookings sheet. */
+export function movedLabel(booking: Booking) {
+  const parts: string[] = []
+  const out = booking.movedOutPax
+  const outTotal = out ? out.adults + out.children + out.infants + out.tourLeaders : 0
+  if (out && outTotal > 0) {
+    parts.push(
+      `${snapshotPaxTotal(bookedPaxOf(booking))}>${outTotal} moved to other date (${formatGuestPaxParts(out)})`,
+    )
+  }
+  if (booking.movedFrom) {
+    parts.push(
+      `Moved from ${booking.movedFrom.date}${booking.movedFrom.code !== booking.code ? ` (${booking.movedFrom.code})` : ''}`,
+    )
+  }
+  return parts.join(' · ')
+}
+
+/**
+ * The Bookings sheet records the booking as it was made: no-show / own-arrival at the marina
+ * lower the live counts but never these numbers (the Merge sheet shows booked vs live).
+ */
 export function buildBookingRows(source: SheetsBackupSource): SheetCell[][] {
-  return source.bookings.map((booking) => [
-    monthKey(booking.date),
-    formatMonthLabel(booking.date),
-    booking.date,
-    programLabel(booking.program),
-    booking.code,
-    booking.status,
-    booking.agentName,
-    booking.agentRef,
-    booking.leadGuest,
-    booking.adults,
-    booking.children,
-    booking.infants,
-    booking.tourLeaders,
-    totalPassengers(booking),
-    formatPaxBreakdown(booking),
-    booking.pickupHotel,
-    booking.pickupZone,
-    booking.pickupTime,
-    booking.roomNumber,
-    booking.cashOnTour,
-    formatIncludeLabel(booking.parkFee),
-    collectTotal(
-      booking.parkFee,
-      booking.program,
-      booking.adults,
-      booking.children,
+  return source.bookings.map((booking) => {
+    const booked = bookedPaxOf(booking)
+    return [
+      monthKey(booking.date),
+      formatMonthLabel(booking.date),
+      booking.date,
+      programLabel(booking.program),
+      booking.code,
+      booking.status,
+      booking.agentName,
+      booking.agentRef,
+      booking.leadGuest,
+      booked.adults,
+      booked.children,
+      booked.infants,
+      booked.tourLeaders,
+      snapshotPaxTotal(booked),
+      formatPaxBreakdown(booked),
+      booking.pickupHotel,
+      booking.pickupZone,
+      booking.pickupTime,
+      booking.roomNumber,
       booking.cashOnTour,
-    ),
-    booking.canoe ? formatIncludeLabel(booking.canoe) : '',
-    booking.transferExtraCharge,
-    booking.lateChangeFee ?? 0,
-    booking.lateCancel ? 'Yes' : '',
-    booking.cancelFee ?? '',
-    [booking.privateTransferVehicle, booking.privateTransferPrice].filter(Boolean).join(' · '),
-    booking.note,
-  ])
+      formatIncludeLabel(booking.parkFee),
+      collectTotal(
+        booking.parkFee,
+        booking.program,
+        booked.adults,
+        booked.children,
+        booking.cashOnTour,
+      ),
+      booking.canoe ? formatIncludeLabel(booking.canoe) : '',
+      booking.transferExtraCharge,
+      booking.lateChangeFee ?? 0,
+      booking.lateCancel ? 'Yes' : '',
+      booking.cancelFee ?? '',
+      [booking.privateTransferVehicle, booking.privateTransferPrice].filter(Boolean).join(' · '),
+      booking.note,
+      movedLabel(booking),
+    ]
+  })
 }
 
 export function buildGuestRows(source: SheetsBackupSource): SheetCell[][] {
@@ -282,7 +310,14 @@ export function buildMergeRows(source: SheetsBackupSource): SheetCell[][] {
   return source.bookings.map((booking) => {
     const key = assignmentKey(booking.date, booking.program, booking.code)
     const current = currentPax(booking)
-    const booked = source.bookedPax[key] ?? current
+    const snapshot = source.bookedPax[key] ?? current
+    const recorded = bookedPaxOf(booking)
+    const booked: BookedPaxSnapshot = {
+      adults: Math.max(snapshot.adults, recorded.adults),
+      children: Math.max(snapshot.children, recorded.children),
+      infants: Math.max(snapshot.infants, recorded.infants),
+      tourLeaders: Math.max(snapshot.tourLeaders, recorded.tourLeaders),
+    }
     const checkedIn = enrollmentsByCode.get(key) ?? 0
     const services = servicesByCode.get(key) ?? []
     const noShow = {

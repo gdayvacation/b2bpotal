@@ -10,9 +10,15 @@ import { Button } from '@/components/ui/button'
 import { voucherUrl } from '@/components/voucher-share-actions'
 import { BRAND_LEGAL } from '@/lib/brand'
 import { formatThbAmount } from '@/lib/booking-cutoffs'
-import { formatIncludeLabel, formatLongDate } from '@/lib/format'
+import { formatIncludeLabel, formatLongDate, formatShortDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { formatPaxBreakdown, isNoTransfer, totalPassengers, type Booking } from '@/lib/types'
+import {
+  bookingMoveNote,
+  formatPaxBreakdown,
+  isNoTransfer,
+  totalPassengers,
+  type Booking,
+} from '@/lib/types'
 
 export function VoucherView({ booking, slug }: { booking: Booking; slug: string }) {
   const searchParams = useSearchParams()
@@ -130,6 +136,13 @@ export function VoucherPreview({
               value={`${formatPaxBreakdown(live)} · ${total}`}
               className="col-span-2 sm:col-span-1"
             />
+            {bookingMoveNote(live, formatShortDate) ? (
+              <HeroFact
+                label="Date change"
+                value={bookingMoveNote(live, formatShortDate)}
+                className="col-span-2 sm:col-span-3"
+              />
+            ) : null}
           </div>
           <div className="mt-2 grid grid-cols-2 gap-2 border-t border-white/10 pt-2">
             <HeroFact label="National Park" value={formatIncludeLabel(live.parkFee)} />

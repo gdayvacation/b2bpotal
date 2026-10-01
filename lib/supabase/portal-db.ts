@@ -133,6 +133,16 @@ type BookingRow = {
   late_date_change?: boolean | null
   late_cancel?: boolean | null
   cancel_fee?: number | null
+  original_adults?: number | null
+  original_children?: number | null
+  original_infants?: number | null
+  original_tour_leaders?: number | null
+  moved_out_adults?: number | null
+  moved_out_children?: number | null
+  moved_out_infants?: number | null
+  moved_out_tour_leaders?: number | null
+  moved_from_code?: string | null
+  moved_from_date?: string | null
 }
 
 type AvailabilityRow = {
@@ -365,11 +375,79 @@ function mapBooking(row: BookingRow): Booking {
     lateCancel: row.late_cancel === true,
     cancelFee:
       row.cancel_fee == null ? undefined : Math.max(0, Math.floor(Number(row.cancel_fee) || 0)),
+    originalPax: mapOriginalPax(row),
+    movedOutPax: mapMovedOutPax(row),
+    movedFrom: row.moved_from_code
+      ? { code: row.moved_from_code, date: asDateString(row.moved_from_date ?? '') }
+      : null,
+  }
+}
+
+function mapMovedOutPax(row: BookingRow): Booking['movedOutPax'] {
+  const count = (value: number | null | undefined) =>
+    Math.max(0, Math.floor(Number(value) || 0))
+  const pax = {
+    adults: count(row.moved_out_adults),
+    children: count(row.moved_out_children),
+    infants: count(row.moved_out_infants),
+    tourLeaders: count(row.moved_out_tour_leaders),
+  }
+  return pax.adults + pax.children + pax.infants + pax.tourLeaders > 0 ? pax : null
+}
+
+/** Date-move columns for inserts. Empty when nothing moved (keeps old DBs working). */
+function dateMoveColumns(booking: Booking) {
+  const out = booking.movedOutPax
+  return {
+    ...(out
+      ? {
+          moved_out_adults: out.adults,
+          moved_out_children: out.children,
+          moved_out_infants: out.infants,
+          moved_out_tour_leaders: out.tourLeaders,
+        }
+      : {}),
+    ...(booking.movedFrom
+      ? { moved_from_code: booking.movedFrom.code, moved_from_date: booking.movedFrom.date }
+      : {}),
+  }
+}
+
+function mapOriginalPax(row: BookingRow): Booking['originalPax'] {
+  if (
+    row.original_adults == null &&
+    row.original_children == null &&
+    row.original_infants == null &&
+    row.original_tour_leaders == null
+  ) {
+    return null
+  }
+  const count = (value: number | null | undefined) =>
+    Math.max(0, Math.floor(Number(value) || 0))
+  return {
+    adults: count(row.original_adults),
+    children: count(row.original_children),
+    infants: count(row.original_infants),
+    tourLeaders: count(row.original_tour_leaders),
+  }
+}
+
+/** Original-pax columns for writes. Empty when the booking was never reduced (keeps old DBs working). */
+function originalPaxColumns(booking: Booking) {
+  const pax = booking.originalPax
+  if (!pax) return {}
+  return {
+    original_adults: pax.adults,
+    original_children: pax.children,
+    original_infants: pax.infants,
+    original_tour_leaders: pax.tourLeaders,
   }
 }
 
 function bookingToRow(booking: Booking): BookingRow {
   return {
+    ...originalPaxColumns(booking),
+    ...dateMoveColumns(booking),
     code: booking.code,
     agent_slug: booking.agentSlug,
     agent_name: booking.agentName,
@@ -824,7 +902,11 @@ export async function updateBookingPickup(
 export async function updateBookingDate(
   code: string,
   date: string,
-  extra?: { lateChangeFee?: number; lateDateChange?: boolean },
+  extra?: {
+    lateChangeFee?: number
+    lateDateChange?: boolean
+    movedFrom?: { code: string; date: string }
+  },
 ) {
   const supabase = getSupabaseBrowserClient()
   const patch: Record<string, unknown> = { date }
@@ -834,9 +916,17 @@ export async function updateBookingDate(
   if (extra?.lateDateChange !== undefined) {
     patch.late_date_change = extra.lateDateChange === true
   }
+  if (extra?.movedFrom) {
+    patch.moved_from_code = extra.movedFrom.code
+    patch.moved_from_date = extra.movedFrom.date
+  }
   const { error } = await supabase.from('bookings').update(patch).eq('code', code)
   if (!error) return
-  if (extra?.lateChangeFee !== undefined || extra?.lateDateChange !== undefined) {
+  if (
+    extra?.lateChangeFee !== undefined ||
+    extra?.lateDateChange !== undefined ||
+    extra?.movedFrom
+  ) {
     const { error: fallbackError } = await supabase
       .from('bookings')
       .update({ date })
@@ -857,10 +947,43 @@ export async function updateBookingRebook(
   if (error) throw new Error(`rebook booking: ${error.message}`)
 }
 
-export async function updateBookingDetails(booking: Booking) {
+export async function updateBookingDetails(
+  booking: Booking,
+  options?: { writeOriginalPax?: boolean; writeMovedOut?: boolean },
+) {
   const supabase = getSupabaseBrowserClient()
   const row = bookingToRow(booking)
+  const movedOut: {
+    moved_out_adults?: number | null
+    moved_out_children?: number | null
+    moved_out_infants?: number | null
+    moved_out_tour_leaders?: number | null
+  } = options?.writeMovedOut
+    ? {
+        moved_out_adults: booking.movedOutPax?.adults ?? null,
+        moved_out_children: booking.movedOutPax?.children ?? null,
+        moved_out_infants: booking.movedOutPax?.infants ?? null,
+        moved_out_tour_leaders: booking.movedOutPax?.tourLeaders ?? null,
+      }
+    : {}
+  // Only touch the original-pax columns when guest counts changed in this save, so a stale
+  // browser can never wipe the stored original with its own (older) copy.
+  const originalPax: {
+    original_adults?: number | null
+    original_children?: number | null
+    original_infants?: number | null
+    original_tour_leaders?: number | null
+  } = options?.writeOriginalPax
+    ? {
+        original_adults: booking.originalPax?.adults ?? null,
+        original_children: booking.originalPax?.children ?? null,
+        original_infants: booking.originalPax?.infants ?? null,
+        original_tour_leaders: booking.originalPax?.tourLeaders ?? null,
+      }
+    : {}
   const payload = {
+    ...originalPax,
+    ...movedOut,
     agent_ref: row.agent_ref,
     park_fee: row.park_fee,
     canoe: row.canoe,
@@ -886,6 +1009,14 @@ export async function updateBookingDetails(booking: Booking) {
   const { error } = await supabase.from('bookings').update(payload).eq('code', booking.code)
   if (!error) return
   const {
+    original_adults: _originalAdults,
+    original_children: _originalChildren,
+    original_infants: _originalInfants,
+    original_tour_leaders: _originalTourLeaders,
+    moved_out_adults: _movedOutAdults,
+    moved_out_children: _movedOutChildren,
+    moved_out_infants: _movedOutInfants,
+    moved_out_tour_leaders: _movedOutTourLeaders,
     late_change_fee: _lateChangeFee,
     private_transfer_vehicle: _vehicle,
     private_transfer_price: _price,

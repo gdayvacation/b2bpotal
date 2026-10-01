@@ -76,6 +76,16 @@ type BookingRow = {
   late_date_change?: boolean | null
   late_cancel?: boolean | null
   cancel_fee?: number | null
+  original_adults?: number | null
+  original_children?: number | null
+  original_infants?: number | null
+  original_tour_leaders?: number | null
+  moved_out_adults?: number | null
+  moved_out_children?: number | null
+  moved_out_infants?: number | null
+  moved_out_tour_leaders?: number | null
+  moved_from_code?: string | null
+  moved_from_date?: string | null
 }
 
 function isProgram(value: unknown): value is Program {
@@ -157,7 +167,34 @@ function mapBooking(row: BookingRow): Booking {
     lateCancel: row.late_cancel === true,
     cancelFee:
       row.cancel_fee == null ? undefined : Math.max(0, Math.floor(Number(row.cancel_fee) || 0)),
+    originalPax:
+      row.original_adults == null &&
+      row.original_children == null &&
+      row.original_infants == null &&
+      row.original_tour_leaders == null
+        ? null
+        : {
+            adults: Math.max(0, Math.floor(Number(row.original_adults) || 0)),
+            children: Math.max(0, Math.floor(Number(row.original_children) || 0)),
+            infants: Math.max(0, Math.floor(Number(row.original_infants) || 0)),
+            tourLeaders: Math.max(0, Math.floor(Number(row.original_tour_leaders) || 0)),
+          },
+    movedOutPax: mapMovedOut(row),
+    movedFrom: row.moved_from_code
+      ? { code: row.moved_from_code, date: String(row.moved_from_date ?? '').slice(0, 10) }
+      : null,
   }
+}
+
+function mapMovedOut(row: BookingRow): Booking['movedOutPax'] {
+  const count = (value: number | null | undefined) => Math.max(0, Math.floor(Number(value) || 0))
+  const pax = {
+    adults: count(row.moved_out_adults),
+    children: count(row.moved_out_children),
+    infants: count(row.moved_out_infants),
+    tourLeaders: count(row.moved_out_tour_leaders),
+  }
+  return pax.adults + pax.children + pax.infants + pax.tourLeaders > 0 ? pax : null
 }
 
 function formatThaiStamp(now = new Date()) {

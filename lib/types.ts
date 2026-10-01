@@ -49,6 +49,25 @@ export type BookingActionOptions = {
   lateCancel?: boolean
   /** Admin cancel: exact THB to bill (0 = no charge). */
   cancelFee?: number
+  /**
+   * Marina check-in / guest pick up adjusted the LIVE guest counts (no-show, own arrival).
+   * The booking keeps its original booked counts (`originalPax`) instead of shrinking.
+   * Without this flag, a pax change is treated as a real amendment and moves the original too.
+   */
+  opsAdjust?: boolean
+  /**
+   * Marina check-in date move: guests moved off this booking to another date. Added to
+   * `movedOutPax` on updateBookingDetails (use with `opsAdjust`).
+   */
+  movedOut?: BookingPax
+  /**
+   * Marina check-in date move: extra change-date charge (THB) billed on the booking the guests
+   * moved INTO (addBooking = new booking, changeBookingDate = the booking that moved). Also marks
+   * the booking as "moved from" its old date.
+   */
+  moveFee?: number
+  /** addBooking: the booking/date these guests were moved from. */
+  movedFrom?: { code: string; date: string }
 }
 
 export const CORE_PICKUP_ZONE_NAMES = ['Patong', 'Kata', 'Karon', 'Other'] as const
@@ -195,6 +214,78 @@ export type Booking = {
   lateCancel?: boolean
   /** Admin-set cancel charge (THB). 0 = complimentary. Unset = follow lateCancel rule. */
   cancelFee?: number
+  /**
+   * Guest counts as originally booked. Only set when marina check-in / guest pick up (no-show,
+   * own arrival) lowered the live adults/children/infants/tourLeaders above. The Booking page and
+   * backups show this; the daily board and check-in use the live counts. Unset = same as live.
+   */
+  originalPax?: BookingPax | null
+  /**
+   * Guests moved OFF this booking to another date by marina check-in (cumulative). They are no
+   * longer billed here — the booking they moved to bills them (plus the change-date charge).
+   */
+  movedOutPax?: BookingPax | null
+  /** This booking holds guests moved in from another date (`code` is the booking they left). */
+  movedFrom?: { code: string; date: string } | null
+}
+
+export type BookingPax = {
+  adults: number
+  children: number
+  infants: number
+  tourLeaders: number
+}
+
+/** Guest counts as originally booked (never smaller than the live counts). */
+export function bookedPaxOf(
+  booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'> & {
+    originalPax?: BookingPax | null
+  },
+): BookingPax {
+  const original = booking.originalPax
+  if (!original) {
+    return {
+      adults: booking.adults,
+      children: booking.children,
+      infants: booking.infants,
+      tourLeaders: booking.tourLeaders,
+    }
+  }
+  return {
+    adults: Math.max(original.adults, booking.adults),
+    children: Math.max(original.children, booking.children),
+    infants: Math.max(original.infants, booking.infants),
+    tourLeaders: Math.max(original.tourLeaders, booking.tourLeaders),
+  }
+}
+
+export function totalMovedOut(booking: { movedOutPax?: BookingPax | null }) {
+  const pax = booking.movedOutPax
+  return pax ? pax.adults + pax.children + pax.infants + pax.tourLeaders : 0
+}
+
+/** Short note for lists/reports/vouchers: guests moved off this booking and/or moved in from another date. */
+export function bookingMoveNote(
+  booking: Pick<Booking, 'code' | 'movedOutPax' | 'movedFrom'>,
+  formatDate: (iso: string) => string = (iso) => iso,
+) {
+  const parts: string[] = []
+  const out = totalMovedOut(booking)
+  if (out > 0) parts.push(`${out} guest${out === 1 ? '' : 's'} moved to another date`)
+  if (booking.movedFrom) {
+    const { code, date } = booking.movedFrom
+    parts.push(`Moved from ${formatDate(date)}${code !== booking.code ? ` (${code})` : ''}`)
+  }
+  return parts.join(' · ')
+}
+
+export function totalBookedPassengers(
+  booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'> & {
+    originalPax?: BookingPax | null
+  },
+) {
+  const pax = bookedPaxOf(booking)
+  return pax.adults + pax.children + pax.infants + pax.tourLeaders
 }
 
 export function isPrivateTransfer(

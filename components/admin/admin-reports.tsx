@@ -51,6 +51,8 @@ import {
 } from '@/lib/report-export'
 import {
   isActiveBooking,
+  bookingMoveNote,
+  totalMovedOut,
   totalPassengers,
   type Booking,
   type Program,
@@ -884,6 +886,11 @@ function BookingReportSection({
                   <div className="break-words leading-snug font-medium text-teal-950">
                     {booking.leadGuest}
                   </div>
+                  {bookingMoveNote(booking, formatShortDate) ? (
+                    <div className="text-[10px] font-semibold text-amber-800">
+                      {bookingMoveNote(booking, formatShortDate)}
+                    </div>
+                  ) : null}
                 </TableCell>
                 <TableCell className="whitespace-normal">
                   <div className="break-words leading-snug text-teal-900/80">
@@ -896,6 +903,9 @@ function BookingReportSection({
                 <TableCell className="px-0.5 text-center tabular-nums">{booking.tourLeaders}</TableCell>
                 <TableCell className="px-0.5 text-center font-medium tabular-nums text-teal-950">
                   {totalPassengers(booking)}
+                  {totalMovedOut(booking) > 0 ? (
+                    <span className="font-semibold text-amber-700">&gt;{totalMovedOut(booking)}</span>
+                  ) : null}
                 </TableCell>
                 <TableCell>
                   <div
@@ -1057,6 +1067,11 @@ function BookingPrintSection({
               </td>
               <td className="border border-teal-900/10 px-1.5 py-1 whitespace-normal break-words font-medium text-teal-950">
                 {booking.leadGuest}
+                {bookingMoveNote(booking, formatShortDate) ? (
+                  <div className="text-[10px] font-semibold text-amber-800">
+                    {bookingMoveNote(booking, formatShortDate)}
+                  </div>
+                ) : null}
               </td>
               <td className="border border-teal-900/10 px-1.5 py-1 whitespace-normal break-words text-teal-950">
                 {booking.pickupHotel || '—'}
@@ -1075,6 +1090,7 @@ function BookingPrintSection({
               </td>
               <td className="border border-teal-900/10 px-0.5 py-1 text-center font-semibold tabular-nums">
                 {totalPassengers(booking)}
+                {totalMovedOut(booking) > 0 ? <span>&gt;{totalMovedOut(booking)}</span> : null}
               </td>
               <td className="border border-teal-900/10 px-1.5 py-1 font-medium">
                 {booking.cashOnTour.trim() || '—'}

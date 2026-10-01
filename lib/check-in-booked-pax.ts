@@ -1,6 +1,6 @@
 import { deleteCheckInBookedPax, upsertCheckInBookedPax } from '@/lib/supabase/booked-pax-db'
 import { persistQuietly } from '@/lib/supabase/portal-db'
-import { dayBoatPlanKey, type Program } from '@/lib/types'
+import { bookedPaxOf, dayBoatPlanKey, type Program } from '@/lib/types'
 
 export type BookedPaxSnapshot = {
   adults: number
@@ -102,16 +102,22 @@ export function hasPartialNoShow(
 export function originalBookedPax(
   date: string,
   program: Program,
-  booking: BookedPaxSnapshot & { code: string },
+  booking: BookedPaxSnapshot & { code: string; originalPax?: BookedPaxSnapshot | null },
 ): BookedPaxSnapshot {
-  return (
-    getBookedPaxSnapshot(date, program, booking.code) ?? {
-      adults: booking.adults,
-      children: booking.children,
-      infants: booking.infants,
-      tourLeaders: booking.tourLeaders,
-    }
-  )
+  const snapshot = getBookedPaxSnapshot(date, program, booking.code) ?? {
+    adults: booking.adults,
+    children: booking.children,
+    infants: booking.infants,
+    tourLeaders: booking.tourLeaders,
+  }
+  // The booking row keeps the originally booked counts (survives snapshot overwrites).
+  const recorded = bookedPaxOf(booking)
+  return {
+    adults: Math.max(snapshot.adults, recorded.adults),
+    children: Math.max(snapshot.children, recorded.children),
+    infants: Math.max(snapshot.infants, recorded.infants),
+    tourLeaders: Math.max(snapshot.tourLeaders, recorded.tourLeaders),
+  }
 }
 
 /** Treat current pax as the live booking — clears no-show minus display. */

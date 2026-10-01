@@ -37,8 +37,9 @@ export function loadArrivedPaxMap(): BookedPaxMap {
   return loadMap()
 }
 
+/** The database is the source of truth, so an override removed elsewhere disappears here too. */
 export function hydrateArrivedPaxMap(remote: BookedPaxMap) {
-  const next = { ...loadMap(), ...remote }
+  const next = { ...remote }
   saveMap(next)
   return next
 }

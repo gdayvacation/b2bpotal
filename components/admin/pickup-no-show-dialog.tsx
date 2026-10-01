@@ -119,7 +119,13 @@ export function PickupNoShowDialog({
         infants: nextInfants,
         tourLeaders: nextTourLeaders,
       },
-      { actor: { role: 'admin', name: 'Guest pick up' }, bypassCutoff: true, lateChangeFee: 0 },
+      {
+        actor: { role: 'admin', name: 'Guest pick up' },
+        bypassCutoff: true,
+        lateChangeFee: 0,
+        // No-show lowers the live count only; the booking keeps its original booked guests.
+        opsAdjust: true,
+      },
     )
     setSaving(false)
     if (!result.ok) {

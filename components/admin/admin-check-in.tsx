@@ -144,6 +144,8 @@ import {
   isNoTransfer,
   normalizeBoatAssignment,
   primaryBoatNumber,
+  totalBookedPassengers,
+  totalMovedOut,
   totalPassengers,
   vanOutsourceLabel,
   vanTransferKind,
@@ -275,6 +277,24 @@ function vanGroupPlate(group: DriverGroup) {
   return 'Unassigned / no van'
 }
 
+/** Amber note on a check-in row: guests moved to another date, or booking moved in from one. */
+function MovedDateNote({ booking, className }: { booking: Booking; className?: string }) {
+  const out = totalMovedOut(booking)
+  if (out < 1 && !booking.movedFrom) return null
+  const parts: string[] = []
+  if (out > 0) {
+    parts.push(`Booked ${totalBookedPassengers(booking)}>${out} moved to another date`)
+  }
+  if (booking.movedFrom) {
+    parts.push(
+      `Moved from ${formatShortDate(booking.movedFrom.date)}${booking.movedFrom.code !== booking.code ? ` (${booking.movedFrom.code})` : ''}`,
+    )
+  }
+  return (
+    <p className={cn('text-[12px] font-semibold text-amber-800', className)}>{parts.join(' · ')}</p>
+  )
+}
+
 function buildBookingLine(
   booking: Booking,
   enrollments: CheckInEnrollment[],
@@ -288,7 +308,17 @@ function buildBookingLine(
   const bookingSeats = Math.max(1, arrived
     ? arrived.adults + arrived.children + arrived.infants + arrived.tourLeaders
     : totalPassengers(booking))
-  const bookedFull = originalBookedPax(today, booking.program, booking)
+  const bookedWithMoved = originalBookedPax(today, booking.program, booking)
+  // Guests moved to another date are not "booked here" any more (no pickup NS for them).
+  const movedOut = booking.movedOutPax
+  const bookedFull = movedOut
+    ? {
+        adults: Math.max(0, bookedWithMoved.adults - movedOut.adults),
+        children: Math.max(0, bookedWithMoved.children - movedOut.children),
+        infants: Math.max(0, bookedWithMoved.infants - movedOut.infants),
+        tourLeaders: Math.max(0, bookedWithMoved.tourLeaders - movedOut.tourLeaders),
+      }
+    : bookedWithMoved
   const currentFull: PaxBreakdown = arrived ?? {
     adults: booking.adults,
     children: booking.children,
@@ -2282,6 +2312,7 @@ function DriverGroupCard({
                   >
                     {statusNote}
                   </p>
+                  <MovedDateNote booking={line.booking} className="mt-0.5 pl-12" />
                 </div>
                 {sentOut ? (
                   <span className="inline-flex h-11 shrink-0 items-center rounded-xl border border-neutral-200 bg-white px-2 text-[10px] font-semibold tracking-wide text-neutral-600 uppercase">
@@ -2654,6 +2685,7 @@ function DriverGroupCard({
                               ? `Waiting · ${progressLabel} · pickup NS ${missingPax}`
                               : `Waiting · ${progressLabel}`}
                       </p>
+                      <MovedDateNote booking={line.booking} className="mt-0.5" />
                       {line.showBookingMoney && !noteOpen ? (
                         <button
                           type="button"
