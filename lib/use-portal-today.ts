@@ -2,6 +2,7 @@
 
 import type { Dispatch, SetStateAction } from 'react'
 import { useEffect, useRef, useState } from 'react'
+import { usePortal } from '@/components/portal-provider'
 import { todayISO } from '@/lib/format'
 
 /**
@@ -38,6 +39,7 @@ export function usePortalTodayISO(): string {
  * Default working date for ops screens (check-in, job orders, vans, boats, lists).
  * Opens on Thailand "today". If the user is still on the previous ops day when
  * Bangkok midnight passes, the selection rolls forward automatically.
+ * Dates outside the default 30-day window are fetched on demand.
  */
 export function usePortalDefaultDateISO(): [
   string,
@@ -45,6 +47,7 @@ export function usePortalDefaultDateISO(): [
   string,
 ] {
   const today = usePortalTodayISO()
+  const { ensureBookingsForRange, hydrated } = usePortal()
   const [selectedDate, setSelectedDate] = useState(today)
   const prevTodayRef = useRef(today)
 
@@ -54,6 +57,11 @@ export function usePortalDefaultDateISO(): [
     prevTodayRef.current = today
     setSelectedDate((current) => (current === previousToday ? today : current))
   }, [today])
+
+  useEffect(() => {
+    if (!hydrated || !selectedDate) return
+    void ensureBookingsForRange(selectedDate, selectedDate)
+  }, [selectedDate, hydrated, ensureBookingsForRange])
 
   return [selectedDate, setSelectedDate, today]
 }

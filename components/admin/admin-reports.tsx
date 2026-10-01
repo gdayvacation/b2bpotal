@@ -320,7 +320,7 @@ function ReportModeCard({
 }
 
 function BookingReport({ onBack }: { onBack: () => void }) {
-  const { bookings, agents } = usePortal()
+  const { bookings, agents, ensureBookingsForRange, hydrated } = usePortal()
   const portalToday = usePortalTodayISO()
   const prevTodayRef = useRef(portalToday)
   const [selectedDate, setSelectedDate] = useState<Date>(() => startOfToday())
@@ -343,6 +343,13 @@ function BookingReport({ onBack }: { onBack: () => void }) {
     })
   }, [portalToday])
 
+  const dateIso = toISODate(selectedDate)
+
+  useEffect(() => {
+    if (!hydrated) return
+    void ensureBookingsForRange(dateIso, dateIso)
+  }, [dateIso, hydrated, ensureBookingsForRange])
+
   const agentOptions = useMemo(() => {
     const map = new Map<string, string>()
     for (const agent of agents) map.set(agent.slug, agent.name)
@@ -351,8 +358,6 @@ function BookingReport({ onBack }: { onBack: () => void }) {
     }
     return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]))
   }, [agents, bookings])
-
-  const dateIso = toISODate(selectedDate)
 
   const rows = useMemo(() => {
     const filtered = bookings.filter((booking) => {
@@ -1163,22 +1168,24 @@ function compareBookings(a: Booking, b: Booking, sortKey: SortKey) {
       if (primary === 0) primary = a.pickupZone.localeCompare(b.pickupZone)
       break
     case 'zone':
-      primary = a.pickupZone.localeCompare(b.pickupZone)
-      if (primary === 0) primary = pickupSortValue(a.pickupTime).localeCompare(pickupSortValue(b.pickupTime))
+      primary = (a.pickupZone ?? '').localeCompare(b.pickupZone ?? '')
+      if (primary === 0) {
+        primary = pickupSortValue(a.pickupTime).localeCompare(pickupSortValue(b.pickupTime))
+      }
       break
     case 'agent':
-      primary = a.agentName.localeCompare(b.agentName)
+      primary = (a.agentName ?? '').localeCompare(b.agentName ?? '')
       break
     case 'guest':
-      primary = a.leadGuest.localeCompare(b.leadGuest)
+      primary = (a.leadGuest ?? '').localeCompare(b.leadGuest ?? '')
       break
     case 'code':
     default:
-      primary = a.code.localeCompare(b.code)
+      primary = (a.code ?? '').localeCompare(b.code ?? '')
       break
   }
   if (primary !== 0) return primary
-  return a.code.localeCompare(b.code)
+  return (a.code ?? '').localeCompare(b.code ?? '')
 }
 
 /** Normalize times like "07:30" / "Awaiting pickup time" for stable sort. */

@@ -486,6 +486,8 @@ export function AdminInvoices() {
   const {
     agents,
     bookings,
+    ensureBookingsForRange,
+    hydrated,
     getCheckInAttendance,
     getCheckInEnrollments,
     getDayBoatPlan,
@@ -504,6 +506,11 @@ export function AdminInvoices() {
   const [fromDate, setFromDate] = useState(todayISO())
   const [toDate, setToDate] = useState(todayISO())
   const [calendarOpen, setCalendarOpen] = useState(false)
+
+  useEffect(() => {
+    if (!hydrated) return
+    void ensureBookingsForRange(fromDate, toDate)
+  }, [fromDate, toDate, hydrated, ensureBookingsForRange])
   const [agentSlug, setAgentSlug] = useState('all')
   const [search, setSearch] = useState('')
   const [billProgram, setBillProgram] = useState<BillProgram>('PP')

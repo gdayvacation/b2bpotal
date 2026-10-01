@@ -76,7 +76,7 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
 ]
 
 export function AdminVanUsageReport({ onBack }: { onBack: () => void }) {
-  const { bookings, getDayVehiclePlan, resolveVanMeta } = usePortal()
+  const { bookings, ensureBookingsForRange, getDayVehiclePlan, resolveVanMeta, hydrated } = usePortal()
   const [selectedDate, setSelectedDate, portalToday] = usePortalDefaultDateISO()
   const [range, setRange] = useState<RangeMode>('month')
   const [calendarOpen, setCalendarOpen] = useState(false)
@@ -90,6 +90,15 @@ export function AdminVanUsageReport({ onBack }: { onBack: () => void }) {
   const selectedDateObj = new Date(`${selectedDate}T12:00:00`)
   const monthLabel = formatMonthLabel(selectedDate)
   const dateLabel = range === 'month' ? monthLabel : formatLongDate(selectedDate)
+
+  useEffect(() => {
+    if (!hydrated || range !== 'month') return
+    const days = daysInMonthISO(selectedDate)
+    const first = days[0]
+    const last = days[days.length - 1]
+    if (!first || !last) return
+    void ensureBookingsForRange(first, last)
+  }, [hydrated, range, selectedDate, ensureBookingsForRange])
 
   const allRows = useMemo(() => {
     const programs: Program[] = program === 'all' ? ['PP', 'James Bond'] : [program]

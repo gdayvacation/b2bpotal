@@ -696,9 +696,9 @@ function InsuranceListTab({
       .slice()
       .sort(
         (a, b) =>
-          a.program.localeCompare(b.program) ||
-          a.leadGuest.localeCompare(b.leadGuest) ||
-          a.code.localeCompare(b.code),
+          (a.program ?? '').localeCompare(b.program ?? '') ||
+          (a.leadGuest ?? '').localeCompare(b.leadGuest ?? '') ||
+          (a.code ?? '').localeCompare(b.code ?? ''),
       )
 
     const byProgram = new Map<Program, InsuranceGuestRow[]>()
@@ -1195,9 +1195,9 @@ function TodayBoardTab({
         .slice()
         .sort(
           (a, b) =>
-            a.program.localeCompare(b.program) ||
-            a.leadGuest.localeCompare(b.leadGuest) ||
-            a.code.localeCompare(b.code),
+            (a.program ?? '').localeCompare(b.program ?? '') ||
+            (a.leadGuest ?? '').localeCompare(b.leadGuest ?? '') ||
+            (a.code ?? '').localeCompare(b.code ?? ''),
         ),
     [boardDate, bookings, programFilter],
   )
@@ -1222,7 +1222,7 @@ function TodayBoardTab({
             (a, b) =>
               sortOrderOnVan(plan.assignments[a.code], van) -
                 sortOrderOnVan(plan.assignments[b.code], van) ||
-              a.leadGuest.localeCompare(b.leadGuest),
+              (a.leadGuest ?? '').localeCompare(b.leadGuest ?? ''),
           )
         if (vanBookings.length === 0) continue
         const meta = resolveVanMeta(van, plan.vanMeta[String(van)])

@@ -1,3 +1,4 @@
+import { addDaysISO, todayISO } from '@/lib/format'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import {
   DEFAULT_BOOKING_CUTOFFS,
@@ -241,6 +242,50 @@ function asDateString(value: string) {
   return value.slice(0, 10)
 }
 
+/** How far back ops pages load on open (pickup / vans / boats / check-in). */
+export const OPS_BOOKING_LOOKBACK_DAYS = 30
+
+/** Inclusive start date for the default operational booking window. */
+export function operationalBookingsFromDate() {
+  return addDaysISO(todayISO(), -OPS_BOOKING_LOOKBACK_DAYS)
+}
+
+/** PostgREST defaults to max 1000 rows — page until exhausted. */
+async function fetchAllPaged<T>(label: string, query: (from: number, to: number) => PromiseLike<{
+  data: T[] | null
+  error: { message: string } | null
+}>): Promise<T[]> {
+  const pageSize = 1000
+  const all: T[] = []
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await query(from, from + pageSize - 1)
+    await assertOk(label, error, data)
+    const rows = data ?? []
+    all.push(...rows)
+    if (rows.length < pageSize) break
+  }
+  return all
+}
+
+/** Date-bounded booking fetch (paged). Omit `toDate` for open-ended future. */
+export async function fetchBookingsInDateRange(
+  fromDate: string,
+  toDate?: string,
+): Promise<Booking[]> {
+  const supabase = getSupabaseBrowserClient()
+  const from = asDateString(fromDate)
+  const to = toDate ? asDateString(toDate) : undefined
+  const data = await fetchAllPaged<BookingRow>('bookings', (start, end) => {
+    let query = supabase.from('bookings').select('*').gte('date', from)
+    if (to) query = query.lte('date', to)
+    return query
+      .order('date', { ascending: false })
+      .order('code', { ascending: true })
+      .range(start, end)
+  })
+  return data.map(mapBooking)
+}
+
 function mapAgent(row: AgentRow): Agent {
   return {
     slug: row.slug,
@@ -269,22 +314,23 @@ function mapHotel(row: HotelRow): Hotel {
 }
 
 function mapBooking(row: BookingRow): Booking {
+  const agentSlug = row.agent_slug ?? ''
   return {
-    code: row.code,
-    agentSlug: row.agent_slug,
-    agentName: row.agent_name,
+    code: row.code ?? '',
+    agentSlug,
+    agentName: row.agent_name ?? agentSlug,
     agentRef: row.agent_ref ?? '',
     program: row.program,
     date: asDateString(row.date),
     parkFee: row.park_fee,
     canoe: row.canoe,
-    adults: row.adults,
-    children: row.children,
-    infants: row.infants,
-    tourLeaders: row.tour_leaders,
-    leadGuest: row.lead_guest,
+    adults: Number(row.adults) || 0,
+    children: Number(row.children) || 0,
+    infants: Number(row.infants) || 0,
+    tourLeaders: Number(row.tour_leaders) || 0,
+    leadGuest: row.lead_guest ?? '',
     pickupZone: row.pickup_zone,
-    pickupHotel: row.pickup_hotel,
+    pickupHotel: row.pickup_hotel ?? '',
     roomNumber: row.room_number ?? '',
     note: row.note ?? '',
     cashOnTour: row.cash_on_tour ?? '',
@@ -296,7 +342,7 @@ function mapBooking(row: BookingRow): Booking {
     privateTransferPrice: row.private_transfer_price ?? '',
     privateDriverName: row.private_driver_name ?? '',
     privateDriverPhone: row.private_driver_phone ?? '',
-    pickupTime: row.pickup_time,
+    pickupTime: row.pickup_time ?? '',
     status: row.status,
     lateChangeFee: Math.max(0, Math.floor(Number(row.late_change_fee) || 0)),
     lateDateChange: row.late_date_change === true,
@@ -581,7 +627,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     agentsRes,
     zonesRes,
     hotelsRes,
-    bookingsRes,
+    bookingRows,
     availabilityRes,
     boatPlansRes,
     boatAssignRes,
@@ -596,7 +642,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     supabase.from('agents').select('*').order('name'),
     supabase.from('pickup_zones').select('*').order('sort_order'),
     supabase.from('hotels').select('*').order('name'),
-    supabase.from('bookings').select('*').order('date', { ascending: false }),
+    fetchBookingsInDateRange(operationalBookingsFromDate()),
     supabase.from('availability').select('*').order('date'),
     supabase.from('day_boat_plans').select('*'),
     supabase.from('boat_assignments').select('*'),
@@ -611,7 +657,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
 
   await assertOk('agents', agentsRes.error, agentsRes.data)
   await assertOk('pickup_zones', zonesRes.error, zonesRes.data)
-  await assertOk('bookings', bookingsRes.error, bookingsRes.data)
+  const bookingsRes = { data: bookingRows, error: null }
   await assertOk('availability', availabilityRes.error, availabilityRes.data)
   await assertOk('day_boat_plans', boatPlansRes.error, boatPlansRes.data)
   await assertOk('boat_assignments', boatAssignRes.error, boatAssignRes.data)
@@ -897,14 +943,9 @@ export async function fetchBookingEvents(bookingCode: string): Promise<BookingEv
   return (data as BookingEventRow[]).map(mapBookingEvent)
 }
 
+/** Operational bookings only (~last 30 days + future). Not full history. */
 export async function fetchBookings(): Promise<Booking[]> {
-  const supabase = getSupabaseBrowserClient()
-  const { data, error } = await supabase
-    .from('bookings')
-    .select('*')
-    .order('date', { ascending: false })
-  await assertOk('bookings', error, data)
-  return (data as BookingRow[]).map(mapBooking)
+  return fetchBookingsInDateRange(operationalBookingsFromDate())
 }
 
 /** Reload seats, close dates, and cutoff times across devices. */
@@ -1048,44 +1089,24 @@ export function subscribeCheckInChanges(onChange: () => void) {
 /** Live van/boat board updates across admin tablets (requires Realtime on plan tables). */
 export function subscribeDayPlanChanges(onChange: () => void) {
   const supabase = getSupabaseBrowserClient()
-  const channel = supabase
-    .channel(`portal-day-plans-${Date.now()}`)
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'day_boat_plans' },
-      () => {
-        onChange()
-      },
-    )
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'boat_assignments' },
-      () => {
-        onChange()
-      },
-    )
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'day_vehicle_plans' },
-      () => {
-        onChange()
-      },
-    )
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'van_assignments' },
-      () => {
-        onChange()
-      },
-    )
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'van_meta' },
-      () => {
-        onChange()
-      },
-    )
-    .subscribe()
+  // Unique name — same-ms remounts reuse a subscribed channel and reject extra .on().
+  const channel = supabase.channel(`portal-day-plans-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+  channel.on('postgres_changes', { event: '*', schema: 'public', table: 'day_boat_plans' }, () => {
+    onChange()
+  })
+  channel.on('postgres_changes', { event: '*', schema: 'public', table: 'boat_assignments' }, () => {
+    onChange()
+  })
+  channel.on('postgres_changes', { event: '*', schema: 'public', table: 'day_vehicle_plans' }, () => {
+    onChange()
+  })
+  channel.on('postgres_changes', { event: '*', schema: 'public', table: 'van_assignments' }, () => {
+    onChange()
+  })
+  channel.on('postgres_changes', { event: '*', schema: 'public', table: 'van_meta' }, () => {
+    onChange()
+  })
+  channel.subscribe()
   return () => {
     void supabase.removeChannel(channel)
   }

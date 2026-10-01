@@ -1,6 +1,15 @@
 'use client'
 
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { formatThb, nextBookingCode, todayISO, uniqueAgentSlug } from '@/lib/format'
 import { autoAssignBoats } from '@/lib/boat-assign'
 import {
@@ -184,10 +193,12 @@ import {
   deleteZone,
   fetchBookingEvents,
   fetchBookings,
+  fetchBookingsInDateRange,
   fetchCheckInMaps,
   fetchAvailabilitySettings,
   fetchDayBoatPlans,
   fetchDayVehiclePlans,
+  operationalBookingsFromDate,
   insertBooking,
   moveCheckInBookingDate,
   insertBookingEvent,
@@ -325,11 +336,33 @@ import {
   totalPassengers,
 } from '@/lib/types'
 
+function mergeBookingsByCode(base: Booking[], incoming: Booking[]): Booking[] {
+  const map = new Map<string, Booking>()
+  for (const booking of base) map.set(booking.code, booking)
+  for (const booking of incoming) map.set(booking.code, booking)
+  return [...map.values()].sort(
+    (a, b) => b.date.localeCompare(a.date) || a.code.localeCompare(b.code),
+  )
+}
+
+function bookingRangeCovered(
+  loaded: { from: string; to: string }[],
+  from: string,
+  to: string,
+) {
+  return loaded.some((range) => range.from <= from && range.to >= to)
+}
+
 type PortalContextValue = {
   hydrated: boolean
   loadError: string | null
   agents: Agent[]
   bookings: Booking[]
+  /**
+   * Lazily load bookings for a date range outside the default 30-day ops window.
+   * Safe to call repeatedly — skips ranges already loaded.
+   */
+  ensureBookingsForRange: (fromDate: string, toDate?: string) => Promise<void>
   zones: PickupZone[]
   hotels: Hotel[]
   availability: Availability[]
@@ -822,6 +855,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const checkInSyncEpochRef = useRef(0)
   const checkInSyncInFlightRef = useRef(false)
   const bookingWritePendingRef = useRef(0)
+  /** Date ranges already loaded into `bookings` (ops window + lazy fetches). */
+  const bookingsLoadedRangesRef = useRef<{ from: string; to: string }[]>([])
+  const bookingsEnsureInflightRef = useRef(new Map<string, Promise<void>>())
   const boatPlanWritePendingRef = useRef(0)
   const boatPlanSaveChainRef = useRef(Promise.resolve())
   const vehiclePlanWritePendingRef = useRef(0)
@@ -1090,6 +1126,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const snapshot = await loadPortalSnapshot()
         if (cancelled) return
         setAgents(snapshot.agents)
+        bookingsLoadedRangesRef.current = [
+          { from: operationalBookingsFromDate(), to: '9999-12-31' },
+        ]
         setBookings(snapshot.bookings)
         setZones(snapshot.zones)
         setHotels(snapshot.hotels)
@@ -1167,7 +1206,15 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       try {
         const next = await fetchBookings()
         if (cancelled || bookingWritePendingRef.current > 0) return
-        setBookings(next)
+        const opsFrom = operationalBookingsFromDate()
+        // Keep lazily loaded history; only refresh the ops window.
+        setBookings((current) => {
+          const older = current.filter((booking) => booking.date < opsFrom)
+          return mergeBookingsByCode(older, next)
+        })
+        if (!bookingRangeCovered(bookingsLoadedRangesRef.current, opsFrom, '9999-12-31')) {
+          bookingsLoadedRangesRef.current.push({ from: opsFrom, to: '9999-12-31' })
+        }
       } catch (error) {
         console.error('[portal] bookings refresh failed', error)
       } finally {
@@ -1730,6 +1777,34 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       unsubCheckIn?.()
     }
   }, [hydrated])
+
+  const ensureBookingsForRange = useCallback(async (fromDate: string, toDate?: string) => {
+    const from = fromDate.slice(0, 10)
+    const to = (toDate ?? fromDate).slice(0, 10)
+    if (!from || !to || from > to) return
+    if (bookingRangeCovered(bookingsLoadedRangesRef.current, from, to)) return
+
+    const key = `${from}:${to}`
+    const inflight = bookingsEnsureInflightRef.current.get(key)
+    if (inflight) {
+      await inflight
+      return
+    }
+
+    const task = (async () => {
+      try {
+        const rows = await fetchBookingsInDateRange(from, to)
+        setBookings((current) => mergeBookingsByCode(current, rows))
+        bookingsLoadedRangesRef.current.push({ from, to })
+      } catch (error) {
+        console.error('[portal] ensureBookingsForRange failed', error)
+      } finally {
+        bookingsEnsureInflightRef.current.delete(key)
+      }
+    })()
+    bookingsEnsureInflightRef.current.set(key, task)
+    await task
+  }, [])
 
   const value = useMemo<PortalContextValue>(() => {
     const getZoneTime = (name: PickupZoneName) =>
@@ -2479,6 +2554,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       loadError,
       agents,
       bookings,
+      ensureBookingsForRange,
       zones,
       hotels,
       availability,
@@ -4730,7 +4806,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
       },
     }
-  }, [agents, bookings, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, checkInGroupGuides, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
+  }, [agents, bookings, ensureBookingsForRange, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, checkInGroupGuides, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
 }

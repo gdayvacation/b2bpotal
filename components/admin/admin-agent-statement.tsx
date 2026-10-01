@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, ChevronLeft, ChevronRight, Printer } from 'lucide-react'
 import { useInvoiceStore } from '@/components/admin/use-invoice-store'
 import { usePortal } from '@/components/portal-provider'
@@ -21,7 +21,7 @@ import {
   invoiceAmountForBooking,
   type InvoiceDocument,
 } from '@/lib/invoice'
-import { formatMonthLabel, startOfThisMonth, toISODate } from '@/lib/format'
+import { daysInMonthISO, formatMonthLabel, startOfThisMonth, toISODate } from '@/lib/format'
 import { formatPaxBreakdown, type Booking } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -38,7 +38,7 @@ type StatementRow = {
 }
 
 export function AdminAgentStatement({ onBack }: { onBack: () => void }) {
-  const { agents, bookings } = usePortal()
+  const { agents, bookings, ensureBookingsForRange, hydrated } = usePortal()
   const store = useInvoiceStore()
   const [monthIso, setMonthIso] = useState(() => toISODate(startOfThisMonth()))
   const [agentSlug, setAgentSlug] = useState('')
@@ -46,6 +46,15 @@ export function AdminAgentStatement({ onBack }: { onBack: () => void }) {
   const monthObj = new Date(`${monthIso}T12:00:00`)
   const monthLabel = formatMonthLabel(monthIso)
   const monthPrefix = monthIso.slice(0, 7)
+
+  useEffect(() => {
+    if (!hydrated) return
+    const days = daysInMonthISO(monthIso)
+    const first = days[0]
+    const last = days[days.length - 1]
+    if (!first || !last) return
+    void ensureBookingsForRange(first, last)
+  }, [monthIso, hydrated, ensureBookingsForRange])
 
   const agentOptions = useMemo(() => {
     const map = new Map<string, string>()

@@ -1,12 +1,13 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
 import { PageHeader, Segment, SegmentedControl, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
 import { formatLongDate, formatShortDate, startOfThisMonth, todayISO, toISODate } from '@/lib/format'
+import { fetchBookingsInDateRange } from '@/lib/supabase/portal-db'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { totalPassengers, isActiveBooking, type Booking, type Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -36,24 +37,66 @@ type SeriesPoint = {
 }
 
 export function AdminDashboard() {
-  const { bookings, agents } = usePortal()
+  const { bookings: liveBookings, agents } = usePortal()
   const [range, setRange] = useState<RangeMode>('year')
   const [month, setMonth] = useState(() => startOfThisMonth())
   const [year, setYear] = useState(() => Number(todayISO().slice(0, 4)))
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
   const [program, setProgram] = useState<ProgramFilter>('all')
   const [agentSlug, setAgentSlug] = useState('all')
+  /** Full history for year/month charts — not shared with day-to-day portal state. */
+  const [historyBookings, setHistoryBookings] = useState<Booking[] | null>(null)
   const today = usePortalTodayISO()
   const thisMonth = startOfThisMonth()
   const thisYear = Number(today.slice(0, 4))
+
+  useEffect(() => {
+    if (range === 'today') {
+      setHistoryBookings(null)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        if (range === 'month') {
+          const y = month.getFullYear()
+          const m = String(month.getMonth() + 1).padStart(2, '0')
+          const last = new Date(y, month.getMonth() + 1, 0).getDate()
+          const rows = await fetchBookingsInDateRange(
+            `${y}-${m}-01`,
+            `${y}-${m}-${String(last).padStart(2, '0')}`,
+          )
+          if (!cancelled) setHistoryBookings(rows)
+          return
+        }
+        const [currentYear, previousYear] = await Promise.all([
+          fetchBookingsInDateRange(`${year}-01-01`, `${year}-12-31`),
+          fetchBookingsInDateRange(`${year - 1}-01-01`, `${year - 1}-12-31`),
+        ])
+        if (!cancelled) setHistoryBookings([...currentYear, ...previousYear])
+      } catch (error) {
+        console.error('[dashboard] history load failed', error)
+        if (!cancelled) setHistoryBookings([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [range, year, month])
+
+  const bookings = historyBookings ?? liveBookings
 
   const agentOptions = useMemo(() => {
     const map = new Map<string, string>()
     for (const agent of agents) map.set(agent.slug, agent.name)
     for (const booking of bookings) {
-      if (!map.has(booking.agentSlug)) map.set(booking.agentSlug, booking.agentName)
+      const slug = booking.agentSlug?.trim()
+      if (!slug || map.has(slug)) continue
+      map.set(slug, booking.agentName?.trim() || slug)
     }
-    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]))
+    return [...map.entries()].sort((a, b) =>
+      (a[1] || a[0]).localeCompare(b[1] || b[0]),
+    )
   }, [agents, bookings])
 
   const filtered = useMemo(
@@ -928,9 +971,9 @@ function formatCount(value: number) {
   return value.toLocaleString('en-GB')
 }
 
-function truncate(value: string, max: number) {
-  const text = value.trim()
-  if (text.length <= max) return text
+function truncate(value: string | null | undefined, max: number) {
+  const text = (value ?? '').trim()
+  if (text.length <= max) return text || '—'
   return `${text.slice(0, max - 1)}…`
 }
 
