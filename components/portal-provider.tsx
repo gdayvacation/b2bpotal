@@ -210,6 +210,7 @@ import {
   insertBooking,
   moveCheckInBookingDate,
   insertBookingEvent,
+  loadGuestPortalSnapshot,
   loadPortalSnapshot,
   persistQuietly,
   pushCheckInMaps,
@@ -1156,7 +1157,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     let cancelled = false
     ;(async () => {
       try {
-        const snapshot = await loadPortalSnapshot()
+        // Guest QR sessions load only their booking's tour date — much lighter than
+        // the 30-day ops window used by admin/helper/partner.
+        const { data: _guestSessionData } = await getSupabaseBrowserClient().auth.getSession()
+        const _guestMeta = _guestSessionData.session?.user.app_metadata ?? {}
+        const _guestRole = String(_guestMeta.role ?? '')
+        const _guestCode = String(_guestMeta.booking_code ?? '').trim()
+        const _guestDate = String(_guestMeta.booking_date ?? '').trim().slice(0, 10)
+        const snapshot =
+          _guestRole === 'guest' && _guestCode && _guestDate
+            ? await loadGuestPortalSnapshot(_guestCode, _guestDate)
+            : await loadPortalSnapshot()
         if (cancelled) return
         setAgents(snapshot.agents)
         bookingsLoadedRangesRef.current = [
@@ -1585,19 +1596,22 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     type SyncProfile = {
       role: string
       helperDate: string | null
+      /** For guest sessions: the booking's tour date (YYYY-MM-DD). */
+      bookingDate: string | null
     }
 
     async function readSyncProfile(): Promise<SyncProfile> {
-      if (!hasSupabaseConfig()) return { role: '', helperDate: null }
+      if (!hasSupabaseConfig()) return { role: '', helperDate: null, bookingDate: null }
       try {
         const { data } = await getSupabaseBrowserClient().auth.getSession()
         const meta = data.session?.user.app_metadata ?? {}
         return {
           role: String(meta.role ?? ''),
           helperDate: String(meta.helper_date ?? '').trim().slice(0, 10) || null,
+          bookingDate: String(meta.booking_date ?? '').trim().slice(0, 10) || null,
         }
       } catch {
-        return { role: '', helperDate: null }
+        return { role: '', helperDate: null, bookingDate: null }
       }
     }
 
@@ -1615,12 +1629,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       // Guests must never migrate localStorage → cloud (RLS makes remote look empty).
       const canMigrate = allowMigrate && !isGuest
       try {
+        // Guest: scope check-in sync to their tour date only (no full-history load).
+        // Helper: scope to their board date. Otherwise fall back to today (partial) or all.
         const boardDate =
-          isHelper && profile.helperDate
-            ? profile.helperDate
-            : partial
-              ? todayISO()
-              : undefined
+          isGuest && profile.bookingDate
+            ? profile.bookingDate
+            : isHelper && profile.helperDate
+              ? profile.helperDate
+              : partial
+                ? todayISO()
+                : undefined
         const remote = await fetchCheckInMaps(
           boardDate
             ? { onDate: boardDate }

@@ -363,6 +363,67 @@ export async function fetchBookingByCode(code: string): Promise<Booking | null> 
   return data ? mapBooking(data as BookingRow) : null
 }
 
+/**
+ * Minimal portal snapshot for a guest QR scan.
+ *
+ * Loads only the guest's single booking and the boat/vehicle plans for that
+ * booking's tour date (from DB — reflects any admin date-move).  Agents, zones,
+ * hotels, availability, fleet-vans, drivers, cutoffs and closures are empty/
+ * default because the guest check-in UI does not use them.
+ *
+ * Compared with loadPortalSnapshot() this reduces per-guest requests from
+ * ~15 paged queries across 30 days to ~6 single-day queries, so 200 concurrent
+ * guests generate a fraction of the DB and Egress load.
+ */
+export async function loadGuestPortalSnapshot(
+  bookingCode: string,
+  bookingDate: string,
+): Promise<PortalSnapshot> {
+  const empty: PortalSnapshot = {
+    agents: [],
+    zones: [],
+    hotels: [],
+    bookings: [],
+    availability: [],
+    dayBoatPlans: {},
+    dayVehiclePlans: {},
+    fleetVans: [],
+    drivers: [],
+    bookingCutoffs: { ...DEFAULT_BOOKING_CUTOFFS },
+    bookingClosures: [],
+  }
+
+  const booking = await fetchBookingByCode(bookingCode)
+  if (!booking) return empty
+
+  // Use date from DB (reflects any admin date-move, not stale JWT claim).
+  const dateStr = booking.date
+
+  const supabase = getSupabaseBrowserClient()
+  const [boatPlansRes, boatAssignRes, vehiclePlansRes, vanMetaRes, vanAssignRes] =
+    await Promise.all([
+      supabase.from('day_boat_plans').select('*').eq('date', dateStr).order('program'),
+      supabase.from('boat_assignments').select('*').eq('date', dateStr).order('booking_code'),
+      supabase.from('day_vehicle_plans').select('*').eq('date', dateStr).order('program'),
+      supabase.from('van_meta').select('*').eq('date', dateStr),
+      supabase.from('van_assignments').select('*').eq('date', dateStr).order('id'),
+    ])
+
+  return {
+    ...empty,
+    bookings: [booking],
+    dayBoatPlans: buildBoatPlans(
+      (boatPlansRes.data ?? []) as BoatPlanRow[],
+      (boatAssignRes.data ?? []) as BoatAssignmentRow[],
+    ),
+    dayVehiclePlans: buildVehiclePlans(
+      (vehiclePlansRes.data ?? []) as VehiclePlanRow[],
+      (vanMetaRes.data ?? []) as VanMetaRow[],
+      (vanAssignRes.data ?? []) as VanAssignmentRow[],
+    ),
+  }
+}
+
 function mapAgent(row: AgentRow): Agent {
   return {
     slug: row.slug,

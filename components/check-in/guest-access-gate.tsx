@@ -1,10 +1,39 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { BrandMark } from '@/components/brand-mark'
 import { readStaffSession } from '@/lib/staff-auth'
 import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/client'
 import { fetchBookingByCode } from '@/lib/supabase/portal-db'
+
+// ---------------------------------------------------------------------------
+// Bangkok time helpers — used to enforce tour-date-only QR access.
+// QR is valid: today (Asia/Bangkok) === booking_date AND time < 19:00.
+// ---------------------------------------------------------------------------
+const GUEST_CLOSE_MINUTES = 19 * 60 // 19:00 Bangkok
+
+function bangkokNow(): { dateStr: string; minutes: number } {
+  const now = new Date()
+  const dateStr = new Intl.DateTimeFormat('sv', { timeZone: 'Asia/Bangkok' }).format(now)
+  const parts = new Intl.DateTimeFormat('en', {
+    timeZone: 'Asia/Bangkok',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false,
+  }).formatToParts(now)
+  const hour = Number(parts.find((p) => p.type === 'hour')?.value ?? 0)
+  const minute = Number(parts.find((p) => p.type === 'minute')?.value ?? 0)
+  return { dateStr, minutes: hour * 60 + minute }
+}
+
+type GuestTimeState = 'ok' | 'wrong-day' | 'closed'
+
+function guestTimeState(bookingDate: string): GuestTimeState {
+  if (!bookingDate) return 'ok' // no date in JWT → let server decide
+  const { dateStr, minutes } = bangkokNow()
+  if (dateStr !== bookingDate) return 'wrong-day'
+  return minutes >= GUEST_CLOSE_MINUTES ? 'closed' : 'ok'
+}
 
 async function applySession(accessToken?: string, refreshToken?: string) {
   if (!accessToken || !refreshToken || !hasSupabaseConfig()) return
@@ -62,6 +91,31 @@ export function GuestAccessGate({
   const [message, setMessage] = useState(
     'Scan the check-in QR for this booking. The page only opens that one booking.',
   )
+  // Keep a ref so the periodic timer can read the latest state without a stale closure.
+  const stateRef = useRef(state)
+  useEffect(() => { stateRef.current = state }, [state])
+
+  // ── Periodic close-check: detect 19:00 passing for tabs left open ─────────
+  useEffect(() => {
+    if (state !== 'ok' || !hasSupabaseConfig()) return
+    const check = () => {
+      if (stateRef.current !== 'ok') return
+      getSupabaseBrowserClient()
+        .auth.getSession()
+        .then(({ data }) => {
+          const bd = String(data.session?.user.app_metadata?.booking_date ?? '').slice(0, 10)
+          if (!bd) return
+          const ts = guestTimeState(bd)
+          if (ts === 'closed') {
+            setMessage('Check-in for today has closed (19:00). Scan your QR again on your tour date.')
+            setState('blocked')
+          }
+        })
+        .catch(() => { /* ignore — next tick will retry */ })
+    }
+    const id = window.setInterval(check, 60_000) // check once per minute
+    return () => window.clearInterval(id)
+  }, [state])
 
   useEffect(() => {
     if (!code) return
@@ -69,6 +123,21 @@ export function GuestAccessGate({
 
     async function unlock() {
       if (await guestOwnsCode(code)) {
+        // Enforce the tour-date-only window client-side too (server already enforces on
+        // new scans, but this catches tabs restored from a previous day's session).
+        const { data: sd } = await getSupabaseBrowserClient().auth.getSession()
+        const bd = String(sd.session?.user.app_metadata?.booking_date ?? '').slice(0, 10)
+        const ts = guestTimeState(bd)
+        if (ts === 'wrong-day') {
+          setMessage('This QR is only valid on your tour date. Please scan again on the day of your tour.')
+          setState('blocked')
+          return
+        }
+        if (ts === 'closed') {
+          setMessage('Check-in for today has closed (19:00). Scan your QR again on your tour date.')
+          setState('blocked')
+          return
+        }
         setState('ok')
         return
       }
