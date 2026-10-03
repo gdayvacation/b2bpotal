@@ -374,6 +374,9 @@ function bookingRangeCovered(
 
 type PortalContextValue = {
   hydrated: boolean
+  /** Guest QR waits for this before deciding check-in is still open. */
+  checkInReady: boolean
+  sessionRole: string
   loadError: string | null
   agents: Agent[]
   bookings: Booking[]
@@ -855,6 +858,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false)
   /** Auth role from the session that hydrated this tab. Empty until that read finishes. */
   const [sessionRole, setSessionRole] = useState('')
+  /** True after this tab's guest check-in rows have been read once. Staff stay ready. */
+  const [checkInReady, setCheckInReady] = useState(false)
   /** False only for a partner tab that has sat unused for PARTNER_IDLE_MS. */
   const [partnerLive, setPartnerLive] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -1188,6 +1193,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const _guestCode = String(_meta.booking_code ?? '').trim()
         const _guestDate = String(_meta.booking_date ?? '').trim().slice(0, 10)
         setSessionRole(_role)
+        if (_role === 'guest') setCheckInReady(false)
         const snapshot =
           _role === 'guest' && _guestCode && _guestDate
             ? await loadGuestPortalSnapshot(_guestCode, _guestDate)
@@ -1949,11 +1955,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       cachedProfile = profile
       const isGuest = profile.role === 'guest'
 
-      // Guest: one load + refresh when tab focuses. No poll / realtime storm under 100–200 phones.
+      // Guest: one load, then the QR page may show "already checked in".
+      // No poll / realtime storm under 100–200 phones.
       if (isGuest) {
-        void syncCheckInFromCloud(false, { profile })
+        setCheckInReady(false)
+        void syncCheckInFromCloud(false, { profile }).finally(() => {
+          if (!cancelled) setCheckInReady(true)
+        })
         return
       }
+      if (!cancelled) setCheckInReady(true)
 
       void syncCheckInFromCloud(true, { profile })
       try {
@@ -2799,6 +2810,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
     return {
       hydrated,
+      checkInReady,
+      sessionRole,
       loadError,
       agents,
       bookings,
@@ -5151,7 +5164,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
       },
     }
-  }, [agents, bookings, ensureBookingsForRange, ensureBookingByCode, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, checkInGroupGuides, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
+  }, [agents, bookings, ensureBookingsForRange, ensureBookingByCode, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, checkInGroupGuides, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, checkInReady, sessionRole, loadError])
 
   const partnerDataLive = sessionRole !== 'partner' || partnerLive
 

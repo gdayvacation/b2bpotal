@@ -262,6 +262,8 @@ function GuestCheckInForm({
     getCheckInServices,
     ensureBookingByCode,
     hydrated,
+    checkInReady,
+    sessionRole,
   } = usePortal()
 
   const today = usePortalTodayISO()
@@ -441,8 +443,11 @@ function GuestCheckInForm({
   }, [step, selectedBooking?.code])
 
   // Resolve locked QR booking once portal data is ready.
+  // Guests wait until this booking's check-in rows have been read, so a phone
+  // does not offer a second check-in before the morning result arrives.
   useEffect(() => {
-    if (!hydrated || !lockedCode || lockedBootstrappedRef.current) return
+    const guestCloudReady = sessionRole === 'guest' ? checkInReady : sessionRole !== ''
+    if (!hydrated || !guestCloudReady || !lockedCode || lockedBootstrappedRef.current) return
 
     const booking = bookings.find((item) => item.code === lockedCode) ?? null
 
@@ -572,7 +577,51 @@ function GuestCheckInForm({
     getCheckInGroupGuide,
     getDayBoatPlan,
     hydrated,
+    checkInReady,
+    sessionRole,
     lockedCode,
+  ])
+
+  // If the morning check-in arrives after the form was shown, close it and
+  // show the existing ticket. No extra database read — uses rows already loaded.
+  useEffect(() => {
+    if (!isLocked || step !== 'scope' || scope !== null || !selectedBooking) return
+    const seats = totalPassengers(selectedBooking)
+    const enrolled = getCheckInEnrollments(
+      selectedBooking.date,
+      selectedBooking.program,
+      selectedBooking.code,
+    )
+    const attendance = getCheckInAttendance(
+      selectedBooking.date,
+      selectedBooking.program,
+      selectedBooking.code,
+    )
+    if (attendance !== 'checked' && enrolledSeatCount(enrolled) < seats) return
+    const guideName = getCheckInGroupGuide(
+      selectedBooking.date,
+      selectedBooking.program,
+      selectedBooking.code,
+    ).trim()
+    const guideDone =
+      guideEnrollmentCount(enrolled) >= parseGroupGuideNames(guideName).length
+    if (guideName && !guideDone) return
+    setDoneGuideOnly(false)
+    setDoneNeedsPayment(
+      paymentDue(
+        selectedBooking,
+        enrolled.filter((item) => item.scope !== 'guide').map((item) => item.nationality),
+      ).needsStaff,
+    )
+    setStep('done')
+  }, [
+    getCheckInAttendance,
+    getCheckInEnrollments,
+    getCheckInGroupGuide,
+    isLocked,
+    scope,
+    selectedBooking,
+    step,
   ])
 
   function resetFind() {
