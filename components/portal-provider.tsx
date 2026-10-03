@@ -1266,6 +1266,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     }
     void loadPortal()
     const onGuestSignedIn = () => {
+      // Reset hydrated so GuestCheckIn waits for the fresh guest-session portal
+      // load instead of racing against a stale gen-1 empty-bookings render.
+      setHydrated(false)
       void loadPortal()
     }
     window.addEventListener(GUEST_SIGNED_IN_EVENT, onGuestSignedIn)
