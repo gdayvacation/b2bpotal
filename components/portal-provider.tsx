@@ -3365,25 +3365,26 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           movedFrom: options?.movedFrom ?? null,
         }
         setBookings((current) => [booking, ...current])
-        persistBookingWrite(
-          'insertBooking',
-          insertBooking(booking).catch((error) => {
-            setBookings((current) => current.filter((item) => item.code !== code))
-            const message =
-              error instanceof Error ? error.message : 'Failed to save booking to Supabase'
-            setLoadError(`Booking ${code} was not saved: ${message}`)
-            throw error
-          }),
-        )
-        logBookingEvent(
-          code,
-          'created',
-          `Created for ${booking.date} · ${booking.program} · ${totalPassengers(booking)} pax`,
+        const createdActor =
           options?.actor ?? {
             role: 'agent',
             name: booking.agentName,
             slug: booking.agentSlug,
-          },
+          }
+        const createdSummary = `Created for ${booking.date} · ${booking.program} · ${totalPassengers(booking)} pax`
+        persistBookingWrite(
+          'insertBooking',
+          insertBooking(booking)
+            .then(() => {
+              logBookingEvent(code, 'created', createdSummary, createdActor)
+            })
+            .catch((error) => {
+              setBookings((current) => current.filter((item) => item.code !== code))
+              const message =
+                error instanceof Error ? error.message : 'Failed to save booking to Supabase'
+              setLoadError(`Booking ${code} was not saved: ${message}`)
+              throw error
+            }),
         )
         return { ok: true, booking }
       },
@@ -3410,19 +3411,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               : booking,
           ),
         )
+        const cancelledSummary = lateCancel
+          ? cancelFee !== undefined
+            ? `Cancelled · charge ${cancelFee.toLocaleString('en-US')} THB · was ${existing.date}`
+            : `Cancelled after ${bookingCutoffs.lateFeeFromTime} · full price charged (no refund) · was ${existing.date}`
+          : `Cancelled · no cancel charge · was ${existing.date}`
         persistBookingWrite(
           'updateBookingStatus',
-          updateBookingStatus(code, 'Cancelled', { lateCancel, cancelFee }),
-        )
-        logBookingEvent(
-          code,
-          'cancelled',
-          lateCancel
-            ? cancelFee !== undefined
-              ? `Cancelled · charge ${cancelFee.toLocaleString('en-US')} THB · was ${existing.date}`
-              : `Cancelled after ${bookingCutoffs.lateFeeFromTime} · full price charged (no refund) · was ${existing.date}`
-            : `Cancelled · no cancel charge · was ${existing.date}`,
-          options?.actor,
+          updateBookingStatus(code, 'Cancelled', { lateCancel, cancelFee }).then(() => {
+            logBookingEvent(code, 'cancelled', cancelledSummary, options?.actor)
+          }),
         )
 
         upsertPlan(existing.date, existing.program, (plan) => {
@@ -3521,25 +3519,22 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               : booking,
           ),
         )
+        const dateChangedSummary = trackedMove
+          ? `Date changed ${oldDate} → ${trimmedDate} · moved at marina check-in · extra charge ${moveFee.toLocaleString('en-US')} THB`
+          : chargeLateDateChange
+            ? `Date changed ${oldDate} → ${trimmedDate} · late change · full charge (Invoice) / head deduct (Prebuy)`
+            : options?.lateDateChange === false || options?.lateChangeFee === 0
+              ? `Date changed ${oldDate} → ${trimmedDate} · late change waived`
+              : `Date changed ${oldDate} → ${trimmedDate}`
         persistBookingWrite(
           'updateBookingDate',
           updateBookingDate(code, trimmedDate, {
             lateDateChange: nextLateDateChange,
             movedFrom,
             ...(trackedMove ? { lateChangeFee: nextLateChangeFee } : {}),
+          }).then(() => {
+            logBookingEvent(code, 'date_changed', dateChangedSummary, options?.actor)
           }),
-        )
-        logBookingEvent(
-          code,
-          'date_changed',
-          trackedMove
-            ? `Date changed ${oldDate} → ${trimmedDate} · moved at marina check-in · extra charge ${moveFee.toLocaleString('en-US')} THB`
-            : chargeLateDateChange
-            ? `Date changed ${oldDate} → ${trimmedDate} · late change · full charge (Invoice) / head deduct (Prebuy)`
-            : options?.lateDateChange === false || options?.lateChangeFee === 0
-              ? `Date changed ${oldDate} → ${trimmedDate} · late change waived`
-              : `Date changed ${oldDate} → ${trimmedDate}`,
-          options?.actor,
         )
 
         const boatAssignment = getDayBoatPlan(oldDate, program).assignments[code]
@@ -3639,15 +3634,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               : booking,
           ),
         )
+        const rebookedSummary = `Rebooked to ${trimmedDate} · ${nextStatus}`
         persistBookingWrite(
           'updateBookingRebook',
-          updateBookingRebook(code, trimmedDate, nextStatus),
-        )
-        logBookingEvent(
-          code,
-          'rebooked',
-          `Rebooked to ${trimmedDate} · ${nextStatus}`,
-          options?.actor,
+          updateBookingRebook(code, trimmedDate, nextStatus).then(() => {
+            logBookingEvent(code, 'rebooked', rebookedSummary, options?.actor)
+          }),
         )
         relocateBookingDayData(existing.date, trimmedDate, existing.program, code)
 
@@ -3904,15 +3896,14 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         setBookings((current) =>
           current.map((booking) => (booking.code === code ? next : booking)),
         )
+        const detailsEditedSummary = `Updated ${changes.join(', ')}`
         persistBookingWrite(
           'updateBookingDetails',
-          updateBookingDetails(next, { writeOriginalPax: livePaxChanged, writeMovedOut }),
-        )
-        logBookingEvent(
-          code,
-          'details_edited',
-          `Updated ${changes.join(', ')}`,
-          options?.actor,
+          updateBookingDetails(next, { writeOriginalPax: livePaxChanged, writeMovedOut }).then(
+            () => {
+              logBookingEvent(code, 'details_edited', detailsEditedSummary, options?.actor)
+            },
+          ),
         )
         if (next.pickupZone !== existing.pickupZone || next.pickupHotel !== existing.pickupHotel) {
           upsertVehiclePlan(existing.date, existing.program, (plan) => {
@@ -3968,9 +3959,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         )
         persistBookingWrite(
           'updateBookingPickup',
-          updateBookingPickup(code, trimmed, 'Confirmed'),
+          updateBookingPickup(code, trimmed, 'Confirmed').then(() => {
+            logBookingEvent(code, 'pickup_set', `Pickup time set to ${trimmed}`, options?.actor)
+          }),
         )
-        logBookingEvent(code, 'pickup_set', `Pickup time set to ${trimmed}`, options?.actor)
         return { ok: true }
       },
       getBookingHistory: (code) => bookingEventsByCode[code] ?? [],
