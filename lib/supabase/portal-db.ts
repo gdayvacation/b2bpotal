@@ -1244,7 +1244,7 @@ export async function insertBookingEvent(
   const supabase = getSupabaseBrowserClient()
   const id = event.id ?? crypto.randomUUID()
   const createdAt = event.createdAt ?? new Date().toISOString()
-  const { error } = await supabase.from('booking_events').insert({
+  const row = {
     id,
     booking_code: event.bookingCode,
     event_type: event.type,
@@ -1253,9 +1253,26 @@ export async function insertBookingEvent(
     actor_name: event.actorName,
     actor_slug: event.actorSlug,
     created_at: createdAt,
-  })
-  if (error) throw new Error(`insert booking event: ${error.message}`)
-  return { id, createdAt }
+  }
+
+  // Retry on FK violation (23503): mobile-network clock skew or Supabase
+  // round-trip ordering can make the event INSERT reach the server a fraction
+  // of a second before the parent booking row commits. Three attempts with
+  // back-off covers the race window.
+  const FK_VIOLATION = '23503'
+  const BACKOFF_MS = [600, 1500, 3000]
+  let lastError: Error | null = null
+  for (let attempt = 0; attempt <= BACKOFF_MS.length; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, BACKOFF_MS[attempt - 1]))
+    }
+    const { error } = await supabase.from('booking_events').insert(row)
+    if (!error) return { id, createdAt }
+    lastError = new Error(`insert booking event: ${error.message}`)
+    // Only retry on FK violation; any other error fails immediately.
+    if (!error.code || error.code !== FK_VIOLATION) break
+  }
+  throw lastError ?? new Error('insert booking event: unknown error')
 }
 
 export async function fetchBookingEvents(bookingCode: string): Promise<BookingEvent[]> {
