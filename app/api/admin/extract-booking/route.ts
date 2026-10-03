@@ -1,6 +1,11 @@
 import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
 import { parseBookingImageModelText } from '@/lib/booking-from-image'
+import {
+  geminiApiKey,
+  geminiBookingModel,
+  looksLikeGoogleAiStudioKey,
+} from '@/lib/gemini-booking-extract'
 import { hasStaffSession, STAFF_COOKIE } from '@/lib/staff-auth-server'
 
 export const runtime = 'nodejs'
@@ -50,24 +55,12 @@ async function requireAdmin() {
   return hasStaffSession(jar.get(STAFF_COOKIE)?.value, 'admin')
 }
 
-function geminiApiKey() {
-  return (
-    process.env.GEMINI_API_KEY?.trim() ||
-    process.env.GOOGLE_AI_API_KEY?.trim() ||
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() ||
-    ''
-  )
-}
-
 type ExtractInput = {
   text?: string
   image?: { mimeType: string; base64: string }
 }
 
 async function extractWithGemini(apiKey: string, input: ExtractInput) {
-  const model = process.env.GEMINI_BOOKING_VISION_MODEL?.trim() || 'gemini-3.8-flash'
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`
-
   const parts: Array<Record<string, unknown>> = [
     {
       text: input.text
@@ -83,6 +76,9 @@ async function extractWithGemini(apiKey: string, input: ExtractInput) {
       },
     })
   }
+
+  const model = geminiBookingModel()
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`
 
   const response = await fetch(url, {
     method: 'POST',
@@ -178,7 +174,28 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error:
-          'Add GEMINI_API_KEY (Google AI Studio) to .env.local — get a free key at https://aistudio.google.com/apikey',
+          'Add GEMINI_API_KEY from Google AI Studio (AIza… or AQ.…) to .env.local — https://aistudio.google.com/apikey',
+      },
+      { status: 503 },
+    )
+  }
+
+  if (googleKey && !looksLikeGoogleAiStudioKey(googleKey) && !openaiKey) {
+    return NextResponse.json(
+      {
+        error:
+          'GEMINI_API_KEY must be from Google AI Studio (AIza… or AQ.…), not service account JSON. Create one at https://aistudio.google.com/apikey',
+      },
+      { status: 503 },
+    )
+  }
+
+  const useGemini = Boolean(googleKey && looksLikeGoogleAiStudioKey(googleKey))
+  if (!useGemini && !openaiKey) {
+    return NextResponse.json(
+      {
+        error:
+          'Add a valid GEMINI_API_KEY (AI Studio) or OPENAI_API_KEY to .env.local',
       },
       { status: 503 },
     )
@@ -226,7 +243,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const content = googleKey
+    const content = useGemini
       ? await extractWithGemini(googleKey, input)
       : await extractWithOpenAI(openaiKey, input)
     const draft = parseBookingImageModelText(content)

@@ -1,5 +1,6 @@
 import { normalizeBookingImageDraft } from '@/lib/booking-from-image'
 import type { BookingImageDraft } from '@/lib/booking-from-image'
+import { parkExcludedFromRemark, parkIncludedFromRemark } from '@/lib/booking-remark-fees'
 
 export type BookingSpreadsheetRow = {
   id: string
@@ -74,10 +75,12 @@ const HEADER_ALIASES: Record<string, string> = {
   'room number': 'roomNumber',
   adults: 'adults',
   ad: 'adults',
+  adl: 'adults',
   adult: 'adults',
   children: 'children',
   child: 'children',
   ch: 'children',
+  chd: 'children',
   infants: 'infants',
   infant: 'infants',
   inf: 'infants',
@@ -157,6 +160,19 @@ function recordFromMappedRow(mapped: Record<string, string | number>) {
   return normalizeBookingImageDraft(mapped)
 }
 
+function inferBannerDate(rows: unknown[][], headerIndex: number) {
+  if (headerIndex <= 0) return ''
+  const banner = rows[headerIndex - 1]
+  if (!Array.isArray(banner)) return ''
+  for (let i = 0; i < Math.min(banner.length, 8); i += 1) {
+    const raw = cell(banner, i)
+    if (!raw) continue
+    const draft = normalizeBookingImageDraft({ date: raw })
+    if (draft.date) return draft.date
+  }
+  return ''
+}
+
 function findHeaderRow(rows: unknown[][]) {
   for (let index = 0; index < Math.min(rows.length, 30); index += 1) {
     const row = rows[index]
@@ -177,6 +193,7 @@ function parseGenericSheet(
   idPrefix: string,
 ): { rows: BookingSpreadsheetRow[]; skipped: number } {
   const headerIndex = findHeaderRow(rows)
+  const bannerDate = inferBannerDate(rows, headerIndex)
   const headerRow = rows[headerIndex] ?? []
   const columnMap: Array<{ field: string; index: number }> = []
   headerRow.forEach((header, index) => {
@@ -207,12 +224,21 @@ function parseGenericSheet(
         mapped[field] = num(row, index)
       } else {
         mapped[field] = raw
+        if (field === 'note') {
+          const code = raw.trim().toUpperCase()
+          if (code === 'EXC' || code === 'EXCL' || code === 'EXCLUDED') {
+            mapped.parkFee = 'Not Included'
+          } else if (code === 'INC' || code === 'INCLUDED') {
+            mapped.parkFee = 'Included'
+          }
+        }
       }
     }
     if (!hasData) {
       skipped += 1
       continue
     }
+    if (!mapped.date && bannerDate) mapped.date = bannerDate
     const draft = recordFromMappedRow(mapped)
     if (!draft.leadGuest && !draft.agentRef && !draft.pickupHotel) {
       skipped += 1
@@ -262,13 +288,11 @@ function isJunkGuest(guest: string) {
 }
 
 function parkExcluded(remark: string) {
-  return /excl(?:uding)?(?:\s*national)?(?:\s*park)?|\bexc\b[\s.]*npf|exc\s*npf|npf\s*excl/i.test(
-    remark,
-  )
+  return parkExcludedFromRemark(remark)
 }
 
 function parkIncludedRemark(remark: string) {
-  return /inc(?:luding)?\s*npf|inc\s*npf|including national/i.test(remark)
+  return parkIncludedFromRemark(remark)
 }
 
 function canoeFromRemark(remark: string, program: string) {

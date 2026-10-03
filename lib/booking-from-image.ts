@@ -1,4 +1,5 @@
 import type { IncludeOption, Program } from '@/lib/types'
+import { inferParkFeeFromRemark } from '@/lib/booking-remark-fees'
 
 /** Draft fields extracted from a chat screenshot before admin confirms. */
 export type BookingImageDraft = {
@@ -86,6 +87,10 @@ function normalizeProgram(value: unknown): Program | null {
 function normalizeInclude(value: unknown, fallback: IncludeOption = 'Included'): IncludeOption {
   const raw = asString(value).toLowerCase()
   if (!raw) return fallback
+  if (raw === 'exc' || raw === 'excl' || raw === 'excluded' || raw === 'exclude') {
+    return 'Not Included'
+  }
+  if (raw === 'inc' || raw === 'included') return 'Included'
   if (
     raw.includes('not') ||
     raw.includes('exclude') ||
@@ -143,6 +148,8 @@ export function normalizeBookingImageDraft(input: unknown): BookingImageDraft {
     ? raw.warnings.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     : []
 
+  const explicitParkRaw = asString(raw.parkFee ?? raw.nationalParkFee)
+
   const draft: BookingImageDraft = {
     agentName: asString(raw.agentName ?? raw.agency ?? raw.agent),
     agentRef: asString(raw.agentRef ?? raw.voucher ?? raw.reference ?? raw.bookingRef),
@@ -158,12 +165,15 @@ export function normalizeBookingImageDraft(input: unknown): BookingImageDraft {
     pickupHotel: asString(raw.pickupHotel ?? raw.hotel ?? raw.hotelName),
     pickupZone: asString(raw.pickupZone ?? raw.zone ?? raw.area),
     roomNumber: asString(raw.roomNumber ?? raw.room),
-    note: asString(raw.note ?? raw.notes ?? raw.specialRequest),
+    note: asString(raw.note ?? raw.notes ?? raw.remark ?? raw.specialRequest),
     cashOnTour: asString(raw.cashOnTour ?? raw.cash ?? raw.collectCash),
     confidence: normalizeConfidence(raw.confidence),
     warnings,
     rawNotes: asString(raw.rawNotes ?? raw.summary),
   }
+
+  const fromRemark = inferParkFeeFromRemark(draft.note, explicitParkRaw || raw.parkFee || raw.nationalParkFee)
+  if (fromRemark) draft.parkFee = fromRemark
 
   if (!draft.program) {
     draft.warnings.push('Program could not be read clearly — please choose PP or James Bond.')

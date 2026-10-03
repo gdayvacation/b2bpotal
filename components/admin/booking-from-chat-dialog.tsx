@@ -639,7 +639,23 @@ export function BookingFromChatDialog({
 
                 <p className="text-xs text-teal-900/45">
                   Supports report-style headers (Date, Guest, Program, …) and Good Day speedboat
-                  workbooks with one tab per day.
+                  workbooks with one tab per day.{' '}
+                  <a
+                    href="/templates/booking-import-template.xlsx"
+                    download
+                    className="font-medium text-teal-800 underline underline-offset-2 hover:text-teal-950"
+                  >
+                    Download blank template (.xlsx)
+                  </a>
+                  {' · '}
+                  <a
+                    href="/templates/README.md"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-teal-800/80 underline underline-offset-2 hover:text-teal-950"
+                  >
+                    AI key setup
+                  </a>
                 </p>
               </>
             ) : (
