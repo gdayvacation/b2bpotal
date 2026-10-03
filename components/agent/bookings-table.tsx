@@ -48,8 +48,8 @@ import { cn } from '@/lib/utils'
 
 type ProgramFilter = 'all' | Program
 
-/** Search looks back 30 days and through all future trips (keeps lists fast). */
-const SEARCH_HISTORY_DAYS = 30
+/** Search looks back 7 days and through all future trips (keeps lists fast). */
+const SEARCH_HISTORY_DAYS = 7
 
 function searchFromISO() {
   const d = startOfToday()
@@ -466,7 +466,7 @@ export function BookingsTable({
               {bookings.length === 0
                 ? 'No bookings yet.'
                 : isSearching
-                  ? 'No bookings match this search (last 30 days + future).'
+                  ? 'No bookings match this search (last 7 days + future).'
                   : 'No bookings match these filters.'}
             </EmptyState>
           </Surface>
@@ -681,7 +681,7 @@ export function BookingsTable({
                   {bookings.length === 0
                     ? 'No bookings yet.'
                     : isSearching
-                      ? 'No bookings match this search (last 30 days + future).'
+                      ? 'No bookings match this search (last 7 days + future).'
                       : 'No bookings match these filters.'}
                 </TableCell>
               </TableRow>

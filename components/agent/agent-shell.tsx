@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { CalendarDays, ClipboardList, Plus } from 'lucide-react'
 import { BrandMark } from '@/components/brand-mark'
+import { usePartnerDataLive } from '@/components/portal-provider'
 import { cn } from '@/lib/utils'
 import type { Agent } from '@/lib/types'
 
@@ -15,11 +16,27 @@ const nav = [
 
 export function AgentShell({ agent, children }: { agent: Agent; children: React.ReactNode }) {
   const pathname = usePathname()
+  const dataLive = usePartnerDataLive()
   const base = `/agent/${agent.slug}`
   const items = agent.status === 'Inactive' ? nav.filter((item) => item.href !== '') : nav
 
   return (
     <div className="gday-app relative">
+      {dataLive ? null : (
+        <button
+          type="button"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-teal-950/25 px-4 pb-28 sm:items-center sm:pb-4"
+          onPointerDown={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+          }}
+        >
+          <span className="max-w-md rounded-2xl bg-white px-5 py-4 text-center text-sm leading-relaxed text-teal-950 shadow-lg">
+            This page paused after 15 minutes so it stops loading data. Tap to refresh seats and
+            bookings.
+          </span>
+        </button>
+      )}
       <header className="sticky top-0 z-40 border-b border-teal-900/8 bg-white/70 backdrop-blur-xl">
         <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-sky-400/50 via-teal-500/60 to-amber-400/40" />
         <div className="relative flex h-14 w-full items-center justify-between gap-3 px-4 sm:h-16 sm:px-6 lg:px-8 xl:px-10">

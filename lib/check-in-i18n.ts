@@ -127,6 +127,13 @@ const COPY = {
     paymentAfter: 'Payment is due on this booking. After check-in, please contact staff to pay.',
     noCash: 'No cash on tour to collect — you can finish check-in.',
     confirmFinish: 'Confirm & finish check-in',
+    pleaseWait: 'Please wait…',
+    checkInPausedWait: 'Please wait a moment. These names are saved, and they stay on this page.',
+    draftRestored:
+      'These names were saved from the earlier check-in. Check them, then tap confirm. You do not need to type them again.',
+    checkInTryAgainSoon:
+      'You can try again now. Your names are still here — no need to scan the QR again.',
+    confirmTryAgain: 'Try again',
     paymentNeeded: 'Checked in · Payment needed',
     payPark: 'Your booking does not include the National Park fee. Please see marina staff to complete payment.',
     payStaff: 'Please see marina staff to complete your payment.',
@@ -288,6 +295,13 @@ const COPY = {
     paymentAfter: 'इस बुकिंग पर भुगतान बाकी है। चेक-इन के बाद स्टाफ से भुगतान करें।',
     noCash: 'कैश ऑन टूर नहीं है — चेक-इन पूरा कर सकते हैं।',
     confirmFinish: 'पुष्टि करें और चेक-इन पूरा करें',
+    pleaseWait: 'कृपया रुकें…',
+    checkInPausedWait: 'कृपया कुछ क्षण रुकें। नामบันทึกแล้ว และยังอยู่บนหน้านี้।',
+    draftRestored:
+      'ये नाम पिछली कोशिश से सेव हो गए हैं। जाँच करें, फिर पुष्टि करें। दोबारा टाइप करने की ज़रूरत नहीं।',
+    checkInTryAgainSoon:
+      'अब फिर से कोशिश कर सकते हैं। नाम यहीं हैं — QR दोबारा स्कैन करने की ज़रूरत नहीं।',
+    confirmTryAgain: 'फिर से कोशिश करें',
     paymentNeeded: 'चेक-इन हो गया — भुगतान बाकी है',
     payPark:
       'आपकी बुकिंग में नेशनल पार्क शुल्क शामिल नहीं है। भुगतान के लिए मरीना स्टाफ से मिलें।',

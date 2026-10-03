@@ -1,11 +1,12 @@
 'use client'
 
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   ArrowLeft,
   CalendarCheck2,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   History,
   Pencil,
   Plus,
@@ -54,6 +55,8 @@ import {
   formatAllotmentParkFee,
   listAgentAllotments,
   removeLastAgentAllotmentPayment,
+  setAgentAllotmentReceiving,
+  topUpAgentAllotment,
   updateAgentAllotment,
   type AgentAllotment,
   type AgentAllotmentParkFee,
@@ -62,6 +65,7 @@ import {
 import {
   fetchAgentBookingDayPax,
   listAgentAllotmentDaily,
+  moveAgentAllotmentDaily,
   type AgentAllotmentDaily,
   type AgentBookingDayPax,
 } from '@/lib/supabase/agent-allotment-daily-db'
@@ -152,6 +156,438 @@ function seatsToDraftHeads(row: Pick<AgentAllotment, 'seats' | 'adultSeats' | 'c
 
 function formatMoney(value: number) {
   return value.toLocaleString('en-US', { maximumFractionDigits: 0 })
+}
+
+function lotTransfers(lot: AgentAllotment) {
+  const payments = allotmentPayments(lot)
+  const date = (lot.paidDate || lot.createdAt).slice(0, 10)
+  const paid = allotmentPaidTotal(lot)
+  const lump = {
+    id: lot.id,
+    date,
+    heads: lot.seats,
+    amount: paid > 0 ? paid : lot.totalAmount,
+    note: payments
+      .map((payment) => payment.note.replace(/^Ref\s*/i, '').trim())
+      .filter(Boolean)
+      .join(', '),
+  }
+  if (payments.length === 0) return [lump]
+  const known = payments.reduce((sum, payment) => sum + (payment.heads ?? 0), 0)
+  if (known <= 0) return [lump]
+  const missing = payments.filter((payment) => !(payment.heads && payment.heads > 0))
+  const shares = new Map<string, number>()
+  let leftover = Math.max(0, lot.seats - known)
+  if (missing.length > 0 && leftover > 0) {
+    const base = Math.floor(leftover / missing.length)
+    let extra = leftover - base * missing.length
+    for (const payment of missing) {
+      const heads = base + (extra > 0 ? 1 : 0)
+      if (extra > 0) extra -= 1
+      shares.set(payment.id, heads)
+    }
+  }
+  return payments.map((payment) => {
+    const noted = payment.note.replace(/^Ref\s*/i, '').trim()
+    return {
+      id: payment.id,
+      date: (payment.headsDate || payment.paidDate).slice(0, 10),
+      heads: payment.heads && payment.heads > 0 ? payment.heads : (shares.get(payment.id) ?? 0),
+      amount: payment.amount,
+      note: noted,
+    }
+  })
+}
+
+type DepositBookLine = {
+  key: string
+  date: string
+  kind: 'in' | 'out'
+  title: string
+  headsDelta: number
+  baht: number | null
+  headsLeft: number
+}
+
+/** One running head balance, oldest first — the sheet's TK column. */
+function buildDepositBook(lots: AgentAllotment[], daily: AgentAllotmentDaily[]): DepositBookLine[] {
+  const orderedLots = [...lots].sort((a, b) => {
+    const aDate = (a.paidDate || a.createdAt).slice(0, 10)
+    const bDate = (b.paidDate || b.createdAt).slice(0, 10)
+    return aDate.localeCompare(bDate) || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
+  })
+
+  const rateOn = (day: string) => {
+    const open = orderedLots.filter((lot) => (lot.paidDate || lot.createdAt).slice(0, 10) <= day)
+    return open.at(-1)?.adultPrice ?? 0
+  }
+
+  const events: Array<Omit<DepositBookLine, 'headsLeft'> & { sort: string }> = []
+
+  for (const lot of orderedLots) {
+    for (const [index, transfer] of lotTransfers(lot).entries()) {
+      events.push({
+        key: `in-${lot.id}-${transfer.id}`,
+        date: transfer.date,
+        sort: `0-${String(index).padStart(3, '0')}`,
+        kind: 'in',
+        title: topupTitle(transfer.amount, transfer.heads, lot.adultPrice, transfer.note),
+        headsDelta: transfer.heads,
+        baht: transfer.amount,
+      })
+    }
+  }
+
+  for (const row of daily) {
+    if (row.totalDeduct <= 0) continue
+    const note = row.note.replace(/^BW ledger:\s*/i, '').trim()
+    const extra = note && !/^bw ledger$/i.test(note) ? note : ''
+    const rate = rateOn(row.day)
+    events.push({
+      key: `out-${row.id}`,
+      date: row.day,
+      sort: `1-${row.day}`,
+      kind: 'out',
+      title: extra,
+      headsDelta: -row.totalDeduct,
+      baht: rate > 0 ? -(row.totalDeduct * rate) : null,
+      })
+  }
+
+  events.sort((a, b) => a.date.localeCompare(b.date) || a.sort.localeCompare(b.sort))
+
+  let heads = 0
+  return events.map((event) => {
+    heads += event.headsDelta
+    return {
+      key: event.key,
+      date: event.date,
+      kind: event.kind,
+      title: event.title,
+      headsDelta: event.headsDelta,
+      baht: event.baht,
+      headsLeft: heads,
+    }
+  })
+}
+
+type LotBookStatus = 'done' | 'active' | 'waiting' | 'over'
+
+type LotBook = {
+  lotId: string
+  index: number
+  openDate: string
+  seats: number
+  rate: number
+  paid: number
+  ref: string
+  used: number
+  remaining: number
+  status: LotBookStatus
+  lines: DepositBookLine[]
+}
+
+function lotBookStatusLabel(status: LotBookStatus) {
+  if (status === 'done') return 'หมด'
+  if (status === 'active') return 'ใช้อยู่'
+  if (status === 'over') return 'เกิน'
+  return 'รอ'
+}
+
+function formatLotTabDate(isoDate: string) {
+  return new Date(`${isoDate}T12:00:00`).toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+  })
+}
+
+function usageNote(day: string, dailyByDay: Map<string, AgentAllotmentDaily>) {
+  const saved = dailyByDay.get(day)
+  if (!saved) return 'จากบุ๊กกิ้งในระบบ'
+  const note = saved.note.replace(/^BW ledger:\s*/i, '').trim()
+  if (!note || /^bw ledger$/i.test(note)) return ''
+  return note
+}
+
+function topupTitle(amount: number, heads: number, rate: number, note: string) {
+  return [`Topup ${formatMoney(amount)}`, `${heads} หัว @ ${formatMoney(rate)}`, note].filter(Boolean).join(' · ')
+}
+
+function usageTitle(note: string, taken: number, dayTotal: number) {
+  const split = dayTotal > taken ? `วันนี้ทั้งวัน ${dayTotal} หัว ล็อตนี้รับ ${taken}` : ''
+  return [split, note].filter(Boolean).join(' · ')
+}
+
+/** One tab per lot. Heads in a tab only move that lot; the next lot starts when this one is full. */
+function buildLotBooks(
+  lots: AgentAllotment[],
+  fifo: ReturnType<typeof allocateDailyHeadsFifo>,
+  daily: AgentAllotmentDaily[],
+  dayTotals: { day: string; totalDeduct: number }[],
+  activeLotId: string,
+): LotBook[] {
+  const dailyByDay = new Map(daily.map((row) => [row.day, row]))
+  const totalByDay = new Map(dayTotals.map((row) => [row.day, row.totalDeduct]))
+  const summaryById = new Map(fifo.summaries.map((row) => [row.allotmentId, row]))
+
+  return lots.map((lot, index) => {
+    const summary = summaryById.get(lot.id) ?? {
+      allotmentId: lot.id,
+      purchased: lot.seats,
+      used: 0,
+      remaining: lot.seats,
+    }
+    const transfers = lotTransfers(lot)
+    const openDate = transfers[0]?.date || (lot.paidDate || lot.createdAt).slice(0, 10)
+    const paid = allotmentPaidTotal(lot)
+    const money = paid > 0 ? paid : lot.totalAmount
+    const ref = transfers
+      .map((transfer) => transfer.note)
+      .filter(Boolean)
+      .slice(0, 3)
+      .join(', ')
+    const events: Array<Omit<DepositBookLine, 'headsLeft'> & { sort: string }> = []
+    for (const [transferIndex, transfer] of transfers.entries()) {
+      events.push({
+        key: `in-${lot.id}-${transfer.id}`,
+        date: transfer.date,
+        sort: `0-${String(transferIndex).padStart(3, '0')}`,
+        kind: 'in',
+        title: topupTitle(transfer.amount, transfer.heads, lot.adultPrice, transfer.note),
+        headsDelta: transfer.heads,
+        baht: transfer.amount,
+      })
+    }
+    for (const item of fifo.byLotId.get(lot.id) ?? []) {
+      const dayTotal = totalByDay.get(item.day) ?? item.heads
+      events.push({
+        key: `use-${lot.id}-${item.day}`,
+        date: item.day,
+        sort: `1-${item.day}`,
+        kind: 'out',
+        title: usageTitle(usageNote(item.day, dailyByDay), item.heads, dayTotal),
+        headsDelta: -item.heads,
+        baht: lot.adultPrice > 0 ? -(item.heads * lot.adultPrice) : null,
+      })
+    }
+    events.sort((a, b) => a.date.localeCompare(b.date) || a.sort.localeCompare(b.sort))
+    let left = 0
+    const lines = events.map((event) => {
+      left += event.headsDelta
+      return {
+        key: event.key,
+        date: event.date,
+        kind: event.kind,
+        title: event.title,
+        headsDelta: event.headsDelta,
+        baht: event.baht,
+        headsLeft: left,
+      }
+    })
+    let status: LotBookStatus = 'waiting'
+    if (summary.remaining < 0) status = 'over'
+    else if (summary.used > 0 && summary.remaining === 0) status = 'done'
+    else if (lot.id === activeLotId || summary.used > 0) status = 'active'
+    return {
+      lotId: lot.id,
+      index: index + 1,
+      openDate,
+      seats: lot.seats,
+      rate: lot.adultPrice,
+      paid: money,
+      ref,
+      used: summary.used,
+      remaining: summary.remaining,
+      status,
+      lines,
+    }
+  })
+}
+
+function sortBookLines(rows: DepositBookLine[], newestFirst: boolean) {
+  return rows
+    .map((line, index) => ({ line, index }))
+    .sort((a, b) => {
+      const order = a.line.date.localeCompare(b.line.date) || a.index - b.index
+      return newestFirst ? -order : order
+    })
+    .map((row) => row.line)
+}
+
+function DepositBookRow({
+  line,
+  moveTargets,
+  onMoveDay,
+}: {
+  line: DepositBookLine
+  moveTargets?: { id: string; label: string }[]
+  onMoveDay?: (day: string, allotmentId: string) => void
+}) {
+  return (
+    <TableRow className={line.kind === 'in' ? 'bg-amber-50 hover:bg-amber-50/80' : undefined}>
+      <TableCell className="px-4 whitespace-nowrap text-teal-950">
+        {formatShortDate(line.date)}
+      </TableCell>
+      <TableCell className="max-w-[420px] whitespace-normal text-teal-950">
+        {line.title}
+        {line.kind === 'out' && moveTargets && moveTargets.length > 0 && onMoveDay ? (
+          <select
+            aria-label={`Move ${line.date}`}
+            className="ml-2 h-7 rounded-lg border border-teal-900/15 bg-white px-1.5 text-[11px] text-teal-900"
+            defaultValue=""
+            onChange={(event) => {
+              const allotmentId = event.target.value
+              event.target.value = ''
+              if (allotmentId) onMoveDay(line.date, allotmentId)
+            }}
+          >
+            <option value="">Move</option>
+            {moveTargets.map((target) => (
+              <option key={target.id} value={target.id}>
+                {target.label}
+              </option>
+            ))}
+          </select>
+        ) : null}
+      </TableCell>
+      <TableCell
+        className={cn(
+          'text-right font-medium tabular-nums',
+          line.headsDelta > 0 ? 'text-emerald-800' : 'text-teal-950',
+        )}
+      >
+        {line.headsDelta > 0 ? `+${line.headsDelta}` : line.headsDelta}
+      </TableCell>
+      <TableCell
+        className={cn(
+          'text-right tabular-nums',
+          line.baht != null && line.baht > 0 ? 'text-emerald-800' : 'text-teal-900/70',
+        )}
+      >
+        {line.baht == null ? '—' : `${line.baht > 0 ? '+' : ''}${formatMoney(line.baht)}`}
+      </TableCell>
+      <TableCell
+        className={cn(
+          'px-4 text-right font-semibold tabular-nums',
+          line.headsLeft < 0 ? 'text-rose-700' : 'text-teal-950',
+        )}
+      >
+        {line.headsLeft}
+      </TableCell>
+    </TableRow>
+  )
+}
+
+function DepositBookTable({
+  lines,
+  moveTargets,
+  onMoveDay,
+}: {
+  lines: DepositBookLine[]
+  moveTargets?: { id: string; label: string }[]
+  onMoveDay?: (day: string, allotmentId: string) => void
+}) {
+  const [showAll, setShowAll] = useState(false)
+  const [topupNewestFirst, setTopupNewestFirst] = useState(false)
+  const [usageNewestFirst, setUsageNewestFirst] = useState(false)
+  const lineKey = lines.map((line) => line.key).join('|')
+  const [seenKey, setSeenKey] = useState(lineKey)
+  if (seenKey !== lineKey) {
+    setSeenKey(lineKey)
+    setShowAll(false)
+  }
+  const open = seenKey === lineKey && showAll
+  if (lines.length === 0) {
+    return <p className="px-4 py-6 text-sm text-teal-900/55">ยังไม่มีรายการ</p>
+  }
+  const topups = lines.filter((line) => line.kind === 'in')
+  const usage = sortBookLines(
+    lines.filter((line) => line.kind === 'out'),
+    usageNewestFirst,
+  )
+  const latestTopup = topups.at(-1) ?? null
+  const latestHeadsLeft = lines[lines.length - 1]?.headsLeft ?? 0
+  const shownTopups = open
+    ? sortBookLines(topups, topupNewestFirst)
+    : latestTopup
+      ? [{ ...latestTopup, headsLeft: latestHeadsLeft }]
+      : []
+  return (
+    <div>
+      {topups.length > 1 ? (
+        <div className="flex items-center justify-between gap-3 border-b border-amber-200/80 bg-amber-50 px-4 py-2">
+          <p className="text-xs text-amber-950">
+            {open
+              ? `Topup ${topups.length}`
+              : `Topup ล่าสุด · ยอดรวมล่าสุด ${latestHeadsLeft}`}
+          </p>
+          <button
+            type="button"
+            className="text-xs font-semibold text-amber-950 underline decoration-amber-950/30 underline-offset-2"
+            onClick={() => setShowAll((current) => !current)}
+          >
+            {open ? 'ซ่อน' : 'โชว์'}
+          </button>
+        </div>
+      ) : null}
+      <Table containerClassName="max-h-[min(70vh,720px)] overflow-auto">
+      <TableHeader className="sticky top-0 z-10 bg-white">
+        <TableRow className="hover:bg-transparent">
+          <TableHead className="px-4 text-teal-700/45" aria-sort={topupNewestFirst ? 'descending' : 'ascending'}>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 text-teal-800"
+              onClick={() => {
+                const next = !topupNewestFirst
+                setTopupNewestFirst(next)
+                setUsageNewestFirst(next)
+              }}
+            >
+              วันที่
+              {topupNewestFirst ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />}
+            </button>
+          </TableHead>
+          <TableHead className="text-teal-700/45">รายการ</TableHead>
+          <TableHead className="text-right text-teal-700/45">หัว</TableHead>
+          <TableHead className="text-right text-teal-700/45">บาท</TableHead>
+          <TableHead className="px-4 text-right text-teal-700/45">หัวเหลือ</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {shownTopups.map((line) => (
+          <DepositBookRow
+            key={line.key}
+            line={line}
+            moveTargets={moveTargets}
+            onMoveDay={onMoveDay}
+          />
+        ))}
+        {usage.length > 0 ? (
+          <TableRow className="hover:bg-transparent">
+            <TableCell colSpan={5} className="bg-teal-950/[0.03] px-4 py-1.5">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-teal-900/70"
+                onClick={() => setUsageNewestFirst((current) => !current)}
+              >
+                การใช้หัว
+                {usageNewestFirst ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />}
+              </button>
+            </TableCell>
+          </TableRow>
+        ) : null}
+        {usage.map((line) => (
+          <DepositBookRow
+            key={line.key}
+            line={line}
+            moveTargets={moveTargets}
+            onMoveDay={onMoveDay}
+          />
+        ))}
+      </TableBody>
+    </Table>
+    </div>
+  )
 }
 
 function payStatusLabel(status: AgentAllotmentPayStatus) {
@@ -365,6 +801,10 @@ export function AdminAgentAllotment() {
   const { agents, addAgent } = usePortal()
   const today = usePortalTodayISO()
   const [view, setView] = useState<View>('hub')
+  const [showLots, setShowLots] = useState(false)
+  /** 'book' = running wallet, 'active' = lot in use, otherwise a lot id. */
+  const [bookTab, setBookTab] = useState<'book' | 'active' | string>('active')
+  const lotTabStripRef = useRef<HTMLDivElement>(null)
   const [selectedAgentSlug, setSelectedAgentSlug] = useState('')
   const [selectedLotId, setSelectedLotId] = useState('')
   const [rows, setRows] = useState<AgentAllotment[]>([])
@@ -383,6 +823,14 @@ export function AdminAgentAllotment() {
   const [ledgerDraft, setLedgerDraft] = useState<Draft>(emptyDraft)
   const [ledgerError, setLedgerError] = useState('')
   const [savingLedger, setSavingLedger] = useState(false)
+  const [topUpDraft, setTopUpDraft] = useState(() => ({
+    paidDate: todayISO(),
+    heads: '',
+    amount: '',
+    note: '',
+  }))
+  const [topUpError, setTopUpError] = useState('')
+  const [savingTopUp, setSavingTopUp] = useState(false)
   const [paymentDraftByLot, setPaymentDraftByLot] = useState<Record<string, PaymentDraft>>({})
   const [paymentErrorByLot, setPaymentErrorByLot] = useState<Record<string, string>>({})
   const [savingPaymentLotId, setSavingPaymentLotId] = useState<string | null>(null)
@@ -478,26 +926,19 @@ export function AdminAgentAllotment() {
   )
 
   /**
-   * Committed head usage for FIFO only: tour dates that have already begun
-   * (day ≤ today Bangkok). Future / advance bookings stay out of real deduct
-   * until that calendar day arrives at midnight.
+   * Saved days that are not pinned to a lot (the imported sheet) still spread
+   * across lots. Live bookings stay in Daily checker until Save.
    */
-  const selectedAgentDailyForFifo = useMemo(() => {
-    const byDay = new Map<string, number>()
-    for (const row of bookingDayPax) {
-      if (earliestLotOpen && row.day < earliestLotOpen) continue
-      if (row.day > today) continue
-      if (row.totalDeduct > 0) byDay.set(row.day, row.totalDeduct)
-    }
-    for (const row of selectedAgentDaily) {
-      if (earliestLotOpen && row.day < earliestLotOpen) continue
-      if (row.day > today) continue
-      byDay.set(row.day, row.totalDeduct)
-    }
-    return [...byDay.entries()]
-      .map(([day, totalDeduct]) => ({ day, totalDeduct }))
-      .sort((a, b) => a.day.localeCompare(b.day))
-  }, [selectedAgentDaily, bookingDayPax, earliestLotOpen, today])
+  const selectedAgentDailyForFifo = useMemo(
+    () =>
+      selectedAgentDaily
+        .filter((row) => !row.allotmentId)
+        .filter((row) => !earliestLotOpen || row.day >= earliestLotOpen)
+        .filter((row) => row.day <= today)
+        .map((row) => ({ day: row.day, totalDeduct: row.totalDeduct }))
+        .sort((a, b) => a.day.localeCompare(b.day)),
+    [selectedAgentDaily, earliestLotOpen, today],
+  )
 
   /** Future tour dates — preview only, not deducted from allotment yet. */
   const advanceBookingPreview = useMemo(() => {
@@ -523,20 +964,40 @@ export function AdminAgentAllotment() {
     }
   }, [bookingDayPax, earliestLotOpen, today])
 
-  const selectedAgentFifo = useMemo(
-    () =>
-      allocateDailyHeadsFifo(
-        selectedAgentRows.map((row) => ({
-          id: row.id,
-          seats: row.seats,
-          // Business lot date (not DB insert time) so backfilled history FIFO correctly.
-          openedAt: row.paidDate || row.createdAt.slice(0, 10),
-          createdAt: row.createdAt,
+  const selectedAgentFifo = useMemo(() => {
+    const fifo = allocateDailyHeadsFifo(
+      selectedAgentRows.map((row) => ({
+        id: row.id,
+        seats: row.seats,
+        openedAt: row.paidDate || row.createdAt.slice(0, 10),
+        createdAt: row.createdAt,
+        topups: lotTransfers(row).map((transfer) => ({
+          date: transfer.date,
+          heads: transfer.heads,
         })),
-        selectedAgentDailyForFifo,
-      ),
-    [selectedAgentRows, selectedAgentDailyForFifo],
-  )
+      })),
+      selectedAgentDailyForFifo,
+    )
+    const summaries = fifo.summaries.map((row) => ({ ...row }))
+    const byLotId = new Map(
+      [...fifo.byLotId.entries()].map(([id, days]) => [id, days.map((day) => ({ ...day }))]),
+    )
+    const known = new Set(summaries.map((row) => row.allotmentId))
+    for (const row of selectedAgentDaily) {
+      if (!row.allotmentId || row.totalDeduct <= 0 || !known.has(row.allotmentId)) continue
+      const list = byLotId.get(row.allotmentId) ?? []
+      const existing = list.find((item) => item.day === row.day)
+      if (existing) existing.heads += row.totalDeduct
+      else list.push({ day: row.day, heads: row.totalDeduct })
+      list.sort((a, b) => a.day.localeCompare(b.day))
+      byLotId.set(row.allotmentId, list)
+      const summary = summaries.find((item) => item.allotmentId === row.allotmentId)
+      if (!summary) continue
+      summary.used += row.totalDeduct
+      summary.remaining = summary.purchased - summary.used
+    }
+    return { summaries, byLotId }
+  }, [selectedAgentRows, selectedAgentDailyForFifo, selectedAgentDaily])
 
   const selectedAgentUsageByLot = useMemo(
     () => lotUsageMap(selectedAgentFifo.summaries),
@@ -639,6 +1100,74 @@ export function AdminAgentAllotment() {
     return overdrawn?.allotmentId ?? summaries[summaries.length - 1]!.allotmentId
   }, [selectedAgentFifo.summaries])
 
+  const bookSourceDaily = useMemo(
+    () =>
+      selectedAgentDaily.filter(
+        (row) =>
+          row.totalDeduct > 0 &&
+          (!earliestLotOpen || row.day >= earliestLotOpen) &&
+          (Boolean(row.allotmentId) || row.day <= today),
+      ),
+    [selectedAgentDaily, earliestLotOpen, today],
+  )
+
+  const depositBook = useMemo(
+    () => buildDepositBook(selectedAgentRows, bookSourceDaily),
+    [selectedAgentRows, bookSourceDaily],
+  )
+  const lotBooks = useMemo(
+    () =>
+      buildLotBooks(
+        selectedAgentRows,
+        selectedAgentFifo,
+        selectedAgentDaily,
+        selectedAgentDailyForFifo,
+        activeWorkingLotId,
+      ),
+    [
+      selectedAgentRows,
+      selectedAgentFifo,
+      selectedAgentDaily,
+      selectedAgentDailyForFifo,
+      activeWorkingLotId,
+    ],
+  )
+  const fifoUsed = selectedAgentFifo.summaries.reduce((sum, row) => sum + row.used, 0)
+  const fifoPurchased = selectedAgentFifo.summaries.reduce((sum, row) => sum + row.purchased, 0)
+  const bookHeadsLeft = fifoPurchased - fifoUsed
+  const bookRate = selectedAgentRows.at(-1)?.adultPrice ?? 0
+  const receivingLotId = selectedAgentRows.find((row) => row.receivesBookings)?.id ?? ''
+  const pendingChecker = useMemo(() => {
+    const savedDays = new Set(selectedAgentDaily.map((row) => row.day))
+    const days = bookingDayPax.filter((row) => {
+      if (row.totalDeduct <= 0) return false
+      if (earliestLotOpen && row.day < earliestLotOpen) return false
+      if (row.day > today) return false
+      return !savedDays.has(row.day)
+    })
+    return {
+      days: days.length,
+      heads: days.reduce((sum, row) => sum + row.totalDeduct, 0),
+    }
+  }, [bookingDayPax, earliestLotOpen, selectedAgentDaily, today])
+  const resolvedLotTabId =
+    bookTab === 'book'
+      ? ''
+      : bookTab === 'active' || !lotBooks.some((book) => book.lotId === bookTab)
+        ? receivingLotId || activeWorkingLotId
+        : bookTab
+  const selectedLotBook = lotBooks.find((book) => book.lotId === resolvedLotTabId) ?? null
+
+  useEffect(() => {
+    const root = lotTabStripRef.current
+    if (!root || view !== 'agent') return
+    const tabId = bookTab === 'book' ? 'book' : resolvedLotTabId
+    const el = root.querySelector(`[data-lot-tab="${tabId}"]`)
+    if (!(el instanceof HTMLElement)) return
+    const left = el.offsetLeft - root.clientWidth / 2 + el.clientWidth / 2
+    root.scrollTo({ left: Math.max(0, left) })
+  }, [view, bookTab, resolvedLotTabId, selectedAgentSlug, lotBooks.length])
+
   function openAgent(slug: string) {
     const summary = agentSummaries.find((row) => row.slug === slug)
     const latest = rows
@@ -647,6 +1176,8 @@ export function AdminAgentAllotment() {
     setSelectedAgentSlug(slug)
     setSelectedLotId('')
     setLedgerError('')
+    setShowLots(false)
+    setBookTab('active')
     setLedgerDraft({
       ...emptyDraft(),
       agentSlug: slug,
@@ -812,6 +1343,7 @@ export function AdminAgentAllotment() {
         paidAmount: paidAmountRaw,
         note: draft.note,
       })
+      await setAgentAllotmentReceiving(created.agentSlug, created.id)
       setDraft(emptyDraft())
       await refresh()
       openLot(created)
@@ -897,6 +1429,7 @@ export function AdminAgentAllotment() {
         paidAmount: paidAmountRaw,
         note: ledgerDraft.note,
       })
+      await setAgentAllotmentReceiving(created.agentSlug, created.id)
       setLedgerDraft((current) => ({
         ...emptyDraft(),
         agentSlug: agent.slug,
@@ -910,6 +1443,81 @@ export function AdminAgentAllotment() {
       setLedgerError(caught instanceof Error ? caught.message : 'Could not save allotment.')
     } finally {
       setSavingLedger(false)
+    }
+  }
+
+  async function handleTopUpCurrentLot(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setTopUpError('')
+    const targetId =
+      bookTab !== 'book' && selectedLotBook ? selectedLotBook.lotId : activeWorkingLotId
+    const lot =
+      selectedAgentRows.find((row) => row.id === targetId) ?? selectedAgentRows.at(-1) ?? null
+    if (!lot) {
+      setTopUpError('เปิดล็อตก่อน แล้วค่อยโอนเพิ่มเข้าล็อตนั้น')
+      return
+    }
+    const heads = parseHeads(topUpDraft.heads)
+    const amount = parseMoney(topUpDraft.amount)
+    if (!Number.isFinite(heads) || heads <= 0) {
+      setTopUpError('ใส่จำนวนหัวที่โอนเพิ่ม')
+      return
+    }
+    if (!Number.isFinite(amount) || amount < 0) {
+      setTopUpError('ใส่จำนวนเงินที่โอน')
+      return
+    }
+    if (!isIsoDate(topUpDraft.paidDate)) {
+      setTopUpError('ใส่วันที่โอน')
+      return
+    }
+    const remaining = selectedAgentUsageByLot.get(lot.id)?.remaining ?? lot.seats
+    setSavingTopUp(true)
+    try {
+      if (remaining <= 0) {
+        const created = await createAgentAllotment({
+          agentSlug: lot.agentSlug,
+          agentName: lot.agentName,
+          adultSeats: heads,
+          childSeats: 0,
+          adultPrice: lot.adultPrice,
+          childPrice: lot.childPrice,
+          parkFee: lot.parkFee,
+          paidDate: topUpDraft.paidDate,
+          paidAmount: amount,
+          note: topUpDraft.note,
+        })
+        await setAgentAllotmentReceiving(created.agentSlug, created.id)
+        setBookTab(created.id)
+      } else {
+        await topUpAgentAllotment(lot.id, {
+          heads,
+          amount,
+          paidDate: topUpDraft.paidDate,
+          note: topUpDraft.note,
+        })
+        setBookTab(lot.id)
+      }
+      setTopUpDraft({ paidDate: todayISO(), heads: '', amount: '', note: '' })
+      await refresh()
+    } catch (caught) {
+      setTopUpError(caught instanceof Error ? caught.message : 'บันทึกโอนเพิ่มไม่ได้')
+    } finally {
+      setSavingTopUp(false)
+    }
+  }
+
+  async function moveSavedDay(day: string, allotmentId: string) {
+    if (!selectedAgentSlug) return
+    try {
+      await moveAgentAllotmentDaily({
+        day,
+        agentSlug: selectedAgentSlug,
+        allotmentId,
+      })
+      await refresh()
+    } catch (caught) {
+      window.alert(caught instanceof Error ? caught.message : 'Could not move this day.')
     }
   }
 
@@ -1758,7 +2366,7 @@ export function AdminAgentAllotment() {
       <div className="w-full">
         <PageHeader
           title={agentName || 'Agent Allotment'}
-          description="Each lot is a buy set. Open a lot to record transfers and see heads used / overage."
+          description="Each tab is one allotment. New bookings wait in Daily checker until Save, then land on the lot marked new. Open a new lot to switch where the next save goes."
           actions={
             <Button type="button" variant="outline" size="sm" onClick={() => setView('add')}>
               <ArrowLeft className="size-3.5" />
@@ -1769,43 +2377,228 @@ export function AdminAgentAllotment() {
 
         <div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           <Surface className="px-4 py-3">
-            <p className="text-xs text-teal-900/45">Paid / due</p>
-            <p className="mt-1 text-lg font-semibold tabular-nums text-teal-800">
-              {formatMoney(selectedAgentSummary?.paidAmount ?? 0)}
+            <p className="text-xs text-teal-900/45">หัวเหลือ</p>
+            <p
+              className={cn(
+                'mt-1 text-2xl font-semibold tabular-nums',
+                bookHeadsLeft < 0 ? 'text-rose-700' : 'text-teal-800',
+              )}
+            >
+              {bookHeadsLeft}
+            </p>
+          </Surface>
+          <Surface className="px-4 py-3">
+            <p className="text-xs text-teal-900/45">ใช้ไป / ซื้อไว้</p>
+            <p className="mt-1 text-lg font-semibold tabular-nums text-teal-950">
+              {fifoUsed}
               <span className="mx-1 text-sm font-normal text-teal-900/35">/</span>
-              <span className="text-amber-800">
-                {formatMoney(selectedAgentSummary?.balance ?? 0)}
+              {fifoPurchased}
+            </p>
+          </Surface>
+          <Surface className="px-4 py-3">
+            <p className="text-xs text-teal-900/45">เงินที่รับ</p>
+            <p className="mt-1 text-lg font-semibold tabular-nums text-teal-950">
+              {formatMoney(selectedAgentSummary?.paidAmount ?? 0)}
+            </p>
+          </Surface>
+          <Surface className="px-4 py-3">
+            <p className="text-xs text-teal-900/45">เรทปัจจุบัน</p>
+            <p className="mt-1 text-lg font-semibold tabular-nums text-teal-950">
+              {bookRate > 0 ? formatMoney(bookRate) : '—'}
+              <span className="ml-1 text-sm font-normal text-teal-900/45">
+                {formatAllotmentParkFee(selectedAgentRows.at(-1)?.parkFee ?? 'exc')}
               </span>
-            </p>
-          </Surface>
-          <Surface className="px-4 py-3">
-            <p className="text-xs text-teal-900/45">Purchased heads</p>
-            <p className="mt-1 text-lg font-semibold tabular-nums text-teal-950">
-              {selectedAgentSummary?.seats ?? 0}
-            </p>
-          </Surface>
-          <Surface className="px-4 py-3">
-            <p className="text-xs text-teal-900/45">Used / left</p>
-            <p className="mt-1 text-lg font-semibold tabular-nums text-teal-950">
-              {selectedAgentSummary?.used ?? 0}
-              <span className="mx-1 text-teal-900/30">/</span>
-              <span
-                className={cn(
-                  (selectedAgentSummary?.remaining ?? 0) < 0 ? 'text-rose-700' : 'text-teal-800',
-                )}
-              >
-                {selectedAgentSummary?.remaining ?? 0}
-              </span>
-            </p>
-          </Surface>
-          <Surface className="px-4 py-3">
-            <p className="text-xs text-teal-900/45">Lots</p>
-            <p className="mt-1 text-lg font-semibold tabular-nums text-teal-950">
-              {selectedAgentRows.length}
             </p>
           </Surface>
         </div>
 
+        <Surface className="mb-4 overflow-hidden p-0">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-900/8 px-4 py-3">
+            <div>
+              <h2 className="text-sm font-semibold text-teal-950">สมุดรายล็อต</h2>
+              <p className="max-w-3xl text-xs text-teal-900/45">
+                Click a tab to see that lot, like the sheet: top-ups add heads, saved days deduct them.
+                The tab marked new receives the next Daily checker save. Move a saved day if it belongs on another lot.
+                {pendingChecker.heads > 0
+                  ? ` ${pendingChecker.heads} heads on ${pendingChecker.days} day${pendingChecker.days === 1 ? '' : 's'} are still only in Daily checker.`
+                  : ''}
+              </p>
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={() => setShowLots((open) => !open)}>
+              {showLots ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+              ก้อนโอน {selectedAgentRows.length}
+            </Button>
+          </div>
+          <div
+            ref={lotTabStripRef}
+            className="flex gap-1.5 overflow-x-auto border-b border-teal-900/8 px-3 py-2"
+          >
+            <button
+              type="button"
+              data-lot-tab="book"
+              onClick={() => setBookTab('book')}
+              className={cn(
+                'shrink-0 rounded-xl border px-2.5 py-1.5 text-left',
+                bookTab === 'book'
+                  ? 'border-teal-800 bg-teal-800 text-white'
+                  : 'border-teal-900/10 bg-white text-teal-950',
+              )}
+            >
+              <span className="block text-[11px] font-semibold">รวม</span>
+              <span className={cn('block text-[10px] tabular-nums', bookTab === 'book' ? 'text-white/75' : 'text-teal-900/45')}>
+                เหลือ {bookHeadsLeft}
+              </span>
+            </button>
+            {lotBooks.map((book) => {
+              const selected = bookTab !== 'book' && book.lotId === resolvedLotTabId
+              return (
+                <button
+                  key={book.lotId}
+                  type="button"
+                  data-lot-tab={book.lotId}
+                  onClick={() => setBookTab(book.lotId)}
+                  className={cn(
+                    'shrink-0 rounded-xl border px-2.5 py-1.5 text-left',
+                    selected && 'border-teal-800 bg-teal-800 text-white',
+                    !selected && book.status === 'active' && 'border-orange-400 bg-orange-50 text-orange-950',
+                    !selected && book.status === 'done' && 'border-teal-900/10 bg-teal-950/[0.03] text-teal-900/70',
+                    !selected && book.status === 'waiting' && 'border-teal-900/10 bg-white text-teal-950',
+                    !selected && book.status === 'over' && 'border-rose-300 bg-rose-50 text-rose-900',
+                  )}
+                >
+                  <span className="block text-[11px] font-semibold">ล็อต {book.index}</span>
+                  <span
+                    className={cn(
+                      'block text-[10px] tabular-nums',
+                      selected ? 'text-white/75' : 'text-teal-900/45',
+                      !selected && book.status === 'active' && 'text-orange-800/70',
+                      !selected && book.status === 'over' && 'text-rose-800/70',
+                    )}
+                  >
+                    {formatLotTabDate(book.openDate)} · {lotBookStatusLabel(book.status)} {book.remaining}
+                    {book.lotId === receivingLotId ? ' · new' : ''}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+          {bookTab !== 'book' && selectedLotBook ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-900/8 px-4 py-2 text-xs text-teal-900/55">
+              <p>
+                Opened {formatShortDate(selectedLotBook.openDate)} · {selectedLotBook.seats} heads @{' '}
+                {formatMoney(selectedLotBook.rate)} · received {formatMoney(selectedLotBook.paid)} · used{' '}
+                {selectedLotBook.used} · left {selectedLotBook.remaining}
+                {selectedLotBook.lotId === receivingLotId
+                  ? ' · next Daily checker save loads here'
+                  : ''}
+                {selectedLotBook.lotId === receivingLotId && advanceBookingPreview.heads > 0
+                  ? ` · ${advanceBookingPreview.heads} future heads stay in Daily checker until that day is saved`
+                  : ''}
+              </p>
+              {selectedLotBook.lotId === receivingLotId ? null : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    void setAgentAllotmentReceiving(selectedAgentSlug, selectedLotBook.lotId)
+                      .then(() => refresh())
+                      .catch((caught) => {
+                        window.alert(caught instanceof Error ? caught.message : 'Could not switch the open lot.')
+                      })
+                  }}
+                >
+                  New saves load here
+                </Button>
+              )}
+            </div>
+          ) : (
+            <p className="border-b border-teal-900/8 px-4 py-2 text-xs text-teal-900/55">
+              All lots together. Heads left is the whole account. Open a tab to top up or move a saved day.
+            </p>
+          )}
+          <DepositBookTable
+            lines={bookTab === 'book' || !selectedLotBook ? depositBook : selectedLotBook.lines}
+            moveTargets={
+              selectedLotBook && bookTab !== 'book'
+                ? lotBooks
+                    .filter((book) => book.lotId !== selectedLotBook.lotId)
+                    .map((book) => ({ id: book.lotId, label: `Lot ${book.index}` }))
+                : undefined
+            }
+            onMoveDay={bookTab === 'book' ? undefined : (day, allotmentId) => void moveSavedDay(day, allotmentId)}
+          />
+          <form
+            className="grid gap-2 border-t border-teal-900/8 px-4 py-3 sm:grid-cols-2 lg:grid-cols-5"
+            onSubmit={handleTopUpCurrentLot}
+          >
+            <div className="sm:col-span-2 lg:col-span-5">
+              <p className="text-xs font-medium text-teal-950">
+                {selectedLotBook && selectedLotBook.remaining <= 0
+                  ? `Lot ${selectedLotBook.index} is used up. This transfer opens a new lot, and the next Daily checker save loads there.`
+                  : `Top up ${selectedLotBook ? `lot ${selectedLotBook.index}` : 'the open lot'}. Heads and money stay on this lot.`}
+              </p>
+            </div>
+            <Input
+              type="date"
+              required
+              value={topUpDraft.paidDate}
+              onChange={(event) =>
+                setTopUpDraft((current) => ({ ...current, paidDate: event.target.value }))
+              }
+              className="h-10"
+              aria-label="วันที่โอน"
+            />
+            <Input
+              type="number"
+              min={1}
+              step={1}
+              required
+              value={topUpDraft.heads}
+              onChange={(event) =>
+                setTopUpDraft((current) => ({ ...current, heads: event.target.value }))
+              }
+              placeholder="หัว"
+              className="h-10"
+              aria-label="หัวที่โอนเพิ่ม"
+            />
+            <Input
+              type="number"
+              min={0}
+              step={1}
+              required
+              value={topUpDraft.amount}
+              onChange={(event) =>
+                setTopUpDraft((current) => ({ ...current, amount: event.target.value }))
+              }
+              placeholder="บาท"
+              className="h-10"
+              aria-label="จำนวนเงิน"
+            />
+            <Input
+              value={topUpDraft.note}
+              onChange={(event) =>
+                setTopUpDraft((current) => ({ ...current, note: event.target.value }))
+              }
+              placeholder="เลขอ้างอิง"
+              className="h-10"
+              aria-label="เลขอ้างอิง"
+            />
+            <Button type="submit" disabled={savingTopUp} className="h-10">
+              {savingTopUp
+                ? 'กำลังบันทึก…'
+                : selectedLotBook && selectedLotBook.remaining <= 0
+                  ? 'Open new lot'
+                  : 'Top up'}
+            </Button>
+            {topUpError ? (
+              <p className="text-sm text-red-600 sm:col-span-2 lg:col-span-5">{topUpError}</p>
+            ) : null}
+          </form>
+        </Surface>
+
+        {showLots || selectedAgentRows.length === 0 ? (
+        <>
         <Surface className="mb-4 p-4 sm:p-5">
           <div className="mb-3 flex items-center gap-2">
             <Wallet className="size-4 text-teal-800" />
@@ -2105,6 +2898,8 @@ export function AdminAgentAllotment() {
               </Table>
             </Surface>
           </>
+        ) : null}
+        </>
         ) : null}
 
         <Dialog

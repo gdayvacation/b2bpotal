@@ -4,6 +4,12 @@
  * Pure helpers — safe for UI/report use; does not write to the database.
  */
 
+export type LotTopUp = {
+  /** Date these heads join the lot (YYYY-MM-DD). */
+  date: string
+  heads: number
+}
+
 export type LotFifoInput = {
   id: string
   seats: number
@@ -14,6 +20,11 @@ export type LotFifoInput = {
   openedAt: string
   /** Tie-break when openedAt matches (ISO timestamp). */
   createdAt?: string
+  /**
+   * Heads added over time. When set, a day can only use heads topped up on or
+   * before that day. Later top-ups raise the same lot's capacity.
+   */
+  topups?: LotTopUp[]
 }
 
 export type LotUsageSummary = {
@@ -48,6 +59,16 @@ export function sortLotsFifo<T extends LotFifoInput>(lots: T[]): T[] {
 
 function purchasedSeats(lot: LotFifoInput) {
   return Math.max(0, Math.floor(Number(lot.seats) || 0))
+}
+
+/** Heads already topped up on or before this day. Without a schedule, the full lot is open from day one. */
+function toppedHeadsByDay(lot: LotFifoInput, day: string) {
+  if (!lot.topups || lot.topups.length === 0) return purchasedSeats(lot)
+  return lot.topups.reduce((sum, topup) => {
+    const date = String(topup.date || '').slice(0, 10)
+    if (!date || date > day) return sum
+    return sum + Math.max(0, Math.floor(Number(topup.heads) || 0))
+  }, 0)
 }
 
 /** Allocate a total deducted head count across lots (oldest first). */
@@ -87,7 +108,6 @@ export function allocateDailyHeadsFifo(
   daily: { day: string; totalDeduct: number }[],
 ): { summaries: LotUsageSummary[]; byLotId: Map<string, LotDayUsage[]> } {
   const ordered = sortLotsFifo(lots)
-  const capacity = new Map(ordered.map((lot) => [lot.id, purchasedSeats(lot)]))
   const usedTotal = new Map(ordered.map((lot) => [lot.id, 0]))
   const byLotId = new Map<string, LotDayUsage[]>(ordered.map((lot) => [lot.id, []]))
 
@@ -105,12 +125,12 @@ export function allocateDailyHeadsFifo(
     for (let index = 0; index < eligible.length && need > 0; index += 1) {
       const lot = eligible[index]!
       const isNewestOpen = index === eligible.length - 1
-      const cap = capacity.get(lot.id) ?? 0
-      const take = isNewestOpen ? need : Math.min(need, Math.max(0, cap))
+      const usedBefore = usedTotal.get(lot.id) ?? 0
+      const available = toppedHeadsByDay(lot, row.day) - usedBefore
+      const take = isNewestOpen ? need : Math.min(need, Math.max(0, available))
       if (take <= 0) continue
 
-      capacity.set(lot.id, cap - take)
-      usedTotal.set(lot.id, (usedTotal.get(lot.id) ?? 0) + take)
+      usedTotal.set(lot.id, usedBefore + take)
       const list = byLotId.get(lot.id) ?? []
       const existing = list.find((item) => item.day === row.day)
       if (existing) existing.heads += take

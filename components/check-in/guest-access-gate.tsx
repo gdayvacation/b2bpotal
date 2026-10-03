@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { BrandMark } from '@/components/brand-mark'
+import { GUEST_SIGNED_IN_EVENT } from '@/lib/check-in-access'
 import { readStaffSession } from '@/lib/staff-auth'
 import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/client'
 import { fetchBookingByCode } from '@/lib/supabase/portal-db'
@@ -35,6 +36,22 @@ function guestTimeState(bookingDate: string): GuestTimeState {
   return minutes >= GUEST_CLOSE_MINUTES ? 'closed' : 'ok'
 }
 
+function accessTokenFresh(accessToken: string | undefined) {
+  if (!accessToken) return false
+  const segment = accessToken.split('.')[1]
+  if (!segment) return false
+  try {
+    const padded = segment.replace(/-/g, '+').replace(/_/g, '/')
+    const json = atob(padded.padEnd(padded.length + ((4 - (padded.length % 4)) % 4), '='))
+    const exp = Number((JSON.parse(json) as { exp?: unknown }).exp)
+    // Refresh ahead of expiry. A dead token still looks logged-in in storage, then the
+    // save leaves the phone as a logged-out visitor and the database rejects it.
+    return Number.isFinite(exp) && exp * 1000 > Date.now() + 90_000
+  } catch {
+    return false
+  }
+}
+
 async function applySession(accessToken?: string, refreshToken?: string) {
   if (!accessToken || !refreshToken || !hasSupabaseConfig()) return
   await getSupabaseBrowserClient().auth.setSession({
@@ -43,12 +60,49 @@ async function applySession(accessToken?: string, refreshToken?: string) {
   })
 }
 
+/** Sign the phone in again from the QR already open on this page, without a new scan. */
+export async function reopenGuestCheckInSession(code: string, token: string): Promise<boolean> {
+  const bookingCode = code.trim()
+  if (!bookingCode || !hasSupabaseConfig()) return false
+  try {
+    const response = await fetch('/api/check-in/guest/enter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: bookingCode, token: token.trim() }),
+    })
+    const payload = (await response.json().catch(() => ({}))) as {
+      accessToken?: string
+      refreshToken?: string
+    }
+    if (!response.ok) return false
+    await applySession(payload.accessToken, payload.refreshToken)
+    return guestOwnsCode(bookingCode)
+  } catch {
+    return false
+  }
+}
+
 async function guestOwnsCode(code: string) {
   if (!hasSupabaseConfig()) return false
   const { data } = await getSupabaseBrowserClient().auth.getSession()
+  if (!accessTokenFresh(data.session?.access_token)) return false
   const role = String(data.session?.user.app_metadata?.role ?? '')
   const claim = String(data.session?.user.app_metadata?.booking_code ?? '')
   return role === 'guest' && claim === code
+}
+
+/** Guest login that can still write. Staff and helper sessions count too. Otherwise sign in from this QR. */
+export async function ensureGuestCheckInSession(code: string, token: string): Promise<boolean> {
+  if (!hasSupabaseConfig()) return false
+  const { data } = await getSupabaseBrowserClient().auth.getSession()
+  const session = data.session
+  if (session && accessTokenFresh(session.access_token)) {
+    const role = String(session.user.app_metadata?.role ?? '')
+    const claim = String(session.user.app_metadata?.booking_code ?? '')
+    if (role === 'guest' && claim === code.trim()) return true
+    if (role === 'admin' || role === 'accounting' || role === 'helper') return true
+  }
+  return reopenGuestCheckInSession(code, token)
 }
 
 async function helperOnDuty() {
@@ -174,16 +228,8 @@ export function GuestAccessGate({
         setState('blocked')
         return
       }
-      const reloadKey = `gday-guest-reloaded:${code}`
-      // The portal loaded its data before this guest session existed, so reload once to pick it
-      // up. Time-boxed (not once-per-tab) so a restored/old tab can recover later, while a
-      // session that fails to persist cannot cause a reload loop.
-      const lastReload = Number(sessionStorage.getItem(reloadKey) ?? 0)
-      if (!Number.isFinite(lastReload) || Date.now() - lastReload > 60_000) {
-        sessionStorage.setItem(reloadKey, String(Date.now()))
-        window.location.reload()
-        return
-      }
+      // Stay on this page. A reload throws away the login if the phone has not saved it yet.
+      window.dispatchEvent(new Event(GUEST_SIGNED_IN_EVENT))
       setState('ok')
     }
 

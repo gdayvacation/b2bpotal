@@ -1,12 +1,12 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
 import { PageHeader, Segment, SegmentedControl, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
-import { formatLongDate, formatShortDate, startOfThisMonth, todayISO, toISODate } from '@/lib/format'
+import { addDaysISO, formatLongDate, formatShortDate, startOfThisMonth, todayISO, toISODate } from '@/lib/format'
 import { fetchBookingsInDateRange } from '@/lib/supabase/portal-db'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { totalPassengers, isActiveBooking, type Booking, type Program } from '@/lib/types'
@@ -34,49 +34,89 @@ type SeriesPoint = {
   pax: number
   pp: number
   jb: number
+  accent?: boolean
 }
 
 export function AdminDashboard() {
   const { bookings: liveBookings, agents } = usePortal()
-  const [range, setRange] = useState<RangeMode>('year')
+  const [range, setRange] = useState<RangeMode>('today')
   const [month, setMonth] = useState(() => startOfThisMonth())
   const [year, setYear] = useState(() => Number(todayISO().slice(0, 4)))
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
   const [program, setProgram] = useState<ProgramFilter>('all')
   const [agentSlug, setAgentSlug] = useState('all')
-  /** Full history for year/month charts — not shared with day-to-day portal state. */
+  /** Month/year rows for charts. Today uses the portal window already in memory. */
   const [historyBookings, setHistoryBookings] = useState<Booking[] | null>(null)
+  const [priorYearBookings, setPriorYearBookings] = useState<Booking[] | null>(null)
+  const historyCacheRef = useRef(new Map<string, Booking[]>())
   const today = usePortalTodayISO()
   const thisMonth = startOfThisMonth()
   const thisYear = Number(today.slice(0, 4))
 
   useEffect(() => {
-    if (range === 'today') {
-      setHistoryBookings(null)
-      return
-    }
+    if (range === 'today') return
+
     let cancelled = false
+    const cache = historyCacheRef.current
+
+    async function loadRange(key: string, from: string, to: string) {
+      const cached = cache.get(key)
+      if (cached) return cached
+      const rows = await fetchBookingsInDateRange(from, to)
+      cache.set(key, rows)
+      return rows
+    }
+
     ;(async () => {
       try {
         if (range === 'month') {
           const y = month.getFullYear()
           const m = String(month.getMonth() + 1).padStart(2, '0')
+          const monthKey = `month:${y}-${m}`
+          const yearRows = cache.get(`year:${y}`)
+          if (yearRows) {
+            if (!cancelled) setHistoryBookings(yearRows)
+            return
+          }
+          const cachedMonth = cache.get(monthKey)
+          if (cachedMonth) {
+            if (!cancelled) setHistoryBookings(cachedMonth)
+            return
+          }
+          setHistoryBookings(null)
           const last = new Date(y, month.getMonth() + 1, 0).getDate()
-          const rows = await fetchBookingsInDateRange(
+          const rows = await loadRange(
+            monthKey,
             `${y}-${m}-01`,
             `${y}-${m}-${String(last).padStart(2, '0')}`,
           )
           if (!cancelled) setHistoryBookings(rows)
           return
         }
-        const [currentYear, previousYear] = await Promise.all([
-          fetchBookingsInDateRange(`${year}-01-01`, `${year}-12-31`),
-          fetchBookingsInDateRange(`${year - 1}-01-01`, `${year - 1}-12-31`),
-        ])
-        if (!cancelled) setHistoryBookings([...currentYear, ...previousYear])
+
+        const yearKey = `year:${year}`
+        const priorKey = `year:${year - 1}`
+        const cachedYear = cache.get(yearKey) ?? null
+        const cachedPrior = cache.get(priorKey) ?? null
+        setHistoryBookings(cachedYear)
+        setPriorYearBookings(cachedPrior)
+        if (cachedYear && cachedPrior) return
+
+        if (!cachedYear) {
+          const rows = await loadRange(yearKey, `${year}-01-01`, `${year}-12-31`)
+          if (cancelled) return
+          setHistoryBookings(rows)
+        }
+        if (!cachedPrior) {
+          const rows = await loadRange(priorKey, `${year - 1}-01-01`, `${year - 1}-12-31`)
+          if (!cancelled) setPriorYearBookings(rows)
+        }
       } catch (error) {
         console.error('[dashboard] history load failed', error)
-        if (!cancelled) setHistoryBookings([])
+        if (!cancelled) {
+          setHistoryBookings((current) => current ?? [])
+          setPriorYearBookings((current) => current ?? [])
+        }
       }
     })()
     return () => {
@@ -84,7 +124,9 @@ export function AdminDashboard() {
     }
   }, [range, year, month])
 
-  const bookings = historyBookings ?? liveBookings
+  const historyPending = range !== 'today' && historyBookings === null
+  const priorPending = range === 'year' && priorYearBookings === null
+  const bookings = range === 'today' ? liveBookings : (historyBookings ?? [])
 
   const agentOptions = useMemo(() => {
     const map = new Map<string, string>()
@@ -119,13 +161,17 @@ export function AdminDashboard() {
   }, [filtered, range, today, month, selectedDay, year])
 
   const yearBookings = useMemo(
-    () => filtered.filter((booking) => inYear(booking.date, year)),
-    [filtered, year],
+    () => (range === 'year' ? filtered.filter((booking) => inYear(booking.date, year)) : []),
+    [filtered, range, year],
   )
-  const lastYearBookings = useMemo(
-    () => filtered.filter((booking) => inYear(booking.date, year - 1)),
-    [filtered, year],
-  )
+  const lastYearBookings = useMemo(() => {
+    if (range !== 'year' || !priorYearBookings) return []
+    return priorYearBookings.filter((booking) => {
+      if (agentSlug !== 'all' && booking.agentSlug !== agentSlug) return false
+      if (program !== 'all' && booking.program !== program) return false
+      return inYear(booking.date, year - 1)
+    })
+  }, [priorYearBookings, range, agentSlug, program, year])
 
   const visible = useMemo(
     () => [...periodBookings].sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code)),
@@ -144,10 +190,18 @@ export function AdminDashboard() {
   const lastYearStats = summarize(lastYearBookings)
   const yoy = yoyChange(yearStats.pax, lastYearStats.pax)
 
+  const nearbyBookings = useMemo(() => {
+    if (range !== 'today') return []
+    const from = addDaysISO(today, -2)
+    const to = addDaysISO(today, 2)
+    return filtered.filter((booking) => booking.date >= from && booking.date <= to)
+  }, [filtered, range, today])
+
   const chartSeries = useMemo(() => {
     if (range === 'month') return dailySeries(monthDays, month)
+    if (range === 'today') return nearbyDaySeries(filtered, today)
     return monthlySeries(yearBookings, year)
-  }, [range, monthDays, month, yearBookings, year])
+  }, [range, monthDays, month, filtered, today, yearBookings, year])
 
   const topAgents = useMemo(() => rankAgents(range === 'year' ? yearBookings : visible), [range, yearBookings, visible])
   const topAgent = topAgents[0] ?? null
@@ -166,51 +220,87 @@ export function AdminDashboard() {
           : monthLabel
   const programDetail =
     program === 'PP' ? 'Phi Phi Islands' : program === 'James Bond' ? 'Phang Nga Bay' : 'All programs'
+  const chartSummary = range === 'today' ? summarize(nearbyBookings) : stats
   const chartTitle =
-    range === 'month' ? `Daily pax · ${monthLabel}` : `Monthly pax · ${year}`
+    range === 'month'
+      ? `Daily pax · ${monthLabel}`
+      : range === 'today'
+        ? `Pax · ${formatDayTick(addDaysISO(today, -2))} – ${formatDayTick(addDaysISO(today, 2))}`
+        : `Monthly pax · ${year}`
 
+  const countLabel = (value: number) => (historyPending ? '…' : formatCount(value))
   const kpis = [
     {
       label: range === 'today' ? 'Today bookings' : range === 'year' ? `${year} bookings` : 'Bookings',
-      value: formatCount(stats.bookings),
-      detail: periodLabel,
+      value: countLabel(stats.bookings),
+      detail: historyPending ? 'Loading…' : periodLabel,
       tone: 'hero' as const,
     },
     {
       label: range === 'today' ? 'Today pax' : range === 'year' ? `${year} pax` : 'Total pax',
-      value: formatCount(stats.pax),
-      detail: programDetail,
+      value: countLabel(stats.pax),
+      detail: historyPending ? 'Loading…' : programDetail,
       tone: 'sky' as const,
     },
     {
       label: `${year} vs ${year - 1}`,
-      value: yoy == null ? '—' : `${yoy > 0 ? '+' : ''}${yoy}%`,
+      value:
+        range !== 'year'
+          ? '—'
+          : historyPending || priorPending
+            ? '…'
+            : yoy == null
+              ? '—'
+              : `${yoy > 0 ? '+' : ''}${yoy}%`,
       detail:
-        lastYearStats.pax > 0
-          ? `${formatCount(yearStats.pax)} pax this year`
-          : `No ${year - 1} data yet`,
+        range !== 'year'
+          ? 'Open Year to compare'
+          : historyPending || priorPending
+            ? 'Loading last year…'
+            : lastYearStats.pax > 0
+              ? `${formatCount(yearStats.pax)} pax this year`
+              : `No ${year - 1} data yet`,
       tone: 'teal' as const,
     },
     {
       label: 'Top agent',
-      value: topAgent ? truncate(topAgent.name, 16) : '—',
-      detail: topAgent
-        ? `${formatCount(topAgent.bookings)} bookings · ${formatCount(topAgent.pax)} pax`
-        : 'No bookings in this view',
+      value: historyPending ? '…' : topAgent ? truncate(topAgent.name, 16) : '—',
+      detail: historyPending
+        ? 'Loading…'
+        : topAgent
+          ? `${formatCount(topAgent.bookings)} bookings · ${formatCount(topAgent.pax)} pax`
+          : 'No bookings in this view',
       tone: 'amber' as const,
     },
   ]
 
-  function changeMonth(delta: number) {
-    setMonth((current) => new Date(current.getFullYear(), current.getMonth() + delta, 1))
+  function applyMonth(next: Date) {
+    const y = next.getFullYear()
+    const m = String(next.getMonth() + 1).padStart(2, '0')
+    const cached =
+      historyCacheRef.current.get(`year:${y}`) ??
+      historyCacheRef.current.get(`month:${y}-${m}`) ??
+      null
+    setHistoryBookings(cached)
+    setMonth(next)
     setSelectedDay(null)
+  }
+
+  function applyYear(next: number) {
+    setHistoryBookings(historyCacheRef.current.get(`year:${next}`) ?? null)
+    setPriorYearBookings(historyCacheRef.current.get(`year:${next - 1}`) ?? null)
+    setYear(next)
+  }
+
+  function changeMonth(delta: number) {
+    applyMonth(new Date(month.getFullYear(), month.getMonth() + delta, 1))
   }
 
   function setRangeMode(next: RangeMode) {
     setRange(next)
     setSelectedDay(null)
-    if (next === 'month') setMonth(startOfThisMonth())
-    if (next === 'year') setYear(thisYear)
+    if (next === 'month') applyMonth(startOfThisMonth())
+    if (next === 'year') applyYear(thisYear)
   }
 
   function toggleDay(iso: string) {
@@ -222,7 +312,7 @@ export function AdminDashboard() {
       <PageHeader
         eyebrow={formatLongDate(today)}
         title="Dashboard"
-        description="Year volume, top agents, and today’s departures — filter by program and agent."
+        description="Today’s departures and top agents — open Month or Year when you need a wider view."
       />
 
       <Surface className="mb-3 px-3 py-2 sm:mb-4 sm:px-3.5">
@@ -283,10 +373,7 @@ export function AdminDashboard() {
                     variant="ghost"
                     size="sm"
                     className="h-7 px-2 text-[11px]"
-                    onClick={() => {
-                      setMonth(startOfThisMonth())
-                      setSelectedDay(null)
-                    }}
+                    onClick={() => applyMonth(startOfThisMonth())}
                   >
                     Now
                   </Button>
@@ -300,7 +387,7 @@ export function AdminDashboard() {
                   variant="ghost"
                   size="icon-sm"
                   className="size-7"
-                  onClick={() => setYear((current) => current - 1)}
+                  onClick={() => applyYear(year - 1)}
                   aria-label="Previous year"
                 >
                   <ChevronLeft className="size-3.5" />
@@ -313,7 +400,7 @@ export function AdminDashboard() {
                   variant="ghost"
                   size="icon-sm"
                   className="size-7"
-                  onClick={() => setYear((current) => current + 1)}
+                  onClick={() => applyYear(year + 1)}
                   aria-label="Next year"
                 >
                   <ChevronRight className="size-3.5" />
@@ -324,7 +411,7 @@ export function AdminDashboard() {
                     variant="ghost"
                     size="sm"
                     className="h-7 px-2 text-[11px]"
-                    onClick={() => setYear(thisYear)}
+                    onClick={() => applyYear(thisYear)}
                   >
                     Now
                   </Button>
@@ -391,8 +478,10 @@ export function AdminDashboard() {
             <div>
               <h2 className="font-display text-base font-semibold text-teal-950">{chartTitle}</h2>
               <p className="text-[12px] text-teal-900/50">
-                {formatCount(stats.bookings)} bookings · {formatCount(stats.pax)} pax
-                {program !== 'all' ? ` · ${programDetail}` : ''}
+                {historyPending
+                  ? 'Loading…'
+                  : `${formatCount(chartSummary.bookings)} bookings · ${formatCount(chartSummary.pax)} pax`}
+                {!historyPending && program !== 'all' ? ` · ${programDetail}` : ''}
               </p>
             </div>
             <div className="flex items-center gap-3 text-[11px] font-medium text-teal-900/55">
@@ -410,7 +499,13 @@ export function AdminDashboard() {
               ) : null}
             </div>
           </div>
-          <VolumeChart points={chartSeries} showPp={program !== 'James Bond'} showJb={program !== 'PP'} />
+          {historyPending ? (
+            <p className="py-16 text-center text-sm text-teal-900/45">
+              Loading {range === 'month' ? 'this month' : 'this year'}…
+            </p>
+          ) : (
+            <VolumeChart points={chartSeries} showPp={program !== 'James Bond'} showJb={program !== 'PP'} />
+          )}
         </Surface>
 
         <Surface className="p-3.5 sm:p-4">
@@ -418,7 +513,9 @@ export function AdminDashboard() {
             <h2 className="font-display text-base font-semibold text-teal-950">Top agents</h2>
             <p className="text-[12px] text-teal-900/50">By pax in this view</p>
           </div>
-          {topAgents.length === 0 ? (
+          {historyPending ? (
+            <p className="py-8 text-center text-sm text-teal-900/45">Loading agents…</p>
+          ) : topAgents.length === 0 ? (
             <p className="py-8 text-center text-sm text-teal-900/45">No agent volume yet.</p>
           ) : (
             <ol className="space-y-2">
@@ -462,14 +559,14 @@ export function AdminDashboard() {
         </Surface>
       </div>
 
-      {program === 'all' ? (
+      {program === 'all' && !historyPending ? (
         <div className="mt-3 grid grid-cols-2 gap-3">
           <ProgramMixCard label="Phi Phi" program="PP" pax={stats.pp} total={stats.pax} />
           <ProgramMixCard label="James Bond" program="James Bond" pax={stats.jb} total={stats.pax} />
         </div>
       ) : null}
 
-      {range === 'month' ? (
+      {range === 'month' && !historyPending ? (
         <Surface className="mt-3 overflow-hidden p-4 sm:p-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
             <div>
@@ -545,7 +642,13 @@ export function AdminDashboard() {
         </Surface>
       ) : null}
 
-      {range !== 'year' ? (
+      {historyPending ? (
+        <Surface className="mt-3 overflow-hidden">
+          <div className="px-4 py-10 text-center text-sm text-teal-900/45 sm:px-5">
+            Loading {range === 'month' ? 'this month' : `${year}`}…
+          </div>
+        </Surface>
+      ) : range !== 'year' ? (
         <Surface className="mt-3 overflow-hidden">
           <div className="border-b border-teal-900/8 px-3.5 py-3 sm:px-5 sm:py-4">
             <h2 className="font-display font-semibold text-teal-950">
@@ -739,7 +842,11 @@ function VolumeChart({
             return (
               <div key={point.key} className="flex min-w-0 flex-1 flex-col items-center justify-end">
                 <div
-                  className="flex w-full max-w-[2.2rem] flex-col justify-end overflow-hidden rounded-t-md bg-teal-950/[0.04]"
+                  className={cn(
+                    'flex w-full flex-col justify-end overflow-hidden rounded-t-md',
+                    points.length <= 7 ? 'max-w-[4.5rem]' : 'max-w-[2.2rem]',
+                    point.accent ? 'bg-teal-700/10 ring-1 ring-teal-700/25' : 'bg-teal-950/[0.04]',
+                  )}
                   style={{ height: `${Math.max(height, point.pax > 0 ? 6 : 2)}%` }}
                   title={`${point.label}: ${point.pax} pax · ${point.bookings} bookings`}
                 >
@@ -759,7 +866,10 @@ function VolumeChart({
         {points.map((point) => (
           <span
             key={`${point.key}-label`}
-            className="min-w-0 flex-1 truncate text-center text-[10px] tabular-nums text-teal-900/40"
+            className={cn(
+              'min-w-0 flex-1 truncate text-center text-[10px] tabular-nums',
+              point.accent ? 'font-semibold text-teal-800' : 'text-teal-900/40',
+            )}
           >
             {point.label}
           </span>
@@ -940,6 +1050,26 @@ function rankAgents(bookings: Booking[]): AgentRank[] {
     map.set(slug, current)
   }
   return [...map.values()].sort((a, b) => b.pax - a.pax || b.bookings - a.bookings || a.name.localeCompare(b.name))
+}
+
+function nearbyDaySeries(bookings: Booking[], today: string): SeriesPoint[] {
+  return [-2, -1, 0, 1, 2].map((offset) => {
+    const iso = addDaysISO(today, offset)
+    const stats = summarize(bookings.filter((booking) => booking.date === iso))
+    return {
+      key: iso,
+      label: offset === 0 ? 'Today' : formatDayTick(iso),
+      accent: offset === 0,
+      ...stats,
+    }
+  })
+}
+
+function formatDayTick(isoDate: string) {
+  return new Date(`${isoDate}T12:00:00`).toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+  })
 }
 
 function monthlySeries(bookings: Booking[], year: number): SeriesPoint[] {

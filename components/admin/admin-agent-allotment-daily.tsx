@@ -1,15 +1,13 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, CalendarDays, CalendarIcon, ChevronLeft, ChevronRight, Save } from 'lucide-react'
+import { ArrowLeft, CalendarDays, ChevronLeft, ChevronRight, Save } from 'lucide-react'
 import { useInvoiceStore } from '@/components/admin/use-invoice-store'
 import { usePortal } from '@/components/portal-provider'
 import { PageHeader, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
-import { Calendar } from '@/components/ui/calendar'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   Table,
   TableBody,
@@ -19,8 +17,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { getArrivedPaxSnapshot } from '@/lib/check-in-arrived-pax'
-import { addDaysISO, dateFromISO, formatShortDate, todayISO, toISODate } from '@/lib/format'
-import { listAgentAllotments } from '@/lib/supabase/agent-allotment-db'
+import { addDaysISO, formatShortDate, todayISO } from '@/lib/format'
+import { listAgentAllotments, type AgentAllotment } from '@/lib/supabase/agent-allotment-db'
 import {
   listAgentAllotmentDaily,
   upsertAgentAllotmentDaily,
@@ -61,8 +59,34 @@ function eachIsoDay(from: string, to: string) {
   return days
 }
 
+function monthRangeContaining(isoDate: string) {
+  const [year, month] = isoDate.split('-').map(Number)
+  const from = `${year}-${String(month).padStart(2, '0')}-01`
+  const last = new Date(year, month, 0).getDate()
+  const to = `${year}-${String(month).padStart(2, '0')}-${String(last).padStart(2, '0')}`
+  return { from, to }
+}
+
+function shiftMonthRange(from: string, delta: number) {
+  const [year, month] = from.split('-').map(Number)
+  const next = new Date(year, month - 1 + delta, 1)
+  const iso = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-01`
+  return monthRangeContaining(iso)
+}
+
+function formatMonthLabel(isoDate: string) {
+  return new Date(`${isoDate}T12:00:00`).toLocaleDateString('en-GB', {
+    month: 'long',
+    year: 'numeric',
+  })
+}
+
 function headsFromPax(pax: { adults: number; children: number }) {
   return chargeablePax(pax)
+}
+
+function lotSaveLabel(lot: AgentAllotment) {
+  return `${formatShortDate(lot.paidDate || lot.createdAt.slice(0, 10))} · ${lot.adultPrice}`
 }
 
 function bookingHeads(booking: Booking) {
@@ -89,11 +113,11 @@ function checkInHeadsForBooking(
 export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void }) {
   const { bookings, getCheckInAttendance, agents } = usePortal()
   const invoiceStore = useInvoiceStore()
-  const [fromDate, setFromDate] = useState(() => todayISO())
-  const [toDate, setToDate] = useState(() => todayISO())
-  const [calendarOpen, setCalendarOpen] = useState(false)
+  const [fromDate, setFromDate] = useState(() => monthRangeContaining(todayISO()).from)
+  const [toDate, setToDate] = useState(() => monthRangeContaining(todayISO()).to)
   const [filterAgent, setFilterAgent] = useState('')
   const [purchasedByAgent, setPurchasedByAgent] = useState<Record<string, number>>({})
+  const [allotments, setAllotments] = useState<AgentAllotment[]>([])
   const [allDaily, setAllDaily] = useState<AgentAllotmentDaily[]>([])
   const [draftDeduct, setDraftDeduct] = useState<Record<string, string>>({})
   const [savingKey, setSavingKey] = useState<string | null>(null)
@@ -102,11 +126,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
   const [loading, setLoading] = useState(true)
 
   const selectedDays = useMemo(() => eachIsoDay(fromDate, toDate), [fromDate, toDate])
-  const multiDay = fromDate !== toDate
-  const dateLabel =
-    fromDate === toDate
-      ? formatShortDate(fromDate)
-      : `${formatShortDate(fromDate)} – ${formatShortDate(toDate)}`
+  const monthLabel = formatMonthLabel(fromDate)
 
   const invoicedCodes = useMemo(() => {
     const codes = new Set<string>()
@@ -129,6 +149,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
       purchased[row.agentSlug] = (purchased[row.agentSlug] ?? 0) + row.seats
     }
     setPurchasedByAgent(purchased)
+    setAllotments(allotments)
     setAllDaily(everyDaily)
   }
 
@@ -239,6 +260,15 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
         if (filterAgent && agentSlug !== filterAgent) continue
         if (!prebuyAgentSlugs.has(agentSlug)) continue
         const saved = savedByDayAgent.get(draftKey(day, agentSlug))
+        if (
+          !saved &&
+          stats.bookingHead === 0 &&
+          stats.checkInHead === 0 &&
+          stats.noShowHead === 0 &&
+          stats.invoiceHead === 0
+        ) {
+          continue
+        }
         const suggested = stats.checkInHead + stats.noShowHead
         result.push({
           day,
@@ -314,18 +344,10 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
     )
   }, [draftDeduct, rows])
 
-  function selectDateRange(range: { from?: Date; to?: Date } | undefined) {
-    if (!range?.from) return
-    const from = toISODate(range.from)
-    const to = range.to ? toISODate(range.to) : from
-    setFromDate(from <= to ? from : to)
-    setToDate(from <= to ? to : from)
-    if (range.to || from === to) setCalendarOpen(false)
-  }
-
-  function shiftRange(delta: number) {
-    setFromDate((current) => addDaysISO(current, delta))
-    setToDate((current) => addDaysISO(current, delta))
+  function shiftMonth(delta: number) {
+    const next = shiftMonthRange(fromDate, delta)
+    setFromDate(next.from)
+    setToDate(next.to)
   }
 
   async function saveRow(row: CheckerRow) {
@@ -333,6 +355,9 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
     const key = draftKey(row.day, row.agentSlug)
     const raw = draftDeduct[key] ?? String(row.totalDeduct)
     const totalDeduct = Math.max(0, Math.floor(Number(raw) || 0))
+    const receiving = allotments.find(
+      (lot) => lot.agentSlug === row.agentSlug && lot.receivesBookings,
+    )
     setSavingKey(key)
     try {
       await upsertAgentAllotmentDaily({
@@ -340,6 +365,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
         agentSlug: row.agentSlug,
         agentName: row.agentName,
         totalDeduct,
+        allotmentId: receiving?.id ?? null,
       })
       await refresh()
     } catch (caught) {
@@ -353,7 +379,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
     <div className="w-full">
       <PageHeader
         title="Daily checker"
-        description="Shows only agents with prebuy allotment. Pick one day or a range — edit Total Deduct when needed."
+        description="One row is one agent on one date. Save loads that day onto the open allotment. A saved row shows Saved and keeps its lot."
         actions={
           <Button type="button" variant="outline" size="sm" onClick={onBack}>
             <ArrowLeft className="size-3.5" />
@@ -365,59 +391,30 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
       <Surface className="mb-4 p-4 sm:p-5">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <div className="space-y-1.5 sm:col-span-2 lg:col-span-1">
-            <Label className="text-xs text-neutral-400">Tour date</Label>
+            <Label className="text-xs text-neutral-400">Month</Label>
             <div className="flex items-center gap-2">
               <Button
                 type="button"
                 variant="outline"
                 size="icon-sm"
-                aria-label="Previous day"
-                onClick={() => shiftRange(-1)}
+                aria-label="Previous month"
+                onClick={() => shiftMonth(-1)}
               >
                 <ChevronLeft className="size-4" />
               </Button>
-              <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
-                <PopoverTrigger
-                  render={
-                    <Button
-                      type="button"
-                      variant="outline"
-                      id="daily-checker-date"
-                      className={cn(
-                        'h-10 min-w-0 flex-1 justify-start gap-1.5 rounded-xl px-3 text-sm font-normal',
-                        multiDay && 'border-teal-700/35 bg-teal-50/80',
-                      )}
-                    />
-                  }
-                >
-                  <CalendarIcon className="size-3.5 shrink-0 text-teal-700/60" />
-                  <span className="truncate">{dateLabel}</span>
-                  {multiDay ? (
-                    <span className="rounded-md bg-teal-800/10 px-1.5 py-0.5 text-[10px] font-semibold text-teal-900">
-                      {selectedDays.length}d
-                    </span>
-                  ) : null}
-                </PopoverTrigger>
-                <PopoverContent align="start" className="!w-fit max-w-none overflow-visible p-3">
-                  <Calendar
-                    mode="range"
-                    selected={{ from: dateFromISO(fromDate), to: dateFromISO(toDate) }}
-                    onSelect={selectDateRange}
-                    defaultMonth={dateFromISO(fromDate)}
-                    numberOfMonths={1}
-                    className="w-full [--cell-size:2.35rem]"
-                  />
-                  <p className="px-2 pb-1 text-xs text-teal-900/45">
-                    One day, or click a second day for a range.
-                  </p>
-                </PopoverContent>
-              </Popover>
+              <div
+                id="daily-checker-date"
+                className="flex h-10 min-w-0 flex-1 items-center gap-1.5 rounded-xl border border-teal-900/12 bg-white/80 px-3 text-sm text-teal-950"
+              >
+                <CalendarDays className="size-3.5 shrink-0 text-teal-700/60" />
+                <span className="truncate">{monthLabel}</span>
+              </div>
               <Button
                 type="button"
                 variant="outline"
                 size="icon-sm"
-                aria-label="Next day"
-                onClick={() => shiftRange(1)}
+                aria-label="Next month"
+                onClick={() => shiftMonth(1)}
               >
                 <ChevronRight className="size-4" />
               </Button>
@@ -444,7 +441,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
           <div className="flex items-end sm:col-span-2 lg:col-span-2">
             <p className="text-sm text-teal-900/55">
               <CalendarDays className="mr-1.5 inline size-3.5 align-text-bottom" />
-              {dateLabel} · AD+CH heads from Booking, Check-in, No show, and Invoice
+              {monthLabel} · one row per date and agent. Save each row on its own.
             </p>
           </div>
         </div>
@@ -468,7 +465,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
         <Surface className="p-6 text-sm text-teal-900/55">
           {prebuyAgentSlugs.size === 0
             ? 'No prebuy agents yet. Add an allotment purchase first, then return here to deduct heads.'
-            : `No prebuy agents to show for ${dateLabel}${filterAgent ? ' with this agent filter' : ''}. Clear the agent filter or pick another date.`}
+            : `No booking days to save in ${monthLabel}${filterAgent ? ' for this agent' : ''}.`}
         </Surface>
       ) : null}
 
@@ -511,6 +508,20 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
                     <div>
                       <p className="text-xs text-teal-900/45">{formatShortDate(row.day)}</p>
                       <p className="font-semibold text-teal-950">{row.agentName}</p>
+                      <p className="text-[11px] text-teal-900/45">
+                        {(() => {
+                          const savedLotId = savedByDayAgent.get(draftKey(row.day, row.agentSlug))?.allotmentId
+                          const pinned = savedLotId
+                            ? allotments.find((lot) => lot.id === savedLotId)
+                            : null
+                          const open = allotments.find(
+                            (lot) => lot.agentSlug === row.agentSlug && lot.receivesBookings,
+                          )
+                          if (pinned) return `On lot ${lotSaveLabel(pinned)}`
+                          if (open) return `Save loads into ${lotSaveLabel(open)}`
+                          return 'Open an allotment before this day can load'
+                        })()}
+                      </p>
                       <p className="mt-1 text-xs text-teal-900/50">
                         {hasAllotment ? (
                           <>
@@ -530,11 +541,14 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
                         )}
                       </p>
                     </div>
-                    {!row.saved ? (
-                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-900">
-                        Suggested
-                      </span>
-                    ) : null}
+                    <span
+                      className={cn(
+                        'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase',
+                        row.saved ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-900',
+                      )}
+                    >
+                      {row.saved ? 'Saved' : 'Suggested'}
+                    </span>
                   </div>
                   <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
                     <div>
@@ -578,7 +592,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
                       onClick={() => void saveRow(row)}
                     >
                       <Save data-icon="inline-start" />
-                      {savingKey === key ? 'Saving…' : 'Save'}
+                      {savingKey === key ? 'Saving…' : row.saved && draftNum === row.totalDeduct ? 'Saved' : 'Save'}
                     </Button>
                   </div>
                 </Surface>
@@ -590,8 +604,8 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
-                  {multiDay ? <TableHead className="px-4 text-teal-700/45">Date</TableHead> : null}
-                  <TableHead className={cn('text-teal-700/45', !multiDay && 'px-4')}>Agent</TableHead>
+                  <TableHead className="px-4 text-teal-700/45">Date</TableHead>
+                  <TableHead className="text-teal-700/45">Agent</TableHead>
                   <TableHead className="text-right text-teal-700/45">Booking Head</TableHead>
                   <TableHead className="text-right text-teal-700/45">Check in</TableHead>
                   <TableHead className="text-right text-teal-700/45">No Show</TableHead>
@@ -613,19 +627,33 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
                   const dirty = draftNum !== row.totalDeduct || !row.saved
                   return (
                     <TableRow key={key}>
-                      {multiDay ? (
-                        <TableCell className="px-4 whitespace-nowrap">
-                          {formatShortDate(row.day)}
-                        </TableCell>
-                      ) : null}
-                      <TableCell className={cn('font-medium', !multiDay && 'px-4')}>
+                      <TableCell className="px-4 whitespace-nowrap">
+                        {formatShortDate(row.day)}
+                      </TableCell>
+                      <TableCell className="font-medium">
                         <div>
                           {row.agentName}
-                          {!row.saved ? (
-                            <span className="ml-2 text-[10px] font-semibold tracking-wide text-amber-700 uppercase">
-                              suggested
-                            </span>
-                          ) : null}
+                          <span
+                            className={cn(
+                              'ml-2 text-[10px] font-semibold tracking-wide uppercase',
+                              row.saved ? 'text-emerald-700' : 'text-amber-700',
+                            )}
+                          >
+                            {row.saved ? 'Saved' : 'Suggested'}
+                          </span>
+                          <p className="text-[11px] font-normal text-teal-900/45">
+                            {(() => {
+                              const pinned = savedByDayAgent.get(key)?.allotmentId
+                                ? allotments.find((lot) => lot.id === savedByDayAgent.get(key)?.allotmentId)
+                                : null
+                              const open = allotments.find(
+                                (lot) => lot.agentSlug === row.agentSlug && lot.receivesBookings,
+                              )
+                              if (pinned) return `On lot ${lotSaveLabel(pinned)}`
+                              if (open) return `Save loads into ${lotSaveLabel(open)}`
+                              return 'Open an allotment before this day can load'
+                            })()}
+                          </p>
                         </div>
                       </TableCell>
                       <TableCell className="text-right tabular-nums">{row.bookingHead}</TableCell>
@@ -673,7 +701,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
                           onClick={() => void saveRow(row)}
                         >
                           <Save data-icon="inline-start" />
-                          {savingKey === key ? 'Saving…' : 'Save'}
+                          {savingKey === key ? 'Saving…' : row.saved && !dirty ? 'Saved' : 'Save'}
                         </Button>
                       </TableCell>
                     </TableRow>

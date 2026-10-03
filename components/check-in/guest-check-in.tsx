@@ -22,6 +22,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { CheckInI18nProvider, CheckInLanguageSwitch, useCheckInI18n } from '@/components/check-in/check-in-i18n'
+import { ensureGuestCheckInSession, reopenGuestCheckInSession } from '@/components/check-in/guest-access-gate'
 import { NationalityCombobox } from '@/components/check-in/nationality-combobox'
 import {
   enrolledSeatCount,
@@ -66,6 +67,8 @@ import {
   sanitizeEnglishName,
   sanitizeEnglishPassport,
 } from '@/lib/check-in-i18n'
+import { clearCheckInDraft, loadCheckInDraft, saveCheckInDraft, type CheckInDraftGuest } from '@/lib/check-in-draft'
+import { CHECK_IN_RETRY_ERROR, CHECK_IN_SESSION_ERROR } from '@/lib/check-in-submit'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { listVanNumbers, primaryVan } from '@/lib/vehicle-assign'
 import { cn } from '@/lib/utils'
@@ -152,6 +155,29 @@ function programLabel(program: Program) {
   return program === 'PP' ? 'Phi Phi' : 'James Bond'
 }
 
+function wait(ms: number) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
+function checkInCanRetry(error: string) {
+  return error === CHECK_IN_SESSION_ERROR || error === CHECK_IN_RETRY_ERROR
+}
+
+function draftGuestToForm(guest: CheckInDraftGuest): GuestDraft {
+  const [year = '', month = '', day = ''] = guest.birthday.split('-')
+  return {
+    firstName: sanitizeEnglishName(guest.firstName),
+    lastName: sanitizeEnglishName(guest.lastName),
+    nationality: guest.nationality,
+    birthYear: /^\d{4}$/.test(year) ? year : '',
+    birthMonth: /^\d{2}$/.test(month) ? month : '',
+    birthDay: /^\d{2}$/.test(day) ? day : '',
+    passportNumber: sanitizeEnglishPassport(guest.passportNumber),
+  }
+}
+
 function paymentDue(booking: Booking, nationalities: string[] = []) {
   const guests = nationalities.map((nationality) => ({ nationality }))
   const thaiSeats = thaiParkSeatsFromGuests(booking.adults, booking.children, guests)
@@ -200,20 +226,24 @@ function ThaiParkFeeNote({ count }: { count: number }) {
 
 export function GuestCheckIn({
   lockedBookingCode = null,
+  linkToken = '',
 }: {
   lockedBookingCode?: string | null
+  linkToken?: string
 }) {
   return (
     <CheckInI18nProvider>
-      <GuestCheckInForm lockedBookingCode={lockedBookingCode} />
+      <GuestCheckInForm lockedBookingCode={lockedBookingCode} linkToken={linkToken} />
     </CheckInI18nProvider>
   )
 }
 
 function GuestCheckInForm({
   lockedBookingCode = null,
+  linkToken = '',
 }: {
   lockedBookingCode?: string | null
+  linkToken?: string
 }) {
   const { t, lang } = useCheckInI18n()
   const {
@@ -256,6 +286,8 @@ function GuestCheckInForm({
   const [partySize, setPartySize] = useState(1)
   const [guests, setGuests] = useState<GuestDraft[]>([emptyGuestDraft()])
   const [error, setError] = useState('')
+  const [saveNotice, setSaveNotice] = useState(false)
+  const [draftRestored, setDraftRestored] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [detailsAttempted, setDetailsAttempted] = useState(false)
   const [doneNeedsPayment, setDoneNeedsPayment] = useState(false)
@@ -470,7 +502,6 @@ function GuestCheckInForm({
     setProgram(booking.program)
     setBookingCode(booking.code)
     setError('')
-    setLockedReady(true)
 
     const seats = totalPassengers(booking)
     const already = enrolledSeatCount(
@@ -487,6 +518,7 @@ function GuestCheckInForm({
       parseGroupGuideNames(guideName).length
     const guestsDone = attendance === 'checked' || already >= seats
     if (guestsDone && !(guideName && !guideDone)) {
+      setLockedReady(true)
       setDoneGuideOnly(false)
       setDoneNeedsPayment(
         paymentDue(
@@ -499,7 +531,40 @@ function GuestCheckInForm({
       setStep('done')
       return
     }
-    setStep('scope')
+
+    void (async () => {
+      let restored = false
+      try {
+        const draft = await loadCheckInDraft(booking.code)
+        const enrolled = getCheckInEnrollments(booking.date, booking.program, booking.code)
+        const seenPassports = new Set(
+          enrolled
+            .map((item) => item.passportNumber.trim().toUpperCase())
+            .filter((item) => item.length > 0),
+        )
+        const remaining = Math.max(0, seats - already)
+        const next = (draft?.guests ?? [])
+          .filter((guest) => {
+            const passport = guest.passportNumber.trim().toUpperCase()
+            return passport.length === 0 || !seenPassports.has(passport)
+          })
+          .slice(0, remaining)
+          .map(draftGuestToForm)
+        if (next.length > 0) {
+          const nextScope = draft?.scope === 'guide' ? 'guide' : next.length > 1 ? 'group' : 'one'
+          setScope(nextScope)
+          setPartySize(next.length)
+          setGuests(next)
+          setDraftRestored(nextScope !== 'guide')
+          setStep(nextScope === 'guide' ? 'details' : 'confirm')
+          restored = true
+        }
+      } catch {
+        restored = false
+      }
+      if (!restored) setStep('scope')
+      setLockedReady(true)
+    })()
   }, [
     bookings,
     getCheckInAttendance,
@@ -669,6 +734,7 @@ function GuestCheckInForm({
   async function submitCheckIn() {
     if (!selectedBooking || !scope || submitting) return
     setError('')
+    setSaveNotice(false)
 
     if (program && selectedBooking.program !== program) {
       setError(t('programMismatch'))
@@ -682,20 +748,52 @@ function GuestCheckInForm({
       birthday: buildBirthdayIso(guest.birthYear, guest.birthMonth, guest.birthDay) ?? '',
       passportNumber: guest.passportNumber,
     }))
+    const input = {
+      date: selectedBooking.date,
+      program: selectedBooking.program,
+      bookingCode: selectedBooking.code,
+      scope,
+      guests: payload,
+    }
 
     setSubmitting(true)
     try {
-      const result = await recordGuestCheckIns({
-        date: selectedBooking.date,
-        program: selectedBooking.program,
-        bookingCode: selectedBooking.code,
-        scope,
-        guests: payload,
-      })
+      await ensureGuestCheckInSession(selectedBooking.code, linkToken)
+      let result = await recordGuestCheckIns(input)
       if (!result.ok) {
-        setError(result.error)
+        await saveCheckInDraft({
+          code: selectedBooking.code,
+          token: linkToken,
+          date: selectedBooking.date,
+          program: selectedBooking.program,
+          scope,
+          guests: payload,
+        })
+      }
+      if (!result.ok && checkInCanRetry(result.error)) {
+        setSaveNotice(true)
+        setError(t('checkInPausedWait'))
+        if (result.error === CHECK_IN_SESSION_ERROR) {
+          await reopenGuestCheckInSession(selectedBooking.code, linkToken)
+          await wait(1200)
+          result = await recordGuestCheckIns(input)
+        } else {
+          await wait(1500)
+        }
+      }
+      if (!result.ok) {
+        if (checkInCanRetry(result.error)) {
+          setSaveNotice(true)
+          setError(t('checkInTryAgainSoon'))
+        } else {
+          setSaveNotice(false)
+          setError(result.error)
+        }
         return
       }
+      setSaveNotice(false)
+      setDraftRestored(false)
+      await clearCheckInDraft(selectedBooking.code)
 
       if (scope === 'guide') {
         setDoneNeedsPayment(false)
@@ -1388,7 +1486,19 @@ function GuestCheckInForm({
                   </div>
                 )
               })}
-              {error ? <p className="text-sm text-rose-700">{error}</p> : null}
+              {error ? (
+                <p
+                  role="status"
+                  className={cn(
+                    'text-sm leading-relaxed',
+                    saveNotice
+                      ? 'rounded-xl bg-amber-50 px-3 py-2 text-amber-950'
+                      : 'text-rose-700',
+                  )}
+                >
+                  {error}
+                </p>
+              ) : null}
               {detailsAttempted && !detailsReady ? (
                 <p className="text-sm font-medium text-rose-700">
                   {t('completeFields')}
@@ -1411,7 +1521,13 @@ function GuestCheckInForm({
                   setStep('confirm')
                 }}
               >
-                {submitting && scope === 'guide' ? t('loading') : scope === 'guide' ? t('groupGuideFinish') : t('next')}
+                {submitting && scope === 'guide'
+                  ? t(saveNotice ? 'pleaseWait' : 'loading')
+                  : scope === 'guide'
+                    ? saveNotice
+                      ? t('confirmTryAgain')
+                      : t('groupGuideFinish')
+                    : t('next')}
                 {!(submitting && scope === 'guide') ? (
                   <ChevronRight data-icon="inline-end" />
                 ) : null}
@@ -1426,6 +1542,8 @@ function GuestCheckInForm({
             guests={guests}
             scope={scope}
             error={error}
+            notice={saveNotice}
+            restored={draftRestored}
             submitting={submitting}
             onConfirm={() => {
               void submitCheckIn()
@@ -1809,6 +1927,8 @@ function ConfirmStep({
   guests,
   scope,
   error,
+  notice = false,
+  restored = false,
   submitting = false,
   onConfirm,
 }: {
@@ -1816,6 +1936,8 @@ function ConfirmStep({
   guests: GuestDraft[]
   scope: Scope
   error: string
+  notice?: boolean
+  restored?: boolean
   submitting?: boolean
   onConfirm: () => void
 }) {
@@ -1836,6 +1958,11 @@ function ConfirmStep({
     <section className="space-y-4">
       <StepHeading title={t('confirmTitle')} subtitle={t('confirmSub')} />
       <div className="gday-sheet space-y-4 rounded-[1.5rem] p-5">
+        {restored ? (
+          <p role="status" className="rounded-xl bg-amber-50 px-3 py-2 text-sm leading-relaxed text-amber-950">
+            {t('draftRestored')}
+          </p>
+        ) : null}
         <DetailRow label={t('program')} value={programLabel(booking.program)} />
         <DetailRow label={t('dateLabel')} value={formatLongDate(booking.date)} />
         <DetailRow label={t('leaderName')} value={booking.leadGuest} />
@@ -1932,14 +2059,26 @@ function ConfirmStep({
           </div>
         )}
 
-        {error ? <p className="text-sm text-rose-700">{error}</p> : null}
+        {error ? (
+          <p
+            role="status"
+            className={cn(
+              'text-sm leading-relaxed',
+              notice
+                ? 'rounded-xl bg-amber-50 px-3 py-2 text-amber-950'
+                : 'text-rose-700',
+            )}
+          >
+            {error}
+          </p>
+        ) : null}
 
         <Button
           className="h-12 w-full text-base"
           disabled={submitting}
           onClick={onConfirm}
         >
-          {submitting ? t('loading') : t('confirmFinish')}
+          {submitting ? t(notice ? 'pleaseWait' : 'loading') : notice ? t('confirmTryAgain') : t('confirmFinish')}
         </Button>
       </div>
     </section>

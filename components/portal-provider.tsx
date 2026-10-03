@@ -19,6 +19,12 @@ import {
   saveCheckInAttendanceMap,
   withCheckInAttendance,
 } from '@/lib/check-in-attendance'
+import { GUEST_SIGNED_IN_EVENT } from '@/lib/check-in-access'
+import {
+  CHECK_IN_RETRY_ERROR,
+  CHECK_IN_SESSION_ERROR,
+  checkInSaveFailure,
+} from '@/lib/check-in-submit'
 import {
   CHECK_IN_PAYMENT_STORAGE_KEY,
   getCheckInPayment,
@@ -207,10 +213,12 @@ import {
   fetchDayBoatPlans,
   fetchDayVehiclePlans,
   operationalBookingsFromDate,
+  partnerBookingsFromDate,
   insertBooking,
   moveCheckInBookingDate,
   insertBookingEvent,
   loadGuestPortalSnapshot,
+  loadPartnerPortalSnapshot,
   loadPortalSnapshot,
   persistQuietly,
   pushCheckInMaps,
@@ -810,6 +818,13 @@ type PortalContextValue = {
 
 const PortalContext = createContext<PortalContextValue | null>(null)
 
+/** Partner booking tabs poll this often while someone is using the page. */
+const PARTNER_POLL_MS = 2 * 60_000
+/** After this long with no tap or keypress, partner tabs stop every Supabase poll. */
+const PARTNER_IDLE_MS = 15 * 60_000
+
+const PartnerDataLiveContext = createContext(true)
+
 function checkInMapsHaveData(maps: CheckInMapsSnapshot) {
   return (
     Object.keys(maps.enrollments).length > 0 ||
@@ -838,6 +853,10 @@ function applyCheckInMapsToStorage(maps: CheckInMapsSnapshot) {
 
 export function PortalProvider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false)
+  /** Auth role from the session that hydrated this tab. Empty until that read finishes. */
+  const [sessionRole, setSessionRole] = useState('')
+  /** False only for a partner tab that has sat unused for PARTNER_IDLE_MS. */
+  const [partnerLive, setPartnerLive] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
   const [bookings, setBookings] = useState<Booking[]>([])
@@ -865,6 +884,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [bookingCutoffs, setBookingCutoffs] = useState<BookingCutoffSettings>(DEFAULT_BOOKING_CUTOFFS)
   const [bookingClosures, setBookingClosures] = useState<BookingClosure[]>([])
   const [bookingEventsByCode, setBookingEventsByCode] = useState<Record<string, BookingEvent[]>>({})
+  const portalLoadGenRef = useRef(0)
   const checkInCloudEnabledRef = useRef(false)
   const checkInWritePendingRef = useRef(0)
   /** Bumped on every local check-in write so in-flight polls cannot overwrite fresher state. */
@@ -1155,23 +1175,32 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false
-    ;(async () => {
+    async function loadPortal() {
+      const gen = ++portalLoadGenRef.current
       try {
-        // Guest QR sessions load only their booking's tour date — much lighter than
-        // the 30-day ops window used by admin/helper/partner.
-        const { data: _guestSessionData } = await getSupabaseBrowserClient().auth.getSession()
-        const _guestMeta = _guestSessionData.session?.user.app_metadata ?? {}
-        const _guestRole = String(_guestMeta.role ?? '')
-        const _guestCode = String(_guestMeta.booking_code ?? '').trim()
-        const _guestDate = String(_guestMeta.booking_date ?? '').trim().slice(0, 10)
+        // Guest QR: one booking + that tour date.
+        // Partner link: own bookings + seats/pickup catalogs, no boat/van/driver plans.
+        // Admin/helper: full ops snapshot.
+        const { data: _sessionData } = await getSupabaseBrowserClient().auth.getSession()
+        if (cancelled || gen !== portalLoadGenRef.current) return
+        const _meta = _sessionData.session?.user.app_metadata ?? {}
+        const _role = String(_meta.role ?? '')
+        const _guestCode = String(_meta.booking_code ?? '').trim()
+        const _guestDate = String(_meta.booking_date ?? '').trim().slice(0, 10)
+        setSessionRole(_role)
         const snapshot =
-          _guestRole === 'guest' && _guestCode && _guestDate
+          _role === 'guest' && _guestCode && _guestDate
             ? await loadGuestPortalSnapshot(_guestCode, _guestDate)
-            : await loadPortalSnapshot()
-        if (cancelled) return
+            : _role === 'partner'
+              ? await loadPartnerPortalSnapshot()
+              : await loadPortalSnapshot()
+        if (cancelled || gen !== portalLoadGenRef.current) return
         setAgents(snapshot.agents)
         bookingsLoadedRangesRef.current = [
-          { from: operationalBookingsFromDate(), to: '9999-12-31' },
+          {
+            from: _role === 'partner' ? partnerBookingsFromDate() : operationalBookingsFromDate(),
+            to: '9999-12-31',
+          },
         ]
         setBookings(snapshot.bookings)
         setZones(snapshot.zones)
@@ -1221,22 +1250,50 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         setBookingClosures(snapshot.bookingClosures)
         setLoadError(null)
       } catch (error) {
-        if (cancelled) return
+        if (cancelled || gen !== portalLoadGenRef.current) return
         const message = error instanceof Error ? error.message : 'Failed to load portal data'
         console.error('[portal] load failed', error)
         setLoadError(message)
       } finally {
-        if (!cancelled) setHydrated(true)
+        if (!cancelled && gen === portalLoadGenRef.current) setHydrated(true)
       }
-    })()
+    }
+    void loadPortal()
+    const onGuestSignedIn = () => {
+      void loadPortal()
+    }
+    window.addEventListener(GUEST_SIGNED_IN_EVENT, onGuestSignedIn)
     return () => {
       cancelled = true
+      window.removeEventListener(GUEST_SIGNED_IN_EVENT, onGuestSignedIn)
     }
   }, [])
+
+  /** Partner tabs stop polling after 15 minutes with no tap or keypress. */
+  useEffect(() => {
+    if (sessionRole !== 'partner') return
+    let lastActivity = Date.now()
+    const mark = () => {
+      lastActivity = Date.now()
+      setPartnerLive((live) => (live ? live : true))
+    }
+    const events = ['pointerdown', 'keydown', 'touchstart'] as const
+    for (const event of events) {
+      window.addEventListener(event, mark, { capture: true, passive: true })
+    }
+    const timer = window.setInterval(() => {
+      if (Date.now() - lastActivity >= PARTNER_IDLE_MS) setPartnerLive(false)
+    }, 30_000)
+    return () => {
+      for (const event of events) window.removeEventListener(event, mark, { capture: true })
+      window.clearInterval(timer)
+    }
+  }, [sessionRole])
 
   /** Keep bookings live across devices via Supabase poll + Realtime. */
   useEffect(() => {
     if (!hydrated) return
+    if (sessionRole === 'partner' && !partnerLive) return
 
     let busy = false
     let cancelled = false
@@ -1253,11 +1310,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       busy = true
       try {
-        const opsFrom = operationalBookingsFromDate()
+        const partner = sessionRole === 'partner'
+        const opsFrom = partner ? partnerBookingsFromDate() : operationalBookingsFromDate()
         const now = Date.now()
         const cursorMs = cursor ? Date.parse(cursor) : Number.NaN
 
-        if (cursor && Number.isFinite(cursorMs) && now - lastFullAt < FULL_BOOKINGS_REFRESH_MS) {
+        // Partners replace their 7-day window every poll. Staff keep the cheap incremental poll.
+        if (
+          !partner &&
+          cursor &&
+          Number.isFinite(cursorMs) &&
+          now - lastFullAt < FULL_BOOKINGS_REFRESH_MS
+        ) {
           // Cheap poll: only rows changed since the last one (60s overlap for late commits).
           const since = new Date(cursorMs - 60_000).toISOString()
           const changed = await fetchBookingsChangedSince(opsFrom, since)
@@ -1275,11 +1339,15 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const full = await fetchBookingsWithCursor(opsFrom)
         if (cancelled || bookingWritePendingRef.current > 0) return
         const next = full.bookings
-        // Keep lazily loaded history; only refresh the ops window.
-        setBookings((current) => {
-          const older = current.filter((booking) => booking.date < opsFrom)
-          return mergeBookingsByCode(older, next)
-        })
+        // Partners only keep the 7-day window. Staff keep lazily loaded older history.
+        if (partner) {
+          setBookings(next)
+        } else {
+          setBookings((current) => {
+            const older = current.filter((booking) => booking.date < opsFrom)
+            return mergeBookingsByCode(older, next)
+          })
+        }
         if (!bookingRangeCovered(bookingsLoadedRangesRef.current, opsFrom, '9999-12-31')) {
           bookingsLoadedRangesRef.current.push({ from: opsFrom, to: '9999-12-31' })
         }
@@ -1317,6 +1385,15 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         return
       }
 
+      // Partners book from a link. Poll slowly, and never subscribe to every booking change.
+      if (sessionRole === 'partner' || role === 'partner') {
+        poll = window.setInterval(() => {
+          void refreshBookings()
+        }, PARTNER_POLL_MS)
+        void refreshBookings()
+        return
+      }
+
       // Realtime pushes changes instantly; the interval is only a safety net (saves Supabase quota).
       poll = window.setInterval(() => {
         void refreshBookings()
@@ -1346,11 +1423,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (realtimeTimer != null) window.clearTimeout(realtimeTimer)
       unsubscribeRealtime?.()
     }
-  }, [hydrated])
+  }, [hydrated, partnerLive, sessionRole])
 
   /** Keep boat guides / assignments live across admins. */
   useEffect(() => {
     if (!hydrated) return
+    if (sessionRole === 'partner') return
 
     let busy = false
     let cancelled = false
@@ -1426,11 +1504,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (boatPoll != null) window.clearInterval(boatPoll)
       unsubscribeRealtime?.()
     }
-  }, [hydrated])
+  }, [hydrated, sessionRole])
 
   /** Keep van assignments live across admins / marina tablets. */
   useEffect(() => {
     if (!hydrated) return
+    if (sessionRole === 'partner') return
 
     let busy = false
     let cancelled = false
@@ -1493,11 +1572,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (vehiclePoll != null) window.clearInterval(vehiclePoll)
       unsubscribeRealtime?.()
     }
-  }, [hydrated])
+  }, [hydrated, sessionRole])
 
   /** Keep seats, close dates, and cutoffs live across agent / admin tabs. */
   useEffect(() => {
     if (!hydrated) return
+    if (sessionRole === 'partner' && !partnerLive) return
 
     let busy = false
     let cancelled = false
@@ -1507,7 +1587,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       busy = true
       try {
-        const next = await fetchAvailabilitySettings()
+        const next = await fetchAvailabilitySettings(
+          sessionRole === 'partner' ? partnerBookingsFromDate() : undefined,
+        )
         if (cancelled || settingsWritePendingRef.current > 0) return
         setAvailability(next.availability)
         setBookingCutoffs(next.bookingCutoffs)
@@ -1540,6 +1622,13 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
       }
       if (cancelled) return
+      if (sessionRole === 'partner' || role === 'partner') {
+        void refreshAvailabilitySettings()
+        settingsPoll = window.setInterval(() => {
+          void refreshAvailabilitySettings()
+        }, PARTNER_POLL_MS)
+        return
+      }
       void refreshAvailabilitySettings()
       if (role === 'guest') return
       try {
@@ -1567,11 +1656,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (settingsTimer != null) window.clearTimeout(settingsTimer)
       unsubscribeSettings?.()
     }
-  }, [hydrated])
+  }, [hydrated, partnerLive, sessionRole])
 
   /** Keep marina check-in board in sync across devices (Supabase) and same-browser tabs. */
   useEffect(() => {
     if (!hydrated) return
+    if (sessionRole === 'partner') return
 
     let cancelled = false
     let migrateAttempted = false
@@ -1889,7 +1979,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (poll != null) window.clearInterval(poll)
       unsubCheckIn?.()
     }
-  }, [hydrated])
+  }, [hydrated, sessionRole])
 
   const ensureBookingsForRange = useCallback(async (fromDate: string, toDate?: string) => {
     const from = fromDate.slice(0, 10)
@@ -2630,14 +2720,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           markChecked = remote.fullyChecked
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
-          const rpcMissing =
-            /portal_record_check_in_enrollments/i.test(message) ||
-            /Could not find the function/i.test(message) ||
-            /schema cache/i.test(message)
-          if (!rpcMissing) {
+          const failure = checkInSaveFailure(message)
+          if (failure !== 'missing') {
             return {
               ok: false,
-              error: 'Check-in failed because the marina is busy. Please try again.',
+              error: failure === 'session' ? CHECK_IN_SESSION_ERROR : CHECK_IN_RETRY_ERROR,
             }
           }
           try {
@@ -2660,10 +2747,13 @@ export function PortalProvider({ children }: { children: ReactNode }) {
                 )
               }
             }
-          } catch {
+          } catch (fallbackError) {
+            const fallbackMessage =
+              fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+            const fallback = checkInSaveFailure(fallbackMessage)
             return {
               ok: false,
-              error: 'Check-in failed because the marina is busy. Please try again.',
+              error: fallback === 'session' ? CHECK_IN_SESSION_ERROR : CHECK_IN_RETRY_ERROR,
             }
           }
         } finally {
@@ -5071,7 +5161,13 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     }
   }, [agents, bookings, ensureBookingsForRange, ensureBookingByCode, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, checkInGroupGuides, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, loadError])
 
-  return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
+  const partnerDataLive = sessionRole !== 'partner' || partnerLive
+
+  return (
+    <PartnerDataLiveContext.Provider value={partnerDataLive}>
+      <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
+    </PartnerDataLiveContext.Provider>
+  )
 }
 
 export function usePortal() {
@@ -5080,4 +5176,9 @@ export function usePortal() {
     throw new Error('usePortal must be used within PortalProvider')
   }
   return context
+}
+
+/** True while this tab should keep loading. Partner tabs go false after 15 idle minutes. */
+export function usePartnerDataLive() {
+  return useContext(PartnerDataLiveContext)
 }

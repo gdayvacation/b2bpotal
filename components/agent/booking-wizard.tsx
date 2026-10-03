@@ -37,7 +37,18 @@ import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { cn } from '@/lib/utils'
 import { duplicateBookingMessage, findDuplicateBookings } from '@/lib/booking-duplicates'
 import type { BookingImageDraft } from '@/lib/booking-from-image'
-import { formatPaxBreakdown, isNoTransfer, NO_TRANSFER_ZONE, type Agent, type Booking, type Hotel, type IncludeOption, type PickupZoneName, type Program } from '@/lib/types'
+import { matchAgentFromSeed, matchZoneFromSeed } from '@/lib/booking-import-resolve'
+import {
+  formatPaxBreakdown,
+  isNoTransfer,
+  NO_TRANSFER_ZONE,
+  type Agent,
+  type Booking,
+  type Hotel,
+  type IncludeOption,
+  type PickupZoneName,
+  type Program,
+} from '@/lib/types'
 
 const CORE_STEPS = [
   'Select Program',
@@ -50,32 +61,6 @@ const CORE_STEPS = [
 /** Prefer earliest open travel day (Bangkok). Today stays closed after the day-before cutoff. */
 function defaultTourDate(earliestBookableDate: () => string): Date {
   return dateFromISO(earliestBookableDate())
-}
-
-function matchAgentFromSeed(agents: Agent[], agentName: string) {
-  const needle = agentName.trim().toLowerCase()
-  if (!needle) return null
-  const active = agents.filter((item) => item.status === 'Active')
-  const exact = active.find((item) => item.name.toLowerCase() === needle)
-  if (exact) return exact
-  const partial = active.find(
-    (item) => item.name.toLowerCase().includes(needle) || needle.includes(item.name.toLowerCase()),
-  )
-  return partial ?? null
-}
-
-function matchZoneFromSeed(zones: { name: string }[], zoneName: string) {
-  const needle = zoneName.trim().toLowerCase()
-  if (!needle) return null
-  if (needle === 'no transfer' || needle === 'no-transfer' || needle === 'self') {
-    return NO_TRANSFER_ZONE
-  }
-  const exact = zones.find((zone) => zone.name.toLowerCase() === needle)
-  if (exact) return exact.name
-  const partial = zones.find(
-    (zone) => zone.name.toLowerCase().includes(needle) || needle.includes(zone.name.toLowerCase()),
-  )
-  return partial?.name ?? null
 }
 
 type ResolvedAgent = { slug: string; name: string }

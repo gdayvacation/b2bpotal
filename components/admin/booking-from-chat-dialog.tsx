@@ -2,7 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
-import { ClipboardPaste, ImagePlus, Loader2, Sparkles, X } from 'lucide-react'
+import {
+  ClipboardPaste,
+  FileSpreadsheet,
+  ImagePlus,
+  Loader2,
+  MessageSquareText,
+  Sparkles,
+  X,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -20,10 +28,24 @@ import {
   saveBookingImageDraft,
   type BookingImageDraft,
 } from '@/lib/booking-from-image'
+import {
+  draftReadyForImport,
+  matchAgentFromSeed,
+  resolvePickupZoneForDraft,
+} from '@/lib/booking-import-resolve'
+import {
+  emptyImportSelection,
+  inferYearMonthFromFileName,
+  parseBookingSpreadsheetFile,
+  type BookingSpreadsheetImportRow,
+} from '@/lib/booking-spreadsheet-import'
+import { uniqueAgentSlug } from '@/lib/format'
+import { usePortal } from '@/components/portal-provider'
 import { cn } from '@/lib/utils'
 import type { IncludeOption, Program } from '@/lib/types'
 
-type Phase = 'capture' | 'review'
+type CaptureMode = 'chat' | 'spreadsheet'
+type Phase = 'capture' | 'review' | 'bulk-review'
 
 export function BookingFromChatDialog({
   open,
@@ -33,9 +55,19 @@ export function BookingFromChatDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const router = useRouter()
+  const { agents, zones, hotels, addBooking, addAgent } = usePortal()
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const spreadsheetInputRef = useRef<HTMLInputElement>(null)
   const textAreaRef = useRef<HTMLTextAreaElement>(null)
+  const [captureMode, setCaptureMode] = useState<CaptureMode>('chat')
   const [phase, setPhase] = useState<Phase>('capture')
+  const [spreadsheetFile, setSpreadsheetFile] = useState<File | null>(null)
+  const [yearMonth, setYearMonth] = useState('')
+  const [needsMonth, setNeedsMonth] = useState(false)
+  const [bulkRows, setBulkRows] = useState<BookingSpreadsheetImportRow[]>([])
+  const [importSummary, setImportSummary] = useState<{ ok: number; failed: string[] } | null>(
+    null,
+  )
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [chatText, setChatText] = useState('')
@@ -44,11 +76,17 @@ export function BookingFromChatDialog({
   const [draft, setDraft] = useState<BookingImageDraft>(emptyBookingImageDraft)
 
   const reset = useCallback(() => {
+    setCaptureMode('chat')
     setPhase('capture')
     setBusy(false)
     setError('')
     setFile(null)
     setChatText('')
+    setSpreadsheetFile(null)
+    setYearMonth('')
+    setNeedsMonth(false)
+    setBulkRows([])
+    setImportSummary(null)
     setDraft(emptyBookingImageDraft())
     setPreviewUrl((current) => {
       if (current) URL.revokeObjectURL(current)
@@ -164,6 +202,140 @@ export function BookingFromChatDialog({
     return () => window.removeEventListener('paste', onPaste)
   }, [open, phase])
 
+  function acceptSpreadsheet(next: File | null) {
+    if (!next) return
+    const name = next.name.toLowerCase()
+    if (
+      !name.endsWith('.csv') &&
+      !name.endsWith('.xlsx') &&
+      !name.endsWith('.xls') &&
+      !name.endsWith('.ods')
+    ) {
+      setError('Use a CSV or Excel file (.csv, .xlsx, .xls).')
+      return
+    }
+    setError('')
+    setSpreadsheetFile(next)
+    setImportSummary(null)
+    const inferred = inferYearMonthFromFileName(next.name)
+    if (inferred) setYearMonth(inferred)
+    setNeedsMonth(false)
+  }
+
+  async function readSpreadsheet() {
+    if (!spreadsheetFile) {
+      setError('Choose a CSV or Excel file first.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    setImportSummary(null)
+    try {
+      const parsed = await parseBookingSpreadsheetFile(spreadsheetFile, {
+        yearMonth: yearMonth || undefined,
+      })
+      if (parsed.needsMonth) {
+        setNeedsMonth(true)
+        if (parsed.inferredYearMonth) setYearMonth(parsed.inferredYearMonth)
+        setError('This workbook uses day tabs (1–31). Pick the tour month, then read again.')
+        return
+      }
+      if (parsed.rows.length === 0) {
+        throw new Error('No booking rows found. Check headers or try another sheet.')
+      }
+      setBulkRows(emptyImportSelection(parsed.rows))
+      setPhase('bulk-review')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not read the file.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function resolveAgentForDraft(agentName: string) {
+    const trimmed = agentName.trim().replace(/\s+/g, ' ')
+    if (!trimmed) return { error: 'Missing agent name.' }
+    const matched = matchAgentFromSeed(agents, trimmed)
+    if (matched) return { slug: matched.slug, name: matched.name }
+    const createError = addAgent(trimmed)
+    if (createError) return { error: createError }
+    const slug = uniqueAgentSlug(
+      trimmed,
+      agents.map((agent) => agent.slug),
+    )
+    return { slug, name: trimmed }
+  }
+
+  async function importSelectedRows() {
+    const selected = bulkRows.filter((row) => row.selected)
+    if (selected.length === 0) {
+      setError('Select at least one booking to add.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    const failed: string[] = []
+    const succeededIds = new Set<string>()
+    let ok = 0
+
+    for (const row of selected) {
+      const draft = row.draft
+      if (!draftReadyForImport(draft)) {
+        failed.push(`Row ${row.rowNumber} (${row.sheet}): incomplete — fix or deselect.`)
+        continue
+      }
+      const agentResult = resolveAgentForDraft(draft.agentName)
+      if ('error' in agentResult) {
+        failed.push(`Row ${row.rowNumber}: ${agentResult.error}`)
+        continue
+      }
+      const pickupZone = resolvePickupZoneForDraft(draft, zones, hotels)
+      if (!pickupZone) {
+        failed.push(
+          `Row ${row.rowNumber}: pickup zone missing — set zone or a known hotel.`,
+        )
+        continue
+      }
+      const program = draft.program!
+      const result = addBooking(
+        {
+          agentSlug: agentResult.slug,
+          agentName: agentResult.name,
+          agentRef: draft.agentRef.trim(),
+          program,
+          date: draft.date,
+          parkFee: draft.parkFee,
+          canoe: program === 'James Bond' ? draft.canoe : null,
+          adults: draft.adults,
+          children: draft.children,
+          infants: draft.infants,
+          tourLeaders: draft.tourLeaders,
+          leadGuest: draft.leadGuest.trim(),
+          pickupZone,
+          pickupHotel: draft.pickupHotel.trim(),
+          roomNumber: draft.roomNumber.trim(),
+          note: draft.note.trim(),
+          cashOnTour: draft.cashOnTour.trim(),
+        },
+        { bypassCutoff: true, actor: { role: 'admin', name: 'Admin import' } },
+      )
+      if (!result.ok) {
+        failed.push(`Row ${row.rowNumber} · ${draft.leadGuest}: ${result.error}`)
+        continue
+      }
+      ok += 1
+      succeededIds.add(row.id)
+    }
+
+    setImportSummary({ ok, failed })
+    if (succeededIds.size > 0) {
+      setBulkRows((current) => current.filter((row) => !succeededIds.has(row.id)))
+    }
+    setBusy(false)
+  }
+
+  const selectedBulkCount = bulkRows.filter((row) => row.selected).length
+
   async function extract() {
     if (!file && !chatText.trim()) {
       setError('Paste chat text or add a screenshot first.')
@@ -209,21 +381,269 @@ export function BookingFromChatDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl md:max-w-3xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Sparkles className="size-4 text-teal-700" />
-            {phase === 'capture' ? 'Seed booking from chat' : 'Review extracted booking'}
+            {phase === 'bulk-review'
+              ? 'Review imported bookings'
+              : phase === 'capture'
+                ? 'Seed bookings'
+                : 'Review extracted booking'}
           </DialogTitle>
           <DialogDescription>
-            {phase === 'capture'
-              ? 'Paste chat text (⌘V) and/or upload a screenshot. AI builds a draft — you recheck before it is saved.'
-              : 'Correct anything that looks wrong, then continue to the booking form. Nothing is saved until you confirm there.'}
+            {phase === 'bulk-review'
+              ? 'Check every row from your file. Deselect any you do not want, then add the rest to the system.'
+              : phase === 'capture'
+                ? captureMode === 'chat'
+                  ? 'Paste chat text (⌘V) and/or upload a screenshot. AI builds a draft — you recheck before it is saved.'
+                  : 'Upload CSV or Excel (including multi-day workbooks). Rows are parsed for review — nothing is saved until you confirm.'
+                : 'Correct anything that looks wrong, then continue to the booking form. Nothing is saved until you confirm there.'}
           </DialogDescription>
         </DialogHeader>
 
-        {phase === 'capture' ? (
+        {phase === 'bulk-review' ? (
           <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-teal-900/70">
+              <span>
+                {bulkRows.length} row{bulkRows.length === 1 ? '' : 's'} · {selectedBulkCount} selected
+              </span>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setBulkRows((current) => current.map((row) => ({ ...row, selected: true })))
+                  }
+                >
+                  Select all
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setBulkRows((current) =>
+                      current.map((row) => ({
+                        ...row,
+                        selected: draftReadyForImport(row.draft),
+                      })),
+                    )
+                  }
+                >
+                  Select ready only
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setBulkRows((current) => current.map((row) => ({ ...row, selected: false })))
+                  }
+                >
+                  Clear
+                </Button>
+              </div>
+            </div>
+
+            <div className="max-h-[min(52vh,420px)] overflow-auto rounded-xl border border-teal-900/10">
+              <table className="w-full min-w-[640px] text-left text-xs">
+                <thead className="sticky top-0 bg-teal-50/95 text-teal-900/60">
+                  <tr>
+                    <th className="w-10 px-2 py-2">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all rows"
+                        checked={bulkRows.length > 0 && bulkRows.every((row) => row.selected)}
+                        onChange={(event) => {
+                          const checked = event.target.checked
+                          setBulkRows((current) =>
+                            current.map((row) => ({ ...row, selected: checked })),
+                          )
+                        }}
+                      />
+                    </th>
+                    <th className="px-2 py-2 font-medium">Date</th>
+                    <th className="px-2 py-2 font-medium">Program</th>
+                    <th className="px-2 py-2 font-medium">Guest</th>
+                    <th className="px-2 py-2 font-medium">Pax</th>
+                    <th className="px-2 py-2 font-medium">Agent</th>
+                    <th className="px-2 py-2 font-medium">Hotel / zone</th>
+                    <th className="px-2 py-2 font-medium">Flags</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bulkRows.map((row) => {
+                    const ready = draftReadyForImport(row.draft)
+                    const pax =
+                      row.draft.adults +
+                      row.draft.children +
+                      row.draft.infants +
+                      row.draft.tourLeaders
+                    return (
+                      <tr
+                        key={row.id}
+                        className={cn(
+                          'border-t border-teal-900/6',
+                          !ready && 'bg-amber-50/40',
+                        )}
+                      >
+                        <td className="px-2 py-2 align-top">
+                          <input
+                            type="checkbox"
+                            checked={row.selected}
+                            onChange={(event) =>
+                              setBulkRows((current) =>
+                                current.map((item) =>
+                                  item.id === row.id
+                                    ? { ...item, selected: event.target.checked }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                        </td>
+                        <td className="px-2 py-2 align-top whitespace-nowrap">{row.draft.date || '—'}</td>
+                        <td className="px-2 py-2 align-top">{row.draft.program || '—'}</td>
+                        <td className="max-w-[120px] truncate px-2 py-2 align-top" title={row.draft.leadGuest}>
+                          {row.draft.leadGuest || '—'}
+                        </td>
+                        <td className="px-2 py-2 align-top whitespace-nowrap">{pax}</td>
+                        <td className="max-w-[100px] truncate px-2 py-2 align-top" title={row.draft.agentName}>
+                          {row.draft.agentName || '—'}
+                        </td>
+                        <td className="max-w-[140px] truncate px-2 py-2 align-top">
+                          {[row.draft.pickupHotel, row.draft.pickupZone].filter(Boolean).join(' · ') ||
+                            '—'}
+                        </td>
+                        <td className="px-2 py-2 align-top text-amber-900/80">
+                          {!ready ? 'Needs data' : null}
+                          {row.draft.warnings.length > 0 ? (
+                            <span title={row.draft.warnings.join(' ')}>⚠</span>
+                          ) : null}
+                          {row.sheet !== 'Sheet1' ? (
+                            <span className="text-teal-900/45"> · {row.sheet}</span>
+                          ) : null}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {importSummary ? (
+              <div className="space-y-2 rounded-xl border border-teal-900/10 bg-teal-50/50 px-3 py-2 text-sm">
+                <p className="font-medium text-teal-950">
+                  Added {importSummary.ok} booking{importSummary.ok === 1 ? '' : 's'}.
+                </p>
+                {importSummary.failed.length > 0 ? (
+                  <ul className="max-h-32 overflow-auto text-amber-950">
+                    {importSummary.failed.map((line) => (
+                      <li key={line}>• {line}</li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
+
+            {error ? (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                {error}
+              </p>
+            ) : null}
+          </div>
+        ) : phase === 'capture' ? (
+          <div className="space-y-4">
+            <div className="flex gap-1 rounded-xl border border-teal-900/10 bg-teal-950/[0.03] p-1">
+              <button
+                type="button"
+                onClick={() => setCaptureMode('chat')}
+                className={cn(
+                  'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                  captureMode === 'chat'
+                    ? 'bg-white text-teal-950 shadow-sm'
+                    : 'text-teal-900/55 hover:text-teal-900/80',
+                )}
+              >
+                <MessageSquareText className="size-3.5" />
+                Chat / photo
+              </button>
+              <button
+                type="button"
+                onClick={() => setCaptureMode('spreadsheet')}
+                className={cn(
+                  'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                  captureMode === 'spreadsheet'
+                    ? 'bg-white text-teal-950 shadow-sm'
+                    : 'text-teal-900/55 hover:text-teal-900/80',
+                )}
+              >
+                <FileSpreadsheet className="size-3.5" />
+                CSV / Excel
+              </button>
+            </div>
+
+            {captureMode === 'spreadsheet' ? (
+              <>
+                <div
+                  className={cn(
+                    'relative flex min-h-[140px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-teal-900/20 bg-teal-950/[0.02] px-4 py-5 text-center',
+                    spreadsheetFile && 'border-solid border-teal-700/30 bg-white',
+                  )}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => {
+                    event.preventDefault()
+                    acceptSpreadsheet(event.dataTransfer.files?.[0] ?? null)
+                  }}
+                >
+                  <FileSpreadsheet className="size-7 text-teal-800/35" />
+                  {spreadsheetFile ? (
+                    <p className="text-sm font-medium text-teal-950">{spreadsheetFile.name}</p>
+                  ) : (
+                    <p className="text-xs text-teal-900/50">
+                      Drop CSV or Excel here — or export from Google Sheets as .xlsx / .csv
+                    </p>
+                  )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => spreadsheetInputRef.current?.click()}
+                  >
+                    Choose file
+                  </Button>
+                  <input
+                    ref={spreadsheetInputRef}
+                    type="file"
+                    accept=".csv,.xlsx,.xls,.ods,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    className="hidden"
+                    onChange={(event) => acceptSpreadsheet(event.target.files?.[0] ?? null)}
+                  />
+                </div>
+
+                {(needsMonth || yearMonth) && (
+                  <Field label="Tour month (for day tabs 1–31)">
+                    <Input
+                      type="month"
+                      value={yearMonth}
+                      onChange={(e) => {
+                        setYearMonth(e.target.value)
+                        setNeedsMonth(false)
+                        if (error) setError('')
+                      }}
+                    />
+                  </Field>
+                )}
+
+                <p className="text-xs text-teal-900/45">
+                  Supports report-style headers (Date, Guest, Program, …) and Good Day speedboat
+                  workbooks with one tab per day.
+                </p>
+              </>
+            ) : (
+              <>
             <Field label="Chat text">
               <Textarea
                 ref={textAreaRef}
@@ -309,6 +729,8 @@ export function BookingFromChatDialog({
                 {error}
               </p>
             ) : null}
+              </>
+            )}
           </div>
         ) : (
           <div className="space-y-4">
@@ -452,8 +874,20 @@ export function BookingFromChatDialog({
         )}
 
         <DialogFooter className="gap-2 sm:gap-2">
-          {phase === 'review' ? (
-            <Button type="button" variant="outline" onClick={() => setPhase('capture')}>
+          {phase === 'review' || phase === 'bulk-review' ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                if (phase === 'bulk-review') {
+                  setPhase('capture')
+                  setBulkRows([])
+                  setImportSummary(null)
+                } else {
+                  setPhase('capture')
+                }
+              }}
+            >
               Back
             </Button>
           ) : (
@@ -462,15 +896,47 @@ export function BookingFromChatDialog({
             </Button>
           )}
           {phase === 'capture' ? (
-            <Button
-              type="button"
-              onClick={extract}
-              disabled={busy || !canExtract}
-              className="gap-1.5"
-            >
-              {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
-              {busy ? 'Reading…' : 'Read with AI'}
-            </Button>
+            captureMode === 'spreadsheet' ? (
+              <Button
+                type="button"
+                onClick={() => void readSpreadsheet()}
+                disabled={busy || !spreadsheetFile}
+                className="gap-1.5"
+              >
+                {busy ? <Loader2 className="size-3.5 animate-spin" /> : <FileSpreadsheet className="size-3.5" />}
+                {busy ? 'Reading…' : 'Read file'}
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                onClick={extract}
+                disabled={busy || !canExtract}
+                className="gap-1.5"
+              >
+                {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+                {busy ? 'Reading…' : 'Read with AI'}
+              </Button>
+            )
+          ) : phase === 'bulk-review' ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+                disabled={busy}
+              >
+                {importSummary?.ok ? 'Done' : 'Close'}
+              </Button>
+              <Button
+                type="button"
+                onClick={() => void importSelectedRows()}
+                disabled={busy || selectedBulkCount === 0}
+                className="gap-1.5"
+              >
+                {busy ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                {busy ? 'Adding…' : `Add ${selectedBulkCount} to system`}
+              </Button>
+            </>
           ) : (
             <Button type="button" onClick={continueToForm} className="gap-1.5">
               Continue to booking form

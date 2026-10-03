@@ -1664,14 +1664,16 @@ export function AdminInvoices() {
                           }
                         />
                       </TableHead>
-                      <TableHead className="w-[4.5rem] px-1.5 font-bold">Date</TableHead>
-                      <TableHead className="w-[7rem] px-1.5 font-bold">Voucher</TableHead>
+                      <TableHead className="w-[3.25rem] px-1 font-bold">Date</TableHead>
+                      <TableHead className="w-[4.75rem] px-1 font-bold" title="Voucher number">
+                        VC No
+                      </TableHead>
                       <BillSortHead
                         column="agent"
                         active={billSort?.key === 'agent'}
                         dir={billSort?.dir ?? 'asc'}
                         onSort={toggleBillSort}
-                        className="w-[10rem] px-1 font-bold"
+                        className="w-[6.5rem] px-1 font-bold"
                       >
                         Agent
                       </BillSortHead>
@@ -1686,6 +1688,7 @@ export function AdminInvoices() {
                       </BillSortHead>
                       <TableHead className="w-[7.5rem] px-1.5 font-bold">Guest</TableHead>
                       <TableHead className="w-[7rem] px-1.5 font-bold">Pax</TableHead>
+                      <TableHead className="w-[7rem] px-1 font-bold">Hotel</TableHead>
                       <TableHead
                         className="w-[4.25rem] px-1 font-bold"
                         title="Included = INC · Excluded shows Exc + agency park fee"
@@ -1749,7 +1752,7 @@ export function AdminInvoices() {
                           </TableCell>
                           <TableCell
                             className={cn(
-                              'whitespace-nowrap px-1.5 tabular-nums',
+                              'whitespace-nowrap px-1 tabular-nums',
                               issued ? 'text-neutral-400' : 'text-teal-900/75',
                             )}
                             title={formatShortDate(booking.date)}
@@ -1758,14 +1761,14 @@ export function AdminInvoices() {
                           </TableCell>
                           <TableCell
                             className={cn(
-                              'truncate px-1.5 font-medium',
+                              'truncate px-1 font-medium',
                               issued ? 'text-neutral-400' : 'text-teal-950',
                             )}
                             title={booking.agentRef?.trim() || undefined}
                           >
                             {booking.agentRef?.trim() || '—'}
                           </TableCell>
-                          <TableCell className="truncate px-1" title={booking.agentName}>
+                          <TableCell className="max-w-[6.5rem] truncate px-1" title={booking.agentName}>
                             {booking.agentName}
                           </TableCell>
                           <TableCell
@@ -1790,6 +1793,12 @@ export function AdminInvoices() {
                             </span>
                           </TableCell>
                           <TableCell className="truncate px-1.5 tabular-nums" title={formatPaxBreakdown(booking)}>{formatPaxBreakdown(booking)}</TableCell>
+                          <TableCell
+                            className="max-w-[7rem] truncate px-1"
+                            title={booking.pickupHotel.trim() || undefined}
+                          >
+                            {booking.pickupHotel.trim() || '—'}
+                          </TableCell>
                           <TableCell
                             className="w-[4.25rem] px-1 text-[11px] tabular-nums"
                             title={
@@ -1890,7 +1899,7 @@ export function AdminInvoices() {
                   </TableBody>
                   <TableFooter>
                     <TableRow>
-                      <TableCell colSpan={10} />
+                      <TableCell colSpan={11} />
                       <TableCell>Sum</TableCell>
                       <TableCell className="text-right tabular-nums text-teal-950">
                         {selectedCodes.length > 0 ? selectedHeads : pageHeads}

@@ -6,6 +6,8 @@ export type AgentAllotmentDaily = {
   agentSlug: string
   agentName: string
   totalDeduct: number
+  /** Lot this saved day belongs to. Empty until Daily checker saves a new day, or a day is moved. */
+  allotmentId: string | null
   note: string
   createdAt: string
   updatedAt: string
@@ -17,6 +19,7 @@ type AgentAllotmentDailyRow = {
   agent_slug: string
   agent_name: string
   total_deduct: number | string
+  allotment_id?: string | null
   note: string | null
   created_at: string
   updated_at: string
@@ -36,6 +39,7 @@ function mapRow(row: AgentAllotmentDailyRow): AgentAllotmentDaily {
     agentSlug: row.agent_slug,
     agentName: row.agent_name,
     totalDeduct: Math.max(0, Math.floor(Number(row.total_deduct) || 0)),
+    allotmentId: row.allotment_id || null,
     note: row.note?.trim() || '',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -74,17 +78,31 @@ export async function upsertAgentAllotmentDaily(input: {
   agentName: string
   totalDeduct: number
   note?: string
+  /** Used only the first time this day is saved. Later saves keep the lot. Move changes it. */
+  allotmentId?: string | null
 }): Promise<AgentAllotmentDaily> {
   const supabase = requireSupabase()
+  const day = input.day.trim()
+  const agentSlug = input.agentSlug.trim()
+  const existing = await supabase
+    .from('agent_allotment_daily')
+    .select('allotment_id')
+    .eq('day', day)
+    .eq('agent_slug', agentSlug)
+    .maybeSingle()
+  if (existing.error) throw new Error(existing.error.message)
+  const currentLot = (existing.data as { allotment_id?: string | null } | null)?.allotment_id || null
+  const allotmentId = existing.data ? currentLot : input.allotmentId || null
   const { data, error } = await supabase
     .from('agent_allotment_daily')
     .upsert(
       {
-        day: input.day.trim(),
-        agent_slug: input.agentSlug.trim(),
+        day,
+        agent_slug: agentSlug,
         agent_name: input.agentName.trim(),
         total_deduct: Math.max(0, Math.floor(input.totalDeduct)),
         note: input.note?.trim() || '',
+        allotment_id: allotmentId,
       },
       { onConflict: 'day,agent_slug' },
     )
@@ -92,6 +110,20 @@ export async function upsertAgentAllotmentDaily(input: {
     .single()
   if (error) throw new Error(error.message)
   return mapRow(data as AgentAllotmentDailyRow)
+}
+
+export async function moveAgentAllotmentDaily(input: {
+  day: string
+  agentSlug: string
+  allotmentId: string
+}): Promise<void> {
+  const supabase = requireSupabase()
+  const { error } = await supabase
+    .from('agent_allotment_daily')
+    .update({ allotment_id: input.allotmentId })
+    .eq('day', input.day.trim())
+    .eq('agent_slug', input.agentSlug.trim())
+  if (error) throw new Error(error.message)
 }
 
 export type AgentBookingDayPax = {

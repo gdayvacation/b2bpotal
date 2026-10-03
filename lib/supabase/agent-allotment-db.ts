@@ -6,6 +6,10 @@ export type AgentAllotmentPayment = {
   /** Transfer / paid calendar date YYYY-MM-DD */
   paidDate: string
   note: string
+  /** Heads this transfer adds to the lot. Several transfers accumulate on one lot. */
+  heads?: number
+  /** When these heads join the lot, if that is earlier than the transfer date. */
+  headsDate?: string
 }
 
 export type AgentAllotmentPayStatus = 'unpaid' | 'partial' | 'paid'
@@ -26,6 +30,8 @@ export type AgentAllotment = {
   totalAmount: number
   paidDate: string | null
   payments: AgentAllotmentPayment[]
+  /** This lot receives the next Daily checker save for the agent. */
+  receivesBookings: boolean
   note: string
   createdAt: string
   updatedAt: string
@@ -44,6 +50,7 @@ type AgentAllotmentRow = {
   total_amount: number | string
   paid_date?: string | null
   payments?: unknown
+  receives_bookings?: boolean | null
   note: string | null
   created_at: string
   updated_at: string
@@ -75,6 +82,8 @@ export type AgentAllotmentPaymentInput = {
   amount: number
   paidDate: string
   note?: string
+  heads?: number
+  headsDate?: string
 }
 
 function requireSupabase() {
@@ -115,11 +124,15 @@ export function parseAllotmentPayments(value: unknown): AgentAllotmentPayment[] 
       const amount = money(num(item.amount))
       const paidDate = String(item.paidDate ?? item.paid_date ?? '').slice(0, 10)
       if (amount <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(paidDate)) return null
+      const heads = Math.floor(num(item.heads))
+      const headsDate = String(item.headsDate ?? item.heads_date ?? '').slice(0, 10)
       return {
         id: String(item.id || crypto.randomUUID()),
         amount,
         paidDate,
         note: String(item.note ?? '').trim(),
+        ...(heads > 0 ? { heads } : {}),
+        ...( /^\d{4}-\d{2}-\d{2}$/.test(headsDate) ? { headsDate } : {}),
       }
     })
     .filter((row): row is AgentAllotmentPayment => row !== null)
@@ -167,6 +180,10 @@ function paymentsToJson(payments: AgentAllotmentPayment[]) {
     amount: money(payment.amount),
     paidDate: payment.paidDate,
     note: payment.note.trim(),
+    ...(payment.heads && payment.heads > 0 ? { heads: Math.floor(payment.heads) } : {}),
+    ...(payment.headsDate && /^\d{4}-\d{2}-\d{2}$/.test(payment.headsDate)
+      ? { headsDate: payment.headsDate }
+      : {}),
   }))
 }
 
@@ -207,6 +224,7 @@ function mapRow(row: AgentAllotmentRow): AgentAllotment {
     totalAmount: Math.max(0, num(row.total_amount)),
     paidDate: row.paid_date?.slice(0, 10) || null,
     payments: parseAllotmentPayments(row.payments),
+    receivesBookings: row.receives_bookings === true,
     note: row.note?.trim() || '',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -386,6 +404,51 @@ export async function addAgentAllotmentPayment(
   return mapRow(data as AgentAllotmentRow)
 }
 
+/** Add heads and money onto an existing lot. The lot total grows; this does not open a new lot. */
+export async function topUpAgentAllotment(
+  id: string,
+  input: { heads: number; amount: number; paidDate: string; note?: string; headsDate?: string },
+): Promise<AgentAllotment> {
+  const heads = Math.floor(Number(input.heads) || 0)
+  const amount = money(input.amount)
+  const paidDate = input.paidDate.trim()
+  const headsDate = input.headsDate?.trim() || paidDate
+  if (heads <= 0) throw new Error('Enter heads greater than 0.')
+  if (amount < 0) throw new Error('Enter a valid amount.')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(paidDate)) throw new Error('Enter a valid transfer date.')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(headsDate)) throw new Error('Enter a valid head date.')
+
+  const existing = await getAgentAllotment(id)
+  const nextPayments = [
+    ...writablePayments(existing),
+    {
+      id: crypto.randomUUID(),
+      amount,
+      paidDate,
+      note: input.note?.trim() || '',
+      heads,
+      ...(headsDate !== paidDate ? { headsDate } : {}),
+    },
+  ]
+  const adultSeats = existing.adultSeats + heads
+  const seats = adultSeats + existing.childSeats
+
+  const supabase = requireSupabase()
+  const { data, error } = await supabase
+    .from('agent_allotments')
+    .update({
+      seats,
+      adult_seats: adultSeats,
+      total_amount: money(existing.totalAmount + amount),
+      payments: paymentsToJson(nextPayments),
+    })
+    .eq('id', id)
+    .select('*')
+    .single()
+  if (error) throw new Error(error.message)
+  return mapRow(data as AgentAllotmentRow)
+}
+
 export async function removeLastAgentAllotmentPayment(id: string): Promise<AgentAllotment> {
   const existing = await getAgentAllotment(id)
   const working = writablePayments(existing)
@@ -410,4 +473,22 @@ export async function deleteAgentAllotment(id: string) {
   const supabase = requireSupabase()
   const { error } = await supabase.from('agent_allotments').delete().eq('id', id)
   if (error) throw new Error(error.message)
+}
+
+/** The next Daily checker save for this agent lands on this lot. */
+export async function setAgentAllotmentReceiving(agentSlug: string, lotId: string) {
+  const supabase = requireSupabase()
+  const slug = agentSlug.trim()
+  const clear = await supabase
+    .from('agent_allotments')
+    .update({ receives_bookings: false })
+    .eq('agent_slug', slug)
+    .neq('id', lotId)
+  if (clear.error) throw new Error(clear.error.message)
+  const set = await supabase
+    .from('agent_allotments')
+    .update({ receives_bookings: true })
+    .eq('id', lotId)
+    .eq('agent_slug', slug)
+  if (set.error) throw new Error(set.error.message)
 }

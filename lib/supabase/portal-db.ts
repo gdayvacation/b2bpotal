@@ -257,9 +257,17 @@ function asDateString(value: string) {
 /** How far back ops pages load on open (pickup / vans / boats / check-in). */
 export const OPS_BOOKING_LOOKBACK_DAYS = 30
 
+/** Agent booking links only keep a short history. Future trips are still included. */
+export const PARTNER_BOOKING_LOOKBACK_DAYS = 7
+
 /** Inclusive start date for the default operational booking window. */
 export function operationalBookingsFromDate() {
   return addDaysISO(todayISO(), -OPS_BOOKING_LOOKBACK_DAYS)
+}
+
+/** Inclusive start date for an agent tab: 7 days back, plus every future trip. */
+export function partnerBookingsFromDate() {
+  return addDaysISO(todayISO(), -PARTNER_BOOKING_LOOKBACK_DAYS)
 }
 
 /** PostgREST defaults to max 1000 rows — page until exhausted. */
@@ -421,6 +429,57 @@ export async function loadGuestPortalSnapshot(
       (vanMetaRes.data ?? []) as VanMetaRow[],
       (vanAssignRes.data ?? []) as VanAssignmentRow[],
     ),
+  }
+}
+
+/**
+ * Portal snapshot for an agent booking link.
+ *
+ * Agents need their own bookings (RLS already scopes rows to their agency),
+ * from 7 days ago through every future trip, plus seat capacity and the
+ * pickup catalogs. They do not render boat plans, van plans, fleet, or drivers.
+ */
+export async function loadPartnerPortalSnapshot(): Promise<PortalSnapshot> {
+  const supabase = getSupabaseBrowserClient()
+  const fromDate = partnerBookingsFromDate()
+  const { data: sessionData } = await supabase.auth.getSession()
+  const agentSlug = String(sessionData.session?.user.app_metadata?.agent_slug ?? '').trim()
+  const agentsRequest = agentSlug
+    ? supabase.from('agents').select('*').eq('slug', agentSlug)
+    : supabase.from('agents').select('*').order('name')
+  const [agentsRes, zonesRes, hotelsRes, bookings, settings] = await Promise.all([
+    agentsRequest,
+    supabase.from('pickup_zones').select('*').order('sort_order'),
+    supabase.from('hotels').select('*').order('name'),
+    fetchBookingsInDateRange(fromDate),
+    fetchAvailabilitySettings(fromDate),
+  ])
+
+  await assertOk('agents', agentsRes.error, agentsRes.data)
+  await assertOk('pickup_zones', zonesRes.error, zonesRes.data)
+
+  let hotels: Hotel[] = []
+  if (hotelsRes.error) {
+    console.warn(
+      '[supabase] hotels table unavailable — run supabase/add-hotels.sql',
+      hotelsRes.error.message,
+    )
+  } else {
+    hotels = (hotelsRes.data as HotelRow[]).map(mapHotel)
+  }
+
+  return {
+    agents: (agentsRes.data as AgentRow[]).map(mapAgent),
+    zones: (zonesRes.data as ZoneRow[]).map(mapZone),
+    hotels,
+    bookings,
+    availability: settings.availability,
+    dayBoatPlans: {},
+    dayVehiclePlans: {},
+    fleetVans: [],
+    drivers: [],
+    bookingCutoffs: settings.bookingCutoffs,
+    bookingClosures: settings.bookingClosures,
   }
 }
 
@@ -1219,16 +1278,28 @@ export async function fetchBookings(): Promise<Booking[]> {
 }
 
 /** Reload seats, close dates, and cutoff times across devices. */
-export async function fetchAvailabilitySettings(): Promise<{
+export async function fetchAvailabilitySettings(fromDate?: string): Promise<{
   availability: Availability[]
   bookingCutoffs: BookingCutoffSettings
   bookingClosures: BookingClosure[]
 }> {
   const supabase = getSupabaseBrowserClient()
+  const from = fromDate ? asDateString(fromDate) : ''
   const [availabilityRes, cutoffsRes, closuresRes] = await Promise.all([
-    selectAllPaged<AvailabilityRow>('availability', ['date']),
+    from
+      ? fetchAllPaged<AvailabilityRow>('availability', (start, end) =>
+          supabase
+            .from('availability')
+            .select('*')
+            .gte('date', from)
+            .order('date')
+            .range(start, end),
+        ).then((data) => ({ data, error: null as { message: string } | null }))
+      : selectAllPaged<AvailabilityRow>('availability', ['date']),
     supabase.from('booking_cutoffs').select('*').eq('id', 'default').maybeSingle(),
-    supabase.from('booking_closures').select('*').order('date'),
+    from
+      ? supabase.from('booking_closures').select('*').gte('date', from).order('date')
+      : supabase.from('booking_closures').select('*').order('date'),
   ])
   await assertOk('availability', availabilityRes.error, availabilityRes.data)
 

@@ -11,7 +11,7 @@ export default async function CheckInPage({
   const token = String(params.t ?? '').trim()
   return (
     <GuestAccessGate bookingCode={lockedBookingCode} token={token}>
-      <GuestCheckIn lockedBookingCode={lockedBookingCode || null} />
+      <GuestCheckIn lockedBookingCode={lockedBookingCode || null} linkToken={token} />
     </GuestAccessGate>
   )
 }
