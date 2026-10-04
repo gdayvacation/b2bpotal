@@ -206,6 +206,8 @@ export function BookingWizard({
     return bits.join('\n')
   })
   const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
   const seedAgentApplied = useRef(Boolean(seededAgent || !seed?.agentName))
 
   // Agents often hydrate after first paint — re-match AI agency name once available.
@@ -438,33 +440,45 @@ export function BookingWizard({
       setDuplicateOpen(true)
       return
     }
-    saveBooking()
+    void saveBooking()
   }
 
-  function saveBooking() {
-    if (!program || !date || !pickupZone || !resolvedAgent) return
-    const result = addBooking(
-      {
-        agentSlug: resolvedAgent.slug,
-        agentName: resolvedAgent.name,
-        agentRef: agentRef.trim(),
-        program,
-        date: isoDate,
-        parkFee,
-        canoe: program === 'James Bond' ? canoe : null,
-        adults,
-        children,
-        infants,
-        tourLeaders,
-        leadGuest: leadGuest.trim(),
-        pickupZone,
-        pickupHotel: pickupHotel.trim(),
-        roomNumber: roomNumber.trim(),
-        note: note.trim(),
-        cashOnTour: cashOnTour.trim(),
-      },
-      { bypassCutoff: selectAgent },
-    )
+  async function saveBooking() {
+    if (!program || !date || !pickupZone || !resolvedAgent || savingRef.current) return
+    savingRef.current = true
+    setSaving(true)
+    setError('')
+    let result: Awaited<ReturnType<typeof addBooking>>
+    try {
+      result = await addBooking(
+        {
+          agentSlug: resolvedAgent.slug,
+          agentName: resolvedAgent.name,
+          agentRef: agentRef.trim(),
+          program,
+          date: isoDate,
+          parkFee,
+          canoe: program === 'James Bond' ? canoe : null,
+          adults,
+          children,
+          infants,
+          tourLeaders,
+          leadGuest: leadGuest.trim(),
+          pickupZone,
+          pickupHotel: pickupHotel.trim(),
+          roomNumber: roomNumber.trim(),
+          note: note.trim(),
+          cashOnTour: cashOnTour.trim(),
+        },
+        { bypassCutoff: selectAgent },
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save this booking.')
+      return
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
     if (!result.ok) {
       setError(result.error)
       return
@@ -1197,8 +1211,12 @@ export function BookingWizard({
               <ChevronRight data-icon="inline-end" />
             </Button>
           ) : (
-            <Button className="h-12 min-w-0 flex-1 rounded-xl px-4 sm:flex-none" onClick={confirm}>
-              Confirm Booking
+            <Button
+              className="h-12 min-w-0 flex-1 rounded-xl px-4 sm:flex-none"
+              disabled={saving}
+              onClick={confirm}
+            >
+              {saving ? 'Saving…' : 'Confirm Booking'}
             </Button>
           )}
         </div>
@@ -1258,8 +1276,8 @@ export function BookingWizard({
             <Button type="button" variant="outline" onClick={() => setDuplicateOpen(false)}>
               Cancel
             </Button>
-            <Button type="button" onClick={saveBooking}>
-              Save anyway
+            <Button type="button" disabled={saving} onClick={() => void saveBooking()}>
+              {saving ? 'Saving…' : 'Save anyway'}
             </Button>
           </DialogFooter>
         </DialogContent>

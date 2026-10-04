@@ -30,7 +30,7 @@ const headers = [
 
 const exampleRows = [
   [
-    '5/10/2026',
+    '5 Oct 26',
     'PP',
     'Good Day',
     'GDV-13699',
@@ -46,7 +46,7 @@ const exampleRows = [
     '',
   ],
   [
-    '5/10/2026',
+    '6 Oct 26',
     'James Bond',
     'Booking Window',
     'BW-12345',
@@ -66,11 +66,18 @@ const exampleRows = [
 const blankRows = Array.from({ length: 8 }, () => headers.map(() => ''))
 
 /** Optional banner row (same layout as pickup lists) — date also in Date column per row */
-const sheetRows = [['5/10/2026', '', '', '', '', '', '', '', '', '', '', '', '', ''], headers, ...exampleRows, ...blankRows]
+const sheetRows = [['5 Oct 26', '', '', '', '', '', '', '', '', '', '', '', '', ''], headers, ...exampleRows, ...blankRows]
 
 const wb = XLSX.utils.book_new()
 const ws = XLSX.utils.aoa_to_sheet(sheetRows)
-ws['!cols'] = headers.map((h) => ({ wch: Math.max(10, h.length + 2) }))
+for (const addr of Object.keys(ws)) {
+  if (addr.startsWith('!')) continue
+  const cell = ws[addr]
+  if (!cell || typeof cell.v !== 'string' || !/^[0-9]{1,2} [A-Za-z]{3} [0-9]{2}$/.test(cell.v)) continue
+  cell.t = 's'
+  cell.z = '@'
+}
+ws['!cols'] = headers.map((h) => ({ wch: Math.max(12, h.length + 2) }))
 XLSX.utils.book_append_sheet(wb, ws, 'Bookings')
 
 const xlsxPath = path.join(outDir, 'booking-import-template.xlsx')

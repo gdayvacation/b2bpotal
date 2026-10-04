@@ -15,6 +15,8 @@ export const DEFAULT_DRIVERS: DriverRosterEntry[] = [
 ]
 
 const STORAGE_KEY = 'gday-driver-roster'
+const RECENT_STORAGE_KEY = 'gday-driver-recent'
+const RECENT_DRIVER_LIMIT = 5
 
 export function normalizeDriverName(name: string) {
   return name.trim()
@@ -72,4 +74,62 @@ export function loadLocalDrivers(): DriverRosterEntry[] {
 export function saveLocalDrivers(list: DriverRosterEntry[]) {
   if (typeof window === 'undefined') return
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(mergeDriverRoster(list)))
+}
+
+export function loadRecentDriverKeys(): string[] {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = window.localStorage.getItem(RECENT_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .map((item) => (typeof item === 'string' ? driverNameKey(item) : ''))
+      .filter(Boolean)
+      .slice(0, RECENT_DRIVER_LIMIT)
+  } catch {
+    return []
+  }
+}
+
+export function recordRecentDriver(name: string) {
+  if (typeof window === 'undefined') return
+  const key = driverNameKey(name)
+  if (!key) return
+  const prev = loadRecentDriverKeys().filter((item) => item !== key)
+  const next = [key, ...prev].slice(0, RECENT_DRIVER_LIMIT)
+  window.localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(next))
+}
+
+export function pickRecentDrivers(
+  roster: DriverRosterEntry[],
+  options?: { limit?: number; pinName?: string },
+): DriverRosterEntry[] {
+  const limit = options?.limit ?? RECENT_DRIVER_LIMIT
+  const picked: DriverRosterEntry[] = []
+  const seen = new Set<string>()
+
+  const add = (driver: DriverRosterEntry | null | undefined) => {
+    if (!driver || picked.length >= limit) return
+    const key = driverNameKey(driver.name)
+    if (seen.has(key)) return
+    seen.add(key)
+    picked.push(driver)
+  }
+
+  if (options?.pinName?.trim()) {
+    add(findDriver(roster, options.pinName))
+  }
+
+  for (const key of loadRecentDriverKeys()) {
+    if (picked.length >= limit) break
+    add(roster.find((row) => driverNameKey(row.name) === key))
+  }
+
+  for (const driver of roster) {
+    if (picked.length >= limit) break
+    add(driver)
+  }
+
+  return picked
 }

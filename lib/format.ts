@@ -16,6 +16,14 @@ export function formatShortDate(isoDate: string) {
   })
 }
 
+/** Compact sheet date: 6 Oct 26. */
+export function formatDayMonYY(isoDate: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) return isoDate
+  const date = dateFromISO(isoDate)
+  const month = date.toLocaleDateString('en-GB', { month: 'short' })
+  return `${date.getDate()} ${month} ${String(date.getFullYear()).slice(2)}`
+}
+
 /** Portal ops calendar — matches booking cutoffs. */
 export const PORTAL_TIMEZONE = 'Asia/Bangkok' as const
 

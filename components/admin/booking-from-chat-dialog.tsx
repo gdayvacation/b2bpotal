@@ -39,8 +39,11 @@ import {
   parseBookingSpreadsheetFile,
   type BookingSpreadsheetImportRow,
 } from '@/lib/booking-spreadsheet-import'
-import { uniqueAgentSlug } from '@/lib/format'
+import { classifyImportDuplicates, type ImportDuplicate } from '@/lib/booking-duplicates'
+import { formatDayMonYY, uniqueAgentSlug } from '@/lib/format'
+import { fetchBookingsInDateRange } from '@/lib/supabase/portal-db'
 import { usePortal } from '@/components/portal-provider'
+import type { Booking } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import type { IncludeOption, Program } from '@/lib/types'
 
@@ -68,6 +71,8 @@ export function BookingFromChatDialog({
   const [importSummary, setImportSummary] = useState<{ ok: number; failed: string[] } | null>(
     null,
   )
+  const [importDuplicates, setImportDuplicates] = useState<Record<string, ImportDuplicate>>({})
+  const [askDuplicate, setAskDuplicate] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [chatText, setChatText] = useState('')
@@ -87,6 +92,8 @@ export function BookingFromChatDialog({
     setNeedsMonth(false)
     setBulkRows([])
     setImportSummary(null)
+    setImportDuplicates({})
+    setAskDuplicate(false)
     setDraft(emptyBookingImageDraft())
     setPreviewUrl((current) => {
       if (current) URL.revokeObjectURL(current)
@@ -243,8 +250,26 @@ export function BookingFromChatDialog({
       if (parsed.rows.length === 0) {
         throw new Error('No booking rows found. Check headers or try another sheet.')
       }
-      setBulkRows(emptyImportSelection(parsed.rows))
+      let existing: Booking[] = []
+      let compareWarning = ''
+      try {
+        existing = await loadBookingsForImportDates(parsed.rows.map((row) => row.draft.date))
+      } catch {
+        compareWarning =
+          'Could not check which bookings are already in the system. Review the list before adding.'
+      }
+      const duplicates = classifyImportDuplicates(parsed.rows, existing, (agentName) => {
+        return matchAgentFromSeed(agents, agentName)?.slug ?? ''
+      })
+      setImportDuplicates(duplicates)
+      setAskDuplicate(false)
+      setBulkRows(
+        emptyImportSelection(parsed.rows).map((row) =>
+          duplicates[row.id] ? { ...row, selected: false } : row,
+        ),
+      )
       setPhase('bulk-review')
+      if (compareWarning) setError(compareWarning)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not read the file.')
     } finally {
@@ -266,19 +291,19 @@ export function BookingFromChatDialog({
     return { slug, name: trimmed }
   }
 
-  async function importSelectedRows() {
-    const selected = bulkRows.filter((row) => row.selected)
-    if (selected.length === 0) {
+  async function importRows(rows: BookingSpreadsheetImportRow[]) {
+    if (rows.length === 0) {
       setError('Select at least one booking to add.')
       return
     }
     setBusy(true)
     setError('')
+    setAskDuplicate(false)
     const failed: string[] = []
     const succeededIds = new Set<string>()
     let ok = 0
 
-    for (const row of selected) {
+    for (const row of rows) {
       const draft = row.draft
       if (!draftReadyForImport(draft)) {
         failed.push(`Row ${row.rowNumber} (${row.sheet}): incomplete — fix or deselect.`)
@@ -297,7 +322,7 @@ export function BookingFromChatDialog({
         continue
       }
       const program = draft.program!
-      const result = addBooking(
+      const result = await addBooking(
         {
           agentSlug: agentResult.slug,
           agentName: agentResult.name,
@@ -334,7 +359,43 @@ export function BookingFromChatDialog({
     setBusy(false)
   }
 
+  function importSelectedRows(allowDuplicates = false) {
+    const selected = bulkRows.filter((row) => row.selected)
+    if (selected.length === 0) {
+      setError('Select at least one booking to add.')
+      return
+    }
+    const duplicates = selected.filter((row) => importDuplicates[row.id])
+    if (duplicates.length > 0 && !allowDuplicates) {
+      setAskDuplicate(true)
+      setError('')
+      return
+    }
+    void importRows(selected)
+  }
+
+  function skipExistingAndImport() {
+    const remaining = bulkRows.filter((row) => row.selected && !importDuplicates[row.id])
+    setBulkRows((current) =>
+      current.map((row) =>
+        importDuplicates[row.id] ? { ...row, selected: false } : row,
+      ),
+    )
+    setAskDuplicate(false)
+    if (remaining.length === 0) {
+      setError('Those rows are already in the system, so nothing new was added.')
+      return
+    }
+    void importRows(remaining)
+  }
+
   const selectedBulkCount = bulkRows.filter((row) => row.selected).length
+  const existingDuplicateCount = bulkRows.filter(
+    (row) => importDuplicates[row.id]?.kind === 'system',
+  ).length
+  const selectedDuplicateCount = bulkRows.filter(
+    (row) => row.selected && importDuplicates[row.id],
+  ).length
 
   async function extract() {
     if (!file && !chatText.trim()) {
@@ -393,7 +454,7 @@ export function BookingFromChatDialog({
           </DialogTitle>
           <DialogDescription>
             {phase === 'bulk-review'
-              ? 'Check every row from your file. Deselect any you do not want, then add the rest to the system.'
+              ? 'The file has no booking ID, so each new row gets the next ID for that travel date. Rows that already match the same guest, hotel, and agent are left unchecked.'
               : phase === 'capture'
                 ? captureMode === 'chat'
                   ? 'Paste chat text (⌘V) and/or upload a screenshot. AI builds a draft — you recheck before it is saved.'
@@ -427,13 +488,33 @@ export function BookingFromChatDialog({
                     setBulkRows((current) =>
                       current.map((row) => ({
                         ...row,
-                        selected: draftReadyForImport(row.draft),
+                        selected:
+                          draftReadyForImport(row.draft) && !importDuplicates[row.id],
                       })),
                     )
                   }
                 >
                   Select ready only
                 </Button>
+                {existingDuplicateCount > 0 ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setAskDuplicate(false)
+                      setBulkRows((current) =>
+                        current.map((row) =>
+                          importDuplicates[row.id]?.kind === 'system'
+                            ? { ...row, selected: false }
+                            : row,
+                        ),
+                      )
+                    }}
+                  >
+                    Skip existing
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   variant="outline"
@@ -476,17 +557,24 @@ export function BookingFromChatDialog({
                 <tbody>
                   {bulkRows.map((row) => {
                     const ready = draftReadyForImport(row.draft)
+                    const duplicate = importDuplicates[row.id]
                     const pax =
                       row.draft.adults +
                       row.draft.children +
                       row.draft.infants +
                       row.draft.tourLeaders
+                    const duplicateLabel =
+                      duplicate?.kind === 'system'
+                        ? `Already booked ${duplicate.codes.join(', ')}`
+                        : duplicate?.kind === 'file'
+                          ? 'Same guest, hotel, and agent as an earlier row'
+                          : ''
                     return (
                       <tr
                         key={row.id}
                         className={cn(
                           'border-t border-teal-900/6',
-                          !ready && 'bg-amber-50/40',
+                          duplicate ? 'bg-amber-50/80' : !ready && 'bg-amber-50/40',
                         )}
                       >
                         <td className="px-2 py-2 align-top">
@@ -504,7 +592,9 @@ export function BookingFromChatDialog({
                             }
                           />
                         </td>
-                        <td className="px-2 py-2 align-top whitespace-nowrap">{row.draft.date || '—'}</td>
+                        <td className="px-2 py-2 align-top whitespace-nowrap" title={row.draft.date || undefined}>
+                          {row.draft.date ? formatDayMonYY(row.draft.date) : '—'}
+                        </td>
                         <td className="px-2 py-2 align-top">{row.draft.program || '—'}</td>
                         <td className="max-w-[120px] truncate px-2 py-2 align-top" title={row.draft.leadGuest}>
                           {row.draft.leadGuest || '—'}
@@ -518,7 +608,21 @@ export function BookingFromChatDialog({
                             '—'}
                         </td>
                         <td className="px-2 py-2 align-top text-amber-900/80">
-                          {!ready ? 'Needs data' : null}
+                          {duplicateLabel ? (
+                            <span
+                              className="font-medium"
+                              title={
+                                duplicate?.kind === 'system'
+                                  ? `${duplicateLabel}. Leave unchecked to skip, or tick the box to add a new booking ID.`
+                                  : duplicateLabel
+                              }
+                            >
+                              {duplicateLabel}
+                            </span>
+                          ) : null}
+                          {!ready ? (
+                            <span>{duplicateLabel ? ' · Needs data' : 'Needs data'}</span>
+                          ) : null}
                           {row.draft.warnings.length > 0 ? (
                             <span title={row.draft.warnings.join(' ')}>⚠</span>
                           ) : null}
@@ -532,6 +636,35 @@ export function BookingFromChatDialog({
                 </tbody>
               </table>
             </div>
+
+            {existingDuplicateCount > 0 ? (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                {existingDuplicateCount} row{existingDuplicateCount === 1 ? '' : 's'} already{' '}
+                {existingDuplicateCount === 1 ? 'exists' : 'exist'} (same date, guest, hotel, and
+                agent) and {existingDuplicateCount === 1 ? 'is' : 'are'} unchecked. Tick a row if
+                you still want a new booking ID.
+              </p>
+            ) : null}
+
+            {askDuplicate ? (
+              <div className="space-y-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-950">
+                <p>
+                  {selectedDuplicateCount} selected row{selectedDuplicateCount === 1 ? '' : 's'}{' '}
+                  already {selectedDuplicateCount === 1 ? 'matches' : 'match'} a booking. Skip{' '}
+                  {selectedDuplicateCount === 1 ? 'it' : 'them'}, or add{' '}
+                  {selectedDuplicateCount === 1 ? 'it' : 'them'} with the next ID
+                  {selectedDuplicateCount === 1 ? '' : 's'}.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" size="sm" variant="outline" onClick={skipExistingAndImport}>
+                    Skip those
+                  </Button>
+                  <Button type="button" size="sm" onClick={() => importSelectedRows(true)}>
+                    Add with new IDs
+                  </Button>
+                </div>
+              </div>
+            ) : null}
 
             {importSummary ? (
               <div className="space-y-2 rounded-xl border border-teal-900/10 bg-teal-50/50 px-3 py-2 text-sm">
@@ -638,8 +771,10 @@ export function BookingFromChatDialog({
                 )}
 
                 <p className="text-xs text-teal-900/45">
-                  Supports report-style headers (Date, Guest, Program, …) and Good Day speedboat
-                  workbooks with one tab per day.{' '}
+                  Dates are day then month: 6/10/2026 is 6 Oct 26, not June. Write{' '}
+                  <span className="font-medium text-teal-900/70">6 Oct 26</span> in the sheet so
+                  the month is clear. Supports report-style headers and Good Day workbooks with one
+                  tab per day.{' '}
                   <a
                     href="/templates/booking-import-template.xlsx"
                     download
@@ -962,6 +1097,30 @@ export function BookingFromChatDialog({
       </DialogContent>
     </Dialog>
   )
+}
+
+async function loadBookingsForImportDates(dates: string[]): Promise<Booking[]> {
+  const months = [
+    ...new Set(
+      dates.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)).map((date) => date.slice(0, 7)),
+    ),
+  ]
+  if (months.length === 0) return []
+  const batches = await Promise.all(
+    months.map((yearMonth) => {
+      const [year, month] = yearMonth.split('-').map(Number)
+      const lastDay = new Date(year!, month!, 0).getDate()
+      return fetchBookingsInDateRange(
+        `${yearMonth}-01`,
+        `${yearMonth}-${String(lastDay).padStart(2, '0')}`,
+      )
+    }),
+  )
+  const byCode = new Map<string, Booking>()
+  for (const batch of batches) {
+    for (const booking of batch) byCode.set(booking.code, booking)
+  }
+  return [...byCode.values()]
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {

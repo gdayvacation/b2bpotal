@@ -7,7 +7,21 @@ import {
 import { guestDisplayName } from '@/lib/check-in-enrollment'
 import { formatCheckInServicesOption, serviceLineTotal } from '@/lib/check-in-services'
 import { collectTotal, formatIncludeLabel, formatMonthLabel } from '@/lib/format'
-import { formatPaymentChannel } from '@/lib/invoice'
+import {
+  deriveInvoiceStatus,
+  formatPaymentChannel,
+  invoiceBalance,
+  invoicePaidTotal,
+  invoicePayments,
+  type InvoiceDocument,
+} from '@/lib/invoice'
+import {
+  allotmentBalance,
+  allotmentPaidTotal,
+  allotmentPayments,
+  allotmentPayStatus,
+  formatAllotmentParkFee,
+} from '@/lib/supabase/agent-allotment-db'
 import { assignmentKey, type SheetsBackupSource } from '@/lib/sheets/source-data'
 import {
   bookedPaxOf,
@@ -112,26 +126,37 @@ export const MERGE_HEADERS = [
 ] as const
 
 export const INVOICE_HEADERS = [
+  'Month',
+  'Month label',
+  'Date',
   'Invoice no',
   'Kind',
-  'Status',
+  'Receipt status',
   'Agent',
-  'Issue date',
-  'Paid at',
-  'Payment',
-  'Receipt',
-  'Send to agent',
   'Grand total',
+  'Paid',
+  'Balance',
+  'Receipt',
+  'Payment',
+  'Paid at',
+  'Send to agent',
   'Booking codes',
+  'Travel dates',
+  'Detail',
   'Notes',
+  'Draft',
 ] as const
 
 export const INVOICE_LINE_HEADERS = [
+  'Month',
+  'Month label',
+  'Date',
   'Invoice no',
   'Kind',
+  'Receipt status',
+  'Agent',
   'Line',
   'Booking',
-  'Travel date',
   'Voucher',
   'Description',
   'Adults',
@@ -140,6 +165,40 @@ export const INVOICE_LINE_HEADERS = [
   'Tour leaders',
   'Amount',
 ] as const
+
+export const ALLOTMENT_HEADERS = [
+  'Month',
+  'Month label',
+  'Date',
+  'Agent',
+  'Program',
+  'Adult seats',
+  'Child seats',
+  'Seats',
+  'Adult price',
+  'Child price',
+  'Park fee',
+  'Total',
+  'Paid',
+  'Balance',
+  'Receipt status',
+  'Payments',
+  'Receives bookings',
+  'Note',
+] as const
+
+export const ALLOTMENT_DAILY_HEADERS = [
+  'Month',
+  'Month label',
+  'Date',
+  'Agent',
+  'Program',
+  'Deduct heads',
+  'Note',
+] as const
+
+/** First option in the Monthly date dropdown. Blank date means the whole month. */
+export const ALL_DATES_LABEL = '(All dates)'
 
 export const MONTHLY_SUMMARY_HEADERS = [
   'Month',
@@ -389,40 +448,171 @@ export function buildMergeRows(source: SheetsBackupSource): SheetCell[][] {
   })
 }
 
+function receiptStatusLabel(doc: InvoiceDocument) {
+  const status = deriveInvoiceStatus(doc.grandTotal, invoicePaidTotal(doc))
+  if (status === 'paid') return 'Paid'
+  if (status === 'partial') return 'Partial'
+  return 'Not paid'
+}
+
+function invoiceKindLabel(kind: InvoiceDocument['kind']) {
+  if (kind === 'billing_note') return 'Billing note'
+  if (kind === 'credit_note') return 'Credit note'
+  return 'Invoice'
+}
+
+function invoiceOpenDate(doc: InvoiceDocument) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(doc.issueDate)) return doc.issueDate
+  const travel = doc.items.find((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.travelDate))
+  return travel?.travelDate ?? ''
+}
+
+function invoiceDetail(doc: InvoiceDocument) {
+  return doc.items
+    .map((item) =>
+      [item.travelDate, item.bookingCode, item.voucherNo, item.description, item.amount || '']
+        .filter((part) => part !== '' && part !== 0)
+        .join(' '),
+    )
+    .filter(Boolean)
+    .join(' | ')
+}
+
+function invoicePaymentDetail(doc: InvoiceDocument) {
+  return invoicePayments(doc)
+    .map((payment) =>
+      [payment.paidDate, payment.amount, payment.receiptNo, formatPaymentChannel(payment.channel)]
+        .filter((part) => part !== '' && part !== 0)
+        .join(' '),
+    )
+    .join(' | ')
+}
+
 export function buildInvoiceRows(source: SheetsBackupSource): SheetCell[][] {
-  return source.invoices.map((doc) => [
-    doc.number,
-    doc.kind,
-    doc.status,
-    doc.agentName,
-    doc.issueDate,
-    doc.paidAt ?? '',
-    formatPaymentChannel(doc.paymentChannel),
-    doc.receiptNo ?? '',
-    doc.sendToAgent ? 'Yes' : '',
-    doc.grandTotal,
-    [...new Set(doc.items.map((item) => item.bookingCode).filter(Boolean))].join(', '),
-    doc.notes,
-  ])
+  return source.invoices.map((doc) => {
+    const date = invoiceOpenDate(doc)
+    const payments = invoicePayments(doc)
+    const latestPaid = payments.at(-1)?.paidDate || (doc.paidAt ? doc.paidAt.slice(0, 10) : '')
+    return [
+      monthKey(date),
+      date ? formatMonthLabel(date) : '',
+      date,
+      doc.number,
+      invoiceKindLabel(doc.kind),
+      receiptStatusLabel(doc),
+      doc.agentName,
+      doc.grandTotal,
+      invoicePaidTotal(doc),
+      invoiceBalance(doc),
+      [...new Set(payments.map((payment) => payment.receiptNo).filter(Boolean))].join(', ') ||
+        doc.receiptNo ||
+        '',
+      invoicePaymentDetail(doc) || formatPaymentChannel(doc.paymentChannel),
+      latestPaid,
+      doc.sendToAgent ? 'Yes' : '',
+      [...new Set(doc.items.map((item) => item.bookingCode).filter(Boolean))].join(', '),
+      [...new Set(doc.items.map((item) => item.travelDate).filter(Boolean))].join(', '),
+      invoiceDetail(doc),
+      doc.notes,
+      doc.isDraft ? 'Yes' : '',
+    ]
+  })
 }
 
 export function buildInvoiceLineRows(source: SheetsBackupSource): SheetCell[][] {
   return source.invoices.flatMap((doc) =>
-    doc.items.map((item, index) => [
-      doc.number,
-      doc.kind,
-      index + 1,
-      item.bookingCode,
-      item.travelDate,
-      item.voucherNo,
-      item.description,
-      item.adults,
-      item.children,
-      item.infants,
-      item.tourLeaders,
-      item.amount,
-    ]),
+    doc.items.map((item, index) => {
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(item.travelDate) ? item.travelDate : invoiceOpenDate(doc)
+      return [
+        monthKey(date),
+        date ? formatMonthLabel(date) : '',
+        date,
+        doc.number,
+        invoiceKindLabel(doc.kind),
+        receiptStatusLabel(doc),
+        doc.agentName,
+        index + 1,
+        item.bookingCode,
+        item.voucherNo,
+        item.description,
+        item.adults,
+        item.children,
+        item.infants,
+        item.tourLeaders,
+        item.amount,
+      ]
+    }),
   )
+}
+
+function allotmentDate(row: SheetsBackupSource['allotments'][number]) {
+  if (row.paidDate && /^\d{4}-\d{2}-\d{2}$/.test(row.paidDate)) return row.paidDate
+  const created = new Date(row.createdAt)
+  if (Number.isNaN(created.getTime())) return ''
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Bangkok',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(created)
+}
+
+function allotmentStatusLabel(row: SheetsBackupSource['allotments'][number]) {
+  const status = allotmentPayStatus(row)
+  if (status === 'paid') return 'Paid'
+  if (status === 'partial') return 'Partial'
+  return 'Not paid'
+}
+
+export function buildAllotmentRows(source: SheetsBackupSource): SheetCell[][] {
+  return source.allotments.map((row) => {
+    const date = allotmentDate(row)
+    const payments = allotmentPayments(row)
+      .map((payment) =>
+        [
+          payment.paidDate,
+          payment.amount,
+          payment.moneyOnly ? 'other cash' : '',
+          payment.heads ? `${payment.heads} heads` : '',
+          payment.note,
+        ]
+          .filter(Boolean)
+          .join(' '),
+      )
+      .join(' | ')
+    return [
+      monthKey(date),
+      date ? formatMonthLabel(date) : '',
+      date,
+      row.agentName,
+      programLabel(row.program),
+      row.adultSeats,
+      row.childSeats,
+      row.seats,
+      row.adultPrice,
+      row.childPrice,
+      formatAllotmentParkFee(row.parkFee),
+      row.totalAmount,
+      allotmentPaidTotal(row),
+      allotmentBalance(row),
+      allotmentStatusLabel(row),
+      payments,
+      row.receivesBookings ? 'Yes' : '',
+      row.note,
+    ]
+  })
+}
+
+export function buildAllotmentDailyRows(source: SheetsBackupSource): SheetCell[][] {
+  return source.allotmentDaily.map((row) => [
+    monthKey(row.day),
+    formatMonthLabel(row.day),
+    row.day,
+    row.agentName,
+    programLabel(row.program),
+    row.totalDeduct,
+    row.note,
+  ])
 }
 
 export function buildMonthlySummaryRows(source: SheetsBackupSource): SheetCell[][] {
@@ -491,10 +681,63 @@ export function buildMonthlySummaryRows(source: SheetsBackupSource): SheetCell[]
     ])
 }
 
+function rememberMonth(months: Set<string>, date: string) {
+  const month = monthKey(date)
+  if (/^\d{4}-\d{2}$/.test(month)) months.add(month)
+}
+
+function rememberDate(dates: Set<string>, date: string) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date)) dates.add(date)
+}
+
 export function uniqueMonths(source: SheetsBackupSource) {
   const months = new Set<string>()
-  for (const booking of source.bookings) months.add(monthKey(booking.date))
+  for (const booking of source.bookings) rememberMonth(months, booking.date)
+  for (const enrollment of source.enrollments) rememberMonth(months, enrollment.date)
+  for (const doc of source.invoices) rememberMonth(months, doc.issueDate)
+  for (const row of source.allotments) {
+    if (row.paidDate) rememberMonth(months, row.paidDate)
+  }
+  for (const row of source.allotmentDaily) rememberMonth(months, row.day)
   return [...months].sort((a, b) => b.localeCompare(a))
+}
+
+export function uniqueDates(source: SheetsBackupSource) {
+  const dates = new Set<string>()
+  for (const booking of source.bookings) rememberDate(dates, booking.date)
+  for (const enrollment of source.enrollments) rememberDate(dates, enrollment.date)
+  for (const doc of source.invoices) {
+    rememberDate(dates, doc.issueDate)
+    for (const item of doc.items) rememberDate(dates, item.travelDate)
+  }
+  for (const row of source.allotments) {
+    if (row.paidDate) rememberDate(dates, row.paidDate)
+  }
+  for (const row of source.allotmentDaily) rememberDate(dates, row.day)
+  return [...dates].sort((a, b) => b.localeCompare(a))
+}
+
+export function columnLetter(index: number) {
+  let n = index
+  let letters = ''
+  while (n > 0) {
+    const rem = (n - 1) % 26
+    letters = String.fromCharCode(65 + rem) + letters
+    n = Math.floor((n - 1) / 26)
+  }
+  return letters
+}
+
+export function sheetA1Range(title: string, columnCount: number) {
+  const quoted = /[^A-Za-z0-9_]/.test(title) ? `'${title.replace(/'/g, "''")}'` : title
+  return `${quoted}!A:${columnLetter(columnCount)}`
+}
+
+/** Monthly tab: month in B1, date in D1. Col1 is month and Col3 is date on each data tab. */
+export function monthlyQueryFormula(sheetRange: string) {
+  const wholeMonth = `QUERY(${sheetRange},"select * where Col1 = '"&B1&"' order by Col3",1)`
+  const oneDate = `QUERY(${sheetRange},"select * where Col1 = '"&B1&"' and Col3 = '"&D1&"' order by Col3",1)`
+  return `=IF(B1="","Select a month",IF(OR(D1="",D1="${ALL_DATES_LABEL}"),${wholeMonth},${oneDate}))`
 }
 
 export function currentThaiMonth(now = new Date()) {

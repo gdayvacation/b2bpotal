@@ -110,29 +110,70 @@ function normalizeConfidence(value: unknown): BookingImageDraft['confidence'] {
   return 'medium'
 }
 
+const MONTH_INDEX: Record<string, number> = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
+}
+
+function isoDate(year: number, month: number, day: number) {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return ''
+  const parsed = new Date(year, month - 1, day)
+  if (parsed.getFullYear() !== year || parsed.getMonth() !== month - 1 || parsed.getDate() !== day) {
+    return ''
+  }
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
 function normalizeDate(value: unknown): string {
   const raw = asString(value)
+    .replace(/\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?$/, '')
+    .trim()
   if (!raw) return ''
-  // Already ISO
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw
-  // DD/MM/YYYY or DD-MM-YYYY (common in TH / chat)
+  // 6 Oct 26, 6 October 2026, 06-Oct-2026
+  const named = raw.match(/^(\d{1,2})[\s\/\-.]+([A-Za-z]+)[\s\/\-.,]+(\d{2,4})$/)
+  if (named) {
+    const month = MONTH_INDEX[named[2].toLowerCase()]
+    let year = Number(named[3])
+    if (year < 100) year += 2000
+    if (month) return isoDate(year, month, Number(named[1]))
+  }
+  // October 6, 2026
+  const monthFirst = raw.match(/^([A-Za-z]+)[\s\-.]+(\d{1,2})(?:st|nd|rd|th)?[\s,.\-]+(\d{2,4})$/)
+  if (monthFirst) {
+    const month = MONTH_INDEX[monthFirst[1].toLowerCase()]
+    let year = Number(monthFirst[3])
+    if (year < 100) year += 2000
+    if (month) return isoDate(year, month, Number(monthFirst[2]))
+  }
+  // 6/10/2026 is 6 Oct 2026 (day/month/year), not 10 June.
   const dmy = raw.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/)
   if (dmy) {
-    const day = Number(dmy[1])
-    const month = Number(dmy[2])
     let year = Number(dmy[3])
     if (year < 100) year += 2000
-    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-      return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-    }
-  }
-  const parsed = Date.parse(raw)
-  if (!Number.isNaN(parsed)) {
-    const d = new Date(parsed)
-    const y = d.getFullYear()
-    const m = String(d.getMonth() + 1).padStart(2, '0')
-    const day = String(d.getDate()).padStart(2, '0')
-    return `${y}-${m}-${day}`
+    return isoDate(year, Number(dmy[2]), Number(dmy[1]))
   }
   return ''
 }

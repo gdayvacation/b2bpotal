@@ -410,6 +410,49 @@ function parseGoodDaySheet(
   return out
 }
 
+const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+function dayMonthLabel(day: number, month: number, year: number) {
+  if (month < 1 || month > 12 || day < 1 || day > 31 || year < 2000) return ''
+  return `${day} ${MONTH_SHORT[month - 1]} ${String(year).slice(2)}`
+}
+
+/**
+ * Turn Excel date cells into "6 Oct 26".
+ * A slash date is day/month: 6/10/2026 is 6 October, not 10 June.
+ */
+function stampExcelDatesAsDayMonth(
+  sheet: { [addr: string]: { t?: string; v?: unknown; w?: string; z?: string } | undefined },
+  parseDateCode: (value: number) => { y: number; m: number; d: number } | null,
+) {
+  for (const addr of Object.keys(sheet)) {
+    if (addr.startsWith('!')) continue
+    const cell = sheet[addr]
+    if (!cell || cell.t === 's') continue
+    const shown = String(cell.w ?? '')
+      .trim()
+      .replace(/\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?$/, '')
+    const slash = shown.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/)
+    let label = ''
+    if (slash) {
+      let year = Number(slash[3])
+      if (year < 100) year += 2000
+      label = dayMonthLabel(Number(slash[1]), Number(slash[2]), year)
+    } else if (cell.t === 'n' && typeof cell.v === 'number') {
+      const fmt = String(cell.z ?? '').replace(/"[^"]*"/g, '')
+      if (/[dy]/i.test(fmt) || /^\d{4}-\d{2}-\d{2}$/.test(shown)) {
+        const parsed = parseDateCode(cell.v)
+        if (parsed) label = dayMonthLabel(parsed.d, parsed.m, parsed.y)
+      }
+    }
+    if (!label) continue
+    cell.t = 's'
+    cell.v = label
+    cell.w = label
+    delete cell.z
+  }
+}
+
 export async function parseBookingSpreadsheetFile(
   file: File,
   options?: { yearMonth?: string },
@@ -417,6 +460,11 @@ export async function parseBookingSpreadsheetFile(
   const XLSX = await import('xlsx')
   const buffer = await file.arrayBuffer()
   const workbook = XLSX.read(buffer, { type: 'array', raw: false })
+  const parseDateCode = (value: number) => XLSX.SSF.parse_date_code(value)
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName]
+    if (sheet) stampExcelDatesAsDayMonth(sheet, parseDateCode)
+  }
   const sheetNames = workbook.SheetNames
   const idPrefix = `import-${Date.now()}`
   const inferred = inferYearMonthFromFileName(file.name)

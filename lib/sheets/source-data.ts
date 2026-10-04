@@ -6,8 +6,20 @@ import {
 import type { CheckInEnrollment } from '@/lib/check-in-enrollment'
 import { isCheckInServiceKind, type CheckInServiceLine } from '@/lib/check-in-services'
 import { PORTAL_TIMEZONE } from '@/lib/format'
-import type { InvoiceDocument, InvoiceItem, InvoiceKind, InvoiceLineKind, InvoiceStatus } from '@/lib/invoice'
+import type {
+  InvoiceDocument,
+  InvoiceItem,
+  InvoiceKind,
+  InvoiceLineKind,
+  InvoicePayment,
+  InvoiceStatus,
+} from '@/lib/invoice'
 import { parsePaymentChannel } from '@/lib/invoice'
+import {
+  parseAllotmentPayments,
+  type AgentAllotment,
+} from '@/lib/supabase/agent-allotment-db'
+import type { AgentAllotmentDaily } from '@/lib/supabase/agent-allotment-daily-db'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getSupabaseBackupClient } from '@/lib/supabase/backup-client'
 import {
@@ -43,6 +55,8 @@ export type SheetsBackupSource = {
   boats: Record<string, string>
   vans: Record<string, string>
   invoices: InvoiceDocument[]
+  allotments: AgentAllotment[]
+  allotmentDaily: AgentAllotmentDaily[]
   syncedAt: string
 }
 
@@ -226,6 +240,8 @@ export async function loadSheetsBackupSource(): Promise<SheetsBackupSource> {
     vanRows,
     invoiceRows,
     invoiceItemRows,
+    allotmentRows,
+    allotmentDailyRows,
   ] = await Promise.all([
     fetchAllRows<BookingRow>(supabase, 'bookings'),
     fetchOptionalRows<Record<string, unknown>>(supabase, 'check_in_enrollments'),
@@ -241,6 +257,8 @@ export async function loadSheetsBackupSource(): Promise<SheetsBackupSource> {
     fetchOptionalRows<Record<string, unknown>>(supabase, 'van_assignments'),
     fetchOptionalRows<Record<string, unknown>>(supabase, 'invoices'),
     fetchOptionalRows<Record<string, unknown>>(supabase, 'invoice_items'),
+    fetchOptionalRows<Record<string, unknown>>(supabase, 'agent_allotments'),
+    fetchOptionalRows<Record<string, unknown>>(supabase, 'agent_allotment_daily'),
   ])
 
   const bookings = bookingRows.map(mapBooking).sort((a, b) => {
@@ -450,11 +468,23 @@ export async function loadSheetsBackupSource(): Promise<SheetsBackupSource> {
       receiptNo: row.receipt_no ? String(row.receipt_no) : null,
       linkedInvoiceIds: [],
       items: (itemsByInvoice.get(id) ?? []).slice().sort((a, b) => a.sortOrder - b.sortOrder),
+      payments: parseInvoicePayments(row.payments),
       createdAt: String(row.created_at ?? ''),
       sendToAgent: row.send_to_agent === true,
+      isDraft: row.is_draft === true,
     })
   }
   invoices.sort((a, b) => b.issueDate.localeCompare(a.issueDate) || a.number.localeCompare(b.number))
+
+  const allotments = (allotmentRows ?? [])
+    .map(mapAllotment)
+    .filter((row): row is AgentAllotment => row !== null)
+    .sort((a, b) => allotmentOpenDate(b).localeCompare(allotmentOpenDate(a)) || a.agentName.localeCompare(b.agentName))
+
+  const allotmentDaily = (allotmentDailyRows ?? [])
+    .map(mapAllotmentDaily)
+    .filter((row): row is AgentAllotmentDaily => row !== null)
+    .sort((a, b) => b.day.localeCompare(a.day) || a.agentName.localeCompare(b.agentName))
 
   return {
     bookings,
@@ -470,6 +500,104 @@ export async function loadSheetsBackupSource(): Promise<SheetsBackupSource> {
     boats,
     vans,
     invoices,
+    allotments,
+    allotmentDaily,
     syncedAt: formatThaiStamp(),
+  }
+}
+
+function parseInvoicePayments(value: unknown): InvoicePayment[] {
+  const raw = (() => {
+    if (Array.isArray(value)) return value
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value) as unknown
+        return Array.isArray(parsed) ? parsed : []
+      } catch {
+        return []
+      }
+    }
+    return []
+  })()
+  return raw.flatMap((row) => {
+    if (!row || typeof row !== 'object') return []
+    const item = row as Record<string, unknown>
+    const amount = Math.max(0, Math.round((Number(item.amount) || 0) * 100) / 100)
+    const paidDate = String(item.paidDate ?? item.paid_date ?? '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(paidDate) || amount <= 0) return []
+    return [
+      {
+        id: String(item.id ?? ''),
+        amount,
+        paidDate,
+        channel: parsePaymentChannel(item.channel) ?? 'deduct_deposit',
+        receiptNo: String(item.receiptNo ?? item.receipt_no ?? '').trim(),
+      },
+    ]
+  })
+}
+
+function thaiCalendarDate(iso: string) {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return String(iso ?? '').slice(0, 10)
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: PORTAL_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date)
+}
+
+function allotmentOpenDate(row: Pick<AgentAllotment, 'paidDate' | 'createdAt'>) {
+  if (row.paidDate && /^\d{4}-\d{2}-\d{2}$/.test(row.paidDate)) return row.paidDate
+  return thaiCalendarDate(row.createdAt)
+}
+
+function mapAllotment(row: Record<string, unknown>): AgentAllotment | null {
+  const id = String(row.id ?? '').trim()
+  const agentSlug = String(row.agent_slug ?? '').trim()
+  if (!id || !agentSlug) return null
+  const seats = Math.max(0, Math.floor(Number(row.seats) || 0))
+  const hasSplit = row.adult_seats != null && row.child_seats != null
+  const adultSeats = hasSplit ? Math.max(0, Math.floor(Number(row.adult_seats) || 0)) : seats
+  const childSeats = hasSplit ? Math.max(0, Math.floor(Number(row.child_seats) || 0)) : 0
+  const paidDate = row.paid_date ? String(row.paid_date).slice(0, 10) : null
+  return {
+    id,
+    agentSlug,
+    agentName: String(row.agent_name ?? '').trim(),
+    program: row.program === 'James Bond' ? 'James Bond' : 'PP',
+    seats: Math.max(seats, adultSeats + childSeats),
+    adultSeats,
+    childSeats,
+    adultPrice: Math.max(0, Number(row.adult_price) || 0),
+    childPrice: Math.max(0, Number(row.child_price) || 0),
+    parkFee: row.park_fee === 'inc' ? 'inc' : 'exc',
+    totalAmount: Math.max(0, Number(row.total_amount) || 0),
+    paidDate: paidDate && /^\d{4}-\d{2}-\d{2}$/.test(paidDate) ? paidDate : null,
+    payments: parseAllotmentPayments(row.payments),
+    receivesBookings: row.receives_bookings === true,
+    note: String(row.note ?? '').trim(),
+    createdAt: String(row.created_at ?? ''),
+    updatedAt: String(row.updated_at ?? ''),
+  }
+}
+
+function mapAllotmentDaily(row: Record<string, unknown>): AgentAllotmentDaily | null {
+  const id = String(row.id ?? '').trim()
+  const day = String(row.day ?? '').slice(0, 10)
+  const agentSlug = String(row.agent_slug ?? '').trim()
+  if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(day) || !agentSlug) return null
+  return {
+    id,
+    day,
+    agentSlug,
+    agentName: String(row.agent_name ?? '').trim(),
+    program: row.program === 'James Bond' ? 'James Bond' : 'PP',
+    totalDeduct: Math.max(0, Math.floor(Number(row.total_deduct) || 0)),
+    allotmentId: row.allotment_id ? String(row.allotment_id) : null,
+    note: String(row.note ?? '').trim(),
+    createdAt: String(row.created_at ?? ''),
+    updatedAt: String(row.updated_at ?? ''),
   }
 }

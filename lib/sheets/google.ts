@@ -271,28 +271,44 @@ export function hideSheetRequest(sheetId: number) {
   }
 }
 
-export function monthDropdownRequest(sheetId: number, monthCount: number) {
+export function listDropdownRequest(
+  sheetId: number,
+  columnIndex: number,
+  sourceRange: string,
+) {
   return {
     setDataValidation: {
       range: {
         sheetId,
         startRowIndex: 0,
         endRowIndex: 1,
-        startColumnIndex: 1,
-        endColumnIndex: 2,
+        startColumnIndex: columnIndex,
+        endColumnIndex: columnIndex + 1,
       },
       rule: {
         condition: {
           type: 'ONE_OF_RANGE',
-          values: [
-            {
-              userEnteredValue: `='_Months'!A2:A${Math.max(2, monthCount + 1)}`,
-            },
-          ],
+          values: [{ userEnteredValue: sourceRange }],
         },
         showCustomUi: true,
         strict: true,
       },
     },
   }
+}
+
+export function monthDropdownRequest(sheetId: number, monthCount: number) {
+  return listDropdownRequest(
+    sheetId,
+    1,
+    `='_Months'!A2:A${Math.max(2, monthCount + 1)}`,
+  )
+}
+
+export function dateDropdownRequest(sheetId: number, dateOptionCount: number) {
+  return listDropdownRequest(
+    sheetId,
+    3,
+    `='_Dates'!A2:A${Math.max(2, dateOptionCount + 1)}`,
+  )
 }

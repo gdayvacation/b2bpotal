@@ -53,7 +53,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatShortDate, startOfToday, toISODate } from '@/lib/format'
+import { addDaysISO, formatShortDate, startOfToday, toISODate } from '@/lib/format'
+import { OPS_BOOKING_LOOKBACK_DAYS } from '@/lib/supabase/portal-db'
 import { bookingTourAmount, ratesForAgent } from '@/lib/invoice'
 import { formatThbAmount, isLateAmendmentForDate } from '@/lib/booking-cutoffs'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
@@ -67,13 +68,6 @@ import {
   type Program,
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
-
-/** Wider window when searching text fields; code search ignores this. */
-function searchFromISO() {
-  const d = startOfToday()
-  d.setDate(d.getDate() - 7)
-  return toISODate(d)
-}
 
 function AdminCancelChargeField({
   suggested,
@@ -140,13 +134,6 @@ function AdminCancelChargeField({
       </label>
     </div>
   )
-}
-
-function looksLikeBookingCodeQuery(query: string) {
-  const q = query.trim().toLowerCase()
-  if (!q) return false
-  // Full or partial codes: PP2609-0229, 0229, pp2609, jb2701-0001
-  return /^(pp|jb)?\d{0,4}-?\d{0,6}$/i.test(q) || q.includes('-')
 }
 
 /** Default list: newest first, capped so the table stays light. */
@@ -438,7 +425,7 @@ export function AdminBookings() {
   const hasSelectedDate = Boolean(selectedDate)
   const hasActiveFilter = quick === 'today' || hasSelectedDate || isSearching || program !== 'all'
   const today = usePortalTodayISO()
-  const searchFrom = searchFromISO()
+  const searchFrom = addDaysISO(today, -OPS_BOOKING_LOOKBACK_DAYS)
 
   const filtered = useMemo(() => {
     const dateIso = selectedDate ? toISODate(selectedDate) : null
@@ -448,6 +435,7 @@ export function AdminBookings() {
       .filter((booking) => {
         if (program !== 'all' && booking.program !== program) return false
         if (isSearching) {
+          if (booking.date < searchFrom) return false
           const haystack = [
             booking.code,
             booking.agentName,
@@ -458,8 +446,6 @@ export function AdminBookings() {
             .join(' ')
             .toLowerCase()
           if (!haystack.includes(query)) return false
-          // Text/name/hotel search stays recent; booking-number search covers all dates.
-          if (!looksLikeBookingCodeQuery(query) && booking.date < searchFrom) return false
         }
         if (quick === 'today' && booking.date !== today) return false
         if (dateIso && booking.date !== dateIso) return false
@@ -631,7 +617,7 @@ export function AdminBookings() {
     <div className="w-full">
       <PageHeader
         title="Booking"
-        description="Partner reservations — default view shows the latest 200. Use filters or search for older trips."
+        description="Partner reservations — default view shows the latest 200. Search covers the last 30 days and every future trip."
         actions={
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             <Button
@@ -781,7 +767,7 @@ export function AdminBookings() {
               {capped && filtered.length > RECENT_LIMIT
                 ? ` · latest ${RECENT_LIMIT}`
                 : null}
-              {isSearching ? ` · search from ${formatShortDate(searchFrom)} onward` : null}
+              {isSearching ? ` · from ${formatShortDate(searchFrom)} onward` : null}
               {!isSearching && quick === 'today'
                 ? ` · departing ${formatShortDate(today)}`
                 : null}
@@ -817,13 +803,7 @@ export function AdminBookings() {
       <Surface className="overflow-hidden">
         {list.length === 0 ? (
           <div className="px-4 py-12 text-center text-sm text-teal-900/45">
-            No bookings match this filter
-            {isSearching
-              ? looksLikeBookingCodeQuery(query)
-                ? ''
-                : ' (name/hotel search covers last 7 days + upcoming; booking numbers search all dates)'
-              : ''}
-            .
+            No bookings match this filter.
           </div>
         ) : (
           <>

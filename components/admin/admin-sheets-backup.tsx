@@ -73,7 +73,7 @@ export function AdminSheetsBackup({ onBack }: { onBack: () => void }) {
       return
     }
     setMessage(
-      `Synced ${result.bookings} bookings, ${result.guests} check-in guests, and ${result.invoices} invoices at ${result.syncedAt} Thai time.`,
+      `Synced ${result.bookings} bookings, ${result.guests} check-in guests, ${result.invoices} invoices, and ${result.allotments} agent allotments at ${result.syncedAt} Thai time.`,
     )
   }
 
@@ -87,7 +87,7 @@ export function AdminSheetsBackup({ onBack }: { onBack: () => void }) {
       </div>
       <PageHeader
         title="Google Sheets backup"
-        description="Full history backup (all months) into Google Sheets. Nightly sync at 4:00 AM Thai time. Staff open the shared sheet anytime — use Monthly → month dropdown to filter."
+        description="Full history backup into Google Sheets. Nightly sync at 4:00 AM Thai time. On Monthly, pick a month in B1 and a date in D1 — choose (All dates) to see the whole month, sorted by date."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -145,12 +145,18 @@ export function AdminSheetsBackup({ onBack }: { onBack: () => void }) {
               check-in vs extra charge.
             </li>
             <li>
-              <span className="font-semibold text-teal-950">Monthly</span> — pick a month in B1
-              (dropdown). Shows that month’s summary, bookings, and merge view.
+              <span className="font-semibold text-teal-950">Invoices</span> — receipt status is
+              Paid, Partial, or Not paid, with amount, balance, receipt, and line detail.
             </li>
             <li>
-              <span className="font-semibold text-teal-950">Bookings / Merge</span> also have a
-              Month column — filter any tab by month anytime.
+              <span className="font-semibold text-teal-950">Agent allotments</span> — each lot with
+              seats, total, paid, balance, and Paid / Not paid. Allotment daily is head usage by
+              date.
+            </li>
+            <li>
+              <span className="font-semibold text-teal-950">Monthly</span> — month in B1, date in
+              D1. Shows that month or that day: bookings, merge, invoices, and agent allotments,
+              sorted by date.
             </li>
           </ol>
         </Surface>

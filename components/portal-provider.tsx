@@ -10,7 +10,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { formatThb, nextBookingCode, todayISO, uniqueAgentSlug } from '@/lib/format'
+import { bookingCodeStem, formatThb, nextBookingCode, todayISO, uniqueAgentSlug } from '@/lib/format'
 import { autoAssignBoats } from '@/lib/boat-assign'
 import {
   CHECK_IN_ATTENDANCE_STORAGE_KEY,
@@ -206,6 +206,7 @@ import {
   deleteZone,
   fetchBookingEvents,
   fetchBookingByCode,
+  fetchBookingCodesByStem,
   fetchBookingsChangedSince,
   fetchBookingsWithCursor,
   fetchBookingsInDateRange,
@@ -261,6 +262,7 @@ import {
 } from '@/lib/supabase/portal-db'
 import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/client'
 import {
+  findDriver,
   loadLocalDrivers,
   mergeDriverRoster,
   saveLocalDrivers,
@@ -444,7 +446,7 @@ type PortalContextValue = {
       transferExtraCharge?: string
     },
     options?: BookingActionOptions,
-  ) => { ok: true; booking: Booking } | { ok: false; error: string }
+  ) => Promise<{ ok: true; booking: Booking } | { ok: false; error: string }>
   cancelBooking: (
     code: string,
     options?: BookingActionOptions,
@@ -970,6 +972,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   /** Date ranges already loaded into `bookings` (ops window + lazy fetches). */
   const bookingsLoadedRangesRef = useRef<{ from: string; to: string }[]>([])
   const bookingsEnsureInflightRef = useRef(new Map<string, Promise<void>>())
+  const bookingsRef = useRef(bookings)
+  bookingsRef.current = bookings
+  /** Highest sequence already handed out for a monthly stem (PP2606-). */
+  const bookingCodeMaxRef = useRef(new Map<string, number>())
+  const bookingCodeStemLoadedRef = useRef(new Set<string>())
+  const bookingCodeAllocChainRef = useRef(Promise.resolve())
   const boatPlanWritePendingRef = useRef(0)
   const boatPlanSaveChainRef = useRef(Promise.resolve())
   const vehiclePlanWritePendingRef = useRef(0)
@@ -2245,6 +2253,36 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  function allocateBookingCode(program: 'PP' | 'James Bond', date: string): Promise<string> {
+    const stem = bookingCodeStem(program, date)
+    const task = bookingCodeAllocChainRef.current.then(async () => {
+      let remote: string[] = []
+      if (!bookingCodeStemLoadedRef.current.has(stem)) {
+        try {
+          remote = await fetchBookingCodesByStem(stem)
+          bookingCodeStemLoadedRef.current.add(stem)
+        } catch (error) {
+          console.warn('[booking-code] could not read existing codes for', stem, error)
+        }
+      }
+      const known = bookingCodeMaxRef.current.get(stem) ?? 0
+      const reserved = known > 0 ? [`${stem}${String(known).padStart(4, '0')}`] : []
+      const code = nextBookingCode(program, date, [
+        ...remote,
+        ...bookingsRef.current.map((booking) => booking.code),
+        ...reserved,
+      ])
+      const seq = Number(code.slice(stem.length))
+      if (Number.isFinite(seq) && seq > known) bookingCodeMaxRef.current.set(stem, seq)
+      return code
+    })
+    bookingCodeAllocChainRef.current = task.then(
+      () => undefined,
+      () => undefined,
+    )
+    return task
+  }
+
   const value = useMemo<PortalContextValue>(() => {
     const getZoneTime = (name: PickupZoneName) =>
       zones.find((zone) => zone.name === name)?.time ?? 'Awaiting pickup time'
@@ -3455,11 +3493,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
         if (!cleaned.name) return
         setDrivers((current) => {
-          const next = mergeDriverRoster([...current, cleaned])
+          const existing = findDriver(current, cleaned.name)
+          const merged: DriverRosterEntry = {
+            name: cleaned.name,
+            phone: cleaned.phone || existing?.phone || '',
+            plate: cleaned.plate || existing?.plate || '',
+          }
+          const next = mergeDriverRoster([...current, merged])
           saveLocalDrivers(next)
+          persistQuietly('upsertDriver', upsertDriverRow(merged))
           return next
         })
-        persistQuietly('upsertDriver', upsertDriverRow(cleaned))
       },
       getBookingClosure,
       isProgramClosed,
@@ -3535,7 +3579,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           )
         })
       },
-      addBooking: (input, options) => {
+      addBooking: async (input, options) => {
         const agent = agents.find((item) => item.slug === input.agentSlug)
         if (agent?.status === 'Inactive' && !options?.bypassCutoff) {
           return { ok: false, error: 'This agent is inactive and cannot create bookings.' }
@@ -3570,11 +3614,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        const code = nextBookingCode(
-          input.program,
-          input.date,
-          bookings.map((booking) => booking.code),
-        )
+        // In-memory bookings are only the recent ops window. Historical imports
+        // (for example June) must continue the monthly sequence already stored in Supabase.
+        const code = await allocateBookingCode(input.program, input.date)
         const noTransfer = isNoTransfer(input.pickupZone)
         const zone = zones.find((item) => item.name === input.pickupZone)
         const pending = !noTransfer && (zone?.pending ?? input.pickupZone === 'Other')
@@ -3626,21 +3668,44 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             slug: booking.agentSlug,
           }
         const createdSummary = `Created for ${booking.date} · ${booking.program} · ${totalPassengers(booking)} pax`
+        const triedCodes = new Set<string>([code])
+        const savePromise = (async () => {
+          let current = booking
+          for (let attempt = 0; attempt < 4; attempt++) {
+            triedCodes.add(current.code)
+            try {
+              await insertBooking(current)
+              return current
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              const duplicate = /duplicate key|unique constraint|bookings_pkey|23505/i.test(message)
+              if (!duplicate || attempt === 3) throw error
+              bookingCodeStemLoadedRef.current.delete(
+                bookingCodeStem(current.program, current.date),
+              )
+              const nextCode = await allocateBookingCode(current.program, current.date)
+              const previous = current.code
+              current = { ...current, code: nextCode }
+              setBookings((rows) => rows.map((row) => (row.code === previous ? current : row)))
+            }
+          }
+          return current
+        })()
         persistBookingWrite(
           'insertBooking',
-          insertBooking(booking)
-            .then(() => {
-              logBookingEvent(code, 'created', createdSummary, createdActor)
-            })
-            .catch((error) => {
-              setBookings((current) => current.filter((item) => item.code !== code))
-              const message =
-                error instanceof Error ? error.message : 'Failed to save booking to Supabase'
-              setLoadError(`Booking ${code} was not saved: ${message}`)
-              throw error
-            }),
+          savePromise.then((saved) => {
+            logBookingEvent(saved.code, 'created', createdSummary, createdActor)
+          }),
         )
-        return { ok: true, booking }
+        try {
+          const saved = await savePromise
+          return { ok: true, booking: saved }
+        } catch (error) {
+          setBookings((rows) => rows.filter((row) => !triedCodes.has(row.code)))
+          const message =
+            error instanceof Error ? error.message : 'Failed to save booking to Supabase'
+          return { ok: false, error: `Booking ${code} was not saved: ${message}` }
+        }
       },
       cancelBooking: (code, options) => {
         const existing = bookings.find((booking) => booking.code === code)

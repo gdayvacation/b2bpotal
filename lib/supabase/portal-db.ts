@@ -391,6 +391,25 @@ export async function fetchBookingByCode(code: string): Promise<Booking | null> 
 }
 
 /**
+ * Every code sharing a monthly stem (PP2606-, JB2606-).
+ * The live portal only holds a short date window, so new codes must be chosen from this list.
+ */
+export async function fetchBookingCodesByStem(stem: string): Promise<string[]> {
+  const prefix = stem.trim()
+  if (!/^(?:PP|JB)\d{4}-$/.test(prefix)) return []
+  const supabase = getSupabaseBrowserClient()
+  const data = await fetchAllPaged<{ code: string | null }>('booking codes', (start, end) =>
+    supabase
+      .from('bookings')
+      .select('code')
+      .like('code', `${prefix}%`)
+      .order('code', { ascending: true })
+      .range(start, end),
+  )
+  return data.map((row) => row.code ?? '').filter(Boolean)
+}
+
+/**
  * Minimal portal snapshot for a guest QR scan.
  *
  * Loads only the guest's single booking and the boat/vehicle plans for that

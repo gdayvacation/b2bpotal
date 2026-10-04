@@ -369,7 +369,7 @@ export function AdminCheckInBookingPanel({
     setNsTourLeaders(0)
   }
 
-  function applyDateChange() {
+  async function applyDateChange() {
     if (!booking) return
     setDateError('')
     if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate)) {
@@ -433,7 +433,7 @@ export function AdminCheckInBookingPanel({
     const stayTourLeaders = booking.tourLeaders - moveTourLeaders
     const stayTotal = stayAdults + stayChildren + stayInfants + stayTourLeaders
 
-    const created = addBooking(
+    const created = await addBooking(
       {
         agentSlug: booking.agentSlug,
         agentName: booking.agentName,

@@ -7,8 +7,11 @@ export const SHEET_TITLES = {
   merge: 'Merge',
   invoices: 'Invoices',
   invoiceLines: 'Invoice lines',
+  allotments: 'Agent allotments',
+  allotmentDaily: 'Allotment daily',
   monthly: 'Monthly',
   months: '_Months',
+  dates: '_Dates',
 } as const
 
 export const BACKUP_SPREADSHEET_TITLE = "G'Day Tours — Daily backup"
