@@ -46,6 +46,7 @@ import {
   agencyRatesReady,
   formatAgentBillingType,
   buildInvoiceItemsForBooking,
+  documentProgram,
   formatInvoiceDate,
   formatInvoiceMoney,
   formatInvoicePayStatus,
@@ -581,7 +582,7 @@ export function AdminInvoices() {
         setPrebuyBalance(null)
         return
       }
-      const balance = await loadPrebuyHeadBalance(agentSlug)
+      const balance = await loadPrebuyHeadBalance(agentSlug, billProgram)
       if (!cancelled) {
         setPrebuyBalance(
           balance
@@ -598,7 +599,7 @@ export function AdminInvoices() {
     return () => {
       cancelled = true
     }
-  }, [agentSlug, store.rates, store.invoices])
+  }, [agentSlug, billProgram, store.rates, store.invoices])
 
   const dateLabel =
     fromDate === toDate
@@ -785,9 +786,21 @@ export function AdminInvoices() {
     toDate,
   ])
 
+  const bookingProgramByCode = useMemo(() => {
+    const map = new Map<string, Program>()
+    for (const booking of bookings) map.set(booking.code, booking.program)
+    return map
+  }, [bookings])
+
+  function docInWorkProgram(doc: InvoiceDocument) {
+    const program = documentProgram(doc, (code) => bookingProgramByCode.get(code))
+    return program === null || program === billProgram
+  }
+
   const documents = useMemo(() => {
     return store.invoices
       .filter((doc) => !doc.isDraft)
+      .filter((doc) => docInWorkProgram(doc))
       .filter((doc) =>
         isSearching || agentSlug === 'all' ? true : doc.agentSlug === agentSlug,
       )
@@ -808,7 +821,7 @@ export function AdminInvoices() {
           (payment) => payment.paidDate >= fromDate && payment.paidDate <= toDate,
         )
       })
-  }, [agentSlug, fromDate, guestByBookingCode, isSearching, query, store.invoices, toDate])
+  }, [agentSlug, billProgram, bookingProgramByCode, fromDate, guestByBookingCode, isSearching, query, store.invoices, toDate])
 
   const invoices = useMemo(
     () => documents.filter((doc) => doc.kind === 'invoice'),
@@ -824,10 +837,12 @@ export function AdminInvoices() {
   )
   const receipts = useMemo(() => {
     // Receipts: prefer payment date in range; fall back to already date-matched invoices.
-    const pool =
-      isSearching || agentSlug === 'all'
-        ? store.invoices.filter((doc) => isIssuedInvoice(doc))
-        : store.invoices.filter((doc) => isIssuedInvoice(doc) && doc.agentSlug === agentSlug)
+    const pool = store.invoices.filter(
+      (doc) =>
+        isIssuedInvoice(doc) &&
+        docInWorkProgram(doc) &&
+        (isSearching || agentSlug === 'all' || doc.agentSlug === agentSlug),
+    )
     const rows = invoiceReceiptRows(pool).filter(({ doc, payment }) => {
       if (isSearching) return documentMatchesInvoiceSearch(doc, query, guestByBookingCode)
       if (payment.paidDate >= fromDate && payment.paidDate <= toDate) return true
@@ -848,6 +863,8 @@ export function AdminInvoices() {
     guestByBookingCode,
     isSearching,
     query,
+    billProgram,
+    bookingProgramByCode,
     store.invoices,
     toDate,
   ])
@@ -1352,7 +1369,7 @@ export function AdminInvoices() {
       <div className="print:hidden">
       <PageHeader
         title="Invoice / Receipt"
-        description="Set each agent as Prebuy or Invoice in Setup. Prebuy deducts AD+CH heads and bills extras. Invoice bills the tour price. Not-included park is collected from the guest."
+        description="Phi Phi and James Bond are separate. Both use the same company and the same Prebuy or Invoice rules."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -1374,6 +1391,36 @@ export function AdminInvoices() {
           </div>
         }
       />
+
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <SegmentedControl>
+          <Segment
+            active={billProgram === 'PP'}
+            onClick={() => {
+              setBillProgram('PP')
+              setSelectedCodes([])
+              setSelectedDocs([])
+            }}
+          >
+            Phi Phi
+          </Segment>
+          <Segment
+            active={billProgram === 'James Bond'}
+            onClick={() => {
+              setBillProgram('James Bond')
+              setSelectedCodes([])
+              setSelectedDocs([])
+            }}
+          >
+            James Bond
+          </Segment>
+        </SegmentedControl>
+        <p className="text-sm text-teal-900/60">
+          <span className="font-semibold text-teal-950">{store.settings.companyName}</span>
+          {' · '}
+          {billProgram === 'PP' ? 'Phi Phi' : 'James Bond'} bills and invoices
+        </p>
+      </div>
 
       {!store.cloud && !store.loading ? (
         <p className="mb-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
@@ -1571,7 +1618,7 @@ export function AdminInvoices() {
 
       {tab === 'dummy' ? (
         <InvoiceDummyVanPanel
-          bookings={bookings}
+          bookings={bookings.filter((booking) => booking.program === billProgram)}
           fromDate={fromDate}
           toDate={toDate}
           agentSlug={agentSlug}
@@ -1581,7 +1628,9 @@ export function AdminInvoices() {
           agentInvoiceNo={(code) =>
             store.invoices.find(
               (doc) =>
-                isIssuedInvoice(doc) && doc.items.some((item) => item.bookingCode === code),
+                isIssuedInvoice(doc) &&
+                docInWorkProgram(doc) &&
+                doc.items.some((item) => item.bookingCode === code),
             )?.number ?? ''
           }
         />
@@ -1589,28 +1638,6 @@ export function AdminInvoices() {
         <>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-3">
-              <SegmentedControl className="rounded-xl p-0.5">
-                <Segment
-                  active={billProgram === 'PP'}
-                  onClick={() => {
-                    setBillProgram('PP')
-                    setSelectedCodes([])
-                  }}
-                  className="rounded-lg px-2.5 py-1 text-xs"
-                >
-                  PP
-                </Segment>
-                <Segment
-                  active={billProgram === 'James Bond'}
-                  onClick={() => {
-                    setBillProgram('James Bond')
-                    setSelectedCodes([])
-                  }}
-                  className="rounded-lg px-2.5 py-1 text-xs"
-                >
-                  JB
-                </Segment>
-              </SegmentedControl>
               <label className="flex items-center gap-1.5 text-xs text-teal-900/65">
                 <input
                   type="checkbox"
@@ -2436,9 +2463,9 @@ export function AdminInvoices() {
         </>
       ) : tab === 'summary' ? (
         <InvoiceMonthlySummary
-          invoices={store.invoices}
+          invoices={store.invoices.filter((doc) => docInWorkProgram(doc))}
           rates={store.rates}
-          bookings={bookings}
+          bookings={bookings.filter((booking) => booking.program === billProgram)}
           fromDate={fromDate}
           toDate={toDate}
         />
@@ -2546,6 +2573,7 @@ export function AdminInvoices() {
             .filter((booking) => codes.includes(booking.code))
             .flatMap((booking) => bookingInvoiceItems(booking, false))
         }
+        guestByBookingCode={guestByBookingCode}
       />
 
       <Dialog open={preview !== null} onOpenChange={(open) => { if (!open) closePreview() }}>
@@ -2579,6 +2607,7 @@ export function AdminInvoices() {
                     linked={store.invoices}
                     mode={currentPreviewMode(preview)}
                     paymentId={previewPaymentId}
+                    guests={guestByBookingCode}
                   />
                 </div>
               </div>
@@ -2632,6 +2661,7 @@ export function AdminInvoices() {
           <InvoicePrintSheet
             doc={preview}
             settings={store.settings}
+            guests={guestByBookingCode}
             linked={store.invoices}
             mode={currentPreviewMode(preview)}
             paymentId={previewPaymentId}

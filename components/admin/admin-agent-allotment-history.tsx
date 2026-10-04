@@ -91,9 +91,11 @@ function programLabel(program: Booking['program']) {
 export function AdminAgentAllotmentHistory({
   onBack,
   onAdd,
+  program,
 }: {
   onBack: () => void
   onAdd: () => void
+  program: Program
 }) {
   const { bookings, agents } = usePortal()
   const [purchases, setPurchases] = useState<AgentAllotment[]>([])
@@ -103,7 +105,7 @@ export function AdminAgentAllotmentHistory({
   const [filterDate, setFilterDate] = useState('')
   const [filterMonth, setFilterMonth] = useState(() => currentMonthValue())
   const [filterAgent, setFilterAgent] = useState('')
-  const [filterProgram, setFilterProgram] = useState<Program | ''>('')
+  const [filterProgram, setFilterProgram] = useState<Program | ''>(program)
   const [filterChecker, setFilterChecker] = useState<CheckerFilter>('')
   const [filterGuest, setFilterGuest] = useState('')
   const [filterVc, setFilterVc] = useState('')
@@ -146,6 +148,7 @@ export function AdminAgentAllotmentHistory({
       { name: string; seats: number; totalAmount: number }
     >()
     for (const row of purchases) {
+      if (row.program !== program) continue
       const current = map.get(row.agentSlug) ?? {
         name: row.agentName,
         seats: 0,
@@ -157,7 +160,7 @@ export function AdminAgentAllotmentHistory({
       map.set(row.agentSlug, current)
     }
     return map
-  }, [purchases])
+  }, [purchases, program])
 
   /** Latest allotment AD/CH price per agent (prefer a purchase that has prices set). */
   const ratesByAgent = useMemo(() => {
@@ -169,6 +172,7 @@ export function AdminAgentAllotmentHistory({
       return aKey.localeCompare(bKey)
     })
     for (const row of sorted) {
+      if (row.program !== program) continue
       const adultPrice = Math.max(0, Number(row.adultPrice) || 0)
       const childPrice = Math.max(0, Number(row.childPrice) || 0)
       const next = { adultPrice, childPrice }
@@ -190,7 +194,7 @@ export function AdminAgentAllotmentHistory({
       merge(byName, row.agentName.trim().toLowerCase())
     }
     return { bySlug, byName }
-  }, [purchases])
+  }, [purchases, program])
 
   function ratesForAgent(agentSlug: string, agentName: string) {
     return (
@@ -226,10 +230,11 @@ export function AdminAgentAllotmentHistory({
   const dailyByAgentDay = useMemo(() => {
     const map = new Map<string, number>()
     for (const row of daily) {
+      if (row.program !== program) continue
       map.set(`${row.agentSlug}|${row.day}`, row.totalDeduct)
     }
     return map
-  }, [daily])
+  }, [daily, program])
 
   const agentOptions = useMemo(() => {
     const map = new Map<string, string>()
@@ -281,6 +286,7 @@ export function AdminAgentAllotmentHistory({
       const checkerDays = daily
         .filter((row) => {
           if (row.agentSlug !== agentSlug) return false
+          if (row.program !== program) return false
           if (filterDate && row.day !== filterDate) return false
           if (filterMonth && !row.day.startsWith(filterMonth)) return false
           return true
@@ -291,6 +297,7 @@ export function AdminAgentAllotmentHistory({
 
       const bookingHeadsByDay = new Map<string, number>()
       for (const booking of allAgentBookings) {
+        if (filterProgram && booking.program !== filterProgram) continue
         bookingHeadsByDay.set(
           booking.date,
           (bookingHeadsByDay.get(booking.date) ?? 0) + chargeablePax(booking),
@@ -330,7 +337,7 @@ export function AdminAgentAllotmentHistory({
             guestName: '—',
             bookingLabel: hasChecker ? 'Daily checker' : 'No bookings',
             paxLabel: '—',
-            program: null,
+            program: filterProgram || null,
             adults: 0,
             children: 0,
             adultPrice: rates.adultPrice,

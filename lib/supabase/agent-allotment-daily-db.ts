@@ -1,10 +1,12 @@
 import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/client'
+import type { Program } from '@/lib/types'
 
 export type AgentAllotmentDaily = {
   id: string
   day: string
   agentSlug: string
   agentName: string
+  program: Program
   totalDeduct: number
   /** Lot this saved day belongs to. Empty until Daily checker saves a new day, or a day is moved. */
   allotmentId: string | null
@@ -18,6 +20,7 @@ type AgentAllotmentDailyRow = {
   day: string
   agent_slug: string
   agent_name: string
+  program?: string | null
   total_deduct: number | string
   allotment_id?: string | null
   note: string | null
@@ -38,6 +41,7 @@ function mapRow(row: AgentAllotmentDailyRow): AgentAllotmentDaily {
     day: row.day.slice(0, 10),
     agentSlug: row.agent_slug,
     agentName: row.agent_name,
+    program: row.program === 'James Bond' ? 'James Bond' : 'PP',
     totalDeduct: Math.max(0, Math.floor(Number(row.total_deduct) || 0)),
     allotmentId: row.allotment_id || null,
     note: row.note?.trim() || '',
@@ -76,6 +80,7 @@ export async function upsertAgentAllotmentDaily(input: {
   day: string
   agentSlug: string
   agentName: string
+  program?: Program
   totalDeduct: number
   note?: string
   /** Used only the first time this day is saved. Later saves keep the lot. Move changes it. */
@@ -84,11 +89,13 @@ export async function upsertAgentAllotmentDaily(input: {
   const supabase = requireSupabase()
   const day = input.day.trim()
   const agentSlug = input.agentSlug.trim()
+  const program: Program = input.program === 'James Bond' ? 'James Bond' : 'PP'
   const existing = await supabase
     .from('agent_allotment_daily')
     .select('allotment_id')
     .eq('day', day)
     .eq('agent_slug', agentSlug)
+    .eq('program', program)
     .maybeSingle()
   if (existing.error) throw new Error(existing.error.message)
   const currentLot = (existing.data as { allotment_id?: string | null } | null)?.allotment_id || null
@@ -100,11 +107,12 @@ export async function upsertAgentAllotmentDaily(input: {
         day,
         agent_slug: agentSlug,
         agent_name: input.agentName.trim(),
+        program,
         total_deduct: Math.max(0, Math.floor(input.totalDeduct)),
         note: input.note?.trim() || '',
         allotment_id: allotmentId,
       },
-      { onConflict: 'day,agent_slug' },
+      { onConflict: 'day,agent_slug,program' },
     )
     .select('*')
     .single()
@@ -115,14 +123,17 @@ export async function upsertAgentAllotmentDaily(input: {
 export async function moveAgentAllotmentDaily(input: {
   day: string
   agentSlug: string
+  program?: Program
   allotmentId: string
 }): Promise<void> {
   const supabase = requireSupabase()
+  const program: Program = input.program === 'James Bond' ? 'James Bond' : 'PP'
   const { error } = await supabase
     .from('agent_allotment_daily')
     .update({ allotment_id: input.allotmentId })
     .eq('day', input.day.trim())
     .eq('agent_slug', input.agentSlug.trim())
+    .eq('program', program)
   if (error) throw new Error(error.message)
 }
 
@@ -138,7 +149,10 @@ export type AgentBookingDayPax = {
  * Paginates past the API 1000-row cap so allotment FIFO can backfill days
  * before Daily checker rows exist.
  */
-export async function fetchAgentBookingDayPax(agentSlug: string): Promise<AgentBookingDayPax[]> {
+export async function fetchAgentBookingDayPax(
+  agentSlug: string,
+  program: Program = 'PP',
+): Promise<AgentBookingDayPax[]> {
   const supabase = requireSupabase()
   const slug = agentSlug.trim()
   if (!slug) return []
@@ -152,6 +166,7 @@ export async function fetchAgentBookingDayPax(agentSlug: string): Promise<AgentB
       .from('bookings')
       .select('date,adults,children,status')
       .eq('agent_slug', slug)
+      .eq('program', program)
       .neq('status', 'Cancelled')
       .order('date', { ascending: true })
       .order('code', { ascending: true })

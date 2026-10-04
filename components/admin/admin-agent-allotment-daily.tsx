@@ -24,7 +24,7 @@ import {
   upsertAgentAllotmentDaily,
   type AgentAllotmentDaily,
 } from '@/lib/supabase/agent-allotment-daily-db'
-import { chargeablePax, isActiveBooking, type Booking } from '@/lib/types'
+import { chargeablePax, isActiveBooking, type Booking, type Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 type CheckerRow = {
@@ -110,7 +110,13 @@ function checkInHeadsForBooking(
   return { checkIn: 0, noShow: 0 }
 }
 
-export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void }) {
+export function AdminAgentAllotmentDailyChecker({
+  onBack,
+  program,
+}: {
+  onBack: () => void
+  program: Program
+}) {
   const { bookings, getCheckInAttendance, agents } = usePortal()
   const invoiceStore = useInvoiceStore()
   const [fromDate, setFromDate] = useState(() => monthRangeContaining(todayISO()).from)
@@ -144,13 +150,14 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
       listAgentAllotments(),
       listAgentAllotmentDaily(),
     ])
+    const programLots = allotments.filter((row) => row.program === program)
     const purchased: Record<string, number> = {}
-    for (const row of allotments) {
+    for (const row of programLots) {
       purchased[row.agentSlug] = (purchased[row.agentSlug] ?? 0) + row.seats
     }
     setPurchasedByAgent(purchased)
-    setAllotments(allotments)
-    setAllDaily(everyDaily)
+    setAllotments(programLots)
+    setAllDaily(everyDaily.filter((row) => row.program === program))
   }
 
   useEffect(() => {
@@ -174,7 +181,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [program])
 
   const deductedByAgent = useMemo(() => {
     const map: Record<string, number> = {}
@@ -209,6 +216,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
       const dayBookings = bookings.filter(
         (booking) =>
           booking.date === day &&
+          booking.program === program &&
           isActiveBooking(booking) &&
           prebuyAgentSlugs.has(booking.agentSlug),
       )
@@ -300,6 +308,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
     getCheckInAttendance,
     invoicedCodes,
     prebuyAgentSlugs,
+    program,
     purchasedByAgent,
     savedByDayAgent,
     selectedDays,
@@ -364,6 +373,7 @@ export function AdminAgentAllotmentDailyChecker({ onBack }: { onBack: () => void
         day: row.day,
         agentSlug: row.agentSlug,
         agentName: row.agentName,
+        program,
         totalDeduct,
         allotmentId: receiving?.id ?? null,
       })

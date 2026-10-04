@@ -106,6 +106,7 @@ export function InvoiceEditDialog({
   onOpenChange,
   onSave,
   liveItemsForCodes,
+  guestByBookingCode,
 }: {
   doc: InvoiceDocument | null
   isNew: boolean
@@ -113,6 +114,7 @@ export function InvoiceEditDialog({
   onOpenChange: (open: boolean) => void
   onSave: (doc: InvoiceDocument, mode: 'draft' | 'issue') => Promise<void>
   liveItemsForCodes?: (codes: string[]) => Omit<InvoiceItem, 'invoiceId'>[]
+  guestByBookingCode?: ReadonlyMap<string, string>
 }) {
   const [draft, setDraft] = useState<InvoiceDocument | null>(null)
   const [saving, setSaving] = useState(false)
@@ -383,7 +385,7 @@ export function InvoiceEditDialog({
                 Voucher
               </label>
               {uniqueVouchers.length > 1 ? (
-                <p className="mt-1 text-sm font-medium text-teal-950">{uniqueVouchers.join(', ')}</p>
+                <p className="mt-1 text-sm text-teal-900/55">Each line has its own reference.</p>
               ) : (
                 <Input
                   id="invoice-voucher"
@@ -432,6 +434,7 @@ export function InvoiceEditDialog({
                 <tbody>
                   {draft.items.map((item, index) => {
                     const unitPrice = invoiceLineUnitPrice(item)
+                    const guestName = guestByBookingCode?.get(item.bookingCode)?.trim() ?? ''
                     return (
                     <tr key={item.id} className="border-b border-teal-900/8 last:border-0">
                       <td className="px-2 py-1.5 text-center text-xs tabular-nums text-teal-900/35">
@@ -447,6 +450,23 @@ export function InvoiceEditDialog({
                           >
                             {invoiceLineKindLabel(item.lineKind)}
                           </span>
+                          {guestName ? (
+                            <p className="px-1.5 text-xs font-semibold text-teal-950">{guestName}</p>
+                          ) : null}
+                          {item.bookingCode ? (
+                            <p className="px-1.5 text-[11px] font-medium tabular-nums text-teal-900/55">
+                              {item.bookingCode}
+                            </p>
+                          ) : null}
+                          <Input
+                            value={item.voucherNo}
+                            onChange={(event) =>
+                              patchItem(item.id, { voucherNo: event.target.value })
+                            }
+                            className="h-8 border-transparent bg-transparent px-1.5 shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
+                            placeholder="Reference"
+                            aria-label={`Reference for ${item.bookingCode || `line ${index + 1}`}`}
+                          />
                           <Input
                             value={item.description}
                             onChange={(event) =>

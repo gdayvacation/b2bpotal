@@ -1,10 +1,12 @@
 import {
+  documentProgram,
   parseAgentBillingType,
   prebuyDeductHeads,
   ratesForAgent,
   type AgencyInvoiceRates,
   type InvoiceDocument,
 } from '@/lib/invoice'
+import type { Program } from '@/lib/types'
 import {
   listAgentAllotments,
   type AgentAllotment,
@@ -22,14 +24,19 @@ export type PrebuyHeadBalance = {
   remaining: number
 }
 
-export function purchasedHeadsFromAllotments(rows: AgentAllotment[], agentSlug: string) {
+export function purchasedHeadsFromAllotments(
+  rows: AgentAllotment[],
+  agentSlug: string,
+  program: Program = 'PP',
+) {
   return rows
-    .filter((row) => row.agentSlug === agentSlug)
+    .filter((row) => row.agentSlug === agentSlug && row.program === program)
     .reduce((sum, row) => sum + Math.max(0, Math.floor(Number(row.seats) || 0)), 0)
 }
 
 export async function loadPrebuyHeadBalance(
   agentSlug: string,
+  program: Program = 'PP',
 ): Promise<PrebuyHeadBalance | null> {
   if (!hasSupabaseConfig() || !agentSlug) return null
   try {
@@ -37,11 +44,10 @@ export async function loadPrebuyHeadBalance(
       listAgentAllotments(),
       listAgentAllotmentDailyByAgent(agentSlug),
     ])
-    const purchased = purchasedHeadsFromAllotments(allotments, agentSlug)
-    const deducted = daily.reduce(
-      (sum, row) => sum + Math.max(0, Math.floor(Number(row.totalDeduct) || 0)),
-      0,
-    )
+    const purchased = purchasedHeadsFromAllotments(allotments, agentSlug, program)
+    const deducted = daily
+      .filter((row) => row.program === program)
+      .reduce((sum, row) => sum + Math.max(0, Math.floor(Number(row.totalDeduct) || 0)), 0)
     return {
       agentSlug,
       purchased,
@@ -85,12 +91,13 @@ export async function syncPrebuyDeductFromInvoice(
     byDate.set(day, (byDate.get(day) ?? 0) + lineHeads)
   }
   if (byDate.size === 0) return { ok: true }
+  const program = documentProgram(doc) ?? 'PP'
 
   try {
     const existing = await listAgentAllotmentDailyByAgent(doc.agentSlug)
-    const balance = await loadPrebuyHeadBalance(doc.agentSlug)
+    const balance = await loadPrebuyHeadBalance(doc.agentSlug, program)
     for (const [day, addHeads] of byDate) {
-      const row = existing.find((item) => item.day === day)
+      const row = existing.find((item) => item.day === day && item.program === program)
       const current = row?.totalDeduct ?? 0
       const noteParts = [row?.note?.trim() || '', `INV ${doc.number} +${addHeads}`]
         .filter(Boolean)
@@ -101,6 +108,7 @@ export async function syncPrebuyDeductFromInvoice(
         day,
         agentSlug: doc.agentSlug,
         agentName: doc.agentName,
+        program,
         totalDeduct: current + addHeads,
         note: noteParts.slice(0, 240),
       })

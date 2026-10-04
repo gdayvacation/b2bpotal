@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { ChevronDown, FileText, LogOut, Menu, Ticket } from 'lucide-react'
+import { ChevronDown, FileSpreadsheet, FileText, LogOut, Menu, Ticket } from 'lucide-react'
 import { AccountingLogin } from '@/components/accounting/accounting-login'
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
@@ -26,9 +26,17 @@ const accountingItems = [
   },
 ] as const
 
+function accountingItemActive(pathname: string, href: string) {
+  if (href === '/accounting') {
+    return pathname === '/accounting' || pathname.startsWith('/accounting/setup')
+  }
+  return pathname === href || pathname.startsWith(`${href}/`)
+}
+
 function currentPageLabel(pathname: string) {
   if (pathname.startsWith('/accounting/setup')) return 'Invoice setup'
   if (pathname.startsWith('/accounting/allotments')) return 'Agent Allotment'
+  if (pathname.startsWith('/accounting/reports')) return 'Report'
   return 'Invoice / Receipt'
 }
 
@@ -75,6 +83,7 @@ export function AccountingShell({ children }: { children: React.ReactNode }) {
         <nav className="flex flex-1 flex-col gap-1 px-3 pb-4">
           <p className="gday-soft-label px-3 py-2">Accounting / บัญชี</p>
           <AccountingGroup pathname={pathname} />
+          <ReportNav pathname={pathname} />
         </nav>
         <div className="border-t border-teal-900/8 p-4">
           <div className="rounded-2xl bg-gradient-to-br from-teal-50 via-white to-sky-50 px-3.5 py-3 ring-1 ring-teal-900/6">
@@ -127,21 +136,31 @@ export function AccountingShell({ children }: { children: React.ReactNode }) {
 }
 
 function AccountingGroup({ pathname }: { pathname: string }) {
+  const active = !pathname.startsWith('/accounting/reports')
   return (
     <div>
-      <div className="group flex items-center gap-3 rounded-2xl bg-gradient-to-r from-teal-700 to-cyan-700 px-2.5 py-2 text-sm font-medium text-white shadow-md shadow-teal-700/25">
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-white/20 text-white">
-          <FileText className="size-4" strokeWidth={2.4} />
+      <div
+        className={cn(
+          'group flex items-center gap-3 rounded-2xl px-2.5 py-2 text-sm font-medium transition-all',
+          active
+            ? 'bg-gradient-to-r from-teal-700 to-cyan-700 text-white shadow-md shadow-teal-700/25'
+            : 'text-teal-900/65',
+        )}
+      >
+        <span
+          className={cn(
+            'flex size-8 shrink-0 items-center justify-center rounded-xl',
+            active ? 'bg-white/20 text-white' : 'bg-fuchsia-100 text-fuchsia-700',
+          )}
+        >
+          <FileText className="size-4" strokeWidth={active ? 2.4 : 2} />
         </span>
         <span className="flex-1">Accounting</span>
-        <ChevronDown className="size-4 shrink-0 rotate-180 opacity-90" />
+        <ChevronDown className={cn('size-4 shrink-0', active ? 'rotate-180 opacity-90' : 'opacity-50')} />
       </div>
       <div className="ml-4 mt-1 flex flex-col gap-0.5 border-l border-teal-900/10 pl-2">
         {accountingItems.map((item) => {
-          const itemActive =
-            item.href === '/accounting'
-              ? !pathname.startsWith('/accounting/allotments')
-              : pathname.startsWith(item.href)
+          const itemActive = accountingItemActive(pathname, item.href)
           const Icon = item.icon
           return (
             <Link
@@ -171,6 +190,31 @@ function AccountingGroup({ pathname }: { pathname: string }) {
   )
 }
 
+function ReportNav({ pathname }: { pathname: string }) {
+  const active = pathname.startsWith('/accounting/reports')
+  return (
+    <Link
+      href="/accounting/reports"
+      className={cn(
+        'group flex items-center gap-3 rounded-2xl px-2.5 py-2 text-sm font-medium transition-all',
+        active
+          ? 'bg-gradient-to-r from-teal-700 to-cyan-700 text-white shadow-md shadow-teal-700/25'
+          : 'text-teal-900/65 hover:bg-white/70 hover:text-teal-950',
+      )}
+    >
+      <span
+        className={cn(
+          'flex size-8 shrink-0 items-center justify-center rounded-xl transition-colors',
+          active ? 'bg-white/20 text-white' : 'bg-orange-100 text-orange-700 group-hover:bg-orange-200/80',
+        )}
+      >
+        <FileSpreadsheet className="size-4" strokeWidth={active ? 2.4 : 2} />
+      </span>
+      <span className="flex-1">Report</span>
+    </Link>
+  )
+}
+
 function MobileNav({ pathname, onSignOut }: { pathname: string; onSignOut: () => void }) {
   return (
     <Sheet>
@@ -188,6 +232,7 @@ function MobileNav({ pathname, onSignOut }: { pathname: string; onSignOut: () =>
         <div className="flex flex-col gap-1 px-3">
           <p className="gday-soft-label px-1 py-2">Accounting / บัญชี</p>
           <AccountingGroup pathname={pathname} />
+          <ReportNav pathname={pathname} />
         </div>
         <div className="mt-auto border-t border-teal-900/8 px-4 py-4">
           <p className="text-sm font-semibold text-teal-950">account</p>

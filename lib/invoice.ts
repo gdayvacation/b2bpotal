@@ -355,6 +355,30 @@ export function programShortLabel(program: Program) {
   return program === 'PP' ? 'Phi Phi' : 'James Bond'
 }
 
+/** Which program a saved bill belongs to. Null when the lines do not say. */
+export function documentProgram(
+  doc: { items: { bookingCode?: string; description?: string }[] },
+  bookingProgram?: (code: string) => Program | undefined,
+): Program | null {
+  let pp = 0
+  let jb = 0
+  for (const item of doc.items) {
+    const fromBooking = item.bookingCode ? bookingProgram?.(item.bookingCode) : undefined
+    const text = item.description || ''
+    const program: Program | null = fromBooking
+      ? fromBooking
+      : /james bond/i.test(text)
+        ? 'James Bond'
+        : /phi phi/i.test(text)
+          ? 'PP'
+          : null
+    if (program === 'James Bond') jb += 1
+    else if (program === 'PP') pp += 1
+  }
+  if (pp === 0 && jb === 0) return null
+  return jb > pp ? 'James Bond' : 'PP'
+}
+
 export function programPaxLineLabel(
   program: Program,
   paxKind: 'adult' | 'child' | 'infant' | 'tourLeader',
@@ -558,99 +582,175 @@ function isLegacyCombinedTourLine(item: Pick<InvoiceItem, 'description' | 'lineK
   return kinds > 1 || /Speedboat/i.test(item.description)
 }
 
-/** Flatten invoice items into print rows (one pax type per line, like Unit Price invoices). */
-export function expandInvoiceDisplayLines(items: InvoiceItem[]): InvoiceDisplayLine[] {
-  const lines: InvoiceDisplayLine[] = []
+/** Guest, booking code, and that booking's voucher — one identity per line. */
+export function invoiceLineIdentity(
+  item: Pick<InvoiceItem, 'bookingCode' | 'voucherNo'>,
+  guestName?: string,
+) {
+  return [guestName?.trim(), item.bookingCode.trim(), item.voucherNo.trim()].filter(Boolean).join(' · ')
+}
 
-  for (const item of items) {
-    if (isLateReduceFeeLine(item)) {
-      const late = lateReduceFeeDisplay(item)
-      lines.push({
-        key: item.id,
-        travelDate: item.travelDate,
-        description: formatInvoiceLineDescription(item),
+/** Hide the prebuy "deduct" marker on the printed description. */
+function stripDeductWord(text: string) {
+  return text
+    .replace(/,?\s*deduct heads?\b/gi, '')
+    .replace(/\s*·\s*deduct\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s*,\s*$/g, '')
+    .trim()
+}
+
+type InvoiceDisplayPart = {
+  label: string
+  qty: number | ''
+  unit: string
+  unitPrice: number | ''
+  amount: number
+  guestCollect: boolean
+  travelDate: string
+}
+
+function displayPartsForItem(item: InvoiceItem): InvoiceDisplayPart[] {
+  if (isLateReduceFeeLine(item)) {
+    const late = lateReduceFeeDisplay(item)
+    return [
+      {
+        label: stripDeductWord(formatInvoiceLineDescription(item)),
         qty: late.heads || '',
         unit: late.heads > 0 ? 'Pax' : 'Fee',
         unitPrice: late.perPerson || '',
         amount: item.amount,
         guestCollect: isGuestCollectLine(item),
+        travelDate: item.travelDate,
+      },
+    ]
+  }
+
+  if (isLegacyCombinedTourLine(item)) {
+    const program = detectProgramFromDescription(item.description)
+    const prebuy = /deduct/i.test(item.description) || item.amount === 0
+    const prefix =
+      item.lineKind === 'no_show'
+        ? 'No show'
+        : item.lineKind === 'cancel'
+          ? /full price/i.test(item.description)
+            ? 'Late Cancel, full price'
+            : 'Late Cancel'
+          : undefined
+    const parts: Array<{
+      kind: 'adult' | 'child' | 'infant' | 'tourLeader'
+      qty: number
+      unitPrice: number
+    }> = []
+    if (item.adults > 0) {
+      parts.push({ kind: 'adult', qty: item.adults, unitPrice: prebuy ? 0 : item.adultPrice })
+    }
+    if (item.children > 0) {
+      parts.push({ kind: 'child', qty: item.children, unitPrice: prebuy ? 0 : item.childPrice })
+    }
+    if (item.infants > 0) {
+      parts.push({ kind: 'infant', qty: item.infants, unitPrice: prebuy ? 0 : item.infantPrice })
+    }
+    if (item.tourLeaders > 0) {
+      parts.push({
+        kind: 'tourLeader',
+        qty: item.tourLeaders,
+        unitPrice: prebuy ? 0 : item.tourLeaderPrice,
       })
-      continue
     }
-
-    if (isLegacyCombinedTourLine(item)) {
-      const program = detectProgramFromDescription(item.description)
-      const prebuy = /deduct/i.test(item.description) || item.amount === 0
-      const prefix =
-        item.lineKind === 'no_show'
-          ? 'No show'
-          : item.lineKind === 'cancel'
-            ? /full price/i.test(item.description)
-              ? 'Late Cancel, full price'
-              : 'Late Cancel'
-            : undefined
-      const parts: Array<{
-        kind: 'adult' | 'child' | 'infant' | 'tourLeader'
-        qty: number
-        unitPrice: number
-      }> = []
-      if (item.adults > 0) {
-        parts.push({ kind: 'adult', qty: item.adults, unitPrice: prebuy ? 0 : item.adultPrice })
-      }
-      if (item.children > 0) {
-        parts.push({ kind: 'child', qty: item.children, unitPrice: prebuy ? 0 : item.childPrice })
-      }
-      if (item.infants > 0) {
-        parts.push({ kind: 'infant', qty: item.infants, unitPrice: prebuy ? 0 : item.infantPrice })
-      }
-      if (item.tourLeaders > 0) {
-        parts.push({
-          kind: 'tourLeader',
-          qty: item.tourLeaders,
-          unitPrice: prebuy ? 0 : item.tourLeaderPrice,
-        })
-      }
-      for (const part of parts) {
-        lines.push({
-          key: `${item.id}-${part.kind}`,
-          travelDate: item.travelDate,
-          description: programPaxLineLabel(program, part.kind, { prebuy, prefix }),
-          qty: part.qty,
-          unit: 'Pax',
-          unitPrice: part.unitPrice || '',
-          amount: prebuy ? 0 : part.qty * part.unitPrice,
-          guestCollect: false,
-        })
-      }
-      continue
-    }
-
-    const qty =
-      item.adults ||
-      item.children ||
-      item.infants ||
-      item.tourLeaders ||
-      (item.amount !== 0 || item.lineKind === 'tour' ? 1 : 0)
-    const unitPrice =
-      item.adultPrice ||
-      item.childPrice ||
-      item.infantPrice ||
-      item.tourLeaderPrice ||
-      (qty === 1 ? Math.abs(item.amount) : 0)
-
-    lines.push({
-      key: item.id,
+    return parts.map((part) => ({
+      label: stripDeductWord(programPaxLineLabel(program, part.kind, { prebuy, prefix })),
+      qty: part.qty,
+      unit: 'Pax',
+      unitPrice: part.unitPrice || '',
+      amount: prebuy ? 0 : part.qty * part.unitPrice,
+      guestCollect: false,
       travelDate: item.travelDate,
-      description: formatInvoiceLineDescription(item),
+    }))
+  }
+
+  const qty =
+    item.adults ||
+    item.children ||
+    item.infants ||
+    item.tourLeaders ||
+    (item.amount !== 0 || item.lineKind === 'tour' ? 1 : 0)
+  const unitPrice =
+    item.adultPrice ||
+    item.childPrice ||
+    item.infantPrice ||
+    item.tourLeaderPrice ||
+    (qty === 1 ? Math.abs(item.amount) : 0)
+
+  return [
+    {
+      label: stripDeductWord(formatInvoiceLineDescription(item)),
       qty: qty || '',
       unit: chargeUnit(item) || (qty ? 'Pax' : ''),
       unitPrice: unitPrice || '',
       amount: item.amount,
       guestCollect: isGuestCollectLine(item),
-    })
-  }
+      travelDate: item.travelDate,
+    },
+  ]
+}
 
-  return lines
+function partQty(qty: number | '') {
+  return typeof qty === 'number' && Number.isFinite(qty) ? qty : 0
+}
+
+/** One print row per booking: charges together, guest and reference once, no "deduct". */
+export function expandInvoiceDisplayLines(
+  items: InvoiceItem[],
+  guests?: ReadonlyMap<string, string>,
+): InvoiceDisplayLine[] {
+  const groups: InvoiceItem[][] = []
+  const indexByKey = new Map<string, number>()
+  items.forEach((item, index) => {
+    const key = item.bookingCode.trim() || `line:${item.id || index}`
+    const at = indexByKey.get(key)
+    if (at == null) {
+      indexByKey.set(key, groups.length)
+      groups.push([item])
+    } else {
+      groups[at]!.push(item)
+    }
+  })
+
+  return groups.map((group) => {
+    const first = group[0]!
+    const parts = group.flatMap(displayPartsForItem)
+    const qtys = parts.map((part) => partQty(part.qty)).filter((qty) => qty > 0)
+    const sameQty = qtys.length > 0 && qtys.every((qty) => qty === qtys[0])
+    const charges = parts
+      .map((part) => {
+        const qty = partQty(part.qty)
+        if (!part.label) return ''
+        if (sameQty || qty <= 0) return part.label
+        return `${part.label} ${qty}`
+      })
+      .filter(Boolean)
+      .join(', ')
+    const who = invoiceLineIdentity(first, guests?.get(first.bookingCode))
+    const prices = [
+      ...new Set(
+        parts
+          .map((part) => part.unitPrice)
+          .filter((price): price is number => typeof price === 'number' && price !== 0),
+      ),
+    ]
+    const units = [...new Set(parts.map((part) => part.unit).filter(Boolean))]
+    return {
+      key: first.bookingCode.trim() || first.id,
+      travelDate: parts.find((part) => part.travelDate)?.travelDate || first.travelDate,
+      description: who ? `${charges}\n${who}` : charges,
+      qty: sameQty ? qtys[0]! : qtys.reduce((sum, qty) => sum + qty, 0) || '',
+      unit: units.length === 1 ? units[0]! : units[0] || '',
+      unitPrice: prices.length === 1 ? prices[0]! : '',
+      amount: parts.reduce((sum, part) => sum + part.amount, 0),
+      guestCollect: parts.length > 0 && parts.every((part) => part.guestCollect),
+    }
+  })
 }
 
 export function isLateReduceFeeLine(

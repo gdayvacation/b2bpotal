@@ -143,12 +143,14 @@ function LineTable({
   doc,
   emptyRows = 6,
   tone = 'invoice',
+  guests,
 }: {
   doc: InvoiceDocument
   emptyRows?: number
   tone?: 'invoice' | 'receipt'
+  guests?: ReadonlyMap<string, string>
 }) {
-  const lines = expandInvoiceDisplayLines(doc.items)
+  const lines = expandInvoiceDisplayLines(doc.items, guests)
   const filler = Math.max(0, emptyRows - lines.length)
   const head = tone === 'receipt' ? 'bg-[#c8ecd4] text-emerald-950' : 'bg-[#f3d4ff] text-neutral-900'
   return (
@@ -178,7 +180,7 @@ function LineTable({
             <td className="border border-neutral-300 px-1.5 py-1 whitespace-nowrap">
               {formatInvoiceDate(line.travelDate)}
             </td>
-            <td className="border border-neutral-300 px-1.5 py-1">{line.description}</td>
+            <td className="border border-neutral-300 px-1.5 py-1 whitespace-pre-line">{line.description}</td>
             <td className="border border-neutral-300 px-1.5 py-1 text-right tabular-nums">
               {line.qty === '' ? '' : Number(line.qty).toFixed(2)}
             </td>
@@ -216,6 +218,7 @@ export function InvoicePrintSheet({
   linked,
   mode = 'invoice',
   paymentId = null,
+  guests,
 }: {
   doc: InvoiceDocument
   settings: InvoiceSettings
@@ -223,6 +226,7 @@ export function InvoicePrintSheet({
   mode?: 'invoice' | 'billing_note' | 'receipt' | 'credit_note'
   /** When printing a receipt for one instalment. */
   paymentId?: string | null
+  guests?: ReadonlyMap<string, string>
 }) {
   const payments = invoicePayments(doc)
   const focusedPayment =
@@ -265,6 +269,9 @@ export function InvoicePrintSheet({
         : doc.grandTotal || itemsAgentTotal(doc.items)
   const receiptDate = focusedPayment?.paidDate ?? doc.paidAt?.slice(0, 10) ?? doc.issueDate
   const receiptChannel = focusedPayment?.channel ?? doc.paymentChannel
+  const voucherNos = [...new Set(doc.items.map((item) => item.voucherNo.trim()).filter(Boolean))]
+  const voucherHeader =
+    voucherNos.length === 0 ? '—' : voucherNos.length === 1 ? voucherNos[0] : 'On each line'
 
   return (
     <article className="invoice-print-page relative overflow-hidden bg-white text-neutral-900 [print-color-adjust:exact]">
@@ -299,7 +306,7 @@ export function InvoicePrintSheet({
         ) : (
           <p>
             <span className="inline-block w-24 text-neutral-500">Voucher</span>
-            {[...new Set(doc.items.map((item) => item.voucherNo.trim()).filter(Boolean))].join(', ') || '—'}
+            {voucherHeader}
           </p>
         )}
         <p>
@@ -361,7 +368,7 @@ export function InvoicePrintSheet({
         </table>
       ) : (
         <div className="mt-4">
-          <LineTable doc={doc} tone={tone} />
+          <LineTable doc={doc} tone={tone} guests={guests} />
         </div>
       )}
 

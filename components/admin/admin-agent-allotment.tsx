@@ -17,7 +17,7 @@ import { AdminAgentAllotmentDailyChecker } from '@/components/admin/admin-agent-
 import { AdminAgentAllotmentHistory } from '@/components/admin/admin-agent-allotment-history'
 import { usePortal } from '@/components/portal-provider'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
-import { PageHeader, Surface } from '@/components/ui-primitives'
+import { PageHeader, Segment, SegmentedControl, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -46,6 +46,7 @@ import { formatShortDate, todayISO, uniqueAgentSlug } from '@/lib/format'
 import {
   addAgentAllotmentPayment,
   allotmentBalance,
+  allotmentOtherCash,
   allotmentPaidTotal,
   allotmentPayments,
   allotmentPayStatus,
@@ -69,6 +70,7 @@ import {
   type AgentAllotmentDaily,
   type AgentBookingDayPax,
 } from '@/lib/supabase/agent-allotment-daily-db'
+import type { Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 type View = 'hub' | 'add' | 'history' | 'daily' | 'agent' | 'lot'
@@ -90,12 +92,15 @@ type PaymentDraft = {
   amount: string
   paidDate: string
   note: string
+  /** Cash for other bills. Does not pay down this lot. */
+  moneyOnly: boolean
 }
 
 const emptyPaymentDraft = (): PaymentDraft => ({
   amount: '',
   paidDate: todayISO(),
   note: '',
+  moneyOnly: false,
 })
 
 const NEW_AGENT_VALUE = '__new__'
@@ -162,20 +167,30 @@ function lotTransfers(lot: AgentAllotment) {
   const payments = allotmentPayments(lot)
   const date = (lot.paidDate || lot.createdAt).slice(0, 10)
   const paid = allotmentPaidTotal(lot)
+  const headPayments = payments.filter((payment) => !payment.moneyOnly)
+  const moneyLines = payments
+    .filter((payment) => payment.moneyOnly)
+    .map((payment) => ({
+      id: payment.id,
+      date: (payment.headsDate || payment.paidDate).slice(0, 10),
+      heads: 0,
+      amount: payment.amount,
+      note: payment.note.replace(/^Ref\s*/i, '').trim(),
+    }))
   const lump = {
     id: lot.id,
     date,
     heads: lot.seats,
     amount: paid > 0 ? paid : lot.totalAmount,
-    note: payments
+    note: headPayments
       .map((payment) => payment.note.replace(/^Ref\s*/i, '').trim())
       .filter(Boolean)
       .join(', '),
   }
-  if (payments.length === 0) return [lump]
-  const known = payments.reduce((sum, payment) => sum + (payment.heads ?? 0), 0)
-  if (known <= 0) return [lump]
-  const missing = payments.filter((payment) => !(payment.heads && payment.heads > 0))
+  if (headPayments.length === 0) return [lump, ...moneyLines]
+  const known = headPayments.reduce((sum, payment) => sum + (payment.heads ?? 0), 0)
+  if (known <= 0) return [lump, ...moneyLines]
+  const missing = headPayments.filter((payment) => !(payment.heads && payment.heads > 0))
   const shares = new Map<string, number>()
   let leftover = Math.max(0, lot.seats - known)
   if (missing.length > 0 && leftover > 0) {
@@ -187,7 +202,7 @@ function lotTransfers(lot: AgentAllotment) {
       shares.set(payment.id, heads)
     }
   }
-  return payments.map((payment) => {
+  const headLines = headPayments.map((payment) => {
     const noted = payment.note.replace(/^Ref\s*/i, '').trim()
     return {
       id: payment.id,
@@ -197,6 +212,7 @@ function lotTransfers(lot: AgentAllotment) {
       note: noted,
     }
   })
+  return [...headLines, ...moneyLines]
 }
 
 type DepositBookLine = {
@@ -310,6 +326,12 @@ function usageNote(day: string, dailyByDay: Map<string, AgentAllotmentDaily>) {
 }
 
 function topupTitle(amount: number, heads: number, rate: number, note: string) {
+  if (heads <= 0 && amount < 0) {
+    return [`Deduct ${formatMoney(Math.abs(amount))}`, note].filter(Boolean).join(' · ')
+  }
+  if (heads <= 0) {
+    return [`Money only ${formatMoney(amount)}`, note].filter(Boolean).join(' · ')
+  }
   return [`Topup ${formatMoney(amount)}`, `${heads} หัว @ ${formatMoney(rate)}`, note].filter(Boolean).join(' · ')
 }
 
@@ -424,7 +446,15 @@ function DepositBookRow({
   onMoveDay?: (day: string, allotmentId: string) => void
 }) {
   return (
-    <TableRow className={line.kind === 'in' ? 'bg-amber-50 hover:bg-amber-50/80' : undefined}>
+    <TableRow
+      className={
+        line.kind === 'in' && (line.baht ?? 0) < 0
+          ? 'bg-rose-50 hover:bg-rose-50/80'
+          : line.kind === 'in'
+            ? 'bg-amber-50 hover:bg-amber-50/80'
+            : undefined
+      }
+    >
       <TableCell className="px-4 whitespace-nowrap text-teal-950">
         {formatShortDate(line.date)}
       </TableCell>
@@ -456,12 +486,20 @@ function DepositBookRow({
           line.headsDelta > 0 ? 'text-emerald-800' : 'text-teal-950',
         )}
       >
-        {line.headsDelta > 0 ? `+${line.headsDelta}` : line.headsDelta}
+        {line.kind === 'in' && line.headsDelta === 0
+          ? '—'
+          : line.headsDelta > 0
+            ? `+${line.headsDelta}`
+            : line.headsDelta}
       </TableCell>
       <TableCell
         className={cn(
           'text-right tabular-nums',
-          line.baht != null && line.baht > 0 ? 'text-emerald-800' : 'text-teal-900/70',
+          line.baht != null && line.baht > 0
+            ? 'text-emerald-800'
+            : line.baht != null && line.baht < 0
+              ? 'text-rose-700'
+              : 'text-teal-900/70',
         )}
       >
         {line.baht == null ? '—' : `${line.baht > 0 ? '+' : ''}${formatMoney(line.baht)}`}
@@ -676,6 +714,7 @@ function LotCardCashBadge({ paid, lotTotal }: { paid: number; lotTotal: number }
 
 function LotCardStats({
   paid,
+  otherCash = 0,
   lotHeads,
   lotTotal,
   usedAmount,
@@ -686,6 +725,8 @@ function LotCardStats({
   isActive = false,
 }: {
   paid: number
+  /** Cash for other bills. Not part of this lot's head balance. */
+  otherCash?: number
   lotHeads: number
   lotTotal: number
   usedAmount: number
@@ -754,6 +795,16 @@ function LotCardStats({
           </p>
         </div>
       </div>
+      {otherCash !== 0 ? (
+        <p
+          className={cn(
+            'px-2.5 text-[11px]',
+            otherCash < 0 ? 'text-rose-700' : 'text-teal-900/55',
+          )}
+        >
+          Other cash {formatMoney(otherCash)} THB — not trip heads
+        </p>
+      ) : null}
 
       <div
         className={cn(
@@ -807,6 +858,7 @@ export function AdminAgentAllotment() {
   const lotTabStripRef = useRef<HTMLDivElement>(null)
   const [selectedAgentSlug, setSelectedAgentSlug] = useState('')
   const [selectedLotId, setSelectedLotId] = useState('')
+  const [workProgram, setWorkProgram] = useState<Program>('PP')
   const [rows, setRows] = useState<AgentAllotment[]>([])
   const [dailyRows, setDailyRows] = useState<AgentAllotmentDaily[]>([])
   const [bookingDayPax, setBookingDayPax] = useState<AgentBookingDayPax[]>([])
@@ -840,13 +892,19 @@ export function AdminAgentAllotment() {
     [agents],
   )
 
+  const programLots = useMemo(
+    () => rows.filter((row) => row.program === workProgram),
+    [rows, workProgram],
+  )
+
   const deductedByAgent = useMemo(() => {
     const map = new Map<string, number>()
     for (const row of dailyRows) {
+      if (row.program !== workProgram) continue
       map.set(row.agentSlug, (map.get(row.agentSlug) ?? 0) + row.totalDeduct)
     }
     return map
-  }, [dailyRows])
+  }, [dailyRows, workProgram])
 
   const agentSummaries = useMemo(() => {
     const map = new Map<
@@ -860,12 +918,13 @@ export function AdminAgentAllotment() {
         remaining: number
         totalAmount: number
         paidAmount: number
+        otherCash: number
         balance: number
         adultPrice: number
         childPrice: number
       }
     >()
-    for (const row of rows) {
+    for (const row of programLots) {
       const current = map.get(row.agentSlug) ?? {
         slug: row.agentSlug,
         name: row.agentName,
@@ -875,6 +934,7 @@ export function AdminAgentAllotment() {
         remaining: 0,
         totalAmount: 0,
         paidAmount: 0,
+        otherCash: 0,
         balance: 0,
         adultPrice: 0,
         childPrice: 0,
@@ -884,6 +944,7 @@ export function AdminAgentAllotment() {
       current.seats += row.seats
       current.totalAmount += row.totalAmount
       current.paidAmount += allotmentPaidTotal(row)
+      current.otherCash += allotmentOtherCash(row)
       current.balance += allotmentBalance(row)
       if (row.adultPrice > 0) current.adultPrice = row.adultPrice
       if (row.childPrice > 0) current.childPrice = row.childPrice
@@ -894,11 +955,11 @@ export function AdminAgentAllotment() {
       summary.remaining = summary.seats - summary.used
     }
     return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
-  }, [rows, deductedByAgent])
+  }, [programLots, deductedByAgent])
 
   const selectedAgentRows = useMemo(
     () =>
-      rows
+      programLots
         .filter((row) => row.agentSlug === selectedAgentSlug)
         .sort((a, b) => {
           const aOpen = (a.paidDate || a.createdAt).slice(0, 10)
@@ -909,12 +970,15 @@ export function AdminAgentAllotment() {
             a.id.localeCompare(b.id)
           )
         }),
-    [rows, selectedAgentSlug],
+    [programLots, selectedAgentSlug],
   )
 
   const selectedAgentDaily = useMemo(
-    () => dailyRows.filter((row) => row.agentSlug === selectedAgentSlug),
-    [dailyRows, selectedAgentSlug],
+    () =>
+      dailyRows.filter(
+        (row) => row.agentSlug === selectedAgentSlug && row.program === workProgram,
+      ),
+    [dailyRows, selectedAgentSlug, workProgram],
   )
 
   const earliestLotOpen = useMemo(
@@ -1252,7 +1316,7 @@ export function AdminAgentAllotment() {
       return
     }
     setAdvanceExpanded(false)
-    void fetchAgentBookingDayPax(selectedAgentSlug)
+    void fetchAgentBookingDayPax(selectedAgentSlug, workProgram)
       .then((rows) => {
         if (!cancelled) setBookingDayPax(rows)
       })
@@ -1263,7 +1327,7 @@ export function AdminAgentAllotment() {
     return () => {
       cancelled = true
     }
-  }, [selectedAgentSlug])
+  }, [selectedAgentSlug, workProgram])
 
   function resolveExistingAgent(slug: string) {
     const agent = agentOptions.find((item) => item.slug === slug)
@@ -1334,6 +1398,7 @@ export function AdminAgentAllotment() {
       const created = await createAgentAllotment({
         agentSlug: agent.slug,
         agentName: agent.name,
+        program: workProgram,
         adultSeats: heads,
         childSeats: 0,
         adultPrice,
@@ -1420,6 +1485,7 @@ export function AdminAgentAllotment() {
       const created = await createAgentAllotment({
         agentSlug: agent.slug,
         agentName: agent.name,
+        program: workProgram,
         adultSeats: heads,
         childSeats: 0,
         adultPrice,
@@ -1457,13 +1523,23 @@ export function AdminAgentAllotment() {
       setTopUpError('เปิดล็อตก่อน แล้วค่อยโอนเพิ่มเข้าล็อตนั้น')
       return
     }
-    const heads = parseHeads(topUpDraft.heads)
+    const headsRaw = topUpDraft.heads.trim()
+    const heads = headsRaw === '' ? 0 : parseHeads(headsRaw)
     const amount = parseMoney(topUpDraft.amount)
-    if (!Number.isFinite(heads) || heads <= 0) {
+    const moneyOnly = headsRaw === '' || heads === 0
+    if (moneyOnly) {
+      if (!Number.isFinite(amount) || amount === 0) {
+        setTopUpError('ใส่จำนวนเงิน — ติดลบเช่น -500 คือหักเงินก้อนนี้')
+        return
+      }
+      if (amount < 0 && !topUpDraft.note.trim()) {
+        setTopUpError('ใส่รายละเอียดว่าหักเงินนี้ไปทำอะไร')
+        return
+      }
+    } else if (!Number.isFinite(heads) || heads <= 0) {
       setTopUpError('ใส่จำนวนหัวที่โอนเพิ่ม')
       return
-    }
-    if (!Number.isFinite(amount) || amount < 0) {
+    } else if (!Number.isFinite(amount) || amount < 0) {
       setTopUpError('ใส่จำนวนเงินที่โอน')
       return
     }
@@ -1474,10 +1550,11 @@ export function AdminAgentAllotment() {
     const remaining = selectedAgentUsageByLot.get(lot.id)?.remaining ?? lot.seats
     setSavingTopUp(true)
     try {
-      if (remaining <= 0) {
+      if (!(moneyOnly || remaining > 0)) {
         const created = await createAgentAllotment({
           agentSlug: lot.agentSlug,
           agentName: lot.agentName,
+          program: lot.program,
           adultSeats: heads,
           childSeats: 0,
           adultPrice: lot.adultPrice,
@@ -1513,6 +1590,7 @@ export function AdminAgentAllotment() {
       await moveAgentAllotmentDaily({
         day,
         agentSlug: selectedAgentSlug,
+        program: workProgram,
         allotmentId,
       })
       await refresh()
@@ -1530,10 +1608,21 @@ export function AdminAgentAllotment() {
       return next
     })
     const amount = parseMoney(draft.amount)
-    if (!Number.isFinite(amount) || amount <= 0) {
+    const lot = rows.find((row) => row.id === lotId)
+    const moneyOnly = draft.moneyOnly || (lot != null && allotmentBalance(lot) <= 0.009)
+    if (!Number.isFinite(amount) || amount === 0 || (!moneyOnly && amount <= 0)) {
       setPaymentErrorByLot((current) => ({
         ...current,
-        [lotId]: 'Enter a payment amount greater than 0.',
+        [lotId]: moneyOnly
+          ? 'Enter an amount. Use a minus, such as -500, to deduct this cash.'
+          : 'Enter a payment amount greater than 0.',
+      }))
+      return
+    }
+    if (moneyOnly && amount < 0 && !draft.note.trim()) {
+      setPaymentErrorByLot((current) => ({
+        ...current,
+        [lotId]: 'Enter what this cash was deducted for.',
       }))
       return
     }
@@ -1550,6 +1639,7 @@ export function AdminAgentAllotment() {
         amount,
         paidDate: draft.paidDate.trim(),
         note: draft.note,
+        moneyOnly,
       })
       setPaymentDraftByLot((current) => ({
         ...current,
@@ -1604,6 +1694,7 @@ export function AdminAgentAllotment() {
       await updateAgentAllotment(editing.id, {
         agentSlug: agent.slug,
         agentName: agent.name,
+        program: editing.program,
         adultSeats: heads,
         childSeats: 0,
         adultPrice,
@@ -1638,13 +1729,40 @@ export function AdminAgentAllotment() {
     }
   }
 
+  function selectProgram(next: Program) {
+    if (next === workProgram) return
+    setWorkProgram(next)
+    setSelectedLotId('')
+    setView('hub')
+  }
+
+  const programBar = (
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <SegmentedControl>
+        <Segment active={workProgram === 'PP'} onClick={() => selectProgram('PP')}>
+          Phi Phi
+        </Segment>
+        <Segment
+          active={workProgram === 'James Bond'}
+          onClick={() => selectProgram('James Bond')}
+        >
+          James Bond
+        </Segment>
+      </SegmentedControl>
+      <p className="text-xs text-teal-900/55">
+        Separate lots and head balance. Same transfer rules.
+      </p>
+    </div>
+  )
+
   if (view === 'hub') {
     return (
       <div className="w-full">
         <PageHeader
           title="Agent Allotment"
-          description="Open lots per agent, record transfers on each lot, and track heads used (FIFO from oldest lot)."
+          description="Phi Phi and James Bond keep separate lots. Payments, FIFO, and money-only cash work the same way."
         />
+        {programBar}
         <div className="grid gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-3">
           <AllotmentModeCard
             tone="teal"
@@ -1680,12 +1798,20 @@ export function AdminAgentAllotment() {
   }
 
   if (view === 'daily') {
-    return <AdminAgentAllotmentDailyChecker onBack={() => setView('hub')} />
+    return (
+      <div className="w-full">
+        {programBar}
+        <AdminAgentAllotmentDailyChecker program={workProgram} onBack={() => setView('hub')} />
+      </div>
+    )
   }
 
   if (view === 'history') {
     return (
+      <div className="w-full">
+        {programBar}
       <AdminAgentAllotmentHistory
+        program={workProgram}
         onBack={() => setView('hub')}
         onAdd={() => {
           setDraft(emptyDraft())
@@ -1693,6 +1819,7 @@ export function AdminAgentAllotment() {
           setView('add')
         }}
       />
+      </div>
     )
   }
 
@@ -1708,7 +1835,7 @@ export function AdminAgentAllotment() {
       <div className="w-full">
         <PageHeader
           title={selectedLot.note.trim() || `Lot · ${formatShortDate(lotDate)}`}
-          description={`${selectedLot.agentName} — heads, transfers, and usage for this lot (FIFO from oldest).`}
+          description={`${selectedLot.agentName} — ${workProgram === 'PP' ? 'Phi Phi' : 'James Bond'} lot. Heads, transfers, and usage (FIFO from oldest).`}
           actions={
             <Button
               type="button"
@@ -1724,6 +1851,7 @@ export function AdminAgentAllotment() {
             </Button>
           }
         />
+        {programBar}
 
         <div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           <Surface className="px-4 py-3">
@@ -1870,6 +1998,7 @@ export function AdminAgentAllotment() {
                       </div>
                       <LotCardStats
                         paid={entry.paid}
+                        otherCash={allotmentOtherCash(entry.lot)}
                         lotHeads={entry.lot.seats}
                         lotTotal={entry.lot.totalAmount}
                         usedAmount={entry.usageTotals.amount}
@@ -1898,9 +2027,26 @@ export function AdminAgentAllotment() {
                                 {formatShortDate(payment.paidDate)}
                               </TableCell>
                               <TableCell className="text-teal-900/70">
-                                {payment.note || '—'}
+                                {payment.moneyOnly ? (
+                                  <span
+                                    className={cn(
+                                      'mr-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold',
+                                      payment.amount < 0
+                                        ? 'bg-rose-100 text-rose-800'
+                                        : 'bg-amber-100 text-amber-800',
+                                    )}
+                                  >
+                                    {payment.amount < 0 ? 'Deduct' : 'Money only'}
+                                  </span>
+                                ) : null}
+                                {payment.note || (payment.moneyOnly ? '' : '—')}
                               </TableCell>
-                              <TableCell className="text-right font-semibold tabular-nums">
+                              <TableCell
+                                className={cn(
+                                  'text-right font-semibold tabular-nums',
+                                  payment.amount < 0 && 'text-rose-700',
+                                )}
+                              >
                                 {formatMoney(payment.amount)}
                               </TableCell>
                             </TableRow>
@@ -1932,32 +2078,52 @@ export function AdminAgentAllotment() {
                           </Button>
                         ) : null}
                       </div>
-                      {entry.due <= 0.009 ? (
-                        <p className="text-xs text-teal-900/45">This lot is fully paid.</p>
-                      ) : (
-                        <form
-                          className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4"
-                          onSubmit={(event) => void handleAddPaymentForLot(entry.lot.id, event)}
-                        >
-                          <div className="space-y-1">
-                            <Label className="text-[11px] text-neutral-400">Date</Label>
-                            <Input
-                              type="date"
-                              required
-                              value={paymentDraftFor(entry.lot.id).paidDate}
+                      <form
+                        className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4"
+                        onSubmit={(event) => void handleAddPaymentForLot(entry.lot.id, event)}
+                      >
+                        {entry.due <= 0.009 ? (
+                          <p className="text-xs text-teal-900/55 sm:col-span-2 lg:col-span-4">
+                            Other cash, not trip heads. Enter a plus to add, or a minus such as
+                            -500 to deduct, with the date and what it paid for.
+                          </p>
+                        ) : (
+                          <label className="flex items-center gap-2 text-xs text-teal-900/70 sm:col-span-2 lg:col-span-4">
+                            <input
+                              type="checkbox"
+                              checked={paymentDraftFor(entry.lot.id).moneyOnly}
                               onChange={(event) =>
                                 patchPaymentDraft(entry.lot.id, {
-                                  paidDate: event.target.value,
+                                  moneyOnly: event.target.checked,
                                 })
                               }
-                              className="h-9"
                             />
-                          </div>
-                          <div className="space-y-1">
-                            <Label className="text-[11px] text-neutral-400">Amount</Label>
+                            Money only — not trip heads. A minus, such as -500, deducts this cash.
+                          </label>
+                        )}
+                        <div className="space-y-1">
+                          <Label className="text-[11px] text-neutral-400">Date</Label>
+                          <Input
+                            type="date"
+                            required
+                            value={paymentDraftFor(entry.lot.id).paidDate}
+                            onChange={(event) =>
+                              patchPaymentDraft(entry.lot.id, {
+                                paidDate: event.target.value,
+                              })
+                            }
+                            className="h-9"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-[11px] text-neutral-400">Amount</Label>
                             <Input
                               type="number"
-                              min={0}
+                              min={
+                                entry.due <= 0.009 || paymentDraftFor(entry.lot.id).moneyOnly
+                                  ? undefined
+                                  : 0
+                              }
                               step={1}
                               required
                               value={paymentDraftFor(entry.lot.id).amount}
@@ -1966,36 +2132,55 @@ export function AdminAgentAllotment() {
                                   amount: event.target.value,
                                 })
                               }
-                              placeholder={String(entry.due)}
+                              placeholder={
+                                entry.due <= 0.009 || paymentDraftFor(entry.lot.id).moneyOnly
+                                  ? '-500 to deduct'
+                                  : String(entry.due)
+                              }
                               className="h-9"
                             />
-                          </div>
-                          <div className="space-y-1">
-                            <Label className="text-[11px] text-neutral-400">Note</Label>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-[11px] text-neutral-400">Note</Label>
                             <Input
                               value={paymentDraftFor(entry.lot.id).note}
+                              required={
+                                (entry.due <= 0.009 || paymentDraftFor(entry.lot.id).moneyOnly) &&
+                                parseMoney(paymentDraftFor(entry.lot.id).amount) < 0
+                              }
                               onChange={(event) =>
                                 patchPaymentDraft(entry.lot.id, {
                                   note: event.target.value,
                                 })
                               }
-                              placeholder="Transfer note"
+                              placeholder={
+                                (entry.due <= 0.009 || paymentDraftFor(entry.lot.id).moneyOnly) &&
+                                parseMoney(paymentDraftFor(entry.lot.id).amount) < 0
+                                  ? 'What this cash paid'
+                                  : 'Transfer note'
+                              }
                               className="h-9"
                             />
-                          </div>
-                          <div className="flex items-end">
-                            <Button
-                              type="submit"
-                              disabled={savingPaymentLotId === entry.lot.id}
-                              className="h-9 w-full"
-                              size="sm"
-                            >
-                              <Plus data-icon="inline-start" />
-                              {savingPaymentLotId === entry.lot.id ? 'Saving…' : 'Add pay'}
-                            </Button>
-                          </div>
-                        </form>
-                      )}
+                        </div>
+                        <div className="flex items-end">
+                          <Button
+                            type="submit"
+                            disabled={savingPaymentLotId === entry.lot.id}
+                            className="h-9 w-full"
+                            size="sm"
+                          >
+                            <Plus data-icon="inline-start" />
+                            {savingPaymentLotId === entry.lot.id
+                              ? 'Saving…'
+                              : (entry.due <= 0.009 || paymentDraftFor(entry.lot.id).moneyOnly) &&
+                                  parseMoney(paymentDraftFor(entry.lot.id).amount) < 0
+                                ? 'Deduct'
+                                : entry.due <= 0.009 || paymentDraftFor(entry.lot.id).moneyOnly
+                                  ? 'Add money'
+                                  : 'Add pay'}
+                          </Button>
+                        </div>
+                      </form>
                       {paymentErrorByLot[entry.lot.id] ? (
                         <p className="mt-2 text-sm text-red-600">
                           {paymentErrorByLot[entry.lot.id]}
@@ -2067,6 +2252,7 @@ export function AdminAgentAllotment() {
                       </div>
                       <LotCardStats
                         paid={entry.paid}
+                        otherCash={allotmentOtherCash(entry.lot)}
                         lotHeads={entry.lot.seats}
                         lotTotal={entry.lot.totalAmount}
                         usedAmount={entry.usageTotals.amount}
@@ -2366,7 +2552,7 @@ export function AdminAgentAllotment() {
       <div className="w-full">
         <PageHeader
           title={agentName || 'Agent Allotment'}
-          description="Each tab is one allotment. New bookings wait in Daily checker until Save, then land on the lot marked new. Open a new lot to switch where the next save goes."
+          description={`Each tab is one ${workProgram === 'PP' ? 'Phi Phi' : 'James Bond'} allotment. New bookings wait in Daily checker until Save, then land on the lot marked new.`}
           actions={
             <Button type="button" variant="outline" size="sm" onClick={() => setView('add')}>
               <ArrowLeft className="size-3.5" />
@@ -2374,6 +2560,7 @@ export function AdminAgentAllotment() {
             </Button>
           }
         />
+        {programBar}
 
         <div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           <Surface className="px-4 py-3">
@@ -2534,9 +2721,11 @@ export function AdminAgentAllotment() {
           >
             <div className="sm:col-span-2 lg:col-span-5">
               <p className="text-xs font-medium text-teal-950">
-                {selectedLotBook && selectedLotBook.remaining <= 0
-                  ? `Lot ${selectedLotBook.index} is used up. This transfer opens a new lot, and the next Daily checker save loads there.`
-                  : `Top up ${selectedLotBook ? `lot ${selectedLotBook.index}` : 'the open lot'}. Heads and money stay on this lot.`}
+                {topUpDraft.heads.trim() === '' || Number(topUpDraft.heads) === 0
+                  ? 'Leave heads empty for other cash. A minus, such as -500, deducts it. Write what it paid for. Trip heads stay the same.'
+                  : selectedLotBook && selectedLotBook.remaining <= 0
+                    ? `Lot ${selectedLotBook.index} is used up. This transfer opens a new lot, and the next Daily checker save loads there.`
+                    : `Top up ${selectedLotBook ? `lot ${selectedLotBook.index}` : 'the open lot'}. Heads and money stay on this lot.`}
               </p>
             </div>
             <Input
@@ -2551,20 +2740,18 @@ export function AdminAgentAllotment() {
             />
             <Input
               type="number"
-              min={1}
+              min={0}
               step={1}
-              required
               value={topUpDraft.heads}
               onChange={(event) =>
                 setTopUpDraft((current) => ({ ...current, heads: event.target.value }))
               }
-              placeholder="หัว"
+              placeholder="หัว (ว่าง = เฉพาะเงิน)"
               className="h-10"
-              aria-label="หัวที่โอนเพิ่ม"
+              aria-label="หัวที่โอนเพิ่ม เว้นว่างถ้าเป็นเงินอย่างเดียว"
             />
             <Input
               type="number"
-              min={0}
               step={1}
               required
               value={topUpDraft.amount}
@@ -2580,16 +2767,26 @@ export function AdminAgentAllotment() {
               onChange={(event) =>
                 setTopUpDraft((current) => ({ ...current, note: event.target.value }))
               }
-              placeholder="เลขอ้างอิง"
+              placeholder={
+                (topUpDraft.heads.trim() === '' || Number(topUpDraft.heads) === 0) &&
+                parseMoney(topUpDraft.amount) < 0
+                  ? 'หักไปทำอะไร'
+                  : 'เลขอ้างอิง'
+              }
               className="h-10"
               aria-label="เลขอ้างอิง"
             />
             <Button type="submit" disabled={savingTopUp} className="h-10">
               {savingTopUp
                 ? 'กำลังบันทึก…'
-                : selectedLotBook && selectedLotBook.remaining <= 0
-                  ? 'Open new lot'
-                  : 'Top up'}
+                : (topUpDraft.heads.trim() === '' || Number(topUpDraft.heads) === 0) &&
+                    parseMoney(topUpDraft.amount) < 0
+                  ? 'Deduct'
+                  : topUpDraft.heads.trim() === '' || Number(topUpDraft.heads) === 0
+                    ? 'Add money'
+                  : selectedLotBook && selectedLotBook.remaining <= 0
+                    ? 'Open new lot'
+                    : 'Top up'}
             </Button>
             {topUpError ? (
               <p className="text-sm text-red-600 sm:col-span-2 lg:col-span-5">{topUpError}</p>
@@ -2798,6 +2995,16 @@ export function AdminAgentAllotment() {
                         </p>
                       </div>
                     </div>
+                    {allotmentOtherCash(row) !== 0 ? (
+                      <p
+                        className={cn(
+                          'mt-2 text-[11px]',
+                          allotmentOtherCash(row) < 0 ? 'text-rose-700' : 'text-teal-900/55',
+                        )}
+                      >
+                        Other cash {formatMoney(allotmentOtherCash(row))} THB — not trip heads
+                      </p>
+                    ) : null}
                   </button>
                 )
               })}
@@ -2870,6 +3077,17 @@ export function AdminAgentAllotment() {
                           >
                             {payStatusLabel(status)}
                           </span>
+                          {allotmentOtherCash(row) !== 0 ? (
+                            <p
+                              className={cn(
+                                'mt-1 text-[10px]',
+                                allotmentOtherCash(row) < 0 ? 'text-rose-700' : 'text-teal-900/50',
+                              )}
+                            >
+                              {allotmentOtherCash(row) > 0 ? '+' : ''}
+                              {formatMoney(allotmentOtherCash(row))} other
+                            </p>
+                          ) : null}
                         </TableCell>
                         <TableCell className="text-right" onClick={(event) => event.stopPropagation()}>
                           <div className="flex justify-end gap-2">
@@ -3026,14 +3244,15 @@ export function AdminAgentAllotment() {
     <div className="w-full">
       <PageHeader
         title="Lots & payments"
-        description="Open a new lot, or click an agent to manage lots, transfers, and head usage."
+        description={`Open a ${workProgram === 'PP' ? 'Phi Phi' : 'James Bond'} lot, or click an agent to manage lots, transfers, and head usage.`}
         actions={
           <Button type="button" variant="outline" size="sm" onClick={() => setView('hub')}>
             <ArrowLeft className="size-3.5" />
             Back
           </Button>
         }
-      />
+        />
+      {programBar}
 
       <Surface className="p-5">
         <form className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-9" onSubmit={handleAdd}>
@@ -3283,6 +3502,16 @@ export function AdminAgentAllotment() {
                       </p>
                     </div>
                   </div>
+                  {summary.otherCash !== 0 ? (
+                    <p
+                      className={cn(
+                        'mt-2 text-[11px]',
+                        summary.otherCash < 0 ? 'text-rose-700' : 'text-teal-900/55',
+                      )}
+                    >
+                      Other cash {formatMoney(summary.otherCash)} THB — not trip heads
+                    </p>
+                  ) : null}
                   <p className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold tracking-wide text-teal-800 uppercase">
                     Open lots
                     <ChevronRight className="size-3.5" />
@@ -3294,7 +3523,7 @@ export function AdminAgentAllotment() {
         </div>
       ) : null}
 
-      {!loading && rows.length > 0 ? (
+      {!loading && programLots.length > 0 ? (
         <div className="mt-5">
           <h2 className="mb-2 text-sm font-semibold text-teal-950">Recent lots</h2>
           <p className="mb-3 text-xs text-teal-900/50">
@@ -3317,7 +3546,7 @@ export function AdminAgentAllotment() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rows.map((row) => {
+                {programLots.map((row) => {
                   const status = allotmentPayStatus(row)
                   return (
                     <TableRow key={row.id}>
@@ -3360,6 +3589,17 @@ export function AdminAgentAllotment() {
                         >
                           {payStatusLabel(status)}
                         </span>
+                        {allotmentOtherCash(row) !== 0 ? (
+                          <p
+                            className={cn(
+                              'mt-1 text-[10px]',
+                              allotmentOtherCash(row) < 0 ? 'text-rose-700' : 'text-teal-900/50',
+                            )}
+                          >
+                            {allotmentOtherCash(row) > 0 ? '+' : ''}
+                            {formatMoney(allotmentOtherCash(row))} other
+                          </p>
+                        ) : null}
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-2">
