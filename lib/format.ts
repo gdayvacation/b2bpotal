@@ -122,10 +122,14 @@ export function uniqueAgentSlug(name: string, existingSlugs: string[]) {
   return `${base}-${index}`
 }
 
-/** Report display label — stored value stays "Not Included". */
+/** Report display label — stored value stays "Not Included". INC/EXC show as full words. */
 export function formatIncludeLabel(value: string | null | undefined) {
   if (!value) return '—'
-  if (value === 'Not Included') return 'Excluded'
+  const raw = value.trim().toLowerCase()
+  if (value === 'Not Included' || raw === 'exc' || raw === 'excl' || raw === 'excluded') {
+    return 'Excluded'
+  }
+  if (value === 'Included' || raw === 'inc' || raw === 'incl') return 'Included'
   return value
 }
 

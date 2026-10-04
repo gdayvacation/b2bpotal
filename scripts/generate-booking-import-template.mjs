@@ -22,10 +22,11 @@ const headers = [
   'CHD',
   'INF',
   'COT',
-  'Remark',
+  'Park Fee',
   'Pick Up',
   'Zone',
   'VAN',
+  'Remark',
 ]
 
 const exampleRows = [
@@ -40,10 +41,11 @@ const exampleRows = [
     '',
     '',
     '800',
-    'Excluding National Park Fee',
+    'EXC',
     '08:00',
     'Patong',
     '',
+    'Arrive 10 min early',
   ],
   [
     '6 Oct 26',
@@ -56,9 +58,10 @@ const exampleRows = [
     '1',
     '',
     '',
-    '',
+    'INC',
     '07:30',
     'Kata',
+    '',
     '',
   ],
 ]
@@ -66,7 +69,7 @@ const exampleRows = [
 const blankRows = Array.from({ length: 8 }, () => headers.map(() => ''))
 
 /** Optional banner row (same layout as pickup lists) — date also in Date column per row */
-const sheetRows = [['5 Oct 26', '', '', '', '', '', '', '', '', '', '', '', '', ''], headers, ...exampleRows, ...blankRows]
+const sheetRows = [['5 Oct 26', '', '', '', '', '', '', '', '', '', '', '', '', '', ''], headers, ...exampleRows, ...blankRows]
 
 const wb = XLSX.utils.book_new()
 const ws = XLSX.utils.aoa_to_sheet(sheetRows)

@@ -223,15 +223,13 @@ function parseGenericSheet(
       if (field === 'adults' || field === 'children' || field === 'infants' || field === 'tourLeaders') {
         mapped[field] = num(row, index)
       } else {
-        mapped[field] = raw
-        if (field === 'note') {
-          const code = raw.trim().toUpperCase()
-          if (code === 'EXC' || code === 'EXCL' || code === 'EXCLUDED') {
-            mapped.parkFee = 'Not Included'
-          } else if (code === 'INC' || code === 'INCLUDED') {
-            mapped.parkFee = 'Included'
+        if (field === 'note' && /^(inc|incl|included|exc|excl|excluded)$/i.test(raw)) {
+          if (!mapped.parkFee) {
+            mapped.parkFee = /^(exc|excl|excluded)$/i.test(raw) ? 'Not Included' : 'Included'
           }
+          continue
         }
+        mapped[field] = raw
       }
     }
     if (!hasData) {

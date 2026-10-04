@@ -215,6 +215,13 @@ export function normalizeBookingImageDraft(input: unknown): BookingImageDraft {
 
   const fromRemark = inferParkFeeFromRemark(draft.note, explicitParkRaw || raw.parkFee || raw.nationalParkFee)
   if (fromRemark) draft.parkFee = fromRemark
+  // INC/EXC belong on Park fee, not in the guest remark. A real Remark column stays in the note.
+  if (/^(inc|incl|included|exc|excl|excluded)$/i.test(draft.note.trim())) {
+    if (!explicitParkRaw) {
+      draft.parkFee = /^(exc|excl|excluded)$/i.test(draft.note.trim()) ? 'Not Included' : 'Included'
+    }
+    draft.note = ''
+  }
 
   if (!draft.program) {
     draft.warnings.push('Program could not be read clearly — please choose PP or James Bond.')

@@ -190,7 +190,7 @@ export function VoucherPreview({
 
           <Section title="Tour options" icon={<Ship className="size-3.5" />}>
             <dl className="grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-3">
-              <DetailCell label="National Park" value={formatIncludeLabel(live.parkFee)} />
+              <DetailCell label="Park fee" value={formatIncludeLabel(live.parkFee)} />
               {live.program === 'James Bond' ? (
                 <DetailCell label="Canoe" value={formatIncludeLabel(live.canoe)} />
               ) : null}
@@ -211,7 +211,7 @@ export function VoucherPreview({
               />
               <DetailCell
                 label="Guest remark"
-                value={live.note.trim() || '—'}
+                value={guestRemarkText(live.note) || '—'}
                 wrap
               />
               {live.lateDateChange ? (
@@ -296,6 +296,13 @@ function GuestStat({ label, value }: { label: string; value: number }) {
       </p>
     </div>
   )
+}
+
+/** Park-fee codes stay on Park fee. The Remark column is the guest remark. */
+function guestRemarkText(note: string) {
+  const text = note.trim()
+  if (/^(inc|incl|included|exc|excl|excluded)$/i.test(text)) return ''
+  return text
 }
 
 function DetailCell({
