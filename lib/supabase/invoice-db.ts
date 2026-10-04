@@ -80,6 +80,7 @@ type InvoiceRow = {
   created_at: string
   send_to_agent?: boolean | null
   payments?: unknown
+  is_draft?: boolean | null
 }
 
 type ItemRow = {
@@ -344,6 +345,7 @@ function mapInvoice(row: InvoiceRow, items: InvoiceItem[]): InvoiceDocument {
     payments: parsePayments(row.payments),
     createdAt: row.created_at,
     sendToAgent: row.send_to_agent === true,
+    isDraft: row.is_draft === true,
   }
 }
 
@@ -365,6 +367,7 @@ function invoiceToRow(doc: InvoiceDocument, includeChannel = true): InvoiceRow {
     created_at: doc.createdAt,
     send_to_agent: doc.sendToAgent === true,
     payments: invoicePayments(doc),
+    is_draft: doc.isDraft === true,
   }
 }
 
@@ -594,7 +597,7 @@ export async function saveInvoiceDocument(
         invoiceError.message,
       )
       if (missingColumn) {
-        const { send_to_agent: _send, payments: _payments, ...withoutExtras } = row
+        const { send_to_agent: _send, payments: _payments, is_draft: _draft, ...withoutExtras } = row
         const retryExtras = await supabase.from('invoices').upsert(withoutExtras)
         if (retryExtras.error) {
           const retry = await supabase.from('invoices').upsert(invoiceToRow(working, false))

@@ -163,6 +163,19 @@ export function isCancelOpenForDate(
  * Extra charges apply once the clock reaches lateFeeFromTime on the modify
  * deadline day, while modify is still open.
  */
+/** Prebuy date moves before this time on the original travel date (Bangkok) leave that day's bill. */
+export const PREBUY_DATE_MOVE_CLOSE_TIME = '22:00'
+
+/** True until 10:00 PM Thailand on the original travel date. */
+export function isBeforePrebuyDateMoveClose(
+  travelDate: string,
+  now: Date = new Date(),
+  timezone: string = BOOKING_CUTOFF_TIMEZONE,
+): boolean {
+  const { date: nowDate, time: nowTime } = zonedParts(now, timezone)
+  return `${nowDate}T${nowTime}` < `${travelDate}T${PREBUY_DATE_MOVE_CLOSE_TIME}`
+}
+
 export function isLateFeeTimeForDate(
   settings: BookingCutoffSettings,
   travelDate: string,

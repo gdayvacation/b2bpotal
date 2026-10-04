@@ -312,7 +312,7 @@ export function AdminDashboard() {
       <PageHeader
         eyebrow={formatLongDate(today)}
         title="Dashboard"
-        description="Today’s departures and top agents — open Month or Year when you need a wider view."
+        description="Today’s totals and top agents — open Month or Year when you need a wider view."
       />
 
       <Surface className="mb-3 px-3 py-2 sm:mb-4 sm:px-3.5">
@@ -648,11 +648,11 @@ export function AdminDashboard() {
             Loading {range === 'month' ? 'this month' : `${year}`}…
           </div>
         </Surface>
-      ) : range !== 'year' ? (
+      ) : range === 'month' ? (
         <Surface className="mt-3 overflow-hidden">
           <div className="border-b border-teal-900/8 px-3.5 py-3 sm:px-5 sm:py-4">
             <h2 className="font-display font-semibold text-teal-950">
-              {range === 'today' ? 'Today’s departures' : selectedDay ? 'Selected day' : 'Monthly departures'}
+              {selectedDay ? 'Selected day' : 'Monthly departures'}
             </h2>
             <p className="text-sm text-teal-900/50">
               {visible.length === 0
@@ -682,7 +682,7 @@ export function AdminDashboard() {
             </div>
           )}
         </Surface>
-      ) : (
+      ) : range === 'year' ? (
         <Surface className="mt-3 overflow-hidden">
           <div className="border-b border-teal-900/8 px-3.5 py-3 sm:px-5 sm:py-4">
             <h2 className="font-display font-semibold text-teal-950">{year} by month</h2>
@@ -722,7 +722,7 @@ export function AdminDashboard() {
             ))}
           </div>
         </Surface>
-      )}
+      ) : null}
     </div>
   )
 }

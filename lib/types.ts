@@ -68,6 +68,11 @@ export type BookingActionOptions = {
   moveFee?: number
   /** addBooking: the booking/date these guests were moved from. */
   movedFrom?: { code: string; date: string }
+  /**
+   * Staff changed the date after a no-show. Prebuy keeps the original-date head
+   * deduct and adds the per-person date-change fee on that same bill.
+   */
+  noShowDateMove?: boolean
 }
 
 export const CORE_PICKUP_ZONE_NAMES = ['Patong', 'Kata', 'Karon', 'Other'] as const
@@ -210,6 +215,11 @@ export type Booking = {
    * Invoice → separate “Change date · full price” line. Prebuy → head deduct like no-show.
    */
   lateDateChange?: boolean
+  /**
+   * Staff moved this booking after a no-show. Prebuy invoices keep the original
+   * head deduct and add the date-change fee on the same bill.
+   */
+  noShowDateMove?: boolean
   /** Agent cancelled after the late-fee time — invoice at full tour price. */
   lateCancel?: boolean
   /** Admin-set cancel charge (THB). 0 = complimentary. Unset = follow lateCancel rule. */

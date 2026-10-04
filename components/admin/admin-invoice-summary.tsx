@@ -64,7 +64,7 @@ export function InvoiceMonthlySummary({
     const map = new Map<string, AgentSummary>()
 
     for (const doc of docs) {
-      if (doc.kind === 'billing_note') continue
+      if (doc.kind === 'billing_note' || doc.isDraft) continue
       const billingType = parseAgentBillingType(
         ratesForAgent(rates, doc.agentSlug).billingType,
       )

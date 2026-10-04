@@ -111,7 +111,7 @@ export function InvoiceEditDialog({
   isNew: boolean
   open: boolean
   onOpenChange: (open: boolean) => void
-  onSave: (doc: InvoiceDocument) => Promise<void>
+  onSave: (doc: InvoiceDocument, mode: 'draft' | 'issue') => Promise<void>
   liveItemsForCodes?: (codes: string[]) => Omit<InvoiceItem, 'invoiceId'>[]
 }) {
   const [draft, setDraft] = useState<InvoiceDocument | null>(null)
@@ -265,7 +265,7 @@ export function InvoiceEditDialog({
     })
   }
 
-  async function save() {
+  async function save(mode: 'draft' | 'issue') {
     if (!draft) return
     if (draft.items.length === 0) {
       setError('Add at least one bill line.')
@@ -274,11 +274,14 @@ export function InvoiceEditDialog({
     setSaving(true)
     setError('')
     try {
-      await onSave({
-        ...draft,
-        grandTotal: itemsAgentTotal(draft.items),
-        items: draft.items.map((item, index) => ({ ...item, sortOrder: index })),
-      })
+      await onSave(
+        {
+          ...draft,
+          grandTotal: itemsAgentTotal(draft.items),
+          items: draft.items.map((item, index) => ({ ...item, sortOrder: index })),
+        },
+        mode,
+      )
       onOpenChange(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save this invoice.')
@@ -302,6 +305,7 @@ export function InvoiceEditDialog({
   const fallbackCode = draft.items[0]?.bookingCode ?? ''
   const fallbackDate = draft.items[0]?.travelDate || draft.issueDate
   const paid = draft.status === 'paid'
+  const unissued = isNew || draft.isDraft === true
   const uniqueVouchers = [...new Set(draft.items.map((item) => item.voucherNo.trim()).filter(Boolean))]
   const headerVoucher = uniqueVouchers[0] ?? draft.items[0]?.voucherNo ?? ''
   const travelDate =
@@ -317,10 +321,10 @@ export function InvoiceEditDialog({
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-teal-900/45">
-                {documentTitle(draft, isNew)}
+                {unissued ? 'Draft' : documentTitle(draft, isNew)}
               </p>
               <DialogTitle className="mt-0.5 font-display text-2xl tracking-tight text-teal-950">
-                {draft.number}
+                {unissued ? 'Not issued' : draft.number}
               </DialogTitle>
               <DialogDescription className="sr-only">
                 Edit invoice lines for {draft.agentName}, then save.
@@ -333,7 +337,7 @@ export function InvoiceEditDialog({
                   : 'rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-900'
               }
             >
-              {paid ? 'Paid' : 'Unpaid'}
+              {unissued ? 'Not issued' : paid ? 'Paid' : 'Unpaid'}
             </span>
           </div>
         </DialogHeader>
@@ -632,8 +636,24 @@ export function InvoiceEditDialog({
           <Button type="button" variant="outline" className="h-10 rounded-xl" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button type="button" className="h-10 rounded-xl" disabled={saving} onClick={() => void save()}>
-            {saving ? 'Saving…' : isNew ? 'Create invoice' : 'Save changes'}
+          {unissued ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="h-10 rounded-xl"
+              disabled={saving}
+              onClick={() => void save('draft')}
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            className="h-10 rounded-xl"
+            disabled={saving}
+            onClick={() => void save('issue')}
+          >
+            {saving ? 'Saving…' : unissued ? 'Create invoice' : 'Save changes'}
           </Button>
         </DialogFooter>
       </DialogContent>

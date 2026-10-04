@@ -58,7 +58,9 @@ import {
   invoicePayments,
   invoiceReceiptRows,
   invoicedBookingCodes,
+  isIssuedInvoice,
   isInvoiceAmountStale,
+  nextDocumentNumber,
   PAYMENT_CHANNELS,
   itemsAgentTotal,
   itemsGuestTotal,
@@ -67,6 +69,8 @@ import {
   newInvoiceDocument,
   parseAgentBillingType,
   prebuyDeductHeads,
+  prebuyNoShowMoveMoney,
+  invoiceBillDate,
   ratesForAgent,
   type AgentBillingType,
   type InvoiceDocument,
@@ -198,6 +202,17 @@ const EXTRA_LINE_KINDS = new Set([
 ])
 
 const EXTRA_CHARGE_KINDS = new Set(['change_date', 'private_transfer', 'extra_zone'])
+
+/** Saved invoice/draft total for this booking, including lines added without a booking code. */
+function savedChargeForBooking(doc: InvoiceDocument, bookingCode: string) {
+  const matched = doc.items.filter((item) => item.bookingCode === bookingCode)
+  const uncoded = doc.items.filter((item) => !item.bookingCode)
+  const codes = new Set(doc.items.map((item) => item.bookingCode).filter(Boolean))
+  const lines = codes.size <= 1 && (codes.size === 0 || codes.has(bookingCode))
+    ? [...matched, ...uncoded]
+    : matched
+  return itemsAgentTotal(lines)
+}
 
 function BillFlag({ label, title }: { label: string; title: string }) {
   return (
@@ -649,9 +664,14 @@ export function AdminInvoices() {
 
   const rows = useMemo<BillRow[]>(() => {
     const list = bookings
-      .filter((booking) =>
-        isSearching ? true : booking.date >= fromDate && booking.date <= toDate,
-      )
+      .filter((booking) => {
+        if (isSearching) return true
+        const prebuy =
+          parseAgentBillingType(ratesForAgent(store.rates, booking.agentSlug).billingType) ===
+          'prebuy'
+        const billedOn = invoiceBillDate(booking, prebuy)
+        return billedOn >= fromDate && billedOn <= toDate
+      })
       .filter((booking) =>
         isSearching || agentSlug === 'all' ? true : booking.agentSlug === agentSlug,
       )
@@ -659,7 +679,11 @@ export function AdminInvoices() {
       .filter((booking) => bookingMatchesInvoiceSearch(booking, query))
       .filter((booking) => {
         const attendance = getCheckInAttendance(booking.date, booking.program, booking.code)
+        const prebuy =
+          parseAgentBillingType(ratesForAgent(store.rates, booking.agentSlug).billingType) ===
+          'prebuy'
         if (booking.status === 'Cancelled') return true
+        if (prebuy && booking.noShowDateMove && booking.movedFrom?.date) return true
         if (attendance === 'checked' || attendance === 'no-show') return true
         return includePending
       })
@@ -669,14 +693,21 @@ export function AdminInvoices() {
         const items = bookingInvoiceItems(booking)
         const invoice = store.invoices.find(
           (doc) =>
-            doc.kind === 'invoice' &&
+            isIssuedInvoice(doc) &&
             doc.items.some((item) => item.bookingCode === booking.code),
         )
+        const draft = store.invoices.find(
+          (doc) =>
+            doc.kind === 'invoice' &&
+            doc.isDraft === true &&
+            doc.items.some((item) => item.bookingCode === booking.code),
+        )
+        const priced = invoice ?? draft
         const liveTotal = itemsAgentTotal(items)
-        const storedTotal = invoice ? invoiceAmountForBooking(invoice, booking.code) : liveTotal
+        const storedTotal = priced ? savedChargeForBooking(priced, booking.code) : liveTotal
         const liveAuto = itemsAgentTotal(items.filter((item) => item.lineKind !== 'other'))
-        const billedItems = (invoice?.items ?? items).filter(
-          (item) => !invoice || item.bookingCode === booking.code,
+        const billedItems = (priced?.items ?? items).filter(
+          (item) => !priced || item.bookingCode === booking.code,
         )
         const extraItems = billedItems.filter((item) => EXTRA_CHARGE_KINDS.has(item.lineKind))
         const parkItems = billedItems.filter((item) => item.lineKind === 'park_fee')
@@ -693,11 +724,11 @@ export function AdminInvoices() {
         return {
           booking,
           billingType,
-          billTotal: invoice ? storedTotal : liveTotal,
+          billTotal: priced ? storedTotal : liveTotal,
           deductHeads: billingType === 'prebuy' ? prebuyDeductHeads(items) : 0,
           liveTotal,
-          guestCollect: invoice
-            ? invoiceGuestAmountForBooking(invoice, booking.code)
+          guestCollect: priced
+            ? invoiceGuestAmountForBooking(priced, booking.code)
             : itemsGuestTotal(items),
           parkCharge: parkItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
           extraCharge: extraItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
@@ -756,6 +787,7 @@ export function AdminInvoices() {
 
   const documents = useMemo(() => {
     return store.invoices
+      .filter((doc) => !doc.isDraft)
       .filter((doc) =>
         isSearching || agentSlug === 'all' ? true : doc.agentSlug === agentSlug,
       )
@@ -794,8 +826,8 @@ export function AdminInvoices() {
     // Receipts: prefer payment date in range; fall back to already date-matched invoices.
     const pool =
       isSearching || agentSlug === 'all'
-        ? store.invoices.filter((doc) => doc.kind === 'invoice')
-        : store.invoices.filter((doc) => doc.kind === 'invoice' && doc.agentSlug === agentSlug)
+        ? store.invoices.filter((doc) => isIssuedInvoice(doc))
+        : store.invoices.filter((doc) => isIssuedInvoice(doc) && doc.agentSlug === agentSlug)
     const rows = invoiceReceiptRows(pool).filter(({ doc, payment }) => {
       if (isSearching) return documentMatchesInvoiceSearch(doc, query, guestByBookingCode)
       if (payment.paidDate >= fromDate && payment.paidDate <= toDate) return true
@@ -1174,6 +1206,17 @@ export function AdminInvoices() {
       setEditInvoice(row.invoice)
       return
     }
+    const draft = store.invoices.find(
+      (doc) =>
+        doc.kind === 'invoice' &&
+        doc.isDraft === true &&
+        doc.items.some((item) => item.bookingCode === row.booking.code),
+    )
+    if (draft) {
+      setEditInvoiceIsNew(false)
+      setEditInvoice(draft)
+      return
+    }
     if (!row.hasRates) {
       setMessage(`Set agency prices first for ${row.booking.agentName}.`)
       return
@@ -1198,22 +1241,50 @@ export function AdminInvoices() {
     )
   }
 
-  async function saveEditedInvoice(doc: InvoiceDocument) {
+  async function saveEditedInvoice(doc: InvoiceDocument, mode: 'draft' | 'issue' = 'issue') {
     const wasNew = editInvoiceIsNew
-    if (wasNew) {
-      await store.addDocuments([doc])
-      setMessage(`Created invoice ${doc.number}.`)
+    const alreadyStored = store.invoices.some((row) => row.id === doc.id)
+    if (mode === 'draft') {
+      const draft: InvoiceDocument = {
+        ...doc,
+        isDraft: true,
+        number: doc.number.startsWith('DRAFT-')
+          ? doc.number
+          : `DRAFT-${doc.id.replace(/-/g, '').slice(0, 10)}`,
+      }
+      if (alreadyStored) await store.replaceDocument(draft)
+      else await store.addDocuments([draft])
+      setMessage('Saved. Invoice not issued yet.')
+      setEditInvoice(null)
+      setEditInvoiceIsNew(false)
+      return
+    }
+
+    let issued = { ...doc, isDraft: false }
+    if (doc.isDraft || !issued.number.startsWith('INV')) {
+      issued = {
+        ...issued,
+        number: nextDocumentNumber(
+          store.invoices.filter((row) => !row.isDraft),
+          'invoice',
+          issued.issueDate,
+        ),
+      }
+    }
+    if (wasNew && !alreadyStored) {
+      await store.addDocuments([issued])
+      setMessage(`Created invoice ${issued.number}.`)
     } else {
-      await store.replaceDocument(doc)
-      setMessage(`Updated ${doc.number}.`)
+      await store.replaceDocument(issued)
+      setMessage(doc.isDraft ? `Created invoice ${issued.number}.` : `Updated ${issued.number}.`)
     }
     setEditInvoice(null)
     setEditInvoiceIsNew(false)
-    if (wasNew) {
+    if (wasNew || doc.isDraft) {
       // Wait for the edit dialog to close before opening the PDF view.
-      window.setTimeout(() => openPreview(doc, 'invoice'), 120)
-    } else if (preview?.id === doc.id) {
-      setPreview(doc)
+      window.setTimeout(() => openPreview(issued, 'invoice'), 120)
+    } else if (preview?.id === issued.id) {
+      setPreview(issued)
     }
   }
 
@@ -1510,7 +1581,7 @@ export function AdminInvoices() {
           agentInvoiceNo={(code) =>
             store.invoices.find(
               (doc) =>
-                doc.kind === 'invoice' && doc.items.some((item) => item.bookingCode === code),
+                isIssuedInvoice(doc) && doc.items.some((item) => item.bookingCode === code),
             )?.number ?? ''
           }
         />
@@ -1755,9 +1826,15 @@ export function AdminInvoices() {
                               'whitespace-nowrap px-1 tabular-nums',
                               issued ? 'text-neutral-400' : 'text-teal-900/75',
                             )}
-                            title={formatShortDate(booking.date)}
+                            title={
+                              row.billingType === 'prebuy' && booking.noShowDateMove && booking.movedFrom?.date
+                                ? (booking.lateChangeFee ?? 0) > 0
+                                  ? `New date bill. Heads deducted on ${formatShortDate(booking.movedFrom.date)}`
+                                  : `After 10 PM — still charged on ${formatShortDate(booking.movedFrom.date)}`
+                                : formatShortDate(booking.date)
+                            }
                           >
-                            {formatDayMonth(booking.date)}
+                            {formatDayMonth(invoiceBillDate(booking, row.billingType === 'prebuy'))}
                           </TableCell>
                           <TableCell
                             className={cn(
@@ -1853,9 +1930,13 @@ export function AdminInvoices() {
                               issued ? 'text-neutral-400' : 'text-teal-950',
                             )}
                             title={
-                              row.billingType === 'prebuy'
-                                ? 'Heads deducted from the agent\'s pre-buy'
-                                : 'Pax count — this agent is billed the tour price'
+                              row.billingType === 'prebuy' && booking.noShowDateMove
+                                ? (booking.lateChangeFee ?? 0) > 0
+                                  ? `Heads deducted on ${formatShortDate(booking.movedFrom?.date ?? booking.date)}`
+                                  : 'Heads deducted from the agent\'s pre-buy'
+                                : row.billingType === 'prebuy'
+                                  ? 'Heads deducted from the agent\'s pre-buy'
+                                  : 'Pax count — this agent is billed the tour price'
                             }
                           >
                             {row.billingType === 'prebuy' ? row.deductHeads : '—'}
@@ -1865,6 +1946,16 @@ export function AdminInvoices() {
                               'px-1.5 text-right font-medium',
                               issued ? 'text-neutral-400' : 'text-teal-950',
                             )}
+                            title={
+                              row.billingType === 'prebuy' &&
+                              booking.noShowDateMove &&
+                              (booking.lateChangeFee ?? 0) > 0
+                                ? (() => {
+                                    const move = prebuyNoShowMoveMoney(booking)
+                                    return `Deducted on ${formatShortDate(move.fromDate)}. Next line: Extra Charge for Changed date ${move.perPerson} THB / person (${formatInvoiceMoney(move.amount)})`
+                                  })()
+                                : undefined
+                            }
                           >
                             {issued && row.invoice ? (
                               <button

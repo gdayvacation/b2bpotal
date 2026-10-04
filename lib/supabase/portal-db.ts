@@ -143,6 +143,7 @@ type BookingRow = {
   moved_out_tour_leaders?: number | null
   moved_from_code?: string | null
   moved_from_date?: string | null
+  no_show_date_move?: boolean | null
   updated_at?: string | null
 }
 
@@ -256,6 +257,24 @@ function asDateString(value: string) {
 
 /** How far back ops pages load on open (pickup / vans / boats / check-in). */
 export const OPS_BOOKING_LOOKBACK_DAYS = 30
+
+/** Boat, van, check-in, and seat rows kept live for marina / admin tablets. */
+export const OPS_BOARD_LOOKBACK_DAYS = 3
+export const OPS_BOARD_FORWARD_DAYS = 7
+/** Accounting tablets keep a longer lookback so recent bills still have plans and check-in. */
+export const ACCOUNTING_BOARD_LOOKBACK_DAYS = 14
+
+export type BoardDateWindow = { from: string; to: string }
+
+/** Live cache window. Accounting looks back 14 days; other staff look back 3. Both go 7 days ahead. */
+export function boardPlanWindow(role: string, now: Date = new Date()): BoardDateWindow {
+  const lookback = role === 'accounting' ? ACCOUNTING_BOARD_LOOKBACK_DAYS : OPS_BOARD_LOOKBACK_DAYS
+  const today = todayISO(now)
+  return {
+    from: addDaysISO(today, -lookback),
+    to: addDaysISO(today, OPS_BOARD_FORWARD_DAYS),
+  }
+}
 
 /** Agent booking links only keep a short history. Future trips are still included. */
 export const PARTNER_BOOKING_LOOKBACK_DAYS = 7
@@ -543,6 +562,7 @@ function mapBooking(row: BookingRow): Booking {
     status: row.status,
     lateChangeFee: Math.max(0, Math.floor(Number(row.late_change_fee) || 0)),
     lateDateChange: row.late_date_change === true,
+    noShowDateMove: row.no_show_date_move === true,
     lateCancel: row.late_cancel === true,
     cancelFee:
       row.cancel_fee == null ? undefined : Math.max(0, Math.floor(Number(row.cancel_fee) || 0)),
@@ -646,6 +666,7 @@ function bookingToRow(booking: Booking): BookingRow {
     status: booking.status,
     late_change_fee: Math.max(0, Math.floor(Number(booking.lateChangeFee) || 0)),
     late_date_change: booking.lateDateChange === true,
+    no_show_date_move: booking.noShowDateMove === true,
     late_cancel: booking.lateCancel === true,
     cancel_fee: booking.cancelFee == null ? null : Math.max(0, Math.floor(booking.cancelFee)),
   }
@@ -891,12 +912,15 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
   // Guest QR phones never show agents / pickup zones / hotels, so skip those three queries.
   // (With 100–200 guests scanning at once this saves hundreds of requests and the biggest payload.)
   let guestLite = false
+  let role = ''
   try {
     const { data } = await supabase.auth.getSession()
-    guestLite = String(data.session?.user.app_metadata?.role ?? '') === 'guest'
+    role = String(data.session?.user.app_metadata?.role ?? '')
+    guestLite = role === 'guest'
   } catch {
     guestLite = false
   }
+  const boardWindow = boardPlanWindow(role)
   const emptyRows = () =>
     Promise.resolve({ data: [] as unknown[], error: null as { message: string } | null })
 
@@ -920,16 +944,25 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     guestLite ? emptyRows() : supabase.from('pickup_zones').select('*').order('sort_order'),
     guestLite ? emptyRows() : supabase.from('hotels').select('*').order('name'),
     fetchBookingsInDateRange(operationalBookingsFromDate()),
-    selectAllPaged<AvailabilityRow>('availability', ['date']),
-    selectAllPaged<BoatPlanRow>('day_boat_plans', ['date', 'program']),
-    selectAllPaged<BoatAssignmentRow>('boat_assignments', ['date', 'program', 'booking_code', 'boat_number']),
-    selectAllPaged<VehiclePlanRow>('day_vehicle_plans', ['date', 'program']),
-    selectAllPaged<VanMetaRow>('van_meta', ['date', 'program', 'van_number']),
-    selectAllPaged<VanAssignmentRow>('van_assignments', ['id']),
+    selectPagedDateWindow<AvailabilityRow>('availability', ['date'], boardWindow),
+    selectPagedDateWindow<BoatPlanRow>('day_boat_plans', ['date', 'program'], boardWindow),
+    selectPagedDateWindow<BoatAssignmentRow>(
+      'boat_assignments',
+      ['date', 'program', 'booking_code', 'boat_number'],
+      boardWindow,
+    ),
+    selectPagedDateWindow<VehiclePlanRow>('day_vehicle_plans', ['date', 'program'], boardWindow),
+    selectPagedDateWindow<VanMetaRow>('van_meta', ['date', 'program', 'van_number'], boardWindow),
+    selectPagedDateWindow<VanAssignmentRow>('van_assignments', ['date', 'id'], boardWindow),
     supabase.from('fleet_vans').select('*').order('van_number'),
     supabase.from('drivers').select('*').order('name'),
     supabase.from('booking_cutoffs').select('*').eq('id', 'default').maybeSingle(),
-    supabase.from('booking_closures').select('*').order('date'),
+    supabase
+      .from('booking_closures')
+      .select('*')
+      .gte('date', boardWindow.from)
+      .lte('date', boardWindow.to)
+      .order('date'),
   ])
 
   await assertOk('agents', agentsRes.error, agentsRes.data)
@@ -1041,7 +1074,10 @@ export async function insertBooking(booking: Booking) {
   const row = bookingToRow(booking)
   const { error } = await supabase.from('bookings').insert(row)
   if (!error) return
-  const { late_cancel: _lateCancel, cancel_fee: _cancelFee, ...withoutCancel } = row
+  const { no_show_date_move: _noShowDateMove, ...withoutMoveFlag } = row
+  const retryMove = await supabase.from('bookings').insert(withoutMoveFlag)
+  if (!retryMove.error) return
+  const { late_cancel: _lateCancel, cancel_fee: _cancelFee, ...withoutCancel } = withoutMoveFlag
   const { error: withoutCancelError } = await supabase.from('bookings').insert(withoutCancel)
   if (!withoutCancelError) return
   const {
@@ -1089,6 +1125,7 @@ export async function updateBookingDate(
     lateChangeFee?: number
     lateDateChange?: boolean
     movedFrom?: { code: string; date: string }
+    noShowDateMove?: boolean
   },
 ) {
   const supabase = getSupabaseBrowserClient()
@@ -1103,8 +1140,16 @@ export async function updateBookingDate(
     patch.moved_from_code = extra.movedFrom.code
     patch.moved_from_date = extra.movedFrom.date
   }
+  if (extra?.noShowDateMove !== undefined) {
+    patch.no_show_date_move = extra.noShowDateMove === true
+  }
   const { error } = await supabase.from('bookings').update(patch).eq('code', code)
   if (!error) return
+  if (extra?.noShowDateMove !== undefined) {
+    const { no_show_date_move: _noShowDateMove, ...withoutFlag } = patch
+    const retry = await supabase.from('bookings').update(withoutFlag).eq('code', code)
+    if (!retry.error) return
+  }
   if (
     extra?.lateChangeFee !== undefined ||
     extra?.lateDateChange !== undefined ||
@@ -1294,28 +1339,56 @@ export async function fetchBookings(): Promise<Booking[]> {
   return fetchBookingsInDateRange(operationalBookingsFromDate())
 }
 
+/** Page `table` rows whose `date` falls inside `window`. Omit `window` to read the whole table. */
+async function selectPagedDateWindow<T>(
+  table: string,
+  orderBy: string[],
+  window?: BoardDateWindow,
+): Promise<{ data: T[] | null; error: { message: string } | null }> {
+  if (!window) return selectAllPaged<T>(table, orderBy)
+  const supabase = getSupabaseBrowserClient()
+  const pageSize = 1000
+  const all: T[] = []
+  const fromDate = window.from.slice(0, 10)
+  const toDate = window.to.slice(0, 10)
+  for (let from = 0; ; from += pageSize) {
+    let query = supabase.from(table).select('*').gte('date', fromDate).lte('date', toDate)
+    for (const column of orderBy) query = query.order(column, { ascending: true })
+    const { data, error } = await query.range(from, from + pageSize - 1)
+    if (error) return { data: null, error }
+    const rows = (data ?? []) as T[]
+    all.push(...rows)
+    if (rows.length < pageSize) break
+  }
+  return { data: all, error: null }
+}
+
 /** Reload seats, close dates, and cutoff times across devices. */
-export async function fetchAvailabilitySettings(fromDate?: string): Promise<{
+export async function fetchAvailabilitySettings(fromDate?: string, toDate?: string): Promise<{
   availability: Availability[]
   bookingCutoffs: BookingCutoffSettings
   bookingClosures: BookingClosure[]
 }> {
   const supabase = getSupabaseBrowserClient()
   const from = fromDate ? asDateString(fromDate) : ''
+  const to = toDate ? asDateString(toDate) : ''
   const [availabilityRes, cutoffsRes, closuresRes] = await Promise.all([
-    from
-      ? fetchAllPaged<AvailabilityRow>('availability', (start, end) =>
-          supabase
-            .from('availability')
-            .select('*')
-            .gte('date', from)
-            .order('date')
-            .range(start, end),
-        ).then((data) => ({ data, error: null as { message: string } | null }))
+    from || to
+      ? fetchAllPaged<AvailabilityRow>('availability', (start, end) => {
+          let query = supabase.from('availability').select('*')
+          if (from) query = query.gte('date', from)
+          if (to) query = query.lte('date', to)
+          return query.order('date').range(start, end)
+        }).then((data) => ({ data, error: null as { message: string } | null }))
       : selectAllPaged<AvailabilityRow>('availability', ['date']),
     supabase.from('booking_cutoffs').select('*').eq('id', 'default').maybeSingle(),
-    from
-      ? supabase.from('booking_closures').select('*').gte('date', from).order('date')
+    from || to
+      ? (() => {
+          let query = supabase.from('booking_closures').select('*')
+          if (from) query = query.gte('date', from)
+          if (to) query = query.lte('date', to)
+          return query.order('date')
+        })()
       : supabase.from('booking_closures').select('*').order('date'),
   ])
   await assertOk('availability', availabilityRes.error, availabilityRes.data)
@@ -1348,12 +1421,13 @@ export async function fetchAvailabilitySettings(fromDate?: string): Promise<{
 }
 
 /** Reload van assignments and meta across admins / marina tablets. */
-export async function fetchDayVehiclePlans(): Promise<Record<string, DayVehiclePlan>> {
-  const supabase = getSupabaseBrowserClient()
+export async function fetchDayVehiclePlans(
+  window?: BoardDateWindow,
+): Promise<Record<string, DayVehiclePlan>> {
   const [vehiclePlansRes, vanMetaRes, vanAssignRes] = await Promise.all([
-    selectAllPaged<VehiclePlanRow>('day_vehicle_plans', ['date', 'program']),
-    selectAllPaged<VanMetaRow>('van_meta', ['date', 'program', 'van_number']),
-    selectAllPaged<VanAssignmentRow>('van_assignments', ['id']),
+    selectPagedDateWindow<VehiclePlanRow>('day_vehicle_plans', ['date', 'program'], window),
+    selectPagedDateWindow<VanMetaRow>('van_meta', ['date', 'program', 'van_number'], window),
+    selectPagedDateWindow<VanAssignmentRow>('van_assignments', ['date', 'id'], window),
   ])
   await assertOk('day_vehicle_plans', vehiclePlansRes.error, vehiclePlansRes.data)
   await assertOk('van_meta', vanMetaRes.error, vanMetaRes.data)
@@ -1366,11 +1440,14 @@ export async function fetchDayVehiclePlans(): Promise<Record<string, DayVehicleP
 }
 
 /** Reload boat capacities, names, guides, and assignments (for live multi-admin sync). */
-export async function fetchDayBoatPlans(): Promise<Record<string, DayBoatPlan>> {
-  const supabase = getSupabaseBrowserClient()
+export async function fetchDayBoatPlans(window?: BoardDateWindow): Promise<Record<string, DayBoatPlan>> {
   const [boatPlansRes, boatAssignRes] = await Promise.all([
-    selectAllPaged<BoatPlanRow>('day_boat_plans', ['date', 'program']),
-    selectAllPaged<BoatAssignmentRow>('boat_assignments', ['date', 'program', 'booking_code', 'boat_number']),
+    selectPagedDateWindow<BoatPlanRow>('day_boat_plans', ['date', 'program'], window),
+    selectPagedDateWindow<BoatAssignmentRow>(
+      'boat_assignments',
+      ['date', 'program', 'booking_code', 'boat_number'],
+      window,
+    ),
   ])
   await assertOk('day_boat_plans', boatPlansRes.error, boatPlansRes.data)
   await assertOk('boat_assignments', boatAssignRes.error, boatAssignRes.data)
@@ -1477,26 +1554,30 @@ export function subscribeSettingsChanges(onChange: () => void) {
   }
 }
 
-/** Live van/boat board updates across admin tablets (requires Realtime on plan tables). */
-export function subscribeDayPlanChanges(onChange: () => void) {
+const BOAT_PLAN_REALTIME_TABLES = ['day_boat_plans', 'boat_assignments'] as const
+const VEHICLE_PLAN_REALTIME_TABLES = ['day_vehicle_plans', 'van_assignments', 'van_meta'] as const
+
+/** Live van/boat board updates. Pass `boat` or `vehicle` so one board does not refetch the other. */
+export function subscribeDayPlanChanges(
+  onChange: () => void,
+  scope: 'boat' | 'vehicle' | 'all' = 'all',
+) {
   const supabase = getSupabaseBrowserClient()
+  const tables =
+    scope === 'boat'
+      ? BOAT_PLAN_REALTIME_TABLES
+      : scope === 'vehicle'
+        ? VEHICLE_PLAN_REALTIME_TABLES
+        : [...BOAT_PLAN_REALTIME_TABLES, ...VEHICLE_PLAN_REALTIME_TABLES]
   // Unique name — same-ms remounts reuse a subscribed channel and reject extra .on().
-  const channel = supabase.channel(`portal-day-plans-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
-  channel.on('postgres_changes', { event: '*', schema: 'public', table: 'day_boat_plans' }, () => {
-    onChange()
-  })
-  channel.on('postgres_changes', { event: '*', schema: 'public', table: 'boat_assignments' }, () => {
-    onChange()
-  })
-  channel.on('postgres_changes', { event: '*', schema: 'public', table: 'day_vehicle_plans' }, () => {
-    onChange()
-  })
-  channel.on('postgres_changes', { event: '*', schema: 'public', table: 'van_assignments' }, () => {
-    onChange()
-  })
-  channel.on('postgres_changes', { event: '*', schema: 'public', table: 'van_meta' }, () => {
-    onChange()
-  })
+  const channel = supabase.channel(
+    `portal-day-plans-${scope}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  )
+  for (const table of tables) {
+    channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => {
+      onChange()
+    })
+  }
   channel.subscribe()
   return () => {
     void supabase.removeChannel(channel)
@@ -2480,13 +2561,15 @@ function flattenCheckInServiceMap(map: DayCheckInServiceMap): CheckInServiceRow[
 type FetchCheckInMapsOptions = {
   /** When set, only rows on/after this YYYY-MM-DD are fetched (for lighter polls). */
   sinceDate?: string
+  /** When set, only rows on/before this YYYY-MM-DD are fetched. */
+  untilDate?: string
   /** When set, only this exact YYYY-MM-DD (helper / live board day). */
   onDate?: string
 }
 
 async function fetchAllCheckInRows<T>(
   table: string,
-  options?: { sinceDate?: string; onDate?: string },
+  options?: { sinceDate?: string; untilDate?: string; onDate?: string },
 ): Promise<{ data: T[] | null; error: { message: string } | null }> {
   const supabase = getSupabaseBrowserClient()
   const pageSize = 1000
@@ -2494,11 +2577,15 @@ async function fetchAllCheckInRows<T>(
   let from = 0
   const onDate = options?.onDate?.slice(0, 10) || undefined
   const sinceDate = options?.sinceDate?.slice(0, 10) || undefined
+  const untilDate = options?.untilDate?.slice(0, 10) || undefined
 
   while (true) {
     let query = supabase.from(table).select('*').range(from, from + pageSize - 1)
     if (onDate) query = query.eq('date', onDate)
-    else if (sinceDate) query = query.gte('date', sinceDate)
+    else {
+      if (sinceDate) query = query.gte('date', sinceDate)
+      if (untilDate) query = query.lte('date', untilDate)
+    }
     const { data, error } = await query
     if (error) return { data: null, error }
     const chunk = (data ?? []) as T[]
@@ -2515,8 +2602,13 @@ export async function fetchCheckInMaps(
   options?: FetchCheckInMapsOptions,
 ): Promise<CheckInMapsSnapshot | null> {
   const sinceDate = options?.sinceDate?.slice(0, 10) || undefined
+  const untilDate = options?.untilDate?.slice(0, 10) || undefined
   const onDate = options?.onDate?.slice(0, 10) || undefined
-  const range = onDate ? { onDate } : sinceDate ? { sinceDate } : undefined
+  const range = onDate
+    ? { onDate }
+    : sinceDate || untilDate
+      ? { sinceDate, untilDate }
+      : undefined
   const [
     enrollmentsRes,
     attendanceRes,

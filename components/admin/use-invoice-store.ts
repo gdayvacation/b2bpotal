@@ -120,6 +120,7 @@ export function useInvoiceStore() {
       return current.map((row) => byId.get(row.id) ?? row)
     })
     for (const doc of saved) {
+      if (doc.isDraft) continue
       const sync = await syncPrebuyDeductFromInvoice(doc, rates)
       if (sync.message) setError(sync.message)
     }
@@ -138,7 +139,9 @@ export function useInvoiceStore() {
     if (saved.number !== doc.number) {
       setInvoices((current) => current.map((row) => (row.id === saved.id ? saved : row)))
     }
-    const sync = await syncPrebuyDeductFromInvoice(saved, rates)
+    const sync = saved.isDraft
+      ? { ok: true as const }
+      : await syncPrebuyDeductFromInvoice(saved, rates)
     if (sync.message) setError(sync.message)
     return saved
   }, [rates])

@@ -185,6 +185,7 @@ import {
   formatThbAmount,
   isBookingOpenForDate,
   isCancelOpenForDate,
+  isBeforePrebuyDateMoveClose,
   isLateAmendmentForDate,
   isLateFeeTimeForDate,
   normalizeBeforeDays,
@@ -212,6 +213,7 @@ import {
   fetchAvailabilitySettings,
   fetchDayBoatPlans,
   fetchDayVehiclePlans,
+  boardPlanWindow,
   operationalBookingsFromDate,
   partnerBookingsFromDate,
   insertBooking,
@@ -288,6 +290,8 @@ import type {
   VanMeta,
   VanSplit,
 } from '@/lib/types'
+import { parseAgentBillingType, ratesForAgent } from '@/lib/invoice'
+import { readLocalAgencyRates } from '@/lib/supabase/invoice-db'
 import { HOTEL_CATALOG } from '@/lib/hotel-catalog'
 import { packOwnBoatLabel } from '@/lib/boat-theme'
 import {
@@ -354,6 +358,17 @@ import {
   bookedPaxOf,
   totalPassengers,
 } from '@/lib/types'
+
+function agentIsPrebuy(agentSlug: string) {
+  return parseAgentBillingType(ratesForAgent(readLocalAgencyRates(), agentSlug).billingType) === 'prebuy'
+}
+
+function prebuyNoShowMoveFee(
+  booking: Pick<Booking, 'adults' | 'children'>,
+  perPerson: number,
+) {
+  return chargeablePax(booking) * Math.max(0, perPerson)
+}
 
 function mergeBookingsByCode(base: Booking[], incoming: Booking[]): Booking[] {
   const map = new Map<string, Booking>()
@@ -825,6 +840,57 @@ const PortalContext = createContext<PortalContextValue | null>(null)
 const PARTNER_POLL_MS = 2 * 60_000
 /** After this long with no tap or keypress, partner tabs stop every Supabase poll. */
 const PARTNER_IDLE_MS = 15 * 60_000
+/**
+ * Staff safety nets only. Live updates still come from Realtime.
+ * These intervals exist so a dropped websocket still catches up.
+ */
+const STAFF_BOOKINGS_POLL_MS = 120_000
+/** Full booking reload. Incremental polls cover edits; this only catches deletes and drift. */
+const STAFF_BOOKINGS_FULL_REFRESH_MS = 45 * 60_000
+const STAFF_DAY_PLAN_POLL_MS = 3 * 60_000
+const STAFF_SETTINGS_POLL_MS = 5 * 60_000
+const STAFF_CHECK_IN_POLL_MS = 3 * 60_000
+const REALTIME_REFRESH_MS = 1_500
+
+function mergeDatedRecords<T extends { date: string }>(
+  current: Record<string, T>,
+  incoming: Record<string, T>,
+  from: string,
+  to: string,
+): Record<string, T> {
+  const next: Record<string, T> = {}
+  for (const [key, value] of Object.entries(current)) {
+    if (value.date < from || value.date > to) next[key] = value
+  }
+  for (const [key, value] of Object.entries(incoming)) next[key] = value
+  return next
+}
+
+function mergeDateKeyed<T>(
+  current: Record<string, T>,
+  incoming: Record<string, T>,
+  from: string,
+  to: string,
+): Record<string, T> {
+  const next: Record<string, T> = {}
+  for (const [key, value] of Object.entries(current)) {
+    const day = key.slice(0, 10)
+    if (day < from || day > to) next[key] = value
+  }
+  for (const [key, value] of Object.entries(incoming)) next[key] = value
+  return next
+}
+
+function mergeRowsInWindow<T extends { date: string }>(
+  current: T[],
+  incoming: T[],
+  from: string,
+  to: string,
+): T[] {
+  return [...current.filter((row) => row.date < from || row.date > to), ...incoming].sort((a, b) =>
+    a.date.localeCompare(b.date),
+  )
+}
 
 const PartnerDataLiveContext = createContext(true)
 
@@ -890,6 +956,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [bookingClosures, setBookingClosures] = useState<BookingClosure[]>([])
   const [bookingEventsByCode, setBookingEventsByCode] = useState<Record<string, BookingEvent[]>>({})
   const portalLoadGenRef = useRef(0)
+  const sessionRoleRef = useRef(sessionRole)
+  sessionRoleRef.current = sessionRole
+  const outsideWindowTimerRef = useRef<number | null>(null)
+  const outsideWindowDatesRef = useRef<string[]>([])
+  const outsideWindowCoveredRef = useRef<{ from: string; to: string }[]>([])
   const checkInCloudEnabledRef = useRef(false)
   const checkInWritePendingRef = useRef(0)
   /** Bumped on every local check-in write so in-flight polls cannot overwrite fresher state. */
@@ -962,8 +1033,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (conflict) {
         delete boatPlanRevisionRef.current[key]
         try {
-          const next = await fetchDayBoatPlans()
-          setDayBoatPlans(next)
+          const day = plan.date.slice(0, 10)
+          const next = await fetchDayBoatPlans({ from: day, to: day })
+          setDayBoatPlans((current) => mergeDatedRecords(current, next, day, day))
         } catch (refreshError) {
           console.error('[portal] boat plan conflict refresh failed', refreshError)
         }
@@ -1006,8 +1078,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         if (/another device|conflict/i.test(message)) {
           delete vehiclePlanRevisionRef.current[key]
           try {
-            const next = await fetchDayVehiclePlans()
-            setDayVehiclePlans(next)
+            const day = plan.date.slice(0, 10)
+            const next = await fetchDayVehiclePlans({ from: day, to: day })
+            setDayVehiclePlans((current) => mergeDatedRecords(current, next, day, day))
           } catch (refreshError) {
             console.error('[portal] van plan conflict refresh failed', refreshError)
           }
@@ -1071,6 +1144,22 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       next[key] = value
     }
     return next
+  }
+
+  /** Replace only days inside [from, to]. Days outside the window stay as they are. */
+  function applyCheckInMapsWindow(patch: CheckInMapsSnapshot, from: string, to: string) {
+    const next: CheckInMapsSnapshot = {
+      enrollments: mergeDateKeyed(loadCheckInEnrollmentMap(), patch.enrollments, from, to),
+      attendance: mergeDateKeyed(loadCheckInAttendanceMap(), patch.attendance, from, to),
+      payments: mergeDateKeyed(loadCheckInPaymentMap(), patch.payments, from, to),
+      tickets: mergeDateKeyed(loadCheckInTicketMap(), patch.tickets, from, to),
+      services: mergeDateKeyed(loadCheckInServiceMap(), patch.services, from, to),
+      sequences: mergeDateKeyed(loadCheckInSequenceMap(), patch.sequences, from, to),
+      guestEdits: mergeDateKeyed(loadCheckInGuestEditMap(), patch.guestEdits, from, to),
+      notes: mergeDateKeyed(loadCheckInNoteMap(), patch.notes, from, to),
+      groupGuides: mergeDateKeyed(loadCheckInGroupGuideMap(), patch.groupGuides, from, to),
+    }
+    applyCheckInMaps(next)
   }
 
   function applyCheckInMapsPartial(patch: CheckInMapsSnapshot, sinceDate: string) {
@@ -1312,7 +1401,6 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     /** Newest bookings.updated_at seen; polls only fetch rows changed after it. */
     let cursor: string | null = null
     let lastFullAt = 0
-    const FULL_BOOKINGS_REFRESH_MS = 10 * 60_000
 
     async function refreshBookings() {
       if (cancelled || busy || bookingWritePendingRef.current > 0) return
@@ -1329,7 +1417,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           !partner &&
           cursor &&
           Number.isFinite(cursorMs) &&
-          now - lastFullAt < FULL_BOOKINGS_REFRESH_MS
+          now - lastFullAt < STAFF_BOOKINGS_FULL_REFRESH_MS
         ) {
           // Cheap poll: only rows changed since the last one (60s overlap for late commits).
           const since = new Date(cursorMs - 60_000).toISOString()
@@ -1406,7 +1494,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       // Realtime pushes changes instantly; the interval is only a safety net (saves Supabase quota).
       poll = window.setInterval(() => {
         void refreshBookings()
-      }, 20000)
+      }, STAFF_BOOKINGS_POLL_MS)
 
       try {
         // Coalesce bursts of realtime events (many guests checking in) into one refetch.
@@ -1447,8 +1535,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       busy = true
       const generation = boatPlanSaveGenerationRef.current
+      const window = boardPlanWindow(sessionRole)
       try {
-        const next = await fetchDayBoatPlans()
+        const next = await fetchDayBoatPlans(window)
         if (cancelled || boatPlanWritePendingRef.current > 0) return
         if (boatPlanSaveGenerationRef.current !== generation) return
         setDayBoatPlans((current) => {
@@ -1458,8 +1547,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             if (plan.date < fromDate) continue
             incoming[key] = { ...plan, capacities: replaceLegacyBoatCapacity(plan.capacities) }
           }
-          if (boatPlanDirtyKeysRef.current.size === 0) return incoming
-          const merged = { ...incoming }
+          const merged = mergeDatedRecords(current, incoming, window.from, window.to)
           for (const key of boatPlanDirtyKeysRef.current) {
             if (current[key]) merged[key] = current[key]!
           }
@@ -1480,6 +1568,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     window.addEventListener('focus', onVisible)
 
     let boatPoll: number | undefined
+    let boatRealtimeTimer: number | undefined
     let unsubscribeRealtime: (() => void) | undefined
     void (async () => {
       let role = ''
@@ -1496,14 +1585,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (role === 'guest') return
       try {
         unsubscribeRealtime = subscribeDayPlanChanges(() => {
-          void refreshDayBoatPlans()
-        })
+          if (boatRealtimeTimer != null) return
+          boatRealtimeTimer = window.setTimeout(() => {
+            boatRealtimeTimer = undefined
+            void refreshDayBoatPlans()
+          }, REALTIME_REFRESH_MS)
+        }, 'boat')
       } catch (error) {
         console.error('[portal] day boat plans realtime subscribe failed', error)
       }
       boatPoll = window.setInterval(() => {
         void refreshDayBoatPlans()
-      }, 60000)
+      }, STAFF_DAY_PLAN_POLL_MS)
     })()
 
     return () => {
@@ -1511,6 +1604,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
       if (boatPoll != null) window.clearInterval(boatPoll)
+      if (boatRealtimeTimer != null) window.clearTimeout(boatRealtimeTimer)
       unsubscribeRealtime?.()
     }
   }, [hydrated, sessionRole])
@@ -1528,11 +1622,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       busy = true
       const generation = vehiclePlanSaveGenerationRef.current
+      const window = boardPlanWindow(sessionRole)
       try {
-        const next = await fetchDayVehiclePlans()
+        const next = await fetchDayVehiclePlans(window)
         if (cancelled || vehiclePlanWritePendingRef.current > 0) return
         if (vehiclePlanSaveGenerationRef.current !== generation) return
-        setDayVehiclePlans(next)
+        setDayVehiclePlans((current) => mergeDatedRecords(current, next, window.from, window.to))
       } catch (error) {
         console.error('[portal] day vehicle plans refresh failed', error)
       } finally {
@@ -1548,6 +1643,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     window.addEventListener('focus', onVisible)
 
     let vehiclePoll: number | undefined
+    let vehicleRealtimeTimer: number | undefined
     let unsubscribeRealtime: (() => void) | undefined
     void (async () => {
       let role = ''
@@ -1564,14 +1660,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (role === 'guest') return
       try {
         unsubscribeRealtime = subscribeDayPlanChanges(() => {
-          void refreshDayVehiclePlans()
-        })
+          if (vehicleRealtimeTimer != null) return
+          vehicleRealtimeTimer = window.setTimeout(() => {
+            vehicleRealtimeTimer = undefined
+            void refreshDayVehiclePlans()
+          }, REALTIME_REFRESH_MS)
+        }, 'vehicle')
       } catch (error) {
         console.error('[portal] day vehicle plans realtime subscribe failed', error)
       }
       vehiclePoll = window.setInterval(() => {
         void refreshDayVehiclePlans()
-      }, 60000)
+      }, STAFF_DAY_PLAN_POLL_MS)
     })()
 
     return () => {
@@ -1579,6 +1679,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
       if (vehiclePoll != null) window.clearInterval(vehiclePoll)
+      if (vehicleRealtimeTimer != null) window.clearTimeout(vehicleRealtimeTimer)
       unsubscribeRealtime?.()
     }
   }, [hydrated, sessionRole])
@@ -1595,14 +1696,26 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (cancelled || busy || settingsWritePendingRef.current > 0) return
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       busy = true
+      const partner = sessionRole === 'partner'
+      const window = partner ? null : boardPlanWindow(sessionRole)
       try {
         const next = await fetchAvailabilitySettings(
-          sessionRole === 'partner' ? partnerBookingsFromDate() : undefined,
+          partner ? partnerBookingsFromDate() : window?.from,
+          partner ? undefined : window?.to,
         )
         if (cancelled || settingsWritePendingRef.current > 0) return
-        setAvailability(next.availability)
+        if (window) {
+          setAvailability((current) =>
+            mergeRowsInWindow(current, next.availability, window.from, window.to),
+          )
+          setBookingClosures((current) =>
+            mergeRowsInWindow(current, next.bookingClosures, window.from, window.to),
+          )
+        } else {
+          setAvailability(next.availability)
+          setBookingClosures(next.bookingClosures)
+        }
         setBookingCutoffs(next.bookingCutoffs)
-        setBookingClosures(next.bookingClosures)
       } catch (error) {
         console.error('[portal] availability settings refresh failed', error)
       } finally {
@@ -1654,7 +1767,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       }
       settingsPoll = window.setInterval(() => {
         void refreshAvailabilitySettings()
-      }, 120000)
+      }, STAFF_SETTINGS_POLL_MS)
     })()
 
     return () => {
@@ -1725,25 +1838,26 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       const profile = options?.profile ?? (await readSyncProfile())
       const isGuest = profile.role === 'guest'
       const isHelper = profile.role === 'helper'
-      // Guests must never migrate localStorage → cloud (RLS makes remote look empty).
-      const canMigrate = allowMigrate && !isGuest
+      // Staff live sync is a short window. An empty window is not an empty database, so do not
+      // upload this browser's localStorage over older cloud rows.
+      const staffWindow = !isGuest && !isHelper ? boardPlanWindow(profile.role) : null
+      const canMigrate = allowMigrate && !isGuest && !staffWindow
       try {
-        // Guest: scope check-in sync to their tour date only (no full-history load).
-        // Helper: scope to their board date. Otherwise fall back to today (partial) or all.
+        // Guest: their tour date. Helper: their board date. Staff: the role window.
         const boardDate =
           isGuest && profile.bookingDate
             ? profile.bookingDate
             : isHelper && profile.helperDate
               ? profile.helperDate
-              : partial
-                ? todayISO()
-                : undefined
+              : undefined
         const remote = await fetchCheckInMaps(
           boardDate
             ? { onDate: boardDate }
-            : partial
-              ? { sinceDate: todayISO() }
-              : undefined,
+            : staffWindow
+              ? { sinceDate: staffWindow.from, untilDate: staffWindow.to }
+              : partial
+                ? { sinceDate: todayISO() }
+                : undefined,
         )
         if (cancelled) return
         if (remote === null) {
@@ -1792,13 +1906,19 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
         if (isGuest) applyCheckInMapsOverlay(next)
         else if (boardDate) applyCheckInMapsForDay(next, boardDate)
+        else if (staffWindow) applyCheckInMapsWindow(next, staffWindow.from, staffWindow.to)
         else if (partial) applyCheckInMapsPartial(next, todayISO())
         else applyCheckInMaps(next)
 
         // Guests only need enrollment/attendance for their booking — skip heavy side maps.
         if (isGuest) return
 
-        const remotePax = await fetchCheckInBookedPax()
+        const sideRange = boardDate
+          ? { from: boardDate, to: boardDate }
+          : staffWindow
+            ? { from: staffWindow.from, to: staffWindow.to }
+            : undefined
+        const remotePax = await fetchCheckInBookedPax(sideRange)
         if (
           cancelled ||
           checkInWritePendingRef.current > 0 ||
@@ -1823,7 +1943,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        const remoteArrived = await fetchCheckInArrivedPax()
+        const remoteArrived = await fetchCheckInArrivedPax(sideRange)
         if (
           cancelled ||
           checkInWritePendingRef.current > 0 ||
@@ -1847,13 +1967,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             } finally {
               checkInWritePendingRef.current = Math.max(0, checkInWritePendingRef.current - 1)
             }
+          } else if (sideRange) {
+            hydrateArrivedPaxMap(
+              mergeDateKeyed(loadArrivedPaxMap(), remoteArrived, sideRange.from, sideRange.to),
+            )
           } else {
             hydrateArrivedPaxMap(remoteArrived)
           }
         }
 
         if (cancelled || dayOpsWritePendingRef.current > 0) return
-        const remoteOps = await fetchDayOpsMaps()
+        const remoteOps = await fetchDayOpsMaps(sideRange)
         if (cancelled || dayOpsWritePendingRef.current > 0) return
         if (remoteOps === null) {
           dayOpsCloudEnabledRef.current = false
@@ -1876,6 +2000,31 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             setPickupNoShowMap(localOps.pickupNoShows)
             setOwnArrivalMap(localOps.ownArrivals)
             setJobOrderActionMap(localOps.jobOrderActions)
+          } else if (sideRange) {
+            const pickupNoShows = mergeDateKeyed(
+              loadPickupNoShowMap(),
+              remoteOps.pickupNoShows,
+              sideRange.from,
+              sideRange.to,
+            )
+            const ownArrivals = mergeDateKeyed(
+              loadOwnArrivalMap(),
+              remoteOps.ownArrivals,
+              sideRange.from,
+              sideRange.to,
+            )
+            const jobOrderActions = mergeDateKeyed(
+              loadJobOrderActionMap(),
+              remoteOps.jobOrderActions,
+              sideRange.from,
+              sideRange.to,
+            )
+            savePickupNoShowMap(pickupNoShows)
+            saveOwnArrivalMap(ownArrivals)
+            saveJobOrderActionMap(jobOrderActions)
+            setPickupNoShowMap(pickupNoShows)
+            setOwnArrivalMap(ownArrivals)
+            setJobOrderActionMap(jobOrderActions)
           } else {
             savePickupNoShowMap(remoteOps.pickupNoShows)
             saveOwnArrivalMap(remoteOps.ownArrivals)
@@ -1981,7 +2130,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       // Staff/helper: day-scoped poll as fallback; realtime (debounced) covers the rush.
       poll = window.setInterval(() => {
         schedulePartialSync()
-      }, 90_000)
+      }, STAFF_CHECK_IN_POLL_MS)
     })()
 
     return () => {
@@ -2029,11 +2178,79 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     return booking
   }, [])
 
+  function requestOutsideBoardWindow(date: string) {
+    const day = date.slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return
+    const role = sessionRoleRef.current
+    if (!role || role === 'guest' || role === 'partner' || role === 'helper') return
+    const live = boardPlanWindow(role)
+    if (day >= live.from && day <= live.to) return
+    if (outsideWindowCoveredRef.current.some((range) => day >= range.from && day <= range.to)) return
+    outsideWindowDatesRef.current.push(day)
+    if (outsideWindowTimerRef.current != null) return
+    outsideWindowTimerRef.current = window.setTimeout(() => {
+      outsideWindowTimerRef.current = null
+      const days = outsideWindowDatesRef.current.splice(0)
+      if (days.length === 0) return
+      const from = days.reduce((min, item) => (item < min ? item : min))
+      const to = days.reduce((max, item) => (item > max ? item : max))
+      outsideWindowCoveredRef.current.push({ from, to })
+      void loadBoardWindow(from, to).catch((error) => {
+        outsideWindowCoveredRef.current = outsideWindowCoveredRef.current.filter(
+          (range) => range.from !== from || range.to !== to,
+        )
+        console.error('[portal] date-window load failed', error)
+      })
+    }, 40)
+  }
+
+  async function loadBoardWindow(from: string, to: string) {
+    const range = { from, to }
+    const [boats, vans, settings, checkIn, bookedPax, arrivedPax, dayOps] = await Promise.all([
+      fetchDayBoatPlans(range),
+      fetchDayVehiclePlans(range),
+      fetchAvailabilitySettings(from, to),
+      fetchCheckInMaps({ sinceDate: from, untilDate: to }),
+      fetchCheckInBookedPax(range),
+      fetchCheckInArrivedPax(range),
+      fetchDayOpsMaps(range),
+    ])
+    if (boatPlanWritePendingRef.current === 0) {
+      setDayBoatPlans((current) => mergeDatedRecords(current, boats, from, to))
+    }
+    if (vehiclePlanWritePendingRef.current === 0) {
+      setDayVehiclePlans((current) => mergeDatedRecords(current, vans, from, to))
+    }
+    if (settingsWritePendingRef.current === 0) {
+      setAvailability((current) => mergeRowsInWindow(current, settings.availability, from, to))
+      setBookingClosures((current) => mergeRowsInWindow(current, settings.bookingClosures, from, to))
+    }
+    if (checkIn && checkInWritePendingRef.current === 0) {
+      applyCheckInMapsWindow(checkIn, from, to)
+    }
+    if (bookedPax) hydrateBookedPaxMap(bookedPax)
+    if (arrivedPax) {
+      hydrateArrivedPaxMap(mergeDateKeyed(loadArrivedPaxMap(), arrivedPax, from, to))
+    }
+    if (dayOps && dayOpsWritePendingRef.current === 0) {
+      const pickupNoShows = mergeDateKeyed(loadPickupNoShowMap(), dayOps.pickupNoShows, from, to)
+      const ownArrivals = mergeDateKeyed(loadOwnArrivalMap(), dayOps.ownArrivals, from, to)
+      const jobOrderActions = mergeDateKeyed(loadJobOrderActionMap(), dayOps.jobOrderActions, from, to)
+      savePickupNoShowMap(pickupNoShows)
+      saveOwnArrivalMap(ownArrivals)
+      saveJobOrderActionMap(jobOrderActions)
+      setPickupNoShowMap(pickupNoShows)
+      setOwnArrivalMap(ownArrivals)
+      setJobOrderActionMap(jobOrderActions)
+    }
+  }
+
   const value = useMemo<PortalContextValue>(() => {
     const getZoneTime = (name: PickupZoneName) =>
       zones.find((zone) => zone.name === name)?.time ?? 'Awaiting pickup time'
 
     const getCapacity = (date: string) => {
+      requestOutsideBoardWindow(date)
       const row = availability.find((item) => item.date === date)
       return {
         ppCapacity: row?.ppCapacity ?? DEFAULT_PP_CAPACITY,
@@ -2110,6 +2327,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       )
 
     const getDayBoatPlan = (date: string, program: Program) => {
+      requestOutsideBoardWindow(date)
       const key = dayBoatPlanKey(date, program)
       const stored = dayBoatPlans[key]
       if (!stored) return emptyDayBoatPlan(date, program)
@@ -2146,6 +2364,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     }
 
     const getDayVehiclePlan = (date: string, program: Program) => {
+      requestOutsideBoardWindow(date)
       const key = dayVehiclePlanKey(date, program)
       const stored = dayVehiclePlans[key]
       if (!stored) return emptyDayVehiclePlan(date, program)
@@ -2833,8 +3052,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       getCapacity,
       bookedPaxFor,
       getDayBoatPlan,
-      getCheckInAttendance: (date, program, bookingCode) =>
-        getCheckInAttendance(checkInAttendance, date, program, bookingCode),
+      getCheckInAttendance: (date, program, bookingCode) => {
+        requestOutsideBoardWindow(date)
+        return getCheckInAttendance(checkInAttendance, date, program, bookingCode)
+      },
       setCheckInAttendance: (date, program, bookingCode, status) => {
         // Undoing a whole no-show (guests came to the marina): the pickup NS ledger still holds
         // the whole booking, which kept a stale red "-N" on the van board. Re-derive it from
@@ -2991,8 +3212,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             : upsertCheckInSequenceStart(date, program, bookingCode, start),
         )
       },
-      getCheckInEnrollments: (date, program, bookingCode) =>
-        getCheckInEnrollments(checkInEnrollment, date, program, bookingCode),
+      getCheckInEnrollments: (date, program, bookingCode) => {
+        requestOutsideBoardWindow(date)
+        return getCheckInEnrollments(checkInEnrollment, date, program, bookingCode)
+      },
       updateCheckInEnrollment: (input) => {
         const firstName = input.enrollment.firstName.trim()
         const lastName = input.enrollment.lastName.trim()
@@ -3364,6 +3587,15 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         )
         const transferExtraCharge =
           input.transferExtraCharge?.trim() || matchedHotel?.extraChargeTransfer?.trim() || ''
+        const originDate = options?.movedFrom?.date
+        const staffMove = options?.actor?.role !== 'agent'
+        const prebuyMove = Boolean(originDate) && staffMove && agentIsPrebuy(input.agentSlug)
+        const beforeClose = originDate ? isBeforePrebuyDateMoveClose(originDate) : false
+        const earlyMove = prebuyMove && beforeClose
+        const lockedMove = prebuyMove && !beforeClose
+        const ruleFee = earlyMove
+          ? prebuyNoShowMoveFee(input, bookingCutoffs.dateChangeFeePerPerson)
+          : 0
         const booking: Booking = {
           ...input,
           agentRef: input.agentRef?.trim() ?? '',
@@ -3375,9 +3607,15 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           code,
           pickupTime,
           status: pending ? 'Pending Pickup Time' : 'Confirmed',
-          // Guests moved in from another date at marina check-in carry the change-date charge.
-          lateChangeFee: Math.max(0, Math.floor(options?.moveFee ?? 0)),
+          // Before 10 PM: new date's bill deducts the original day and adds 300 THB / person.
+          // After 10 PM: the original date keeps a normal head deduct.
+          lateChangeFee: earlyMove
+            ? ruleFee
+            : lockedMove
+              ? 0
+              : Math.max(0, Math.floor(options?.moveFee ?? 0)),
           lateDateChange: false,
+          noShowDateMove: prebuyMove || options?.noShowDateMove === true,
           movedFrom: options?.movedFrom ?? null,
         }
         setBookings((current) => [booking, ...current])
@@ -3505,22 +3743,45 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
         const oldDate = existing.date
         const program = existing.program
+        const staffMove = options?.actor?.role !== 'agent'
+        const beforeClose = isBeforePrebuyDateMoveClose(existing.date)
+        const prebuyMove = staffMove && agentIsPrebuy(existing.agentSlug)
+        const earlyMove = prebuyMove && beforeClose
+        const lockedMove = prebuyMove && !beforeClose
+        const ruleFee = earlyMove
+          ? prebuyNoShowMoveFee(existing, bookingCutoffs.dateChangeFeePerPerson)
+          : 0
         const autoLateDateChange =
           !options?.bypassCutoff && isLateAmendmentForDate(bookingCutoffs, existing.date)
-        const chargeLateDateChange =
-          options?.lateDateChange !== undefined
+        const chargeLateDateChange = earlyMove || lockedMove
+          ? false
+          : options?.lateDateChange !== undefined
             ? options.lateDateChange
             : options?.lateChangeFee !== undefined
               ? options.lateChangeFee > 0
               : autoLateDateChange
-        const nextLateDateChange = existing.lateDateChange === true || chargeLateDateChange
-        // Marina check-in move: bill the change-date charge on this booking (new date) and mark
-        // where it came from.
+        const nextLateDateChange = earlyMove || lockedMove
+          ? false
+          : existing.lateDateChange === true || chargeLateDateChange
+        // Before 10 PM the new date's bill carries the original-day deduct plus 300 THB / person.
+        // After 10 PM the original date stays on a normal head charge.
         const trackedMove = options?.moveFee !== undefined
-        const moveFee = trackedMove ? Math.max(0, Math.floor(options?.moveFee ?? 0)) : 0
-        const nextLateChangeFee = (existing.lateChangeFee ?? 0) + moveFee
+        const moveFee = earlyMove
+          ? ruleFee
+          : lockedMove
+            ? 0
+            : trackedMove
+              ? Math.max(0, Math.floor(options?.moveFee ?? 0))
+              : 0
+        const applyFee = earlyMove || lockedMove || trackedMove
+        const nextLateChangeFee = earlyMove
+          ? ruleFee
+          : lockedMove
+            ? 0
+            : (existing.lateChangeFee ?? 0) + moveFee
         // Every date change leaves a "Moved from <old date>" note on the booking.
         const movedFrom = { code, date: oldDate }
+        const nextNoShowDateMove = earlyMove || lockedMove || existing.noShowDateMove === true
 
         setBookings((current) =>
           current.map((booking) =>
@@ -3529,25 +3790,31 @@ export function PortalProvider({ children }: { children: ReactNode }) {
                   ...booking,
                   date: trimmedDate,
                   lateDateChange: nextLateDateChange,
+                  noShowDateMove: nextNoShowDateMove,
                   movedFrom,
-                  ...(trackedMove ? { lateChangeFee: nextLateChangeFee } : {}),
+                  ...(applyFee ? { lateChangeFee: nextLateChangeFee } : {}),
                 }
               : booking,
           ),
         )
-        const dateChangedSummary = trackedMove
-          ? `Date changed ${oldDate} → ${trimmedDate} · moved at marina check-in · extra charge ${moveFee.toLocaleString('en-US')} THB`
-          : chargeLateDateChange
-            ? `Date changed ${oldDate} → ${trimmedDate} · late change · full charge (Invoice) / head deduct (Prebuy)`
-            : options?.lateDateChange === false || options?.lateChangeFee === 0
-              ? `Date changed ${oldDate} → ${trimmedDate} · late change waived`
-              : `Date changed ${oldDate} → ${trimmedDate}`
+        const dateChangedSummary = earlyMove
+          ? `Date changed ${oldDate} → ${trimmedDate} · before 10 PM · deduct ${chargeablePax(existing)} heads on ${oldDate} · extra ${ruleFee.toLocaleString('en-US')} THB on ${trimmedDate}`
+          : lockedMove
+            ? `Date changed ${oldDate} → ${trimmedDate} · after 10 PM · ${oldDate} stays charged as normal heads`
+            : trackedMove
+            ? `Date changed ${oldDate} → ${trimmedDate} · moved at marina check-in · extra charge ${moveFee.toLocaleString('en-US')} THB`
+            : chargeLateDateChange
+              ? `Date changed ${oldDate} → ${trimmedDate} · late change · full charge (Invoice) / head deduct (Prebuy)`
+              : options?.lateDateChange === false || options?.lateChangeFee === 0
+                ? `Date changed ${oldDate} → ${trimmedDate} · late change waived`
+                : `Date changed ${oldDate} → ${trimmedDate}`
         persistBookingWrite(
           'updateBookingDate',
           updateBookingDate(code, trimmedDate, {
             lateDateChange: nextLateDateChange,
             movedFrom,
-            ...(trackedMove ? { lateChangeFee: nextLateChangeFee } : {}),
+            noShowDateMove: nextNoShowDateMove,
+            ...(applyFee ? { lateChangeFee: nextLateChangeFee } : {}),
           }).then(() => {
             logBookingEvent(code, 'date_changed', dateChangedSummary, options?.actor)
           }),

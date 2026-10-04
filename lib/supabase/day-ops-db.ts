@@ -114,14 +114,22 @@ function flattenJobOrderMap(map: DayJobOrderActionMap): JobOrderRow[] {
 
 const missingDayOpsTables = new Set<string>()
 
-async function fetchOptionalTable<T>(table: string): Promise<T[] | null> {
+async function fetchOptionalTable<T>(
+  table: string,
+  range?: { from?: string; to?: string },
+): Promise<T[] | null> {
   if (missingDayOpsTables.has(table)) return null
   const supabase = getSupabaseBrowserClient()
   const pageSize = 1000
   const all: T[] = []
   let from = 0
+  const fromDate = range?.from?.slice(0, 10) || ''
+  const toDate = range?.to?.slice(0, 10) || ''
   while (true) {
-    const { data, error } = await supabase.from(table).select('*').range(from, from + pageSize - 1)
+    let query = supabase.from(table).select('*')
+    if (fromDate) query = query.gte('date', fromDate)
+    if (toDate) query = query.lte('date', toDate)
+    const { data, error } = await query.range(from, from + pageSize - 1)
     if (error) {
       missingDayOpsTables.add(table)
       console.warn(`[supabase] ${table} unavailable — run supabase/add-day-ops-sync.sql`, error.message)
@@ -135,11 +143,14 @@ async function fetchOptionalTable<T>(table: string): Promise<T[] | null> {
   return all
 }
 
-export async function fetchDayOpsMaps(): Promise<DayOpsSnapshot | null> {
+export async function fetchDayOpsMaps(range?: {
+  from?: string
+  to?: string
+}): Promise<DayOpsSnapshot | null> {
   const [pickupRows, arrivalRows, actionRows] = await Promise.all([
-    fetchOptionalTable<PaxRow>('pickup_no_shows'),
-    fetchOptionalTable<PaxRow>('own_arrivals'),
-    fetchOptionalTable<JobOrderRow>('job_order_actions'),
+    fetchOptionalTable<PaxRow>('pickup_no_shows', range),
+    fetchOptionalTable<PaxRow>('own_arrivals', range),
+    fetchOptionalTable<JobOrderRow>('job_order_actions', range),
   ])
   if (pickupRows === null && arrivalRows === null && actionRows === null) return null
   return {

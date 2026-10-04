@@ -21,17 +21,22 @@ function asDateString(value: string) {
   return value.slice(0, 10)
 }
 
-export async function fetchCheckInArrivedPax(): Promise<BookedPaxMap | null> {
+export async function fetchCheckInArrivedPax(range?: {
+  from?: string
+  to?: string
+}): Promise<BookedPaxMap | null> {
   const supabase = getSupabaseBrowserClient()
   const pageSize = 1000
   const next: BookedPaxMap = {}
   let from = 0
+  const fromDate = range?.from?.slice(0, 10) || ''
+  const toDate = range?.to?.slice(0, 10) || ''
 
   while (true) {
-    const { data, error } = await supabase
-      .from('check_in_arrived_pax')
-      .select('*')
-      .range(from, from + pageSize - 1)
+    let query = supabase.from('check_in_arrived_pax').select('*')
+    if (fromDate) query = query.gte('date', fromDate)
+    if (toDate) query = query.lte('date', toDate)
+    const { data, error } = await query.range(from, from + pageSize - 1)
 
     if (error) {
       console.warn(

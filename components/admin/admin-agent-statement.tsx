@@ -369,7 +369,9 @@ function SummaryCard({
 function toStatementRow(booking: Booking, invoices: InvoiceDocument[]): StatementRow | null {
   const invoice = invoices.find(
     (doc) =>
-      doc.kind === 'invoice' && doc.items.some((item) => item.bookingCode === booking.code),
+      doc.kind === 'invoice' &&
+      doc.isDraft !== true &&
+      doc.items.some((item) => item.bookingCode === booking.code),
   )
   if (!invoice && !isActiveBooking(booking)) return null
 
