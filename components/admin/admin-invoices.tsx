@@ -1888,6 +1888,9 @@ export function AdminInvoices() {
                           <TableCell className="w-[7.5rem] max-w-[7.5rem] px-1.5" title={booking.leadGuest}>
                             <span className="inline-flex min-w-0 max-w-full items-center gap-1">
                               <span className="truncate">{booking.leadGuest}</span>
+                              {booking.status === 'Cancelled' ? (
+                                <BillFlag label="Cancelled" title="Cancelled — included on the invoice as Cancelled" />
+                              ) : null}
                               {row.hasNoShow ? (
                                 <BillFlag label="NS" title="This booking has a no-show guest" />
                               ) : null}

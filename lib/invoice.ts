@@ -524,8 +524,12 @@ export function lateChangeDateDescription(input: { heads: number; prebuy: boolea
 
 export function lateCancelDescription(program: Program, fullPrice: boolean) {
   return fullPrice
-    ? `Late Cancel, full price · ${programLabel(program)}`
-    : `Late Cancel · ${programLabel(program)}`
+    ? `Cancelled · full price · ${programLabel(program)}`
+    : `Cancelled · ${programLabel(program)}`
+}
+
+export function freeCancelDescription(program: Program) {
+  return `Cancelled · no charge · ${programLabel(program)}`
 }
 
 /** Normalize older vague labels on print / edit. */
@@ -545,11 +549,16 @@ export function formatInvoiceLineDescription(
     const prebuy = /deduct/i.test(text) || item.amount === 0
     return lateChangeDateDescription({ heads, prebuy })
   }
-  if (item.lineKind === 'cancel' || /^Cancel ·/i.test(text) || /^Late Cancel/i.test(text)) {
+  if (
+    item.lineKind === 'cancel' ||
+    /^Cancel/i.test(text) ||
+    /^Late Cancel/i.test(text) ||
+    /^Cancelled/i.test(text)
+  ) {
     const fullPrice = /full price/i.test(text)
-    const programMatch = text.match(/·\s*(Phi Phi Speedboat|James Bond Speedboat)\s*$/i)
-    const program: Program = /james bond/i.test(programMatch?.[1] ?? text) ? 'James Bond' : 'PP'
-    return lateCancelDescription(program, fullPrice || item.amount > 0)
+    const program: Program = /james bond/i.test(text) ? 'James Bond' : 'PP'
+    if (fullPrice || item.amount > 0) return lateCancelDescription(program, fullPrice)
+    return freeCancelDescription(program)
   }
   return item.description
 }
@@ -634,8 +643,10 @@ function displayPartsForItem(item: InvoiceItem): InvoiceDisplayPart[] {
         ? 'No show'
         : item.lineKind === 'cancel'
           ? /full price/i.test(item.description)
-            ? 'Late Cancel, full price'
-            : 'Late Cancel'
+            ? 'Cancelled, full price'
+            : /no charge/i.test(item.description)
+              ? 'Cancelled, no charge'
+              : 'Cancelled'
           : undefined
     const parts: Array<{
       kind: 'adult' | 'child' | 'infant' | 'tourLeader'
@@ -1139,6 +1150,33 @@ export function buildInvoiceItemsForBooking(
         tourLeaderPrice: rates.tourLeaderPrice,
         cot: 0,
         amount,
+        lineKind: 'cancel',
+        sortOrder: items.length,
+      })
+    } else {
+      const original = originalBookedPax(booking.date, booking.program, booking)
+      const pax = {
+        adults: Math.max(booking.adults, original.adults),
+        children: Math.max(booking.children, original.children),
+        infants: Math.max(booking.infants, original.infants),
+        tourLeaders: Math.max(booking.tourLeaders, original.tourLeaders),
+      }
+      items.push({
+        id: moneyId(),
+        bookingCode: booking.code,
+        travelDate: booking.date,
+        voucherNo,
+        description: freeCancelDescription(booking.program),
+        adults: pax.adults,
+        children: pax.children,
+        infants: pax.infants,
+        tourLeaders: pax.tourLeaders,
+        adultPrice: 0,
+        childPrice: 0,
+        infantPrice: 0,
+        tourLeaderPrice: 0,
+        cot: 0,
+        amount: 0,
         lineKind: 'cancel',
         sortOrder: items.length,
       })

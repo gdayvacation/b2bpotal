@@ -737,7 +737,7 @@ function LotCardStats({
   /** Orange highlight — lot still has remaining money/heads (in use). */
   isActive?: boolean
 }) {
-  const moneyLeft = Math.round((paid - usedAmount) * 100) / 100
+  const moneyLeft = Math.round((paid + otherCash - usedAmount) * 100) / 100
   const paxDetail = dailyUseHeadParts(usedAdults, usedChildren, usedHeads).detail
   const moneyLeftClass =
     moneyLeft < 0
@@ -802,7 +802,8 @@ function LotCardStats({
             otherCash < 0 ? 'text-rose-700' : 'text-teal-900/55',
           )}
         >
-          Other cash {formatMoney(otherCash)} THB — not trip heads
+          {otherCash < 0 ? 'Deducted' : 'Includes'} {formatMoney(otherCash)} THB
+          {otherCash < 0 ? ' from money left' : ' in money left'} — not trip heads
         </p>
       ) : null}
 
