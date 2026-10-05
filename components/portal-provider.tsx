@@ -843,8 +843,10 @@ type PortalContextValue = {
 
 const PortalContext = createContext<PortalContextValue | null>(null)
 
-/** Partner booking tabs poll this often while someone is using the page. */
-const PARTNER_POLL_MS = 2 * 60_000
+/** Partner booking tabs poll this often while someone is using the page.
+ *  PERF sprint-4: increased from 2 min → 10 min. Partners use Realtime for live updates;
+ *  this poll is only a safety net for dropped WebSocket connections. */
+const PARTNER_POLL_MS = 10 * 60_000
 /** After this long with no tap or keypress, partner tabs stop every Supabase poll. */
 const PARTNER_IDLE_MS = 15 * 60_000
 /**
