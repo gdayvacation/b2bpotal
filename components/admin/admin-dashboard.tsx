@@ -7,7 +7,6 @@ import { StatusBadge } from '@/components/status-badge'
 import { PageHeader, Segment, SegmentedControl, SoftLabel, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
 import { addDaysISO, formatLongDate, formatShortDate, startOfThisMonth, todayISO, toISODate } from '@/lib/format'
-import { fetchBookingsInDateRange } from '@/lib/supabase/portal-db'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { totalPassengers, isActiveBooking, type Booking, type Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -38,91 +37,77 @@ type SeriesPoint = {
 }
 
 export function AdminDashboard() {
-  const { bookings: liveBookings, agents } = usePortal()
+  const { bookings: liveBookings, agents, ensureBookingsForRange } = usePortal()
   const [range, setRange] = useState<RangeMode>('today')
   const [month, setMonth] = useState(() => startOfThisMonth())
   const [year, setYear] = useState(() => Number(todayISO().slice(0, 4)))
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
   const [program, setProgram] = useState<ProgramFilter>('all')
   const [agentSlug, setAgentSlug] = useState('all')
-  /** Month/year rows for charts. Today uses the portal window already in memory. */
-  const [historyBookings, setHistoryBookings] = useState<Booking[] | null>(null)
-  const [priorYearBookings, setPriorYearBookings] = useState<Booking[] | null>(null)
-  const historyCacheRef = useRef(new Map<string, Booking[]>())
+  // PERF sprint-1b: track which date-ranges have been requested so we never call
+  // ensureBookingsForRange twice for the same key. The actual deduplication and merge
+  // live inside PortalProvider; here we only track "did we ask for it already?".
+  const ensuredRangesRef = useRef(new Set<string>())
+  /** True once the needed range has been requested (data may still be merging in). */
+  const [rangeRequested, setRangeRequested] = useState(false)
   const today = usePortalTodayISO()
   const thisMonth = startOfThisMonth()
   const thisYear = Number(today.slice(0, 4))
 
+  // PERF sprint-1b: trigger ensureBookingsForRange when the user switches to month/year.
+  // After the range loads, PortalProvider merges it into `liveBookings` which the useMemo
+  // below filters — no second copy of booking rows is ever stored in this component.
   useEffect(() => {
-    if (range === 'today') return
+    if (range === 'today') { setRangeRequested(true); return }
 
     let cancelled = false
-    const cache = historyCacheRef.current
+    const ensured = ensuredRangesRef.current
 
-    async function loadRange(key: string, from: string, to: string) {
-      const cached = cache.get(key)
-      if (cached) return cached
-      const rows = await fetchBookingsInDateRange(from, to)
-      cache.set(key, rows)
-      return rows
+    async function ensureRange(key: string, from: string, to: string) {
+      if (ensured.has(key)) return
+      ensured.add(key) // mark eagerly so concurrent calls skip it
+      await ensureBookingsForRange(from, to)
     }
 
+    setRangeRequested(false)
     ;(async () => {
       try {
         if (range === 'month') {
           const y = month.getFullYear()
           const m = String(month.getMonth() + 1).padStart(2, '0')
-          const monthKey = `month:${y}-${m}`
-          const yearRows = cache.get(`year:${y}`)
-          if (yearRows) {
-            if (!cancelled) setHistoryBookings(yearRows)
-            return
-          }
-          const cachedMonth = cache.get(monthKey)
-          if (cachedMonth) {
-            if (!cancelled) setHistoryBookings(cachedMonth)
-            return
-          }
-          setHistoryBookings(null)
           const last = new Date(y, month.getMonth() + 1, 0).getDate()
-          const rows = await loadRange(
-            monthKey,
+          await ensureRange(
+            `month:${y}-${m}`,
             `${y}-${m}-01`,
             `${y}-${m}-${String(last).padStart(2, '0')}`,
           )
-          if (!cancelled) setHistoryBookings(rows)
-          return
+        } else {
+          await Promise.all([
+            ensureRange(`year:${year}`, `${year}-01-01`, `${year}-12-31`),
+            ensureRange(`year:${year - 1}`, `${year - 1}-01-01`, `${year - 1}-12-31`),
+          ])
         }
-
-        const yearKey = `year:${year}`
-        const priorKey = `year:${year - 1}`
-        const cachedYear = cache.get(yearKey) ?? null
-        const cachedPrior = cache.get(priorKey) ?? null
-        setHistoryBookings(cachedYear)
-        setPriorYearBookings(cachedPrior)
-        if (cachedYear && cachedPrior) return
-
-        if (!cachedYear) {
-          const rows = await loadRange(yearKey, `${year}-01-01`, `${year}-12-31`)
-          if (cancelled) return
-          setHistoryBookings(rows)
-        }
-        if (!cachedPrior) {
-          const rows = await loadRange(priorKey, `${year - 1}-01-01`, `${year - 1}-12-31`)
-          if (!cancelled) setPriorYearBookings(rows)
-        }
+        if (!cancelled) setRangeRequested(true)
       } catch (error) {
         console.error('[dashboard] history load failed', error)
-        if (!cancelled) {
-          setHistoryBookings((current) => current ?? [])
-          setPriorYearBookings((current) => current ?? [])
-        }
+        if (!cancelled) setRangeRequested(true)
       }
     })()
-    return () => {
-      cancelled = true
-    }
-  }, [range, year, month])
+    return () => { cancelled = true }
+  }, [range, year, month, ensureBookingsForRange])
+
+  // Derive displayed bookings from the single PortalProvider source of truth.
+  // No separate historyBookings state — liveBookings already contains all ensured ranges.
+  const historyBookings = useMemo(() => {
+    if (range === 'today' || !rangeRequested) return null
+    if (range === 'month') return liveBookings.filter((b) => inMonth(b.date, month))
+    return liveBookings.filter((b) => inYear(b.date, year))
+  }, [liveBookings, range, month, year, rangeRequested])
+
+  const priorYearBookings = useMemo(() => {
+    if (range !== 'year' || !rangeRequested) return null
+    return liveBookings.filter((b) => inYear(b.date, year - 1))
+  }, [liveBookings, range, year, rangeRequested])
 
   const historyPending = range !== 'today' && historyBookings === null
   const priorPending = range === 'year' && priorYearBookings === null
@@ -274,21 +259,14 @@ export function AdminDashboard() {
     },
   ]
 
+  // PERF sprint-1b: applyMonth/applyYear only update state; the useEffect above triggers
+  // ensureBookingsForRange, and the useMemo above derives historyBookings from liveBookings.
   function applyMonth(next: Date) {
-    const y = next.getFullYear()
-    const m = String(next.getMonth() + 1).padStart(2, '0')
-    const cached =
-      historyCacheRef.current.get(`year:${y}`) ??
-      historyCacheRef.current.get(`month:${y}-${m}`) ??
-      null
-    setHistoryBookings(cached)
     setMonth(next)
     setSelectedDay(null)
   }
 
   function applyYear(next: number) {
-    setHistoryBookings(historyCacheRef.current.get(`year:${next}`) ?? null)
-    setPriorYearBookings(historyCacheRef.current.get(`year:${next - 1}`) ?? null)
     setYear(next)
   }
 

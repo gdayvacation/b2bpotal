@@ -850,14 +850,29 @@ const PARTNER_IDLE_MS = 15 * 60_000
 /**
  * Staff safety nets only. Live updates still come from Realtime.
  * These intervals exist so a dropped websocket still catches up.
+ *
+ * PERF sprint-1a: increased intervals — Realtime is the primary live-update path;
+ * polls are safety nets only and do not need to be as frequent as the Realtime cadence.
+ *   bookings:  2 min  → 5 min  (incremental cursor poll; Realtime covers instant edits)
+ *   day plans: 3 min  → 5 min  (boat + van boards; Realtime covers live board edits)
+ *   settings:  5 min  → 15 min (availability/cutoffs change rarely)
+ *   check-in:  3 min  → 15 min (Realtime covers the rush; 15-min net is ample)
  */
-const STAFF_BOOKINGS_POLL_MS = 120_000
+const STAFF_BOOKINGS_POLL_MS = 5 * 60_000
 /** Full booking reload. Incremental polls cover edits; this only catches deletes and drift. */
 const STAFF_BOOKINGS_FULL_REFRESH_MS = 45 * 60_000
-const STAFF_DAY_PLAN_POLL_MS = 3 * 60_000
-const STAFF_SETTINGS_POLL_MS = 5 * 60_000
-const STAFF_CHECK_IN_POLL_MS = 3 * 60_000
+const STAFF_DAY_PLAN_POLL_MS = 5 * 60_000
+const STAFF_SETTINGS_POLL_MS = 15 * 60_000
+const STAFF_CHECK_IN_POLL_MS = 15 * 60_000
 const REALTIME_REFRESH_MS = 1_500
+/**
+ * PERF sprint-1a: check-in Realtime debounce increased from 4 s → 30 s.
+ * During morning rush 200 guests scan within ~2 hours, firing ~200 Realtime events.
+ * A 30-second coalesce window means each staff tab runs at most ~1 sync per 30 s
+ * instead of ~1 per 4 s, cutting Realtime-triggered sync queries by ~87 %.
+ * Staff see check-ins appear within 30 s — acceptable for the admin board.
+ */
+const CHECK_IN_REALTIME_DEBOUNCE_MS = 30_000
 /** Guest success screen fallback only (realtime is the fast path). */
 const GUEST_BOAT_POLL_MS = 60_000
 
@@ -2206,12 +2221,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     let cachedProfile: SyncProfile | null = null
 
     // Throttle (not debounce): during a guest rush realtime fires constantly, and every admin
-    // device would otherwise refetch ~12 tables each second. One refetch per 4s window is enough.
+    // device would otherwise refetch ~12 tables each second.
+    // PERF sprint-1a: base window increased from 4 s → CHECK_IN_REALTIME_DEBOUNCE_MS (30 s).
+    // Realtime fires ~200 times during morning rush; coalescing to 30 s cuts triggered
+    // sync queries by ~87 % while keeping the board fresh within 30 s of each check-in.
     function schedulePartialSync() {
       if (debounceTimer != null) return
-      // After failures (e.g. DB timeouts) wait longer each time: 8s, 16s, 32s … max 2 min.
+      // After failures (e.g. DB timeouts) wait longer each time: 60s, 120s … max 2 min.
       const delay =
-        syncFailures > 0 ? Math.min(120_000, 4000 * 2 ** Math.min(syncFailures, 5)) : 4000
+        syncFailures > 0
+          ? Math.min(120_000, CHECK_IN_REALTIME_DEBOUNCE_MS * 2 ** Math.min(syncFailures, 2))
+          : CHECK_IN_REALTIME_DEBOUNCE_MS
       debounceTimer = window.setTimeout(() => {
         debounceTimer = null
         if (document.visibilityState === 'hidden') return

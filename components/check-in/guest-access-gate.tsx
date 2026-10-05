@@ -6,6 +6,8 @@ import { GUEST_SIGNED_IN_EVENT } from '@/lib/check-in-access'
 import { readStaffSession } from '@/lib/staff-auth'
 import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/client'
 import { fetchBookingByCode } from '@/lib/supabase/portal-db'
+// PERF sprint-1b: fetchBookingByCode is used below only for scoped sessions (helper/partner)
+// that have RLS restrictions. Admin/accounting sessions can read all bookings so they skip it.
 
 // ---------------------------------------------------------------------------
 // Bangkok time helpers — used to enforce tour-date-only QR access.
@@ -197,7 +199,13 @@ export function GuestAccessGate({
       }
       const staff = await readStaffSession()
       if (cancelled) return
-      if (staff || (await helperOnDuty()) || (await partnerSession())) {
+      // PERF sprint-1b: admin/accounting can read all bookings — skip the extra DB query.
+      // Helper and partner sessions are RLS-scoped, so we still verify access before opening.
+      if (staff === 'admin' || staff === 'accounting') {
+        setState('ok')
+        return
+      }
+      if ((await helperOnDuty()) || (await partnerSession())) {
         const readable = await canReadBooking(code)
         if (cancelled) return
         if (readable) {
