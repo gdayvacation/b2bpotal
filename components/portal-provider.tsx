@@ -3091,7 +3091,15 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       }
 
       let markChecked = false
-      if (checkInCloudEnabledRef.current) {
+      // Always attempt the real cloud write when Supabase is configured — never gate this on
+      // checkInCloudEnabledRef, which is only a cache from the last *background* sync poll. If
+      // that poll happened to fail (one dropped request on marina Wi-Fi, a cold start, etc.)
+      // right before the guest submitted, trusting the stale flag silently sent the whole
+      // check-in down the browser-local-only path below: the guest still saw a ticket number
+      // and the "Done" screen, but nothing ever reached Supabase, so the admin board never
+      // showed it and the record was never retried. Always trying the live write first — and
+      // only falling back when it genuinely can't run — closes that gap.
+      if (hasSupabaseConfig()) {
         checkInSyncEpochRef.current += 1
         checkInWritePendingRef.current += 1
         try {
@@ -3103,6 +3111,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           )
           if (!remote.ok) return remote
           markChecked = remote.fullyChecked
+          // The write just round-tripped the database, so cloud is reachable right now even
+          // if the last background sync thought otherwise.
+          checkInCloudEnabledRef.current = true
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           const failure = checkInSaveFailure(message)
@@ -3145,6 +3156,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           checkInWritePendingRef.current = Math.max(0, checkInWritePendingRef.current - 1)
         }
       } else if (!isGuide) {
+        // Supabase isn't configured at all in this environment (local/offline dev) — there is
+        // no cloud to write to, so local-only state is the correct and only option.
         const already = enrolledSeatCount(existing)
         const seatsTotal = totalPassengers(booking)
         markChecked = already + cleaned.length >= seatsTotal
