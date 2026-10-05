@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils'
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-type RangeMode = 'today' | 'month' | 'year'
+type RangeMode = 'today' | 'month'
 type ProgramFilter = 'all' | Program
 
 type AgentRank = {
@@ -40,7 +40,6 @@ export function AdminDashboard() {
   const { bookings: liveBookings, agents, ensureBookingsForRange } = usePortal()
   const [range, setRange] = useState<RangeMode>('today')
   const [month, setMonth] = useState(() => startOfThisMonth())
-  const [year, setYear] = useState(() => Number(todayISO().slice(0, 4)))
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
   const [program, setProgram] = useState<ProgramFilter>('all')
   const [agentSlug, setAgentSlug] = useState('all')
@@ -52,7 +51,6 @@ export function AdminDashboard() {
   const [rangeRequested, setRangeRequested] = useState(false)
   const today = usePortalTodayISO()
   const thisMonth = startOfThisMonth()
-  const thisYear = Number(today.slice(0, 4))
 
   // PERF sprint-1b: trigger ensureBookingsForRange when the user switches to month/year.
   // After the range loads, PortalProvider merges it into `liveBookings` which the useMemo
@@ -72,21 +70,14 @@ export function AdminDashboard() {
     setRangeRequested(false)
     ;(async () => {
       try {
-        if (range === 'month') {
-          const y = month.getFullYear()
-          const m = String(month.getMonth() + 1).padStart(2, '0')
-          const last = new Date(y, month.getMonth() + 1, 0).getDate()
-          await ensureRange(
-            `month:${y}-${m}`,
-            `${y}-${m}-01`,
-            `${y}-${m}-${String(last).padStart(2, '0')}`,
-          )
-        } else {
-          await Promise.all([
-            ensureRange(`year:${year}`, `${year}-01-01`, `${year}-12-31`),
-            ensureRange(`year:${year - 1}`, `${year - 1}-01-01`, `${year - 1}-12-31`),
-          ])
-        }
+        const y = month.getFullYear()
+        const m = String(month.getMonth() + 1).padStart(2, '0')
+        const last = new Date(y, month.getMonth() + 1, 0).getDate()
+        await ensureRange(
+          `month:${y}-${m}`,
+          `${y}-${m}-01`,
+          `${y}-${m}-${String(last).padStart(2, '0')}`,
+        )
         if (!cancelled) setRangeRequested(true)
       } catch (error) {
         console.error('[dashboard] history load failed', error)
@@ -94,23 +85,16 @@ export function AdminDashboard() {
       }
     })()
     return () => { cancelled = true }
-  }, [range, year, month, ensureBookingsForRange])
+  }, [range, month, ensureBookingsForRange])
 
   // Derive displayed bookings from the single PortalProvider source of truth.
   // No separate historyBookings state — liveBookings already contains all ensured ranges.
   const historyBookings = useMemo(() => {
     if (range === 'today' || !rangeRequested) return null
-    if (range === 'month') return liveBookings.filter((b) => inMonth(b.date, month))
-    return liveBookings.filter((b) => inYear(b.date, year))
-  }, [liveBookings, range, month, year, rangeRequested])
-
-  const priorYearBookings = useMemo(() => {
-    if (range !== 'year' || !rangeRequested) return null
-    return liveBookings.filter((b) => inYear(b.date, year - 1))
-  }, [liveBookings, range, year, rangeRequested])
+    return liveBookings.filter((b) => inMonth(b.date, month))
+  }, [liveBookings, range, month, rangeRequested])
 
   const historyPending = range !== 'today' && historyBookings === null
-  const priorPending = range === 'year' && priorYearBookings === null
   const bookings = range === 'today' ? liveBookings : (historyBookings ?? [])
 
   const agentOptions = useMemo(() => {
@@ -138,25 +122,9 @@ export function AdminDashboard() {
 
   const periodBookings = useMemo(() => {
     if (range === 'today') return filtered.filter((booking) => booking.date === today)
-    if (range === 'month') {
-      const inView = filtered.filter((booking) => inMonth(booking.date, month))
-      return selectedDay ? inView.filter((booking) => booking.date === selectedDay) : inView
-    }
-    return filtered.filter((booking) => inYear(booking.date, year))
-  }, [filtered, range, today, month, selectedDay, year])
-
-  const yearBookings = useMemo(
-    () => (range === 'year' ? filtered.filter((booking) => inYear(booking.date, year)) : []),
-    [filtered, range, year],
-  )
-  const lastYearBookings = useMemo(() => {
-    if (range !== 'year' || !priorYearBookings) return []
-    return priorYearBookings.filter((booking) => {
-      if (agentSlug !== 'all' && booking.agentSlug !== agentSlug) return false
-      if (program !== 'all' && booking.program !== program) return false
-      return inYear(booking.date, year - 1)
-    })
-  }, [priorYearBookings, range, agentSlug, program, year])
+    const inView = filtered.filter((booking) => inMonth(booking.date, month))
+    return selectedDay ? inView.filter((booking) => booking.date === selectedDay) : inView
+  }, [filtered, range, today, month, selectedDay])
 
   const visible = useMemo(
     () => [...periodBookings].sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code)),
@@ -171,9 +139,6 @@ export function AdminDashboard() {
   const days = useMemo(() => buildMonth(month), [month])
 
   const stats = summarize(visible)
-  const yearStats = summarize(yearBookings)
-  const lastYearStats = summarize(lastYearBookings)
-  const yoy = yoyChange(yearStats.pax, lastYearStats.pax)
 
   const nearbyBookings = useMemo(() => {
     if (range !== 'today') return []
@@ -184,68 +149,42 @@ export function AdminDashboard() {
 
   const chartSeries = useMemo(() => {
     if (range === 'month') return dailySeries(monthDays, month)
-    if (range === 'today') return nearbyDaySeries(filtered, today)
-    return monthlySeries(yearBookings, year)
-  }, [range, monthDays, month, filtered, today, yearBookings, year])
+    return nearbyDaySeries(filtered, today)
+  }, [range, monthDays, month, filtered, today])
 
-  const topAgents = useMemo(() => rankAgents(range === 'year' ? yearBookings : visible), [range, yearBookings, visible])
+  const topAgents = useMemo(() => rankAgents(visible), [visible])
   const topAgent = topAgents[0] ?? null
 
   const monthLabel = month.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
   const isCurrentMonth =
     month.getFullYear() === thisMonth.getFullYear() && month.getMonth() === thisMonth.getMonth()
-  const isCurrentYear = year === thisYear
   const periodLabel =
     range === 'today'
       ? formatShortDate(today)
-      : range === 'year'
-        ? String(year)
-        : selectedDay
-          ? formatLongDate(selectedDay)
-          : monthLabel
+      : selectedDay
+        ? formatLongDate(selectedDay)
+        : monthLabel
   const programDetail =
     program === 'PP' ? 'Phi Phi Islands' : program === 'James Bond' ? 'Phang Nga Bay' : 'All programs'
   const chartSummary = range === 'today' ? summarize(nearbyBookings) : stats
   const chartTitle =
     range === 'month'
       ? `Daily pax · ${monthLabel}`
-      : range === 'today'
-        ? `Pax · ${formatDayTick(addDaysISO(today, -2))} – ${formatDayTick(addDaysISO(today, 2))}`
-        : `Monthly pax · ${year}`
+      : `Pax · ${formatDayTick(addDaysISO(today, -2))} – ${formatDayTick(addDaysISO(today, 2))}`
 
   const countLabel = (value: number) => (historyPending ? '…' : formatCount(value))
   const kpis = [
     {
-      label: range === 'today' ? 'Today bookings' : range === 'year' ? `${year} bookings` : 'Bookings',
+      label: range === 'today' ? 'Today bookings' : 'Bookings',
       value: countLabel(stats.bookings),
       detail: historyPending ? 'Loading…' : periodLabel,
       tone: 'hero' as const,
     },
     {
-      label: range === 'today' ? 'Today pax' : range === 'year' ? `${year} pax` : 'Total pax',
+      label: range === 'today' ? 'Today pax' : 'Total pax',
       value: countLabel(stats.pax),
       detail: historyPending ? 'Loading…' : programDetail,
       tone: 'sky' as const,
-    },
-    {
-      label: `${year} vs ${year - 1}`,
-      value:
-        range !== 'year'
-          ? '—'
-          : historyPending || priorPending
-            ? '…'
-            : yoy == null
-              ? '—'
-              : `${yoy > 0 ? '+' : ''}${yoy}%`,
-      detail:
-        range !== 'year'
-          ? 'Open Year to compare'
-          : historyPending || priorPending
-            ? 'Loading last year…'
-            : lastYearStats.pax > 0
-              ? `${formatCount(yearStats.pax)} pax this year`
-              : `No ${year - 1} data yet`,
-      tone: 'teal' as const,
     },
     {
       label: 'Top agent',
@@ -259,15 +198,9 @@ export function AdminDashboard() {
     },
   ]
 
-  // PERF sprint-1b: applyMonth/applyYear only update state; the useEffect above triggers
-  // ensureBookingsForRange, and the useMemo above derives historyBookings from liveBookings.
   function applyMonth(next: Date) {
     setMonth(next)
     setSelectedDay(null)
-  }
-
-  function applyYear(next: number) {
-    setYear(next)
   }
 
   function changeMonth(delta: number) {
@@ -278,7 +211,6 @@ export function AdminDashboard() {
     setRange(next)
     setSelectedDay(null)
     if (next === 'month') applyMonth(startOfThisMonth())
-    if (next === 'year') applyYear(thisYear)
   }
 
   function toggleDay(iso: string) {
@@ -290,7 +222,7 @@ export function AdminDashboard() {
       <PageHeader
         eyebrow={formatLongDate(today)}
         title="Dashboard"
-        description="Today’s totals and top agents — open Month or Year when you need a wider view."
+        description="Today’s totals and top agents — open Month when you need a wider view."
       />
 
       <Surface className="mb-3 px-3 py-2 sm:mb-4 sm:px-3.5">
@@ -311,13 +243,6 @@ export function AdminDashboard() {
                 onClick={() => setRangeMode('month')}
               >
                 Month
-              </Segment>
-              <Segment
-                className="rounded-lg px-2.5 py-1 text-xs"
-                active={range === 'year'}
-                onClick={() => setRangeMode('year')}
-              >
-                Year
               </Segment>
             </SegmentedControl>
             {range === 'month' ? (
@@ -352,44 +277,6 @@ export function AdminDashboard() {
                     size="sm"
                     className="h-7 px-2 text-[11px]"
                     onClick={() => applyMonth(startOfThisMonth())}
-                  >
-                    Now
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
-            {range === 'year' ? (
-              <div className="flex items-center gap-0.5">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  className="size-7"
-                  onClick={() => applyYear(year - 1)}
-                  aria-label="Previous year"
-                >
-                  <ChevronLeft className="size-3.5" />
-                </Button>
-                <p className="min-w-[3.5rem] text-center text-xs font-semibold tabular-nums text-teal-950">
-                  {year}
-                </p>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  className="size-7"
-                  onClick={() => applyYear(year + 1)}
-                  aria-label="Next year"
-                >
-                  <ChevronRight className="size-3.5" />
-                </Button>
-                {!isCurrentYear ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-[11px]"
-                    onClick={() => applyYear(thisYear)}
                   >
                     Now
                   </Button>
@@ -623,81 +510,7 @@ export function AdminDashboard() {
       {historyPending ? (
         <Surface className="mt-3 overflow-hidden">
           <div className="px-4 py-10 text-center text-sm text-teal-900/45 sm:px-5">
-            Loading {range === 'month' ? 'this month' : `${year}`}…
-          </div>
-        </Surface>
-      ) : range === 'month' ? (
-        <Surface className="mt-3 overflow-hidden">
-          <div className="border-b border-teal-900/8 px-3.5 py-3 sm:px-5 sm:py-4">
-            <h2 className="font-display font-semibold text-teal-950">
-              {selectedDay ? 'Selected day' : 'Monthly departures'}
-            </h2>
-            <p className="text-sm text-teal-900/50">
-              {visible.length === 0
-                ? 'No bookings match these filters.'
-                : `${visible.length} booking${visible.length === 1 ? '' : 's'} · ${stats.pax} pax · ${periodLabel}`}
-            </p>
-          </div>
-          {visible.length === 0 ? (
-            <p className="px-4 py-10 text-center text-sm text-teal-900/45 sm:px-5">
-              Try another agent, program, or month.
-            </p>
-          ) : (
-            <div className="divide-y divide-teal-900/6">
-              {grouped.map((group) => (
-                <section key={group.date}>
-                  {range === 'month' && !selectedDay ? (
-                    <div className="bg-teal-50/60 px-4 py-2 text-xs font-medium tracking-wide text-teal-800/70 uppercase sm:px-5">
-                      {formatLongDate(group.date)} · {group.items.length} booking
-                      {group.items.length === 1 ? '' : 's'} · {sumPax(group.items)} pax
-                    </div>
-                  ) : null}
-                  {group.items.map((booking) => (
-                    <BookingRow key={booking.code} booking={booking} />
-                  ))}
-                </section>
-              ))}
-            </div>
-          )}
-        </Surface>
-      ) : range === 'year' ? (
-        <Surface className="mt-3 overflow-hidden">
-          <div className="border-b border-teal-900/8 px-3.5 py-3 sm:px-5 sm:py-4">
-            <h2 className="font-display font-semibold text-teal-950">{year} by month</h2>
-            <p className="text-sm text-teal-900/50">
-              {yearStats.bookings === 0
-                ? 'No bookings in this year for these filters.'
-                : `${formatCount(yearStats.bookings)} bookings · ${formatCount(yearStats.pax)} pax`}
-            </p>
-          </div>
-          <div className="divide-y divide-teal-900/6">
-            {chartSeries.map((point) => (
-              <div
-                key={point.key}
-                className="flex items-center gap-3 px-3.5 py-2.5 sm:px-5"
-              >
-                <p className="w-10 shrink-0 text-sm font-medium text-teal-950">{point.label}</p>
-                <div className="min-w-0 flex-1">
-                  <div className="flex h-2 overflow-hidden rounded-full bg-teal-950/[0.06]">
-                    {point.pp > 0 ? (
-                      <div
-                        className="h-full bg-sky-500"
-                        style={{ width: `${(point.pp / Math.max(point.pax, 1)) * 100}%` }}
-                      />
-                    ) : null}
-                    {point.jb > 0 ? (
-                      <div
-                        className="h-full bg-amber-400"
-                        style={{ width: `${(point.jb / Math.max(point.pax, 1)) * 100}%` }}
-                      />
-                    ) : null}
-                  </div>
-                </div>
-                <p className="w-[7.5rem] shrink-0 text-right text-[12px] tabular-nums text-teal-900/65">
-                  {formatCount(point.bookings)} · {formatCount(point.pax)} pax
-                </p>
-              </div>
-            ))}
+            Loading this month…
           </div>
         </Surface>
       ) : null}
