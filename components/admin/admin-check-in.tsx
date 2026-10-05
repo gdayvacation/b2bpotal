@@ -2,6 +2,7 @@
 
 import { Fragment, startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
+  AlertTriangle,
   CalendarIcon,
   Check,
   CheckCircle2,
@@ -295,6 +296,19 @@ function MovedDateNote({ booking, className }: { booking: Booking; className?: s
   )
 }
 
+/** Seats the booking actually needs checked in today — the same math admin board and the
+ *  check-in / insurance reconciliation banner must agree on (uses the admin "arrived" pax
+ *  override when one exists, otherwise the original booked pax). */
+function effectiveBookingSeats(booking: Booking, today: string) {
+  const arrived = getArrivedPaxSnapshot(today, booking.program, booking.code)
+  return Math.max(
+    1,
+    arrived
+      ? arrived.adults + arrived.children + arrived.infants + arrived.tourLeaders
+      : totalPassengers(booking),
+  )
+}
+
 function buildBookingLine(
   booking: Booking,
   enrollments: CheckInEnrollment[],
@@ -305,9 +319,7 @@ function buildBookingLine(
   legs?: VanSplit[],
 ): BookingLine {
   const arrived = getArrivedPaxSnapshot(today, booking.program, booking.code)
-  const bookingSeats = Math.max(1, arrived
-    ? arrived.adults + arrived.children + arrived.infants + arrived.tourLeaders
-    : totalPassengers(booking))
+  const bookingSeats = effectiveBookingSeats(booking, today)
   const bookedWithMoved = originalBookedPax(today, booking.program, booking)
   // Guests moved to another date are not "booked here" any more (no pickup NS for them).
   const movedOut = booking.movedOutPax
@@ -413,6 +425,207 @@ function formatCheckInTime(iso: string) {
   })
 }
 
+/**
+ * Booking ⇄ check-in ⇄ insurance reconciliation.
+ *
+ * Booking: seats the booking needs checked in today.
+ * Check-in: seats actually enrolled on the marina board (capped at Booking).
+ * Insurance: named guests that will print on the insurance sheet for that booking.
+ *
+ * Insurance always mirrors the exact enrollment records the check-in board reads, so the three
+ * numbers only ever disagree for a handful of real reasons — each one caught below and raised to
+ * the admin by name instead of silently sitting on the board as a confusing "Wait".
+ */
+type CheckInMismatchKind = 'stuck-waiting' | 'checked-without-names' | 'over-enrolled'
+
+type CheckInMismatch = {
+  bookingCode: string
+  program: Program
+  leadGuest: string
+  hotel: string
+  kind: CheckInMismatchKind
+  bookingSeats: number
+  checkedInSeats: number
+  insuranceNamedCount: number
+}
+
+type CheckInReconciliation = {
+  bookingSeats: number
+  checkedInSeats: number
+  insuranceNamedCount: number
+  mismatches: CheckInMismatch[]
+}
+
+function mismatchMessage(kind: CheckInMismatchKind) {
+  switch (kind) {
+    case 'stuck-waiting':
+      return 'all seats are checked in but the board still shows “Wait” — refresh / re-open the booking'
+    case 'checked-without-names':
+      return 'marked checked-in but no guest names were recorded — this booking will be missing from the insurance sheet'
+    case 'over-enrolled':
+      return 'more guests checked in than seats booked — check for a duplicate check-in'
+  }
+}
+
+function computeCheckInReconciliation(
+  bookings: Booking[],
+  boardDate: string,
+  programFilter: 'all' | Program,
+  getCheckInEnrollments: (date: string, program: Program, bookingCode: string) => CheckInEnrollment[],
+  getCheckInAttendance: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+  ) => 'checked' | 'no-show' | null,
+): CheckInReconciliation {
+  let bookingSeats = 0
+  let checkedInSeats = 0
+  let insuranceNamedCount = 0
+  const mismatches: CheckInMismatch[] = []
+
+  const dayBookings = bookings
+    .filter((booking) => booking.date === boardDate && isActiveBooking(booking))
+    .filter((booking) => (programFilter === 'all' ? true : booking.program === programFilter))
+
+  for (const booking of dayBookings) {
+    const attendance = getCheckInAttendance(boardDate, booking.program, booking.code)
+    // No-shows never need insurance cover — same exclusion the insurance sheet itself applies.
+    if (attendance === 'no-show') continue
+
+    const seatsNeeded = effectiveBookingSeats(booking, boardDate)
+    const enrollments = getCheckInEnrollments(boardDate, booking.program, booking.code)
+    const enrolledSeats = enrolledSeatCount(enrollments)
+    const namedCount = enrollments.filter((enrollment) => guestDisplayName(enrollment)).length
+    const isChecked = attendance === 'checked' || enrolledSeats >= seatsNeeded
+
+    bookingSeats += seatsNeeded
+    checkedInSeats += Math.min(enrolledSeats, seatsNeeded)
+    insuranceNamedCount += namedCount
+
+    const base = {
+      bookingCode: booking.code,
+      program: booking.program,
+      leadGuest: booking.leadGuest,
+      hotel: booking.pickupHotel || booking.pickupZone || '—',
+      bookingSeats: seatsNeeded,
+      checkedInSeats: enrolledSeats,
+      insuranceNamedCount: namedCount,
+    }
+
+    if (isChecked && namedCount === 0) {
+      mismatches.push({ ...base, kind: 'checked-without-names' })
+    } else if (!isChecked && namedCount >= seatsNeeded && seatsNeeded > 0) {
+      mismatches.push({ ...base, kind: 'stuck-waiting' })
+    } else if (enrolledSeats > seatsNeeded) {
+      mismatches.push({ ...base, kind: 'over-enrolled' })
+    }
+  }
+
+  return { bookingSeats, checkedInSeats, insuranceNamedCount, mismatches }
+}
+
+function ReconcileStat({
+  label,
+  value,
+  danger,
+}: {
+  label: string
+  value: number
+  danger: boolean
+}) {
+  return (
+    <div
+      className={cn(
+        'flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[12px] font-semibold',
+        danger ? 'bg-rose-100 text-rose-900' : 'bg-teal-950/[0.04] text-teal-900/70',
+      )}
+    >
+      <span className="text-[10px] font-bold tracking-wide uppercase opacity-70">{label}</span>
+      <span className="text-sm tabular-nums">{value}</span>
+    </div>
+  )
+}
+
+function CheckInReconciliationBanner({
+  boardDate,
+  programFilter,
+  onOpenInsurance,
+}: {
+  boardDate: string
+  programFilter: 'all' | Program
+  onOpenInsurance: () => void
+}) {
+  const { bookings, getCheckInEnrollments, getCheckInAttendance, hydrated } = usePortal()
+
+  const reconciliation = useMemo(
+    () =>
+      computeCheckInReconciliation(
+        bookings,
+        boardDate,
+        programFilter,
+        getCheckInEnrollments,
+        getCheckInAttendance,
+      ),
+    [bookings, boardDate, programFilter, getCheckInEnrollments, getCheckInAttendance],
+  )
+
+  if (!hydrated) return null
+  if (reconciliation.bookingSeats === 0) return null
+
+  const hasMismatch = reconciliation.mismatches.length > 0
+
+  return (
+    <div
+      className={cn(
+        'space-y-2.5 rounded-2xl border px-3.5 py-3 print:hidden',
+        hasMismatch ? 'border-rose-300 bg-rose-50' : 'border-teal-900/10 bg-white',
+      )}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2.5">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+          <ReconcileStat label="Booking" value={reconciliation.bookingSeats} danger={false} />
+          <ReconcileStat
+            label="Check-in"
+            value={reconciliation.checkedInSeats}
+            danger={hasMismatch}
+          />
+          <ReconcileStat
+            label="Insurance"
+            value={reconciliation.insuranceNamedCount}
+            danger={hasMismatch}
+          />
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={onOpenInsurance}>
+          <ClipboardList data-icon="inline-start" />
+          Insurance list
+        </Button>
+      </div>
+      {hasMismatch ? (
+        <div className="space-y-1.5 border-t border-rose-200 pt-2.5">
+          <p className="flex items-center gap-1.5 text-sm font-semibold text-rose-900">
+            <AlertTriangle className="size-4" />
+            {reconciliation.mismatches.length} booking
+            {reconciliation.mismatches.length === 1 ? '' : 's'} need a check before the insurance
+            list goes out
+          </p>
+          <ul className="space-y-1 text-[12.5px] leading-snug text-rose-800">
+            {reconciliation.mismatches.map((mismatch) => (
+              <li key={`${mismatch.bookingCode}-${mismatch.kind}`}>
+                <span className="font-semibold">{mismatch.leadGuest || mismatch.bookingCode}</span>{' '}
+                <span className="text-rose-700/70">
+                  ({mismatch.bookingCode} · {programLabel(mismatch.program)} · {mismatch.hotel})
+                </span>{' '}
+                — {mismatchMessage(mismatch.kind)} (booked {mismatch.bookingSeats}, checked-in{' '}
+                {mismatch.checkedInSeats}, insurance {mismatch.insuranceNamedCount})
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function AdminCheckIn() {
   const [boardDate, setBoardDate, portalToday] = usePortalDefaultDateISO()
   const [tab, setTab] = useState<AdminTab>('today')
@@ -463,6 +676,14 @@ export function AdminCheckIn() {
           Insurance
         </TabButton>
       </div>
+
+      {tab !== 'qr' ? (
+        <CheckInReconciliationBanner
+          boardDate={boardDate}
+          programFilter={programFilter}
+          onOpenInsurance={() => setTab('insurance')}
+        />
+      ) : null}
 
       {tab === 'qr' ? (
         <QrTab />
