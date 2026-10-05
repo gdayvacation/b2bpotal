@@ -47,6 +47,12 @@ import {
   sequenceJustCheckedInLabel,
   type GuestSequenceBlock,
 } from '@/lib/check-in-sequence'
+import {
+  clearCheckInDraft,
+  loadCheckInDraft,
+  saveCheckInDraft,
+  type CheckInDraftGuest,
+} from '@/lib/check-in-draft'
 import { boatTheme } from '@/lib/boat-theme'
 import {
   isThaiNationality,
@@ -867,9 +873,20 @@ function GuestCheckInForm({
         }
         return
       }
+
+      // The check-in is durably recorded server-side from this point on — nothing below should
+      // ever be able to strand the guest on this screen with no feedback and no success page.
       setSaveNotice(false)
       setDraftRestored(false)
-      await clearCheckInDraft(selectedBooking.code)
+      try {
+        await clearCheckInDraft(selectedBooking.code)
+      } catch (cleanupError) {
+        // Best-effort cleanup only — a dropped request here (flaky marina Wi-Fi, etc.) must
+        // never block the guest from seeing their own already-successful check-in. Letting this
+        // throw uncaught used to leave the screen stuck with no message, which led guests to tap
+        // "Confirm" again and create a duplicate check-in for the same person.
+        console.warn('[check-in] clearCheckInDraft failed (non-fatal)', cleanupError)
+      }
 
       if (scope === 'guide') {
         setDoneNeedsPayment(false)
@@ -892,6 +909,14 @@ function GuestCheckInForm({
         ).needsStaff,
       )
       setStep('done')
+    } catch (error) {
+      // Catch-all: any unexpected failure (session refresh hiccup, dropped request, etc.) must
+      // still give the guest a visible message instead of a silently stuck screen — the exact
+      // gap that previously let a real check-in succeed in the background while the guest saw
+      // nothing happen, tapped "Confirm" again, and ended up with a duplicate check-in.
+      console.error('[check-in] submitCheckIn unexpected error', error)
+      setSaveNotice(true)
+      setError(t('checkInTryAgainSoon'))
     } finally {
       setSubmitting(false)
     }
