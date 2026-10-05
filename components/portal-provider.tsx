@@ -1257,14 +1257,26 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   }
 
   function persistCheckInWrite(label: string, task: Promise<unknown>) {
-    if (!checkInCloudEnabledRef.current) return
+    // `task` is already an in-flight Promise by the time we get here — every call site builds
+    // it as `persistCheckInWrite('label', someSupabaseCall(...))`, and JS evaluates that
+    // argument (so the request already left) before this function body runs. The old
+    // `if (!checkInCloudEnabledRef.current) return` guard could never stop that request; all it
+    // did was skip the pending-write/sync-epoch bookkeeping that keeps a background sync from
+    // racing a write still in flight, and let a failed write become a silent unhandled promise
+    // rejection instead of the usual `persistQuietly` console.error. A stale cached flag (from
+    // the last background sync poll failing once) should never cost us that tracking or
+    // visibility for a staff action — so always do it, and self-heal the flag on success.
     checkInSyncEpochRef.current += 1
     checkInWritePendingRef.current += 1
     persistQuietly(
       label,
-      task.finally(() => {
-        checkInWritePendingRef.current = Math.max(0, checkInWritePendingRef.current - 1)
-      }),
+      task
+        .then(() => {
+          checkInCloudEnabledRef.current = true
+        })
+        .finally(() => {
+          checkInWritePendingRef.current = Math.max(0, checkInWritePendingRef.current - 1)
+        }),
     )
   }
 
