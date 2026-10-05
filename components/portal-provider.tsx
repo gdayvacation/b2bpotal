@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from 'react'
 import { bookingCodeStem, formatThb, nextBookingCode, todayISO, uniqueAgentSlug } from '@/lib/format'
+import { guestQrRepeatFetchOpen, msUntilGuestQrRepeatFetchCutoff } from '@/lib/guest-qr-sync'
 import { autoAssignBoats } from '@/lib/boat-assign'
 import {
   CHECK_IN_ATTENDANCE_STORAGE_KEY,
@@ -212,6 +213,7 @@ import {
   fetchBookingsInDateRange,
   fetchCheckInMaps,
   fetchAvailabilitySettings,
+  fetchBoatPlansForDate,
   fetchDayBoatPlans,
   fetchDayVehiclePlans,
   boardPlanWindow,
@@ -233,6 +235,7 @@ import {
   subscribeBookings,
   subscribeCheckInChanges,
   subscribeDayPlanChanges,
+  subscribeGuestBoatChanges,
   subscribeSettingsChanges,
   type CheckInMapsSnapshot,
   updateBookingDate,
@@ -394,6 +397,8 @@ type PortalContextValue = {
   /** Guest QR waits for this before deciding check-in is still open. */
   checkInReady: boolean
   sessionRole: string
+  /** Turn on only on guest check-in success — avoids polling for the whole QR flow. */
+  setGuestBoatWatch: (watch: GuestBoatWatch | null) => void
   loadError: string | null
   agents: Agent[]
   bookings: Booking[]
@@ -853,6 +858,13 @@ const STAFF_DAY_PLAN_POLL_MS = 3 * 60_000
 const STAFF_SETTINGS_POLL_MS = 5 * 60_000
 const STAFF_CHECK_IN_POLL_MS = 3 * 60_000
 const REALTIME_REFRESH_MS = 1_500
+/** Guest success screen fallback only (realtime is the fast path). */
+const GUEST_BOAT_POLL_MS = 60_000
+
+export type GuestBoatWatch = {
+  bookingCode: string
+  tourDate: string
+}
 
 function mergeDatedRecords<T extends { date: string }>(
   current: Record<string, T>,
@@ -926,6 +938,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false)
   /** Auth role from the session that hydrated this tab. Empty until that read finishes. */
   const [sessionRole, setSessionRole] = useState('')
+  const [guestBoatWatch, setGuestBoatWatch] = useState<GuestBoatWatch | null>(null)
+  const setGuestBoatWatchStable = useCallback((watch: GuestBoatWatch | null) => {
+    setGuestBoatWatch(watch)
+  }, [])
   /** True after this tab's guest check-in rows have been read once. Staff stay ready. */
   const [checkInReady, setCheckInReady] = useState(false)
   /** False only for a partner tab that has sat unused for PARTNER_IDLE_MS. */
@@ -1533,7 +1549,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   /** Keep boat guides / assignments live across admins. */
   useEffect(() => {
     if (!hydrated) return
-    if (sessionRole === 'partner') return
+    if (sessionRole === 'partner' || sessionRole === 'guest') return
 
     let busy = false
     let cancelled = false
@@ -1578,34 +1594,21 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     let boatPoll: number | undefined
     let boatRealtimeTimer: number | undefined
     let unsubscribeRealtime: (() => void) | undefined
-    void (async () => {
-      let role = ''
-      if (hasSupabaseConfig()) {
-        try {
-          const { data } = await getSupabaseBrowserClient().auth.getSession()
-          role = String(data.session?.user.app_metadata?.role ?? '')
-        } catch {
-          role = ''
-        }
-      }
-      if (cancelled) return
+    void refreshDayBoatPlans()
+    try {
+      unsubscribeRealtime = subscribeDayPlanChanges(() => {
+        if (boatRealtimeTimer != null) return
+        boatRealtimeTimer = window.setTimeout(() => {
+          boatRealtimeTimer = undefined
+          void refreshDayBoatPlans()
+        }, REALTIME_REFRESH_MS)
+      }, 'boat')
+    } catch (error) {
+      console.error('[portal] day boat plans realtime subscribe failed', error)
+    }
+    boatPoll = window.setInterval(() => {
       void refreshDayBoatPlans()
-      if (role === 'guest') return
-      try {
-        unsubscribeRealtime = subscribeDayPlanChanges(() => {
-          if (boatRealtimeTimer != null) return
-          boatRealtimeTimer = window.setTimeout(() => {
-            boatRealtimeTimer = undefined
-            void refreshDayBoatPlans()
-          }, REALTIME_REFRESH_MS)
-        }, 'boat')
-      } catch (error) {
-        console.error('[portal] day boat plans realtime subscribe failed', error)
-      }
-      boatPoll = window.setInterval(() => {
-        void refreshDayBoatPlans()
-      }, STAFF_DAY_PLAN_POLL_MS)
-    })()
+    }, STAFF_DAY_PLAN_POLL_MS)
 
     return () => {
       cancelled = true
@@ -1617,10 +1620,134 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     }
   }, [hydrated, sessionRole])
 
+  /** Guest success screen only — live boat before 12:00 Bangkok on tour day. */
+  useEffect(() => {
+    if (!hydrated || sessionRole !== 'guest' || !guestBoatWatch) return
+    if (!guestQrRepeatFetchOpen(guestBoatWatch.tourDate)) {
+      setGuestBoatWatch(null)
+      return
+    }
+
+    const bookingCode = guestBoatWatch.bookingCode.trim()
+    const date = guestBoatWatch.tourDate.slice(0, 10)
+    if (!bookingCode || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return
+
+    let busy = false
+    let cancelled = false
+    let guestBoatAgain = false
+
+    let boatPoll: number | undefined
+    let boatRealtimeTimer: number | undefined
+    let unsubscribeRealtime: (() => void) | undefined
+    let noonTimer: number | undefined
+
+    function stopSync() {
+      cancelled = true
+      if (boatPoll != null) window.clearInterval(boatPoll)
+      if (boatRealtimeTimer != null) window.clearTimeout(boatRealtimeTimer)
+      if (noonTimer != null) window.clearTimeout(noonTimer)
+      unsubscribeRealtime?.()
+      boatPoll = undefined
+      boatRealtimeTimer = undefined
+      noonTimer = undefined
+      unsubscribeRealtime = undefined
+    }
+
+    function endGuestBoatLive() {
+      stopSync()
+      setGuestBoatWatch(null)
+    }
+
+    async function refreshGuestBoats() {
+      if (cancelled) return
+      if (!guestQrRepeatFetchOpen(date)) {
+        endGuestBoatLive()
+        return
+      }
+      if (busy) {
+        guestBoatAgain = true
+        return
+      }
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      busy = true
+      try {
+        const incoming = await fetchBoatPlansForDate(date)
+        if (cancelled) return
+        setDayBoatPlans((current) => {
+          let changed = false
+          const next = { ...current }
+          for (const [key, plan] of Object.entries(incoming)) {
+            changed = true
+            next[key] = {
+              ...plan,
+              capacities: replaceLegacyBoatCapacity(plan.capacities),
+            }
+          }
+          return changed ? next : current
+        })
+      } catch (error) {
+        console.error('[portal] guest boat plan refresh failed', error)
+      } finally {
+        busy = false
+        if (guestBoatAgain && !cancelled) {
+          guestBoatAgain = false
+          void refreshGuestBoats()
+        }
+      }
+    }
+
+    function onVisible() {
+      if (document.visibilityState !== 'visible') return
+      if (!guestQrRepeatFetchOpen(date)) {
+        endGuestBoatLive()
+        return
+      }
+      void refreshGuestBoats()
+    }
+
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+
+    const untilNoon = msUntilGuestQrRepeatFetchCutoff(date)
+    if (untilNoon > 0) {
+      noonTimer = window.setTimeout(() => endGuestBoatLive(), untilNoon)
+    }
+
+    void refreshGuestBoats()
+    try {
+      unsubscribeRealtime = subscribeGuestBoatChanges(bookingCode, date, () => {
+        if (cancelled || !guestQrRepeatFetchOpen(date)) {
+          endGuestBoatLive()
+          return
+        }
+        if (boatRealtimeTimer != null) return
+        boatRealtimeTimer = window.setTimeout(() => {
+          boatRealtimeTimer = undefined
+          void refreshGuestBoats()
+        }, REALTIME_REFRESH_MS)
+      })
+    } catch (error) {
+      console.error('[portal] guest boat realtime subscribe failed', error)
+    }
+    boatPoll = window.setInterval(() => {
+      if (!guestQrRepeatFetchOpen(date)) {
+        endGuestBoatLive()
+        return
+      }
+      void refreshGuestBoats()
+    }, GUEST_BOAT_POLL_MS)
+
+    return () => {
+      stopSync()
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
+  }, [hydrated, sessionRole, guestBoatWatch, setGuestBoatWatchStable])
+
   /** Keep van assignments live across admins / marina tablets. */
   useEffect(() => {
     if (!hydrated) return
-    if (sessionRole === 'partner') return
+    if (sessionRole === 'partner' || sessionRole === 'guest') return
 
     let busy = false
     let cancelled = false
@@ -1653,34 +1780,21 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     let vehiclePoll: number | undefined
     let vehicleRealtimeTimer: number | undefined
     let unsubscribeRealtime: (() => void) | undefined
-    void (async () => {
-      let role = ''
-      if (hasSupabaseConfig()) {
-        try {
-          const { data } = await getSupabaseBrowserClient().auth.getSession()
-          role = String(data.session?.user.app_metadata?.role ?? '')
-        } catch {
-          role = ''
-        }
-      }
-      if (cancelled) return
+    void refreshDayVehiclePlans()
+    try {
+      unsubscribeRealtime = subscribeDayPlanChanges(() => {
+        if (vehicleRealtimeTimer != null) return
+        vehicleRealtimeTimer = window.setTimeout(() => {
+          vehicleRealtimeTimer = undefined
+          void refreshDayVehiclePlans()
+        }, REALTIME_REFRESH_MS)
+      }, 'vehicle')
+    } catch (error) {
+      console.error('[portal] day vehicle plans realtime subscribe failed', error)
+    }
+    vehiclePoll = window.setInterval(() => {
       void refreshDayVehiclePlans()
-      if (role === 'guest') return
-      try {
-        unsubscribeRealtime = subscribeDayPlanChanges(() => {
-          if (vehicleRealtimeTimer != null) return
-          vehicleRealtimeTimer = window.setTimeout(() => {
-            vehicleRealtimeTimer = undefined
-            void refreshDayVehiclePlans()
-          }, REALTIME_REFRESH_MS)
-        }, 'vehicle')
-      } catch (error) {
-        console.error('[portal] day vehicle plans realtime subscribe failed', error)
-      }
-      vehiclePoll = window.setInterval(() => {
-        void refreshDayVehiclePlans()
-      }, STAFF_DAY_PLAN_POLL_MS)
-    })()
+    }, STAFF_DAY_PLAN_POLL_MS)
 
     return () => {
       cancelled = true
@@ -3072,6 +3186,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       hydrated,
       checkInReady,
       sessionRole,
+      setGuestBoatWatch: setGuestBoatWatchStable,
       loadError,
       agents,
       bookings,
@@ -5499,7 +5614,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
       },
     }
-  }, [agents, bookings, ensureBookingsForRange, ensureBookingByCode, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, checkInGroupGuides, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, checkInReady, sessionRole, loadError])
+  }, [agents, bookings, ensureBookingsForRange, ensureBookingByCode, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, checkInGroupGuides, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, checkInReady, sessionRole, setGuestBoatWatchStable, loadError])
 
   const partnerDataLive = sessionRole !== 'partner' || partnerLive
 

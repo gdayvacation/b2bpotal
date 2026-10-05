@@ -67,7 +67,7 @@ import {
   sanitizeEnglishName,
   sanitizeEnglishPassport,
 } from '@/lib/check-in-i18n'
-import { clearCheckInDraft, loadCheckInDraft, saveCheckInDraft, type CheckInDraftGuest } from '@/lib/check-in-draft'
+import { guestQrRepeatFetchOpen } from '@/lib/guest-qr-sync'
 import { CHECK_IN_RETRY_ERROR, CHECK_IN_SESSION_ERROR } from '@/lib/check-in-submit'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { listVanNumbers, primaryVan } from '@/lib/vehicle-assign'
@@ -264,6 +264,7 @@ function GuestCheckInForm({
     hydrated,
     checkInReady,
     sessionRole,
+    setGuestBoatWatch,
   } = usePortal()
 
   const today = usePortalTodayISO()
@@ -441,6 +442,32 @@ function GuestCheckInForm({
       cancelled = true
     }
   }, [step, selectedBooking?.code])
+
+  // Live boat on success only — not during the rest of the QR flow (saves poll + Realtime).
+  useEffect(() => {
+    if (sessionRole !== 'guest') return
+    if (
+      step === 'done' &&
+      selectedBooking &&
+      !doneGuideOnly &&
+      guestQrRepeatFetchOpen(selectedBooking.date)
+    ) {
+      setGuestBoatWatch({
+        bookingCode: selectedBooking.code,
+        tourDate: selectedBooking.date,
+      })
+    } else {
+      setGuestBoatWatch(null)
+    }
+    return () => setGuestBoatWatch(null)
+  }, [
+    sessionRole,
+    step,
+    selectedBooking?.code,
+    selectedBooking?.date,
+    doneGuideOnly,
+    setGuestBoatWatch,
+  ])
 
   // Resolve locked QR booking once portal data is ready.
   // Guests wait until this booking's check-in rows have been read, so a phone

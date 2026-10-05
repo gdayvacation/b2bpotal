@@ -1476,6 +1476,22 @@ export async function fetchDayBoatPlans(window?: BoardDateWindow): Promise<Recor
   )
 }
 
+/** One tour date. Guests use this so a phone only refetches its own day. */
+export async function fetchBoatPlansForDate(date: string): Promise<Record<string, DayBoatPlan>> {
+  const dateStr = date.slice(0, 10)
+  const supabase = getSupabaseBrowserClient()
+  const [boatPlansRes, boatAssignRes] = await Promise.all([
+    supabase.from('day_boat_plans').select('*').eq('date', dateStr).order('program'),
+    supabase.from('boat_assignments').select('*').eq('date', dateStr).order('booking_code'),
+  ])
+  await assertOk('day_boat_plans', boatPlansRes.error, boatPlansRes.data)
+  await assertOk('boat_assignments', boatAssignRes.error, boatAssignRes.data)
+  return buildBoatPlans(
+    (boatPlansRes.data ?? []) as BoatPlanRow[],
+    (boatAssignRes.data ?? []) as BoatAssignmentRow[],
+  )
+}
+
 /** Live updates when bookings change in Supabase (requires Realtime on `bookings`). */
 export function subscribeBookings(onChange: () => void) {
   const supabase = getSupabaseBrowserClient()
@@ -1597,6 +1613,54 @@ export function subscribeDayPlanChanges(
       onChange()
     })
   }
+  channel.subscribe()
+  return () => {
+    void supabase.removeChannel(channel)
+  }
+}
+
+/**
+ * One guest phone listens only for its own booking and that tour date.
+ * Staff boards keep the wider `subscribeDayPlanChanges` channel.
+ */
+export function subscribeGuestBoatChanges(
+  bookingCode: string,
+  date: string,
+  onChange: () => void,
+) {
+  const code = bookingCode.trim()
+  const dateStr = date.slice(0, 10)
+  if (!/^[A-Za-z0-9_-]+$/.test(code) || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return () => {}
+  }
+  const supabase = getSupabaseBrowserClient()
+  const channel = supabase.channel(
+    `portal-guest-boat-${code}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  )
+  channel.on(
+    'postgres_changes',
+    {
+      event: '*',
+      schema: 'public',
+      table: 'boat_assignments',
+      filter: `booking_code=eq.${code}`,
+    },
+    () => {
+      onChange()
+    },
+  )
+  channel.on(
+    'postgres_changes',
+    {
+      event: '*',
+      schema: 'public',
+      table: 'day_boat_plans',
+      filter: `date=eq.${dateStr}`,
+    },
+    () => {
+      onChange()
+    },
+  )
   channel.subscribe()
   return () => {
     void supabase.removeChannel(channel)
