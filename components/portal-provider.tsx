@@ -1620,13 +1620,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     }
   }, [hydrated, sessionRole])
 
-  /** Guest success screen only — live boat before 12:00 Bangkok on tour day. */
+  /**
+   * Guest success screen boat sync.
+   *
+   * Before noon Bangkok: full live sync — Realtime subscription + poll every GUEST_BOAT_POLL_MS.
+   * After noon Bangkok:  one-time fetch on mount + re-fetch on tab focus only (no poll, no
+   *                      Realtime). DB load is kept minimal while the guest still sees the
+   *                      latest boat whenever they look at the screen.
+   */
   useEffect(() => {
     if (!hydrated || sessionRole !== 'guest' || !guestBoatWatch) return
-    if (!guestQrRepeatFetchOpen(guestBoatWatch.tourDate)) {
-      setGuestBoatWatch(null)
-      return
-    }
 
     const bookingCode = guestBoatWatch.bookingCode.trim()
     const date = guestBoatWatch.tourDate.slice(0, 10)
@@ -1641,8 +1644,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     let unsubscribeRealtime: (() => void) | undefined
     let noonTimer: number | undefined
 
-    function stopSync() {
-      cancelled = true
+    /** Stop Realtime + polling only — visibility listener stays active. */
+    function stopLiveSync() {
       if (boatPoll != null) window.clearInterval(boatPoll)
       if (boatRealtimeTimer != null) window.clearTimeout(boatRealtimeTimer)
       if (noonTimer != null) window.clearTimeout(noonTimer)
@@ -1653,17 +1656,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       unsubscribeRealtime = undefined
     }
 
-    function endGuestBoatLive() {
-      stopSync()
-      setGuestBoatWatch(null)
-    }
-
     async function refreshGuestBoats() {
       if (cancelled) return
-      if (!guestQrRepeatFetchOpen(date)) {
-        endGuestBoatLive()
-        return
-      }
       if (busy) {
         guestBoatAgain = true
         return
@@ -1696,49 +1690,56 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    /** Fires on visibility/focus — works both before and after noon. */
     function onVisible() {
       if (document.visibilityState !== 'visible') return
-      if (!guestQrRepeatFetchOpen(date)) {
-        endGuestBoatLive()
-        return
-      }
+      // Past noon: stop live sync (idempotent) and do a one-off refresh.
+      if (!guestQrRepeatFetchOpen(date)) stopLiveSync()
       void refreshGuestBoats()
     }
 
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('focus', onVisible)
 
+    // Schedule live-sync shutdown at noon.
     const untilNoon = msUntilGuestQrRepeatFetchCutoff(date)
     if (untilNoon > 0) {
-      noonTimer = window.setTimeout(() => endGuestBoatLive(), untilNoon)
+      noonTimer = window.setTimeout(() => stopLiveSync(), untilNoon)
     }
 
+    // Always fetch once immediately (gives guests current data even after noon).
     void refreshGuestBoats()
-    try {
-      unsubscribeRealtime = subscribeGuestBoatChanges(bookingCode, date, () => {
-        if (cancelled || !guestQrRepeatFetchOpen(date)) {
-          endGuestBoatLive()
+
+    // Before noon only: subscribe to Realtime + start poll.
+    if (guestQrRepeatFetchOpen(date)) {
+      try {
+        unsubscribeRealtime = subscribeGuestBoatChanges(bookingCode, date, () => {
+          if (cancelled) return
+          if (!guestQrRepeatFetchOpen(date)) {
+            stopLiveSync()
+            return
+          }
+          if (boatRealtimeTimer != null) return
+          boatRealtimeTimer = window.setTimeout(() => {
+            boatRealtimeTimer = undefined
+            void refreshGuestBoats()
+          }, REALTIME_REFRESH_MS)
+        })
+      } catch (error) {
+        console.error('[portal] guest boat realtime subscribe failed', error)
+      }
+      boatPoll = window.setInterval(() => {
+        if (!guestQrRepeatFetchOpen(date)) {
+          stopLiveSync()
           return
         }
-        if (boatRealtimeTimer != null) return
-        boatRealtimeTimer = window.setTimeout(() => {
-          boatRealtimeTimer = undefined
-          void refreshGuestBoats()
-        }, REALTIME_REFRESH_MS)
-      })
-    } catch (error) {
-      console.error('[portal] guest boat realtime subscribe failed', error)
+        void refreshGuestBoats()
+      }, GUEST_BOAT_POLL_MS)
     }
-    boatPoll = window.setInterval(() => {
-      if (!guestQrRepeatFetchOpen(date)) {
-        endGuestBoatLive()
-        return
-      }
-      void refreshGuestBoats()
-    }, GUEST_BOAT_POLL_MS)
 
     return () => {
-      stopSync()
+      cancelled = true
+      stopLiveSync()
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
     }
