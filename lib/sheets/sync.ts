@@ -92,15 +92,22 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
   const allotmentQueryIndex = invoiceQueryIndex + INVOICE_HEADERS.length + 1
   const monthlyColumnCount = allotmentQueryIndex + ALLOTMENT_HEADERS.length + 2
 
-  const bookingRowBudget = Math.max(50000, bookingRows.length + 2000)
-  const guestRowBudget = Math.max(50000, guestRows.length + 2000)
-  const mergeRowBudget = Math.max(50000, mergeRows.length + 2000)
-  const invoiceRowBudget = Math.max(20000, invoiceRows.length + 1000)
-  const invoiceLineRowBudget = Math.max(50000, invoiceLineRows.length + 2000)
-  const allotmentRowBudget = Math.max(5000, allotmentRows.length + 500)
-  const allotmentDailyRowBudget = Math.max(20000, allotmentDailyRows.length + 1000)
+  // Row budgets stay well under Google Sheets' hard 20,000,000-cell-per-workbook
+  // limit (sum of every tab's rowCount * columnCount). The whole resize batch
+  // below is atomic — if any one tab would push the workbook over the cap,
+  // Google rejects the entire batchUpdate and NOTHING gets cleared or written
+  // to ANY tab (this previously made Agent allotments / Allotment daily /
+  // Invoices appear permanently empty). Keep headroom here comfortable but
+  // sane — these floors are a few years of growth, not "infinite".
+  const bookingRowBudget = Math.max(20000, bookingRows.length + 3000)
+  const guestRowBudget = Math.max(10000, guestRows.length + 3000)
+  const mergeRowBudget = Math.max(20000, mergeRows.length + 3000)
+  const invoiceRowBudget = Math.max(5000, invoiceRows.length + 1000)
+  const invoiceLineRowBudget = Math.max(10000, invoiceLineRows.length + 2000)
+  const allotmentRowBudget = Math.max(2000, allotmentRows.length + 500)
+  const allotmentDailyRowBudget = Math.max(6000, allotmentDailyRows.length + 1000)
   // Monthly tab holds summary + QUERY spill of selected-month bookings/merge/invoices.
-  const monthlyRowBudget = Math.max(50000, bookingRows.length + invoiceRows.length + 5000)
+  const monthlyRowBudget = Math.max(15000, bookingRows.length + invoiceRows.length + 3000)
 
   await batchUpdate([
     expandGridRequests(bookingsId, bookingRowBudget),
