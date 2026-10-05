@@ -80,6 +80,35 @@ import {
   persistBoatNames,
 } from '@/lib/types'
 
+// PERF sprint-2: Column projection maps — only fetch columns consumed by each Row mapper.
+// Keep in sync with the Row types below and the mapper functions that read them.
+
+/** Columns selected from each check-in table in fetchAllCheckInRows. */
+const CHECK_IN_TABLE_COLS: Record<string, string> = {
+  check_in_enrollments:
+    'id,date,program,booking_code,first_name,last_name,nationality,birthday,passport_number,scope,seats,checked_in_at',
+  check_in_attendance: 'date,program,booking_code,status',
+  check_in_payments: 'date,program,seat_key,status',
+  check_in_services: 'id,date,program,booking_code,kind,people,price_per_person,paid',
+  check_in_sequences: 'date,program,booking_code,start_number',
+  check_in_guest_edits: 'date,program,booking_code,enrollment_id',
+  check_in_notes: 'date,program,booking_code,note',
+  check_in_group_guides: 'date,program,booking_code,guide_name',
+}
+
+/** Columns selected from each day-plan / availability table in selectPagedDateWindow. */
+const DAY_PLAN_TABLE_COLS: Record<string, string> = {
+  availability: 'date,pp_capacity,james_bond_capacity',
+  day_boat_plans:
+    'date,program,capacity_1,capacity_2,capacity_3,capacities,boat_names,boat_kinds,boat_labels,boat_guides,revision',
+  boat_assignments: 'date,program,booking_code,boat_number,pax',
+  day_vehicle_plans: 'date,program,van_capacity,revision',
+  van_meta:
+    'date,program,van_number,plate,driver,phone,capacity,outsourced,outsource_company,special_kind,transfer_in,transfer_out,charge_amount',
+  van_assignments: 'date,program,booking_code,van_number,pax,sort_order',
+  booking_closures: 'date,program,reason',
+}
+
 type AgentRow = {
   slug: string
   name: string
@@ -482,13 +511,14 @@ export async function loadPartnerPortalSnapshot(): Promise<PortalSnapshot> {
   const fromDate = partnerBookingsFromDate()
   const { data: sessionData } = await supabase.auth.getSession()
   const agentSlug = String(sessionData.session?.user.app_metadata?.agent_slug ?? '').trim()
+  const agentCols = 'slug,name,country,status'
   const agentsRequest = agentSlug
-    ? supabase.from('agents').select('*').eq('slug', agentSlug)
-    : supabase.from('agents').select('*').order('name')
+    ? supabase.from('agents').select(agentCols).eq('slug', agentSlug)
+    : supabase.from('agents').select(agentCols).order('name')
   const [agentsRes, zonesRes, hotelsRes, bookings, settings] = await Promise.all([
     agentsRequest,
-    supabase.from('pickup_zones').select('*').order('sort_order'),
-    supabase.from('hotels').select('*').order('name'),
+    supabase.from('pickup_zones').select('name,time,pending').order('sort_order'),
+    supabase.from('hotels').select('id,name,zone_name,active,extra_charge_transfer').order('name'),
     fetchBookingsInDateRange(fromDate),
     fetchAvailabilitySettings(fromDate),
   ])
@@ -959,9 +989,10 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     cutoffsRes,
     closuresRes,
   ] = await Promise.all([
-    guestLite ? emptyRows() : supabase.from('agents').select('*').order('name'),
-    guestLite ? emptyRows() : supabase.from('pickup_zones').select('*').order('sort_order'),
-    guestLite ? emptyRows() : supabase.from('hotels').select('*').order('name'),
+    // PERF sprint-2: select only mapped columns for catalog and config tables.
+    guestLite ? emptyRows() : supabase.from('agents').select('slug,name,country,status').order('name'),
+    guestLite ? emptyRows() : supabase.from('pickup_zones').select('name,time,pending').order('sort_order'),
+    guestLite ? emptyRows() : supabase.from('hotels').select('id,name,zone_name,active,extra_charge_transfer').order('name'),
     fetchBookingsInDateRange(operationalBookingsFromDate()),
     selectPagedDateWindow<AvailabilityRow>('availability', ['date'], boardWindow),
     selectPagedDateWindow<BoatPlanRow>('day_boat_plans', ['date', 'program'], boardWindow),
@@ -973,12 +1004,14 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     selectPagedDateWindow<VehiclePlanRow>('day_vehicle_plans', ['date', 'program'], boardWindow),
     selectPagedDateWindow<VanMetaRow>('van_meta', ['date', 'program', 'van_number'], boardWindow),
     selectPagedDateWindow<VanAssignmentRow>('van_assignments', ['date', 'id'], boardWindow),
-    supabase.from('fleet_vans').select('*').order('van_number'),
-    supabase.from('drivers').select('*').order('name'),
-    supabase.from('booking_cutoffs').select('*').eq('id', 'default').maybeSingle(),
+    supabase.from('fleet_vans').select('van_number,plate,driver,phone').order('van_number'),
+    supabase.from('drivers').select('name,phone,plate').order('name'),
+    supabase.from('booking_cutoffs')
+      .select('id,timezone,book_before_days,book_until_time,cancel_before_days,cancel_until_time,late_fee_from_time,date_change_fee_thb')
+      .eq('id', 'default').maybeSingle(),
     supabase
       .from('booking_closures')
-      .select('*')
+      .select('date,program,reason')
       .gte('date', boardWindow.from)
       .lte('date', boardWindow.to)
       .order('date'),
@@ -1370,8 +1403,10 @@ async function selectPagedDateWindow<T>(
   const all: T[] = []
   const fromDate = window.from.slice(0, 10)
   const toDate = window.to.slice(0, 10)
+  // PERF sprint-2: use column projection for known tables; fall back to '*' for unknown.
+  const cols = DAY_PLAN_TABLE_COLS[table] ?? '*'
   for (let from = 0; ; from += pageSize) {
-    let query = supabase.from(table).select('*').gte('date', fromDate).lte('date', toDate)
+    let query = supabase.from(table).select(cols).gte('date', fromDate).lte('date', toDate)
     for (const column of orderBy) query = query.order(column, { ascending: true })
     const { data, error } = await query.range(from, from + pageSize - 1)
     if (error) return { data: null, error }
@@ -1394,21 +1429,24 @@ export async function fetchAvailabilitySettings(fromDate?: string, toDate?: stri
   const [availabilityRes, cutoffsRes, closuresRes] = await Promise.all([
     from || to
       ? fetchAllPaged<AvailabilityRow>('availability', (start, end) => {
-          let query = supabase.from('availability').select('*')
+          // PERF sprint-2: column projection
+          let query = supabase.from('availability').select('date,pp_capacity,james_bond_capacity')
           if (from) query = query.gte('date', from)
           if (to) query = query.lte('date', to)
           return query.order('date').range(start, end)
         }).then((data) => ({ data, error: null as { message: string } | null }))
-      : selectAllPaged<AvailabilityRow>('availability', ['date']),
-    supabase.from('booking_cutoffs').select('*').eq('id', 'default').maybeSingle(),
+      : selectAllPaged<AvailabilityRow>('availability', ['date'], 'date,pp_capacity,james_bond_capacity'),
+    supabase.from('booking_cutoffs')
+      .select('id,timezone,book_before_days,book_until_time,cancel_before_days,cancel_until_time,late_fee_from_time,date_change_fee_thb')
+      .eq('id', 'default').maybeSingle(),
     from || to
       ? (() => {
-          let query = supabase.from('booking_closures').select('*')
+          let query = supabase.from('booking_closures').select('date,program,reason')
           if (from) query = query.gte('date', from)
           if (to) query = query.lte('date', to)
           return query.order('date')
         })()
-      : supabase.from('booking_closures').select('*').order('date'),
+      : supabase.from('booking_closures').select('date,program,reason').order('date'),
   ])
   await assertOk('availability', availabilityRes.error, availabilityRes.data)
 
@@ -2662,8 +2700,10 @@ async function fetchAllCheckInRows<T>(
   const sinceDate = options?.sinceDate?.slice(0, 10) || undefined
   const untilDate = options?.untilDate?.slice(0, 10) || undefined
 
+  // PERF sprint-2: use column projection for known tables; fall back to '*' for unknown.
+  const cols = CHECK_IN_TABLE_COLS[table] ?? '*'
   while (true) {
-    let query = supabase.from(table).select('*').range(from, from + pageSize - 1)
+    let query = supabase.from(table).select(cols).range(from, from + pageSize - 1)
     if (onDate) query = query.eq('date', onDate)
     else {
       if (sinceDate) query = query.gte('date', sinceDate)
