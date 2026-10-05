@@ -67,7 +67,7 @@ import {
   sanitizeEnglishName,
   sanitizeEnglishPassport,
 } from '@/lib/check-in-i18n'
-// guest-qr-sync cutoff is enforced inside portal-provider; no check needed here.
+import { guestQrRepeatFetchOpen } from '@/lib/guest-qr-sync'
 import { CHECK_IN_RETRY_ERROR, CHECK_IN_SESSION_ERROR } from '@/lib/check-in-submit'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { listVanNumbers, primaryVan } from '@/lib/vehicle-assign'
@@ -443,13 +443,15 @@ function GuestCheckInForm({
     }
   }, [step, selectedBooking?.code])
 
-  // Keep boat info current on the success screen.
-  // Before noon: portal-provider runs full Realtime + polling.
-  // After noon:  portal-provider does a one-time fetch + re-fetches on tab focus.
-  // Either way, no boat-watch during the check-in steps (scope/details/confirm) to save DB load.
+  // Live boat on success only — not during the rest of the QR flow (saves poll + Realtime).
   useEffect(() => {
     if (sessionRole !== 'guest') return
-    if (step === 'done' && selectedBooking && !doneGuideOnly) {
+    if (
+      step === 'done' &&
+      selectedBooking &&
+      !doneGuideOnly &&
+      guestQrRepeatFetchOpen(selectedBooking.date)
+    ) {
       setGuestBoatWatch({
         bookingCode: selectedBooking.code,
         tourDate: selectedBooking.date,
