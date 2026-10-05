@@ -138,14 +138,11 @@ const COPY = {
     payPark: 'Your booking does not include the National Park fee. Please see marina staff to complete payment.',
     payStaff: 'Please see marina staff to complete your payment.',
     checkInAnother: 'Check in another guest',
-    parkNoteTitle: 'National Park Fee Note',
+    parkNoteTitle: 'National park fee',
     parkNote1:
-      'Entry to Phi Phi Island, Maya Bay, and the other islands on this trip is not free for foreigners. A mandatory fee of 400 THB per adult and 200 THB per child applies for foreign visitors, paid in cash when visiting Maya Bay.',
-    parkNote2:
-      'This is not optional. Failure to pay this fee will result in forfeiture of your trip, with no refunds.',
-    parkNote3:
-      'Please confirm with your booking agent whether your package includes the National Park fee. Thank you.',
-    management: 'Management',
+      'Foreign visitors: 400 THB per adult, 200 THB per child — pay in cash at Maya Bay (Phi Phi, Maya Bay & islands on this tour).',
+    parkNote2: 'Required. No payment = you cannot join the trip. No refund.',
+    parkNote3: 'Not sure if your package includes it? Ask your booking agent.',
     successTitle: 'Check-in successful',
     successBody: "You're all set — no cash on tour to pay. Have a great day on the water!",
     successPaidTitle: 'Check-in successful',
@@ -161,8 +158,9 @@ const COPY = {
     boat: 'Boat',
     boatUnassigned: 'Boat not assigned yet — please ask marina staff.',
     sequence: 'Ticket sequence',
-    sequenceShowStaff: 'Show this number to staff before they give you the boat ticket.',
+    sequenceShowStaff: 'Show this number to staff for your ticket.',
     sequencePending: 'Sequence will appear when check-in is complete.',
+    screenshotTip: 'Tip: screenshot this, then close the tab.',
     editInformation: 'Edit information',
     editGuestTitle: 'Edit guest details',
     editGuestSub: 'Fix name, birthday, nationality, or passport. Must match the passport.',
@@ -171,6 +169,7 @@ const COPY = {
     editSaved: 'Details updated.',
     guestsCount: '{count} guest{plural}',
     checkedIn: 'Checked in',
+    moreGuestsScroll: '+{count} more — scroll to see all',
   },
   hi: {
     loading: 'चेक-इन लोड हो रहा है…',
@@ -307,14 +306,11 @@ const COPY = {
       'आपकी बुकिंग में नेशनल पार्क शुल्क शामिल नहीं है। भुगतान के लिए मरीना स्टाफ से मिलें।',
     payStaff: 'भुगतान पूरा करने के लिए कृपया मरीना स्टाफ से मिलें।',
     checkInAnother: 'दूसरे अतिथि का चेक-इन करें',
-    parkNoteTitle: 'नेशनल पार्क शुल्क नोट',
+    parkNoteTitle: 'नेशनल पार्क शुल्क',
     parkNote1:
-      'इस यात्रा में Phi Phi Island, Maya Bay और अन्य द्वीप विदेशी यात्रियों के लिए मुफ़्त नहीं हैं। वयस्क पर 400 THB और बच्चे पर 200 THB अनिवार्य शुल्क है, Maya Bay पर नकद भुगतान।',
-    parkNote2:
-      'यह वैकल्पिक नहीं है। शुल्क न देने पर यात्रा रद्द हो जाएगी और रिफंड नहीं मिलेगा।',
-    parkNote3:
-      'कृपया अपने बुकिंग एजेंट से पुष्टि करें कि पैकेज में नेशनल पार्क शुल्क शामिल है या नहीं। धन्यवाद।',
-    management: 'प्रबंधन',
+      'विदेशी यात्री: वयस्क 400 THB, बच्चा 200 THB — Maya Bay पर नकद (Phi Phi, Maya Bay और इस टूर के द्वीप)।',
+    parkNote2: 'अनिवार्य। भुगतान नहीं = यात्रा में नहीं जा सकते। कोई रिफंड नहीं।',
+    parkNote3: 'पैकेज में शामिल है या नहीं? अपने बुकिंग एजेंट से पूछें।',
     successTitle: 'चेक-इन सफल',
     successBody: 'सब तैयार है — कैश ऑन टूर नहीं है। समुद्र पर अच्छा दिन बिताएँ!',
     successPaidTitle: 'चेक-इन सफल',
@@ -330,8 +326,9 @@ const COPY = {
     boat: 'नाव',
     boatUnassigned: 'नाव अभी नहीं लगी — कृपया मरीना स्टाफ से पूछें।',
     sequence: 'टिकट क्रम',
-    sequenceShowStaff: 'बोट टिकट देने से पहले यह नंबर स्टाफ को दिखाएँ।',
+    sequenceShowStaff: 'टिकट के लिए यह नंबर स्टाफ को दिखाएँ।',
     sequencePending: 'चेक-इन पूरा होने पर क्रम संख्या दिखेगी।',
+    screenshotTip: 'सुझाव: स्क्रीनशॉट लें, फिर टैब बंद करें।',
     editInformation: 'जानकारी संपादित करें',
     editGuestTitle: 'अतिथि विवरण संपादित करें',
     editGuestSub: 'नाम, जन्म तिथि, राष्ट्रीयता या पासपोर्ट ठीक करें। पासपोर्ट से मेल खाना चाहिए।',
@@ -340,6 +337,7 @@ const COPY = {
     editSaved: 'जानकारी अपडेट हो गई।',
     guestsCount: '{count} अतिथि{plural}',
     checkedIn: 'चेक-इन हो गया',
+    moreGuestsScroll: '+{count} और — सभी देखने के लिए स्क्रॉल करें',
   },
 } as const
 

@@ -15,7 +15,6 @@ import {
   Users,
   Waves,
 } from 'lucide-react'
-import { BoatFleetBadge } from '@/components/boat-badge'
 import { usePortal } from '@/components/portal-provider'
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
@@ -216,10 +215,10 @@ function ThaiParkFeeNote({ count }: { count: number }) {
   const { t } = useCheckInI18n()
   if (count < 1) return null
   return (
-    <div className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-3 text-left text-sm text-amber-950">
+    <div className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-left text-sm leading-snug text-amber-950">
       <p className="font-semibold">{t('thaiParkFeeTitle')}</p>
-      <p className="mt-1 text-amber-900/80">{t('thaiParkFeeBody')}</p>
-      <p className="mt-1.5 font-semibold tabular-nums">
+      <p className="mt-0.5 text-amber-900/80">{t('thaiParkFeeBody')}</p>
+      <p className="mt-1 font-semibold tabular-nums">
         {t('thaiParkFeeCollect', {
           count,
           plural: englishPlural(count),
@@ -2008,13 +2007,13 @@ function PaymentDueAlert({
   return (
     <div
       role="alert"
-      className="rounded-2xl border border-orange-300 bg-orange-50 px-4 py-3.5 text-left text-sm leading-relaxed text-orange-950"
+      className="rounded-2xl border border-orange-300 bg-orange-50 px-3.5 py-2.5 text-left text-sm leading-snug text-orange-950"
     >
       <p className="flex items-center gap-2 font-semibold">
         <AlertTriangle className="size-4 shrink-0" />
         {t('paymentDueTitle')}
       </p>
-      <p className="mt-1 text-orange-900/85">
+      <p className="mt-0.5 text-orange-900/85">
         {due.amount > 0
           ? t('payAmount', { amount: due.amount.toLocaleString('en-US') })
           : t('payCash')}
@@ -2270,16 +2269,16 @@ function DoneStep({
 
   if (needsPayment) {
     return (
-      <div className="space-y-4">
-        <section className="gday-sheet space-y-5 rounded-[1.5rem] border border-orange-200/80 bg-gradient-to-br from-orange-50 via-white to-amber-50 p-6 text-center">
-          <div className="mx-auto flex size-16 items-center justify-center rounded-full bg-orange-500 text-white shadow-lg shadow-orange-500/30">
-            <AlertTriangle className="size-8" />
+      <div className="space-y-3">
+        <section className="gday-sheet space-y-3 rounded-[1.5rem] border border-orange-200/80 bg-gradient-to-br from-orange-50 via-white to-amber-50 p-5 text-center">
+          <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-orange-500 text-white shadow-lg shadow-orange-500/30">
+            <AlertTriangle className="size-6" />
           </div>
           <div>
-            <h1 className="font-display text-2xl font-semibold text-orange-950">
+            <h1 className="font-display text-xl font-semibold text-orange-950">
               {t('paymentNeeded')}
             </h1>
-            <p className="mt-2 text-sm leading-relaxed text-orange-950/70">
+            <p className="mt-1 text-sm leading-snug text-orange-950/70">
               {parkExcluded ? t('payPark') : t('payStaff')}
             </p>
           </div>
@@ -2287,26 +2286,23 @@ function DoneStep({
           {thaiCount > 0 ? <ThaiParkFeeNote count={thaiCount} /> : null}
           {boarding}
           {onEdit ? (
-            <Button variant="outline" className="h-11 w-full" onClick={onEdit}>
+            <Button variant="outline" className="h-10 w-full" onClick={onEdit}>
               {t('editInformation')}
             </Button>
           ) : null}
-          <Button variant="outline" className="h-11 w-full" onClick={onAgain}>
+          <Button variant="outline" className="h-10 w-full" onClick={onAgain}>
             {t('checkInAnother')}
           </Button>
         </section>
 
         {showParkNote ? (
-          <section className="rounded-[1.5rem] border border-teal-900/10 bg-white/80 px-4 py-4 text-left text-sm leading-relaxed text-teal-950/75">
-            <p className="font-semibold tracking-wide text-teal-950 uppercase">
-              {t('parkNoteTitle')}
-            </p>
-            <p className="mt-2">{t('parkNote1')}</p>
-            <p className="mt-2 font-medium text-teal-950">{t('parkNote2')}</p>
-            <p className="mt-2">{t('parkNote3')}</p>
-            <p className="mt-3 text-xs font-semibold tracking-wide text-teal-900/55 uppercase">
-              {t('management')}
-            </p>
+          <section className="rounded-[1.5rem] border border-teal-900/10 bg-white/80 px-4 py-3 text-left text-sm leading-snug text-teal-950/80">
+            <p className="text-[13px] font-semibold text-teal-950">{t('parkNoteTitle')}</p>
+            <ul className="mt-2 list-disc space-y-1.5 pl-4 marker:text-teal-700/50">
+              <li>{t('parkNote1')}</li>
+              <li className="font-medium text-teal-950">{t('parkNote2')}</li>
+              <li>{t('parkNote3')}</li>
+            </ul>
           </section>
         ) : null}
       </div>
@@ -2314,19 +2310,19 @@ function DoneStep({
   }
 
   return (
-    <section className="gday-sheet space-y-5 rounded-[1.5rem] border border-emerald-200/80 bg-gradient-to-br from-emerald-50 via-white to-teal-50 p-6 text-center">
-      <div className="mx-auto flex size-16 items-center justify-center rounded-full bg-emerald-500 text-white shadow-lg shadow-emerald-500/30">
-        <CheckCircle2 className="size-8" />
+    <section className="gday-sheet space-y-3 rounded-[1.5rem] border border-emerald-200/80 bg-gradient-to-br from-emerald-50 via-white to-teal-50 p-5 text-center">
+      <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-emerald-500 text-white shadow-lg shadow-emerald-500/30">
+        <CheckCircle2 className="size-6" />
       </div>
       <div>
-        <h1 className="font-display text-2xl font-semibold text-emerald-950">
+        <h1 className="font-display text-xl font-semibold text-emerald-950">
           {paid ? t('successPaidTitle') : t('successTitle')}
         </h1>
-        <p className="mt-2 text-sm leading-relaxed text-emerald-950/70">
+        <p className="mt-1 text-sm leading-snug text-emerald-950/70">
           {paid ? t('successPaidBody') : t('successBody')}
         </p>
         {paid ? (
-          <p className="mt-3 inline-flex rounded-full bg-emerald-100 px-3 py-1 text-sm font-bold tracking-wide text-emerald-800">
+          <p className="mt-2 inline-flex rounded-full bg-emerald-100 px-3 py-1 text-sm font-bold tracking-wide text-emerald-800">
             {t('paidBadge')}
           </p>
         ) : null}
@@ -2335,11 +2331,11 @@ function DoneStep({
       {paid && booking ? <GuestMarinaReceipt booking={booking} /> : null}
       {boarding}
       {onEdit ? (
-        <Button variant="outline" className="h-11 w-full" onClick={onEdit}>
+        <Button variant="outline" className="h-10 w-full" onClick={onEdit}>
           {t('editInformation')}
         </Button>
       ) : null}
-      <Button variant="outline" className="h-11 w-full" onClick={onAgain}>
+      <Button variant="outline" className="h-10 w-full" onClick={onAgain}>
         {t('checkInAnother')}
       </Button>
     </section>
@@ -2365,87 +2361,101 @@ function BoardingSummary({
   const theme = boat && boat > 0 ? boatTheme(boat) : null
 
   return (
-    <div className="space-y-3 text-left">
-      <div className="rounded-2xl bg-teal-950 px-4 py-4 text-center text-white shadow-lg shadow-teal-950/20">
-        <p className="text-[11px] font-semibold tracking-wide text-white/60 uppercase">
-          {t('sequence')}
-        </p>
-        {sequenceLabel ? (
-          <p className="mt-1 font-display text-4xl font-semibold tracking-tight tabular-nums">
-            {sequenceLabel}
+    <div className="space-y-2 text-left">
+      <div className="grid grid-cols-2 gap-2">
+        <div className="rounded-2xl bg-teal-950 px-3 py-3 text-center text-white shadow-lg shadow-teal-950/20">
+          <p className="text-[10px] font-semibold tracking-wide text-white/60 uppercase">
+            {t('sequence')}
           </p>
+          {sequenceLabel ? (
+            <p className="mt-0.5 font-display text-2xl font-semibold tracking-tight tabular-nums">
+              {sequenceLabel}
+            </p>
+          ) : (
+            <p className="mt-0.5 text-xs font-medium text-white/70">{t('sequencePending')}</p>
+          )}
+        </div>
+
+        {theme && boatLabel ? (
+          <div
+            className={cn(
+              'rounded-2xl px-3 py-3 text-center ring-1',
+              theme.sheet,
+              theme.ring.replace('ring-', 'ring-'),
+            )}
+          >
+            <p className="text-[10px] font-semibold tracking-wide uppercase opacity-70">
+              {t('yourBoat')}
+            </p>
+            <div className="mt-1 flex items-center justify-center gap-2">
+              <span className={cn('size-7 shrink-0 rounded-lg shadow-sm', theme.swatch)} />
+              <div className="min-w-0 text-left">
+                <p
+                  className={cn(
+                    'font-display truncate text-base leading-tight font-semibold tracking-tight',
+                    theme.title,
+                  )}
+                >
+                  {boatLabel}
+                </p>
+                <p className={cn('text-xs leading-tight font-semibold', theme.title)}>
+                  {theme.colorName} · {theme.fleetNumber}
+                </p>
+              </div>
+            </div>
+          </div>
         ) : (
-          <p className="mt-1 text-sm font-medium text-white/70">{t('sequencePending')}</p>
+          <div className="rounded-2xl bg-white/80 px-3 py-3 text-center ring-1 ring-teal-900/8">
+            <p className="text-[10px] font-semibold tracking-wide text-teal-800/50 uppercase">
+              {t('yourBoat')}
+            </p>
+            <p className="mt-1 text-xs font-medium text-teal-900/55">{t('boatUnassigned')}</p>
+          </div>
         )}
-        <p className="mt-2 text-xs leading-relaxed text-white/70">{t('sequenceShowStaff')}</p>
       </div>
-      <div className="rounded-2xl bg-white/80 px-4 py-3.5 ring-1 ring-teal-900/8">
+      <p className="text-center text-xs font-semibold text-teal-900/75">
+        {t('sequenceShowStaff')}
+      </p>
+      <p className="text-center text-xs font-semibold text-teal-900/75">{t('screenshotTip')}</p>
+      <div className="rounded-2xl bg-white/80 px-4 py-2.5 ring-1 ring-teal-900/8">
         <p className="text-[11px] font-semibold tracking-wide text-teal-800/50 uppercase">
           {names.length === 1 ? t('guest') : t('guests')}
         </p>
         {names.length === 0 ? (
           <p className="mt-1 text-sm font-semibold text-teal-950">—</p>
         ) : (
-          <ul className="mt-1 space-y-0.5">
-            {names.map((name, index) => (
-              <li key={`${name}-${index}`} className="text-base font-semibold text-teal-950">
-                <span className="tabular-nums text-teal-800/55">{index + 1}.</span> {name}
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul className="mt-1 max-h-32 space-y-0.5 overflow-y-auto pr-1">
+              {names.map((name, index) => (
+                <li key={`${name}-${index}`} className="text-base font-semibold text-teal-950">
+                  <span className="tabular-nums text-teal-800/55">{index + 1}.</span> {name}
+                </li>
+              ))}
+            </ul>
+            {names.length > 5 ? (
+              <p className="mt-1 text-[11px] font-medium text-teal-900/45">
+                {t('moreGuestsScroll', { count: names.length - 5 })}
+              </p>
+            ) : null}
+          </>
         )}
       </div>
 
-      <div className="rounded-2xl bg-white/80 px-4 py-3.5 ring-1 ring-teal-900/8">
+      <div className="rounded-2xl bg-white/80 px-4 py-2.5 ring-1 ring-teal-900/8">
         <p className="text-[11px] font-semibold tracking-wide text-teal-800/50 uppercase">
           {t('hotelName')}
         </p>
-        <p className="mt-1 text-base font-semibold text-teal-950">
+        <p className="mt-0.5 text-base font-semibold text-teal-950">
           {hotelName || '—'}
         </p>
       </div>
 
-      {theme && boatLabel ? (
-        <div
-          className={cn(
-            'rounded-2xl px-4 py-4 ring-1',
-            theme.sheet,
-            theme.ring.replace('ring-', 'ring-'),
-          )}
-        >
-          <p className="text-[11px] font-semibold tracking-wide uppercase opacity-70">{t('yourBoat')}</p>
-          <div className="mt-2 flex items-center gap-3">
-            <span className={cn('size-10 shrink-0 rounded-xl shadow-sm', theme.swatch)} />
-            <div className="min-w-0">
-              <p className={cn('font-display text-xl font-semibold tracking-tight', theme.title)}>
-                {boatLabel}
-              </p>
-              <p className={cn('mt-0.5 text-sm font-semibold', theme.title)}>
-                {theme.colorName}
-                <span className="mx-1.5 opacity-40">·</span>
-                {t('boat')} {theme.fleetNumber}
-              </p>
-            </div>
-            <BoatFleetBadge boat={boat} showColorName className="ml-auto text-sm" />
-          </div>
-        </div>
-      ) : (
-        <div className="rounded-2xl bg-white/80 px-4 py-3.5 ring-1 ring-teal-900/8">
-          <p className="text-[11px] font-semibold tracking-wide text-teal-800/50 uppercase">
-            {t('yourBoat')}
-          </p>
-          <p className="mt-1 text-sm font-medium text-teal-900/55">
-            {t('boatUnassigned')}
-          </p>
-        </div>
-      )}
-
-      <div className="rounded-2xl bg-white/80 px-4 py-3.5 ring-1 ring-teal-900/8">
+      <div className="rounded-2xl bg-white/80 px-4 py-2.5 ring-1 ring-teal-900/8">
         <p className="text-[11px] font-semibold tracking-wide text-teal-800/50 uppercase">
           {t('addOnServiceToday')}
         </p>
         {services.length === 0 ? (
-          <p className="mt-1 text-sm font-medium text-teal-900/45">{t('noAddOnService')}</p>
+          <p className="mt-0.5 text-sm font-medium text-teal-900/45">{t('noAddOnService')}</p>
         ) : (
           <ul className="mt-2 space-y-2">
             {CHECK_IN_SERVICE_KINDS.filter((kind) =>
