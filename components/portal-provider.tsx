@@ -1991,6 +1991,13 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       // upload this browser's localStorage over older cloud rows.
       const staffWindow = !isGuest && !isHelper ? boardPlanWindow(profile.role) : null
       const canMigrate = allowMigrate && !isGuest && !staffWindow
+
+      // PERF sprint-3: Realtime/poll partial syncs only refresh TODAY's check-in rows.
+      // Check-ins can only happen on the current tour date; past days are immutable
+      // during a session. Full window loads on mount; subsequent partials are today-only.
+      // This cuts per-triggered-sync data by ~90% (1 day vs 10-day window × 8 tables).
+      const partialOnDate = partial && staffWindow ? todayISO() : null
+
       try {
         // Guest: their tour date. Helper: their board date. Staff: the role window.
         const boardDate =
@@ -2002,11 +2009,13 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const remote = await fetchCheckInMaps(
           boardDate
             ? { onDate: boardDate }
-            : staffWindow
-              ? { sinceDate: staffWindow.from, untilDate: staffWindow.to }
-              : partial
-                ? { sinceDate: todayISO() }
-                : undefined,
+            : partialOnDate
+              ? { onDate: partialOnDate }
+              : staffWindow
+                ? { sinceDate: staffWindow.from, untilDate: staffWindow.to }
+                : partial
+                  ? { sinceDate: todayISO() }
+                  : undefined,
         )
         if (cancelled) return
         if (remote === null) {
@@ -2055,6 +2064,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
         if (isGuest) applyCheckInMapsOverlay(next)
         else if (boardDate) applyCheckInMapsForDay(next, boardDate)
+        else if (partialOnDate) applyCheckInMapsForDay(next, partialOnDate)  // sprint-3: today-only partial
         else if (staffWindow) applyCheckInMapsWindow(next, staffWindow.from, staffWindow.to)
         else if (partial) applyCheckInMapsPartial(next, todayISO())
         else applyCheckInMaps(next)
@@ -2062,11 +2072,14 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         // Guests only need enrollment/attendance for their booking — skip heavy side maps.
         if (isGuest) return
 
+        // sprint-3: partial syncs only need today's side-table data
         const sideRange = boardDate
           ? { from: boardDate, to: boardDate }
-          : staffWindow
-            ? { from: staffWindow.from, to: staffWindow.to }
-            : undefined
+          : partialOnDate
+            ? { from: partialOnDate, to: partialOnDate }
+            : staffWindow
+              ? { from: staffWindow.from, to: staffWindow.to }
+              : undefined
         const remotePax = await fetchCheckInBookedPax(sideRange)
         if (
           cancelled ||
