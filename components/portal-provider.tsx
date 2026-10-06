@@ -217,6 +217,7 @@ import {
   fetchDayBoatPlans,
   fetchDayVehiclePlans,
   boardPlanWindow,
+  livePlanWindow,
   operationalBookingsFromDate,
   partnerBookingsFromDate,
   insertBooking,
@@ -1583,12 +1584,13 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     let busy = false
     let cancelled = false
 
-    async function refreshDayBoatPlans() {
+    async function refreshDayBoatPlans(partial = false) {
       if (cancelled || busy || boatPlanWritePendingRef.current > 0) return
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       busy = true
       const generation = boatPlanSaveGenerationRef.current
-      const window = boardPlanWindow(sessionRole)
+      // PERF sprint-6: realtime-triggered refreshes only pull yesterday/today/tomorrow.
+      const window = partial ? livePlanWindow() : boardPlanWindow(sessionRole)
       try {
         const next = await fetchDayBoatPlans(window)
         if (cancelled || boatPlanWritePendingRef.current > 0) return
@@ -1629,7 +1631,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         if (boatRealtimeTimer != null) return
         boatRealtimeTimer = window.setTimeout(() => {
           boatRealtimeTimer = undefined
-          void refreshDayBoatPlans()
+          void refreshDayBoatPlans(true)
         }, REALTIME_REFRESH_MS)
       }, 'boat')
     } catch (error) {
@@ -1781,12 +1783,13 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     let busy = false
     let cancelled = false
 
-    async function refreshDayVehiclePlans() {
+    async function refreshDayVehiclePlans(partial = false) {
       if (cancelled || busy || vehiclePlanWritePendingRef.current > 0) return
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       busy = true
       const generation = vehiclePlanSaveGenerationRef.current
-      const window = boardPlanWindow(sessionRole)
+      // PERF sprint-6: realtime-triggered refreshes only pull yesterday/today/tomorrow.
+      const window = partial ? livePlanWindow() : boardPlanWindow(sessionRole)
       try {
         const next = await fetchDayVehiclePlans(window)
         if (cancelled || vehiclePlanWritePendingRef.current > 0) return
@@ -1815,7 +1818,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         if (vehicleRealtimeTimer != null) return
         vehicleRealtimeTimer = window.setTimeout(() => {
           vehicleRealtimeTimer = undefined
-          void refreshDayVehiclePlans()
+          void refreshDayVehiclePlans(true)
         }, REALTIME_REFRESH_MS)
       }, 'vehicle')
     } catch (error) {

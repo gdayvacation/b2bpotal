@@ -305,6 +305,23 @@ export function boardPlanWindow(role: string, now: Date = new Date()): BoardDate
   }
 }
 
+/**
+ * PERF sprint-6: boat/vehicle plans were refetching the full boardPlanWindow (11-22 days) on
+ * every 5-minute poll AND on every realtime change — the top egress contributor measured on
+ * Oct 5-6 (boat_assignments/day_boat_plans had the highest request counts of any table).
+ * Realtime-triggered refreshes only need yesterday/today/tomorrow: boat/van plans are mostly
+ * edited for the near-term, and the regular poll (unchanged, still full window) self-heals any
+ * edit to a farther-out day within STAFF_DAY_PLAN_POLL_MS. Initial mount load also keeps the
+ * full window so navigating to any day works immediately.
+ */
+export function livePlanWindow(now: Date = new Date()): BoardDateWindow {
+  const today = todayISO(now)
+  return {
+    from: addDaysISO(today, -1),
+    to: addDaysISO(today, 1),
+  }
+}
+
 /** Agent booking links only keep a short history. Future trips are still included. */
 export const PARTNER_BOOKING_LOOKBACK_DAYS = 7
 
