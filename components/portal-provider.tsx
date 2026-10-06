@@ -2243,10 +2243,15 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     function schedulePartialSync() {
       if (debounceTimer != null) return
       // After failures (e.g. DB timeouts) wait longer each time: 60s, 120s … max 2 min.
-      const delay =
+      const baseDelay =
         syncFailures > 0
           ? Math.min(120_000, CHECK_IN_REALTIME_DEBOUNCE_MS * 2 ** Math.min(syncFailures, 2))
           : CHECK_IN_REALTIME_DEBOUNCE_MS
+      // PERF sprint-5: add up to +5s random jitter so multiple staff tabs/devices — which all
+      // receive the same realtime event at roughly the same moment — don't fire their sync
+      // requests in the exact same instant. Spreads the burst out instead of all tabs hitting
+      // the 10-connection pool together.
+      const delay = baseDelay + Math.floor(Math.random() * 5_000)
       debounceTimer = window.setTimeout(() => {
         debounceTimer = null
         if (document.visibilityState === 'hidden') return

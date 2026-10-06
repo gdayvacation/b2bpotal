@@ -1,6 +1,6 @@
 import { addDaysISO, todayISO } from '@/lib/format'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
-import { selectAllPaged } from '@/lib/supabase/paged'
+import { selectAllPaged, runWithConcurrencyLimit } from '@/lib/supabase/paged'
 import {
   DEFAULT_BOOKING_CUTOFFS,
   normalizeBeforeDays,
@@ -2733,6 +2733,8 @@ export async function fetchCheckInMaps(
     : sinceDate || untilDate
       ? { sinceDate, untilDate }
       : undefined
+  // PERF sprint-5: cap concurrency at 4 instead of firing all 8 table queries at once.
+  // See runWithConcurrencyLimit for why — avoids starving the 10-connection PostgREST pool.
   const [
     enrollmentsRes,
     attendanceRes,
@@ -2742,16 +2744,19 @@ export async function fetchCheckInMaps(
     guestEditsRes,
     notesRes,
     groupGuidesRes,
-  ] = await Promise.all([
-    fetchAllCheckInRows<CheckInEnrollmentRow>('check_in_enrollments', range),
-    fetchAllCheckInRows<CheckInAttendanceRow>('check_in_attendance', range),
-    fetchAllCheckInRows<CheckInPaymentRow>('check_in_payments', range),
-    fetchAllCheckInRows<CheckInServiceRow>('check_in_services', range),
-    fetchAllCheckInRows<CheckInSequenceRow>('check_in_sequences', range),
-    fetchAllCheckInRows<CheckInGuestEditRow>('check_in_guest_edits', range),
-    fetchAllCheckInRows<CheckInNoteRow>('check_in_notes', range),
-    fetchAllCheckInRows<CheckInGroupGuideRow>('check_in_group_guides', range),
-  ])
+  ] = await runWithConcurrencyLimit(
+    [
+      () => fetchAllCheckInRows<CheckInEnrollmentRow>('check_in_enrollments', range),
+      () => fetchAllCheckInRows<CheckInAttendanceRow>('check_in_attendance', range),
+      () => fetchAllCheckInRows<CheckInPaymentRow>('check_in_payments', range),
+      () => fetchAllCheckInRows<CheckInServiceRow>('check_in_services', range),
+      () => fetchAllCheckInRows<CheckInSequenceRow>('check_in_sequences', range),
+      () => fetchAllCheckInRows<CheckInGuestEditRow>('check_in_guest_edits', range),
+      () => fetchAllCheckInRows<CheckInNoteRow>('check_in_notes', range),
+      () => fetchAllCheckInRows<CheckInGroupGuideRow>('check_in_group_guides', range),
+    ],
+    4,
+  )
 
   if (enrollmentsRes.error || attendanceRes.error || paymentsRes.error) {
     const message =
