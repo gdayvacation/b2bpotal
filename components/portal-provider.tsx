@@ -874,7 +874,13 @@ const REALTIME_REFRESH_MS = 1_500
  * instead of ~1 per 4 s, cutting Realtime-triggered sync queries by ~87 %.
  * Staff see check-ins appear within 30 s — acceptable for the admin board.
  */
-const CHECK_IN_REALTIME_DEBOUNCE_MS = 30_000
+// PERF sprint-9: 30s -> 60s. Realtime check-in resync refetches 13 tables per cycle; during
+// continuous rush-hour activity with several staff tabs open, this fires very frequently and
+// was the single largest contributor to staff-side request volume (measured Oct 6 rush).
+// Doubling the coalescing window halves triggered-sync frequency while keeping the board
+// fresh within 60s of any check-in change — guest-visible confirmations are unaffected since
+// those go through the dedicated low-latency guest realtime path, not this staff board sync.
+const CHECK_IN_REALTIME_DEBOUNCE_MS = 60_000
 /**
  * Guest success screen fallback only (realtime is the fast path).
  * PERF sprint-8: 60 s → 180 s. During morning rush 100-150 guests can have this screen open
