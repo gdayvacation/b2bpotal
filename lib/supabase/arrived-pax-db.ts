@@ -3,7 +3,7 @@ import { bookedPaxKey } from '@/lib/check-in-booked-pax'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { type Program } from '@/lib/types'
 
-type ArrivedPaxRow = {
+export type ArrivedPaxRow = {
   date: string
   program: string
   booking_code: string
@@ -21,13 +21,34 @@ function asDateString(value: string) {
   return value.slice(0, 10)
 }
 
+/**
+ * PERF sprint-9b: shared row->map builder reused by the consolidated check-in
+ * snapshot RPC (see portal-db.ts' fetchCheckInSnapshotRpc) and the standalone
+ * fetchCheckInArrivedPax fallback below.
+ */
+export function buildArrivedPaxMapFromRows(rows: ArrivedPaxRow[]): BookedPaxMap {
+  const next: BookedPaxMap = {}
+  for (const row of rows) {
+    if (!isProgram(row.program)) continue
+    const code = String(row.booking_code ?? '').trim()
+    if (!code) continue
+    next[bookedPaxKey(asDateString(row.date), row.program, code)] = {
+      adults: Math.max(0, Math.floor(Number(row.adults) || 0)),
+      children: Math.max(0, Math.floor(Number(row.children) || 0)),
+      infants: Math.max(0, Math.floor(Number(row.infants) || 0)),
+      tourLeaders: Math.max(0, Math.floor(Number(row.tour_leaders) || 0)),
+    }
+  }
+  return next
+}
+
 export async function fetchCheckInArrivedPax(range?: {
   from?: string
   to?: string
 }): Promise<BookedPaxMap | null> {
   const supabase = getSupabaseBrowserClient()
   const pageSize = 1000
-  const next: BookedPaxMap = {}
+  const rows: ArrivedPaxRow[] = []
   let from = 0
   const fromDate = range?.from?.slice(0, 10) || ''
   const toDate = range?.to?.slice(0, 10) || ''
@@ -46,24 +67,13 @@ export async function fetchCheckInArrivedPax(range?: {
       return null
     }
 
-    const rows = (data ?? []) as ArrivedPaxRow[]
-    for (const row of rows) {
-      if (!isProgram(row.program)) continue
-      const code = String(row.booking_code ?? '').trim()
-      if (!code) continue
-      next[bookedPaxKey(asDateString(row.date), row.program, code)] = {
-        adults: Math.max(0, Math.floor(Number(row.adults) || 0)),
-        children: Math.max(0, Math.floor(Number(row.children) || 0)),
-        infants: Math.max(0, Math.floor(Number(row.infants) || 0)),
-        tourLeaders: Math.max(0, Math.floor(Number(row.tour_leaders) || 0)),
-      }
-    }
-
-    if (rows.length < pageSize) break
+    const chunk = (data ?? []) as ArrivedPaxRow[]
+    rows.push(...chunk)
+    if (chunk.length < pageSize) break
     from += pageSize
   }
 
-  return next
+  return buildArrivedPaxMapFromRows(rows)
 }
 
 export async function deleteCheckInArrivedPax(date: string, program: Program, bookingCode: string) {

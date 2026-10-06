@@ -7,7 +7,7 @@ function isJobOrderAction(value: unknown): value is JobOrderAction {
   return value === 'stand-by' || value === 'picked-up' || value === 'no-show'
 }
 
-type PaxRow = {
+export type PaxRow = {
   date: string
   program: string
   booking_code: string
@@ -17,7 +17,7 @@ type PaxRow = {
   tour_leaders: number
 }
 
-type JobOrderRow = {
+export type JobOrderRow = {
   date: string
   program: string
   booking_code: string
@@ -51,7 +51,9 @@ function snapshotFromRow(row: PaxRow): BookedPaxSnapshot {
   }
 }
 
-function buildPaxMap(rows: PaxRow[]): BookedPaxMap {
+// PERF sprint-9b: exported so the consolidated check-in snapshot RPC (portal-db.ts'
+// fetchCheckInSnapshotRpc) can reuse the exact same row->map logic.
+export function buildPaxMap(rows: PaxRow[]): BookedPaxMap {
   const next: BookedPaxMap = {}
   for (const row of rows) {
     if (!isProgram(row.program)) continue
@@ -84,7 +86,7 @@ function flattenPaxMap(map: BookedPaxMap): PaxRow[] {
   return rows
 }
 
-function buildJobOrderMap(rows: JobOrderRow[]): DayJobOrderActionMap {
+export function buildJobOrderMap(rows: JobOrderRow[]): DayJobOrderActionMap {
   const next: DayJobOrderActionMap = {}
   for (const row of rows) {
     if (!isProgram(row.program) || !isJobOrderAction(row.action)) continue
