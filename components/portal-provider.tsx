@@ -875,8 +875,13 @@ const REALTIME_REFRESH_MS = 1_500
  * Staff see check-ins appear within 30 s — acceptable for the admin board.
  */
 const CHECK_IN_REALTIME_DEBOUNCE_MS = 30_000
-/** Guest success screen fallback only (realtime is the fast path). */
-const GUEST_BOAT_POLL_MS = 60_000
+/**
+ * Guest success screen fallback only (realtime is the fast path).
+ * PERF sprint-8: 60 s → 180 s. During morning rush 100-150 guests can have this screen open
+ * simultaneously waiting for their boat — Realtime already pushes updates instantly; this poll
+ * is purely a dropped-connection safety net and doesn't need to be as tight as 1/min.
+ */
+const GUEST_BOAT_POLL_MS = 180_000
 
 export type GuestBoatWatch = {
   bookingCode: string
@@ -1621,7 +1626,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     }
 
     function onVisible() {
-      if (document.visibilityState === 'visible') void refreshDayBoatPlans()
+      // PERF sprint-8: tab/app switches happen very often on staff tablets/phones — use the
+      // same narrow 3-day window as realtime triggers instead of the full board window. The
+      // regular 5-min poll (unchanged, full window) still runs and self-heals within minutes.
+      if (document.visibilityState === 'visible') void refreshDayBoatPlans(true)
     }
 
     document.addEventListener('visibilitychange', onVisible)
@@ -1808,7 +1816,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     }
 
     function onVisible() {
-      if (document.visibilityState === 'visible') void refreshDayVehiclePlans()
+      // PERF sprint-8: same reasoning as the boat plan effect — narrow window on tab/app
+      // refocus, full window still covered by the regular poll.
+      if (document.visibilityState === 'visible') void refreshDayVehiclePlans(true)
     }
 
     document.addEventListener('visibilitychange', onVisible)
