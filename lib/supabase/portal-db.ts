@@ -1,6 +1,22 @@
 import { addDaysISO, todayISO } from '@/lib/format'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { selectAllPaged, runWithConcurrencyLimit } from '@/lib/supabase/paged'
+import type { BookedPaxMap } from '@/lib/check-in-booked-pax'
+import {
+  buildArrivedPaxMapFromRows,
+  type ArrivedPaxRow,
+} from '@/lib/supabase/arrived-pax-db'
+import {
+  buildBookedPaxMapFromRows,
+  type BookedPaxRow,
+} from '@/lib/supabase/booked-pax-db'
+import {
+  buildJobOrderMap,
+  buildPaxMap,
+  type JobOrderRow,
+  type PaxRow,
+} from '@/lib/supabase/day-ops-db'
+import type { DayJobOrderActionMap } from '@/lib/job-order-action'
 import {
   DEFAULT_BOOKING_CUTOFFS,
   normalizeBeforeDays,
@@ -2866,6 +2882,98 @@ export async function fetchCheckInMaps(
   }
 
   return snapshot
+}
+
+export type CheckInSnapshotRpcResult = {
+  checkInMaps: CheckInMapsSnapshot
+  bookedPax: BookedPaxMap
+  arrivedPax: BookedPaxMap
+  pickupNoShows: BookedPaxMap
+  ownArrivals: BookedPaxMap
+  jobOrderActions: DayJobOrderActionMap
+}
+
+/**
+ * PERF sprint-9b: single-request replacement for fetchCheckInMaps + fetchCheckInBookedPax +
+ * fetchCheckInArrivedPax + fetchDayOpsMaps (13 separate table fetches total). Calls the
+ * `portal_fetch_check_in_snapshot` Postgres function (see
+ * supabase/add-check-in-snapshot-rpc.sql) and reuses the exact same row->map builders as
+ * each of those standalone fetchers, so the resulting maps are identical either way.
+ *
+ * Returns null if the RPC is unavailable (migration not yet run on this project, or any
+ * other error) — callers should fall back to the original per-table fetch path in that
+ * case. Safe to call speculatively on every sync; the fallback keeps today's behavior
+ * unchanged for any project that hasn't applied the migration.
+ */
+export async function fetchCheckInSnapshotRpc(options?: {
+  sinceDate?: string
+  untilDate?: string
+  onDate?: string
+}): Promise<CheckInSnapshotRpcResult | null> {
+  const onDate = options?.onDate?.slice(0, 10) || undefined
+  const sinceDate = onDate ?? options?.sinceDate?.slice(0, 10) ?? '1970-01-01'
+  const untilDate = onDate ?? options?.untilDate?.slice(0, 10) ?? '2999-12-31'
+
+  const supabase = getSupabaseBrowserClient()
+  const { data, error } = await supabase.rpc('portal_fetch_check_in_snapshot', {
+    p_since_date: sinceDate,
+    p_until_date: untilDate,
+  })
+  if (error) {
+    // Expected until supabase/add-check-in-snapshot-rpc.sql has been run on this project.
+    return null
+  }
+
+  const payload = (data ?? {}) as Record<string, unknown[] | undefined>
+  const rows = <T>(key: string): T[] => (payload[key] ?? []) as T[]
+
+  const services: DayCheckInServiceMap = buildCheckInServiceMap(rows<CheckInServiceRow>('services'))
+  const sequences: DayCheckInSequenceMap = buildCheckInSequenceMap(
+    rows<CheckInSequenceRow>('sequences'),
+  )
+  const guestEdits: DayCheckInGuestEditMap = buildCheckInGuestEditMap(
+    rows<CheckInGuestEditRow>('guest_edits'),
+  )
+  const notes: DayCheckInNoteMap = buildCheckInNoteMap(rows<CheckInNoteRow>('notes'))
+  const groupGuides: DayCheckInGroupGuideMap = buildCheckInGroupGuideMap(
+    rows<CheckInGroupGuideRow>('group_guides'),
+  )
+
+  const paymentRows = rows<CheckInPaymentRow>('payments')
+  const split = adoptLegacyPaymentsAsTickets(
+    buildCheckInPaymentMap(paymentRows),
+    buildCheckInTicketMap(paymentRows),
+  )
+
+  const checkInMaps: CheckInMapsSnapshot = {
+    enrollments: buildCheckInEnrollmentMap(rows<CheckInEnrollmentRow>('enrollments')),
+    attendance: buildCheckInAttendanceMap(rows<CheckInAttendanceRow>('attendance')),
+    payments: split.payments,
+    tickets: split.tickets,
+    services,
+    sequences,
+    guestEdits,
+    notes,
+    groupGuides,
+  }
+
+  if (split.migrated) {
+    try {
+      await rewriteLegacyPaymentTicksAsTickets(checkInMaps)
+      markCheckInTicketMigrationDone()
+    } catch (migrateError) {
+      console.warn('[supabase] could not rewrite legacy ticket ticks', migrateError)
+    }
+  }
+
+  return {
+    checkInMaps,
+    bookedPax: buildBookedPaxMapFromRows(rows<BookedPaxRow>('booked_pax')),
+    arrivedPax: buildArrivedPaxMapFromRows(rows<ArrivedPaxRow>('arrived_pax')),
+    pickupNoShows: buildPaxMap(rows<PaxRow>('pickup_no_shows')),
+    ownArrivals: buildPaxMap(rows<PaxRow>('own_arrivals')),
+    jobOrderActions: buildJobOrderMap(rows<JobOrderRow>('job_order_actions')),
+  }
 }
 
 export type RecordCheckInEnrollmentsResult =

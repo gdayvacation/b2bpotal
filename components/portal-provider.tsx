@@ -211,6 +211,7 @@ import {
   fetchBookingsWithCursor,
   fetchBookingsInDateRange,
   fetchCheckInMaps,
+  fetchCheckInSnapshotRpc,
   fetchAvailabilitySettings,
   fetchBoatPlansForDate,
   fetchDayBoatPlans,
@@ -2032,17 +2033,25 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             : isHelper && profile.helperDate
               ? profile.helperDate
               : undefined
-        const remote = await fetchCheckInMaps(
-          boardDate
-            ? { onDate: boardDate }
-            : partialOnDate
-              ? { onDate: partialOnDate }
-              : staffWindow
-                ? { sinceDate: staffWindow.from, untilDate: staffWindow.to }
-                : partial
-                  ? { sinceDate: todayISO() }
-                  : undefined,
-        )
+        const checkInRangeOptions = boardDate
+          ? { onDate: boardDate }
+          : partialOnDate
+            ? { onDate: partialOnDate }
+            : staffWindow
+              ? { sinceDate: staffWindow.from, untilDate: staffWindow.to }
+              : partial
+                ? { sinceDate: todayISO() }
+                : undefined
+
+        // PERF sprint-9b: try the 1-request consolidated snapshot (13 tables -> 1 RPC
+        // call, see supabase/add-check-in-snapshot-rpc.sql) first. Returns null and falls
+        // back to the original per-table fetches below if that migration hasn't been run
+        // on this project yet — behavior is unchanged either way, only the request count.
+        const rpcSnapshot = await fetchCheckInSnapshotRpc(checkInRangeOptions)
+
+        const remote = rpcSnapshot
+          ? rpcSnapshot.checkInMaps
+          : await fetchCheckInMaps(checkInRangeOptions)
         if (cancelled) return
         if (remote === null) {
           syncFailures += 1
@@ -2106,7 +2115,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             : staffWindow
               ? { from: staffWindow.from, to: staffWindow.to }
               : undefined
-        const remotePax = await fetchCheckInBookedPax(sideRange)
+        const remotePax = rpcSnapshot ? rpcSnapshot.bookedPax : await fetchCheckInBookedPax(sideRange)
         if (
           cancelled ||
           checkInWritePendingRef.current > 0 ||
@@ -2131,7 +2140,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        const remoteArrived = await fetchCheckInArrivedPax(sideRange)
+        const remoteArrived = rpcSnapshot
+          ? rpcSnapshot.arrivedPax
+          : await fetchCheckInArrivedPax(sideRange)
         if (
           cancelled ||
           checkInWritePendingRef.current > 0 ||
@@ -2165,7 +2176,13 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
 
         if (cancelled || dayOpsWritePendingRef.current > 0) return
-        const remoteOps = await fetchDayOpsMaps(sideRange)
+        const remoteOps = rpcSnapshot
+          ? {
+              pickupNoShows: rpcSnapshot.pickupNoShows,
+              ownArrivals: rpcSnapshot.ownArrivals,
+              jobOrderActions: rpcSnapshot.jobOrderActions,
+            }
+          : await fetchDayOpsMaps(sideRange)
         if (cancelled || dayOpsWritePendingRef.current > 0) return
         if (remoteOps === null) {
           dayOpsCloudEnabledRef.current = false
@@ -2404,14 +2421,23 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
   async function loadBoardWindow(from: string, to: string) {
     const range = { from, to }
+    // PERF sprint-9b: try the 1-request consolidated check-in snapshot first; falls back
+    // to the 13 separate table fetches below if that migration hasn't been run yet.
+    const rpcSnapshot = await fetchCheckInSnapshotRpc({ sinceDate: from, untilDate: to })
     const [boats, vans, settings, checkIn, bookedPax, arrivedPax, dayOps] = await Promise.all([
       fetchDayBoatPlans(range),
       fetchDayVehiclePlans(range),
       fetchAvailabilitySettings(from, to),
-      fetchCheckInMaps({ sinceDate: from, untilDate: to }),
-      fetchCheckInBookedPax(range),
-      fetchCheckInArrivedPax(range),
-      fetchDayOpsMaps(range),
+      rpcSnapshot ? Promise.resolve(rpcSnapshot.checkInMaps) : fetchCheckInMaps({ sinceDate: from, untilDate: to }),
+      rpcSnapshot ? Promise.resolve(rpcSnapshot.bookedPax) : fetchCheckInBookedPax(range),
+      rpcSnapshot ? Promise.resolve(rpcSnapshot.arrivedPax) : fetchCheckInArrivedPax(range),
+      rpcSnapshot
+        ? Promise.resolve({
+            pickupNoShows: rpcSnapshot.pickupNoShows,
+            ownArrivals: rpcSnapshot.ownArrivals,
+            jobOrderActions: rpcSnapshot.jobOrderActions,
+          })
+        : fetchDayOpsMaps(range),
     ])
     if (boatPlanWritePendingRef.current === 0) {
       setDayBoatPlans((current) => mergeDatedRecords(current, boats, from, to))
