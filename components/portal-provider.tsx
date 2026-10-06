@@ -172,7 +172,6 @@ import {
 } from '@/lib/supabase/day-ops-db'
 import { matchNationality } from '@/lib/nationalities'
 import {
-  adoptAllVansOntoSharedBoats,
   adoptVanBookingsOntoSharedBoat,
   canFitBookingOnBoat,
 } from '@/lib/boat-load'
@@ -1386,22 +1385,15 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             writeBoatPlan({ ...plan, capacities })
           }
         }
-        for (const vehiclePlan of Object.values(snapshot.dayVehiclePlans)) {
-          const key = dayBoatPlanKey(vehiclePlan.date, vehiclePlan.program)
-          const boatPlan = nextBoatPlans[key] ?? emptyDayBoatPlan(vehiclePlan.date, vehiclePlan.program)
-          const dayBookings = snapshot.bookings.filter(
-            (booking) =>
-              isActiveBooking(booking) &&
-              booking.date === vehiclePlan.date &&
-              booking.program === vehiclePlan.program,
-          )
-          const assignments = adoptAllVansOntoSharedBoats(
-            dayBookings,
-            vehiclePlan.assignments,
-            boatPlan.assignments,
-          )
-          if (assignments) writeBoatPlan({ ...boatPlan, assignments })
-        }
+        // FIX: previously re-ran adoptAllVansOntoSharedBoats on *every* page load, which
+        // forces every booking on a van back onto that van's majority boat. That's the right
+        // default the moment a van is first assigned (see followVanOntoBoat, triggered
+        // explicitly when a van move happens), but replaying it on every refresh silently
+        // undid deliberate boat splits staff make during check-in (e.g. moving one guest from
+        // a full van's boat to a different boat for capacity/operational reasons) — the split
+        // would revert to "everyone back on the van's boat" the next time anyone reloaded the
+        // page, with no error or warning. Boat assignments are now left exactly as saved;
+        // the "follow the van" convenience only applies when a van is actually moved.
         setDayBoatPlans(nextBoatPlans)
         for (const plan of persistTouched) persistBoatPlanWrite(plan)
         setDayVehiclePlans(snapshot.dayVehiclePlans)
