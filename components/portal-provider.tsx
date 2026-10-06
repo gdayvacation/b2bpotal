@@ -172,7 +172,6 @@ import {
 } from '@/lib/supabase/day-ops-db'
 import { matchNationality } from '@/lib/nationalities'
 import {
-  adoptAllVansOntoSharedBoats,
   adoptVanBookingsOntoSharedBoat,
   canFitBookingOnBoat,
 } from '@/lib/boat-load'
@@ -1071,23 +1070,29 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     }).catch(async (error) => {
       console.error('[supabase] saveDayBoatPlan', error)
       const message = error instanceof Error ? error.message : 'Failed to save boat plan'
-      const conflict = /another device|conflict/i.test(message)
-      if (conflict) {
-        delete boatPlanRevisionRef.current[key]
-        try {
-          const day = plan.date.slice(0, 10)
-          const next = await fetchDayBoatPlans({ from: day, to: day })
-          setDayBoatPlans((current) => mergeDatedRecords(current, next, day, day))
-        } catch (refreshError) {
-          console.error('[portal] boat plan conflict refresh failed', refreshError)
-        }
-        if (typeof window !== 'undefined') {
-          window.alert(message)
-        }
-        return
-      }
       if (/boat.?guides|add-boat-guides/i.test(message)) {
         setLoadError(message)
+        return
+      }
+      // FIX sprint-7: previously only "another device/conflict" errors resynced + alerted —
+      // any other failure (timeout, pool exhaustion, dropped connection) fell through silently.
+      // The optimistic UI kept showing the change as saved with no indication the write never
+      // reached the database; staff only discovered it later when some unrelated refresh
+      // quietly reverted the boat assignment back. Now every failure resyncs this day from the
+      // server and tells the user plainly, so a failed save is never mistaken for a saved one.
+      const conflict = /another device|conflict/i.test(message)
+      delete boatPlanRevisionRef.current[key]
+      try {
+        const day = plan.date.slice(0, 10)
+        const next = await fetchDayBoatPlans({ from: day, to: day })
+        setDayBoatPlans((current) => mergeDatedRecords(current, next, day, day))
+      } catch (refreshError) {
+        console.error('[portal] boat plan save-failure refresh failed', refreshError)
+      }
+      if (typeof window !== 'undefined') {
+        window.alert(
+          conflict ? message : 'Could not save the boat change — please check and try again.',
+        )
       }
     })
   }
@@ -1117,16 +1122,23 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       async (error) => {
         console.error('[supabase] saveDayVehiclePlan', error)
         const message = error instanceof Error ? error.message : 'Failed to save van plan'
-        if (/another device|conflict/i.test(message)) {
-          delete vehiclePlanRevisionRef.current[key]
-          try {
-            const day = plan.date.slice(0, 10)
-            const next = await fetchDayVehiclePlans({ from: day, to: day })
-            setDayVehiclePlans((current) => mergeDatedRecords(current, next, day, day))
-          } catch (refreshError) {
-            console.error('[portal] van plan conflict refresh failed', refreshError)
-          }
-          if (typeof window !== 'undefined') window.alert(message)
+        // FIX sprint-7: same class of bug as persistBoatPlanWrite — previously only
+        // "another device/conflict" errors resynced + alerted; a timeout/pool-exhaustion
+        // failure fell through silently and the change quietly reverted on the next refresh
+        // with no warning. Now every failure resyncs this day and tells the user plainly.
+        const conflict = /another device|conflict/i.test(message)
+        delete vehiclePlanRevisionRef.current[key]
+        try {
+          const day = plan.date.slice(0, 10)
+          const next = await fetchDayVehiclePlans({ from: day, to: day })
+          setDayVehiclePlans((current) => mergeDatedRecords(current, next, day, day))
+        } catch (refreshError) {
+          console.error('[portal] van plan save-failure refresh failed', refreshError)
+        }
+        if (typeof window !== 'undefined') {
+          window.alert(
+            conflict ? message : 'Could not save the van change — please check and try again.',
+          )
         }
       },
     )
@@ -1374,22 +1386,15 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             writeBoatPlan({ ...plan, capacities })
           }
         }
-        for (const vehiclePlan of Object.values(snapshot.dayVehiclePlans)) {
-          const key = dayBoatPlanKey(vehiclePlan.date, vehiclePlan.program)
-          const boatPlan = nextBoatPlans[key] ?? emptyDayBoatPlan(vehiclePlan.date, vehiclePlan.program)
-          const dayBookings = snapshot.bookings.filter(
-            (booking) =>
-              isActiveBooking(booking) &&
-              booking.date === vehiclePlan.date &&
-              booking.program === vehiclePlan.program,
-          )
-          const assignments = adoptAllVansOntoSharedBoats(
-            dayBookings,
-            vehiclePlan.assignments,
-            boatPlan.assignments,
-          )
-          if (assignments) writeBoatPlan({ ...boatPlan, assignments })
-        }
+        // FIX: previously re-ran adoptAllVansOntoSharedBoats on *every* page load, which
+        // forces every booking on a van back onto that van's majority boat. That's the right
+        // default the moment a van is first assigned (see followVanOntoBoat, triggered
+        // explicitly when a van move happens), but replaying it on every refresh silently
+        // undid deliberate boat splits staff make during check-in (e.g. moving one guest from
+        // a full van's boat to a different boat for capacity/operational reasons) — the split
+        // would revert to "everyone back on the van's boat" the next time anyone reloaded the
+        // page, with no error or warning. Boat assignments are now left exactly as saved;
+        // the "follow the van" convenience only applies when a van is actually moved.
         setDayBoatPlans(nextBoatPlans)
         for (const plan of persistTouched) persistBoatPlanWrite(plan)
         setDayVehiclePlans(snapshot.dayVehiclePlans)
