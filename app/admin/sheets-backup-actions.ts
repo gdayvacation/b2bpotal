@@ -7,6 +7,7 @@ import {
   resolvedSpreadsheetId,
   shareEmail,
   sheetsBackupConfigured,
+  snapshotSpreadsheetId,
 } from '@/lib/sheets/config'
 import { createBackupSpreadsheet } from '@/lib/sheets/create'
 import { spreadsheetUrl } from '@/lib/sheets/store'
@@ -21,6 +22,8 @@ export async function getSheetsBackupStatus() {
     missing: missingSheetsBackupEnv(),
     spreadsheetId,
     spreadsheetUrl: spreadsheetId ? spreadsheetUrl(spreadsheetId) : '',
+    snapshotSpreadsheetId: snapshotSpreadsheetId(),
+    snapshotSpreadsheetUrl: snapshotSpreadsheetId() ? spreadsheetUrl(snapshotSpreadsheetId()) : '',
     shareEmail: shareEmail(),
   }
 }

@@ -2,6 +2,10 @@
   "regions": ["syd1"],
   "crons": [
     {
+      "path": "/api/cron/sheets-snapshot",
+      "schedule": "0 20 * * *"
+    },
+    {
       "path": "/api/cron/sheets-backup",
       "schedule": "0 21 * * *"
     }

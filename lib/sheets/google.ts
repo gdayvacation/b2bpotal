@@ -71,6 +71,24 @@ export async function createSpreadsheet(title: string, tabTitles: string[]) {
   }
 }
 
+export async function copySpreadsheet(sourceId: string, title: string) {
+  const data = (await googleFetch(
+    `${DRIVE_API}/files/${encodeURIComponent(sourceId)}/copy?fields=id,webViewLink`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ name: title }),
+    },
+  )) as { id?: string; webViewLink?: string }
+
+  const spreadsheetIdValue = data.id?.trim()
+  if (!spreadsheetIdValue) throw new Error('Google Drive copy returned no file id')
+  return {
+    spreadsheetId: spreadsheetIdValue,
+    url: data.webViewLink?.trim() || `https://docs.google.com/spreadsheets/d/${spreadsheetIdValue}`,
+    title,
+  }
+}
+
 export async function shareSpreadsheet(
   id: string,
   email: string,
@@ -120,8 +138,8 @@ export async function shareSpreadsheetAnyoneWithLink(id: string) {
   })
 }
 
-export async function listSheets(): Promise<SheetProps[]> {
-  const data = (await sheetsFetch('?fields=sheets.properties')) as {
+export async function listSheets(id = spreadsheetId()): Promise<SheetProps[]> {
+  const data = (await sheetsFetch('?fields=sheets.properties', undefined, id)) as {
     sheets?: Array<{ properties?: { sheetId?: number; title?: string } }>
   }
   return (data.sheets ?? [])
@@ -132,8 +150,8 @@ export async function listSheets(): Promise<SheetProps[]> {
     .filter((sheet) => sheet.sheetId >= 0 && sheet.title)
 }
 
-export async function ensureSheets(titles: string[]) {
-  const existing = await listSheets()
+export async function ensureSheets(titles: string[], id = spreadsheetId()) {
+  const existing = await listSheets(id)
   const have = new Set(existing.map((sheet) => sheet.title))
   const requests: unknown[] = []
   const leftover = existing.find((sheet) => sheet.title === 'Sheet1')
@@ -151,40 +169,60 @@ export async function ensureSheets(titles: string[]) {
     requests.push({ addSheet: { properties: { title, hidden: title.startsWith('_') } } })
   }
   if (requests.length > 0) {
-    await sheetsFetch(':batchUpdate', {
-      method: 'POST',
-      body: JSON.stringify({ requests }),
-    })
+    await sheetsFetch(
+      ':batchUpdate',
+      {
+        method: 'POST',
+        body: JSON.stringify({ requests }),
+      },
+      id,
+    )
   }
-  return listSheets()
+  return listSheets(id)
 }
 
-export async function getCell(range: string) {
-  const data = (await sheetsFetch(`/values/${encodeURIComponent(range)}`)) as {
+export async function getCell(range: string, id = spreadsheetId()) {
+  const data = (await sheetsFetch(`/values/${encodeURIComponent(range)}`, undefined, id)) as {
     values?: string[][]
   }
   return data.values?.[0]?.[0] ?? ''
 }
 
-export async function clearRange(range: string) {
-  await sheetsFetch(`/values/${encodeURIComponent(range)}:clear`, {
-    method: 'POST',
-    body: JSON.stringify({}),
-  })
+export async function readValues(range: string, id = spreadsheetId()): Promise<string[][]> {
+  const data = (await sheetsFetch(`/values/${encodeURIComponent(range)}`, undefined, id)) as {
+    values?: string[][]
+  }
+  return data.values ?? []
+}
+
+export async function clearRange(range: string, id = spreadsheetId()) {
+  await sheetsFetch(
+    `/values/${encodeURIComponent(range)}:clear`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+    id,
+  )
 }
 
 export async function writeValues(
   range: string,
   values: SheetCell[][],
   valueInputOption: 'RAW' | 'USER_ENTERED' = 'RAW',
+  id = spreadsheetId(),
 ) {
   // Chunk large history dumps so Google Sheets accepts multi-month backups.
   const chunkSize = 4000
   if (values.length <= chunkSize) {
-    await sheetsFetch(`/values/${encodeURIComponent(range)}?valueInputOption=${valueInputOption}`, {
-      method: 'PUT',
-      body: JSON.stringify({ range, majorDimension: 'ROWS', values }),
-    })
+    await sheetsFetch(
+      `/values/${encodeURIComponent(range)}?valueInputOption=${valueInputOption}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ range, majorDimension: 'ROWS', values }),
+      },
+      id,
+    )
     return
   }
 
@@ -202,17 +240,22 @@ export async function writeValues(
         method: 'PUT',
         body: JSON.stringify({ range: chunkRange, majorDimension: 'ROWS', values: chunk }),
       },
+      id,
     )
     startRow += chunk.length
   }
 }
 
-export async function batchUpdate(requests: unknown[]) {
+export async function batchUpdate(requests: unknown[], id = spreadsheetId()) {
   if (requests.length === 0) return
-  await sheetsFetch(':batchUpdate', {
-    method: 'POST',
-    body: JSON.stringify({ requests }),
-  })
+  await sheetsFetch(
+    ':batchUpdate',
+    {
+      method: 'POST',
+      body: JSON.stringify({ requests }),
+    },
+    id,
+  )
 }
 
 export function expandGridRequests(sheetId: number, rowCount = 50000, columnCount = 60) {

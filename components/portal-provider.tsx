@@ -185,7 +185,6 @@ import {
   formatThbAmount,
   isBookingOpenForDate,
   isCancelOpenForDate,
-  isBeforePrebuyDateMoveClose,
   isLateAmendmentForDate,
   isLateFeeTimeForDate,
   normalizeBeforeDays,
@@ -296,8 +295,6 @@ import type {
   VanMeta,
   VanSplit,
 } from '@/lib/types'
-import { parseAgentBillingType, ratesForAgent } from '@/lib/invoice'
-import { readLocalAgencyRates } from '@/lib/supabase/invoice-db'
 import { HOTEL_CATALOG } from '@/lib/hotel-catalog'
 import { packOwnBoatLabel } from '@/lib/boat-theme'
 import {
@@ -364,10 +361,6 @@ import {
   bookedPaxOf,
   totalPassengers,
 } from '@/lib/types'
-
-function agentIsPrebuy(agentSlug: string) {
-  return parseAgentBillingType(ratesForAgent(readLocalAgencyRates(), agentSlug).billingType) === 'prebuy'
-}
 
 function prebuyNoShowMoveFee(
   booking: Pick<Booking, 'adults' | 'children'>,
@@ -3860,14 +3853,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const transferExtraCharge =
           input.transferExtraCharge?.trim() || matchedHotel?.extraChargeTransfer?.trim() || ''
         const originDate = options?.movedFrom?.date
-        const staffMove = options?.actor?.role !== 'agent'
-        const prebuyMove = Boolean(originDate) && staffMove && agentIsPrebuy(input.agentSlug)
-        const beforeClose = originDate ? isBeforePrebuyDateMoveClose(originDate) : false
-        const earlyMove = prebuyMove && beforeClose
-        const lockedMove = prebuyMove && !beforeClose
-        const ruleFee = earlyMove
-          ? prebuyNoShowMoveFee(input, bookingCutoffs.dateChangeFeePerPerson)
-          : 0
+        const staffMove = Boolean(originDate) && options?.actor?.role !== 'agent'
+        const policyFee = prebuyNoShowMoveFee(input, bookingCutoffs.dateChangeFeePerPerson)
+        const trackedMove = options?.moveFee !== undefined
+        const typedFee = Math.max(0, Math.floor(options?.moveFee ?? 0))
         const booking: Booking = {
           ...input,
           agentRef: input.agentRef?.trim() ?? '',
@@ -3879,15 +3868,14 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           code,
           pickupTime,
           status: pending ? 'Pending Pickup Time' : 'Confirmed',
-          // Before 10 PM: new date's bill deducts the original day and adds 300 THB / person.
-          // After 10 PM: the original date keeps a normal head deduct.
-          lateChangeFee: earlyMove
-            ? ruleFee
-            : lockedMove
-              ? 0
-              : Math.max(0, Math.floor(options?.moveFee ?? 0)),
+          // Staff move: original day keeps the head charge. This new booking's bill is the change-date fee.
+          lateChangeFee: staffMove
+            ? trackedMove
+              ? typedFee
+              : policyFee
+            : Math.max(0, Math.floor(options?.moveFee ?? 0)),
           lateDateChange: false,
-          noShowDateMove: prebuyMove || options?.noShowDateMove === true,
+          noShowDateMove: staffMove || options?.noShowDateMove === true,
           movedFrom: options?.movedFrom ?? null,
         }
         setBookings((current) => [booking, ...current])
@@ -4039,44 +4027,32 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const oldDate = existing.date
         const program = existing.program
         const staffMove = options?.actor?.role !== 'agent'
-        const beforeClose = isBeforePrebuyDateMoveClose(existing.date)
-        const prebuyMove = staffMove && agentIsPrebuy(existing.agentSlug)
-        const earlyMove = prebuyMove && beforeClose
-        const lockedMove = prebuyMove && !beforeClose
-        const ruleFee = earlyMove
-          ? prebuyNoShowMoveFee(existing, bookingCutoffs.dateChangeFeePerPerson)
-          : 0
+        const policyFee = prebuyNoShowMoveFee(existing, bookingCutoffs.dateChangeFeePerPerson)
         const autoLateDateChange =
           !options?.bypassCutoff && isLateAmendmentForDate(bookingCutoffs, existing.date)
-        const chargeLateDateChange = earlyMove || lockedMove
+        const trackedMove = options?.moveFee !== undefined
+        const typedFee = Math.max(0, Math.floor(options?.moveFee ?? 0))
+        // Staff date change: the original day keeps the head / tour charge.
+        // The new day is charged only the change-date fee (default 300 THB per AD/CH).
+        const chargeLateDateChange = staffMove
           ? false
           : options?.lateDateChange !== undefined
             ? options.lateDateChange
             : options?.lateChangeFee !== undefined
               ? options.lateChangeFee > 0
               : autoLateDateChange
-        const nextLateDateChange = earlyMove || lockedMove
+        const nextLateDateChange = staffMove
           ? false
           : existing.lateDateChange === true || chargeLateDateChange
-        // Before 10 PM the new date's bill carries the original-day deduct plus 300 THB / person.
-        // After 10 PM the original date stays on a normal head charge.
-        const trackedMove = options?.moveFee !== undefined
-        const moveFee = earlyMove
-          ? ruleFee
-          : lockedMove
-            ? 0
-            : trackedMove
-              ? Math.max(0, Math.floor(options?.moveFee ?? 0))
-              : 0
-        const applyFee = earlyMove || lockedMove || trackedMove
-        const nextLateChangeFee = earlyMove
-          ? ruleFee
-          : lockedMove
-            ? 0
-            : (existing.lateChangeFee ?? 0) + moveFee
-        // Every date change leaves a "Moved from <old date>" note on the booking.
+        const staffDateFee = trackedMove ? typedFee : policyFee
+        const applyFee = staffMove || trackedMove
+        const nextLateChangeFee = staffMove
+          ? staffDateFee
+          : trackedMove
+            ? (existing.lateChangeFee ?? 0) + typedFee
+            : (existing.lateChangeFee ?? 0)
         const movedFrom = { code, date: oldDate }
-        const nextNoShowDateMove = earlyMove || lockedMove || existing.noShowDateMove === true
+        const nextNoShowDateMove = staffMove || existing.noShowDateMove === true
 
         setBookings((current) =>
           current.map((booking) =>
@@ -4092,17 +4068,13 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               : booking,
           ),
         )
-        const dateChangedSummary = earlyMove
-          ? `Date changed ${oldDate} → ${trimmedDate} · before 10 PM · deduct ${chargeablePax(existing)} heads on ${oldDate} · extra ${ruleFee.toLocaleString('en-US')} THB on ${trimmedDate}`
-          : lockedMove
-            ? `Date changed ${oldDate} → ${trimmedDate} · after 10 PM · ${oldDate} stays charged as normal heads`
-            : trackedMove
-            ? `Date changed ${oldDate} → ${trimmedDate} · moved at marina check-in · extra charge ${moveFee.toLocaleString('en-US')} THB`
-            : chargeLateDateChange
-              ? `Date changed ${oldDate} → ${trimmedDate} · late change · full charge (Invoice) / head deduct (Prebuy)`
-              : options?.lateDateChange === false || options?.lateChangeFee === 0
-                ? `Date changed ${oldDate} → ${trimmedDate} · late change waived`
-                : `Date changed ${oldDate} → ${trimmedDate}`
+        const dateChangedSummary = staffMove
+          ? `Date changed ${oldDate} → ${trimmedDate} · head use stays on ${oldDate} · change-date fee ${staffDateFee.toLocaleString('en-US')} THB on ${trimmedDate}`
+          : chargeLateDateChange
+            ? `Date changed ${oldDate} → ${trimmedDate} · late change · full charge (Invoice) / head deduct (Prebuy)`
+            : options?.lateDateChange === false || options?.lateChangeFee === 0
+              ? `Date changed ${oldDate} → ${trimmedDate} · late change waived`
+              : `Date changed ${oldDate} → ${trimmedDate}`
         persistBookingWrite(
           'updateBookingDate',
           updateBookingDate(code, trimmedDate, {

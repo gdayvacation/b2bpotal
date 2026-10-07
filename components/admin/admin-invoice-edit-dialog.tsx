@@ -88,7 +88,7 @@ function countInput(value: number, onChange: (value: number) => void, ariaLabel:
         const raw = event.target.value.replace(/[^\d]/g, '')
         onChange(Math.max(0, Math.round(Number(raw) || 0)))
       }}
-      className="h-8 border-transparent bg-transparent px-1 text-right tabular-nums shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
+      className="h-7 border-transparent bg-transparent px-1 text-right tabular-nums shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
     />
   )
 }
@@ -133,7 +133,8 @@ export function InvoiceEditDialog({
       ...doc,
       items: doc.items.map((item) => {
         if (!isLateReduceFeeLine(item)) {
-          return { ...item, unit: chargeUnit(item) }
+          const unit = chargeUnit(item)
+          return { ...item, unit: unit === 'Pax' ? 'Person' : unit }
         }
         const display = lateReduceFeeDisplay(item)
         return {
@@ -141,7 +142,7 @@ export function InvoiceEditDialog({
           description: formatInvoiceLineDescription(item),
           adults: display.heads || item.adults,
           adultPrice: display.perPerson || item.adultPrice,
-          unit: display.heads > 0 ? 'Pax' : 'Fee',
+          unit: display.heads > 0 ? 'Person' : 'Fee',
         }
       }),
     })
@@ -418,81 +419,81 @@ export function InvoiceEditDialog({
               Line items
             </p>
             <div className="overflow-x-auto rounded-xl border border-teal-900/12">
-              <table className="w-full min-w-[52rem] text-sm">
+              <table className="w-full min-w-[44rem] text-sm">
                 <thead>
                   <tr className="border-b border-teal-900/10 bg-teal-950/[0.04] text-left text-xs font-bold text-teal-950">
-                    <th className="w-8 px-2 py-2.5 text-center font-bold text-teal-900/40">#</th>
-                    <th className="px-2 py-2.5 font-bold">Description</th>
-                    <th className="w-24 px-2 py-2.5 font-bold" title="Pax, Box, Pcs, Van">Unit</th>
-                    <th className="w-14 px-1 py-2.5 text-right font-bold" title="Adults">AD</th>
-                    <th className="w-14 px-1 py-2.5 text-right font-bold" title="Children">CH</th>
-                    <th className="w-28 px-2 py-2.5 text-right font-bold">Price/Unit</th>
-                    <th className="w-32 px-2 py-2.5 text-right font-bold">Amount (THB)</th>
-                    <th className="w-10 px-2 py-2.5" />
+                    <th className="w-8 px-2 py-2 text-center font-bold text-teal-900/40">#</th>
+                    <th className="px-2 py-2 font-bold">Description</th>
+                    <th className="w-28 px-2 py-2 font-bold" title="Person, Box, Pcs, Van">Unit</th>
+                    <th className="w-12 px-1 py-2 text-right font-bold" title="Adults">AD</th>
+                    <th className="w-12 px-1 py-2 text-right font-bold" title="Children">CH</th>
+                    <th className="w-24 px-2 py-2 text-right font-bold">Price</th>
+                    <th className="w-28 px-2 py-2 text-right font-bold">Amount</th>
+                    <th className="w-8 px-1 py-2" />
                   </tr>
                 </thead>
                 <tbody>
                   {draft.items.map((item, index) => {
                     const unitPrice = invoiceLineUnitPrice(item)
                     const guestName = guestByBookingCode?.get(item.bookingCode)?.trim() ?? ''
+                    const ownVoucher = uniqueVouchers.length > 1
                     return (
                     <tr key={item.id} className="border-b border-teal-900/8 last:border-0">
-                      <td className="px-2 py-1.5 text-center text-xs tabular-nums text-teal-900/35">
+                      <td className="px-2 py-1 text-center text-xs tabular-nums text-teal-900/35">
                         {index + 1}
                       </td>
-                      <td className="px-2 py-1.5">
-                        <div className="space-y-1">
+                      <td className="px-2 py-1">
+                        <div className="flex min-w-0 items-center gap-1.5">
                           <span
                             className={cn(
-                              'inline-flex rounded-md px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase',
+                              'inline-flex shrink-0 rounded px-1 py-px text-[10px] font-semibold tracking-wide uppercase',
                               LINE_KIND_TONE[item.lineKind],
                             )}
                           >
                             {invoiceLineKindLabel(item.lineKind)}
                           </span>
                           {guestName ? (
-                            <p className="px-1.5 text-xs font-semibold text-teal-950">{guestName}</p>
+                            <span className="max-w-[7rem] shrink-0 truncate text-xs font-semibold text-teal-950" title={guestName}>
+                              {guestName}
+                            </span>
                           ) : null}
-                          {item.bookingCode ? (
-                            <p className="px-1.5 text-[11px] font-medium tabular-nums text-teal-900/55">
-                              {item.bookingCode}
-                            </p>
-                          ) : null}
-                          <Input
-                            value={item.voucherNo}
-                            onChange={(event) =>
-                              patchItem(item.id, { voucherNo: event.target.value })
-                            }
-                            className="h-8 border-transparent bg-transparent px-1.5 shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
-                            placeholder="Reference"
-                            aria-label={`Reference for ${item.bookingCode || `line ${index + 1}`}`}
-                          />
                           <Input
                             value={item.description}
                             onChange={(event) =>
                               patchItem(item.id, { description: event.target.value })
                             }
-                            className="h-8 border-transparent bg-transparent px-1.5 shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
+                            className="h-7 min-w-0 flex-1 border-transparent bg-transparent px-1.5 shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
                             placeholder="Description"
                           />
                         </div>
+                        {ownVoucher ? (
+                          <Input
+                            value={item.voucherNo}
+                            onChange={(event) =>
+                              patchItem(item.id, { voucherNo: event.target.value })
+                            }
+                            className="mt-1 h-7 border-transparent bg-transparent px-1.5 text-xs shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
+                            placeholder="Reference"
+                            aria-label={`Reference for line ${index + 1}`}
+                          />
+                        ) : null}
                       </td>
-                      <td className="px-2 py-1.5">
+                      <td className="px-2 py-1">
                         <Input
                           value={item.unit ?? ''}
                           onChange={(event) => patchItem(item.id, { unit: event.target.value })}
-                          className="h-8 border-transparent bg-transparent px-1.5 shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
-                          placeholder="Box, Pcs, Van"
+                          className="h-7 min-w-[5.5rem] border-transparent bg-transparent px-1.5 text-sm shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
+                          placeholder="Person"
                           list="invoice-unit-suggestions"
                         />
                       </td>
-                      <td className="px-1 py-1.5">
+                      <td className="px-1 py-1">
                         {countInput(item.adults, (adults) => patchItem(item.id, { adults }), 'Adults')}
                       </td>
-                      <td className="px-1 py-1.5">
+                      <td className="px-1 py-1">
                         {countInput(item.children, (children) => patchItem(item.id, { children }), 'Children')}
                       </td>
-                      <td className="px-2 py-1.5">
+                      <td className="px-2 py-1">
                         <Input
                           type="text"
                           inputMode="decimal"
@@ -518,7 +519,7 @@ export function InvoiceEditDialog({
                             }
                           }}
                           className={cn(
-                            'h-8 border-transparent bg-transparent px-1.5 text-right font-medium tabular-nums shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white',
+                            'h-7 border-transparent bg-transparent px-1.5 text-right font-medium tabular-nums shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white',
                             unitPrice < 0 && 'text-rose-700',
                           )}
                           title="Price per unit. Amount = Price/Unit × AD/CH (auto)."
@@ -526,14 +527,14 @@ export function InvoiceEditDialog({
                       </td>
                       <td
                         className={cn(
-                          'px-2 py-1.5 text-right font-medium tabular-nums',
+                          'px-2 py-1 text-right text-sm font-medium tabular-nums',
                           item.amount < 0 ? 'text-rose-700' : 'text-teal-950',
                         )}
                         title="Auto-calculated from Price/Unit × AD/CH"
                       >
                         {item.amount === 0 ? '—' : formatInvoiceMoney(item.amount)}
                       </td>
-                      <td className="px-2 py-1.5">
+                      <td className="px-1 py-1">
                         <Button
                           type="button"
                           variant="ghost"
@@ -564,7 +565,7 @@ export function InvoiceEditDialog({
               </table>
             </div>
             <datalist id="invoice-unit-suggestions">
-              <option value="Pax" />
+              <option value="Person" />
               <option value="Head" />
               <option value="Box" />
               <option value="Pcs" />

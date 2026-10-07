@@ -37,6 +37,7 @@ import {
   uniqueDates,
   uniqueMonths,
 } from '@/lib/sheets/rows'
+import { saveRawSnapshot, type SnapshotSaveResult } from '@/lib/sheets/snapshot'
 import { loadSheetsBackupSource } from '@/lib/sheets/source-data'
 
 export type SheetsBackupResult = {
@@ -48,6 +49,12 @@ export type SheetsBackupResult = {
   invoices: number
   allotments: number
   months: number
+  snapshot: SnapshotSaveResult
+}
+
+async function writeReplacing(title: string, values: Array<Array<string | number>>) {
+  await writeValues(`${title}!A1`, values)
+  await clearRange(`${title}!A${values.length + 1}:ZZ`)
 }
 
 function withHeader(headers: readonly string[], rows: Array<Array<string | number>>) {
@@ -71,6 +78,22 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
   const summaryRows = withHeader(MONTHLY_SUMMARY_HEADERS, buildMonthlySummaryRows(source))
   const months = uniqueMonths(source)
   const dates = uniqueDates(source)
+
+  const snapshot = await saveRawSnapshot(
+    [
+      { title: SHEET_TITLES.bookings, values: bookingRows },
+      { title: SHEET_TITLES.guests, values: guestRows },
+      { title: SHEET_TITLES.merge, values: mergeRows },
+      { title: SHEET_TITLES.invoices, values: invoiceRows },
+      { title: SHEET_TITLES.invoiceLines, values: invoiceLineRows },
+      { title: SHEET_TITLES.allotments, values: allotmentRows },
+      { title: SHEET_TITLES.allotmentDaily, values: allotmentDailyRows },
+    ],
+    source.syncedAt,
+  )
+  if (snapshot.blocked) {
+    throw new Error(snapshot.note)
+  }
 
   const sheets = await ensureSheets(Object.values(SHEET_TITLES))
   const bookingsId = sheetIdByTitle(sheets, SHEET_TITLES.bookings)
@@ -122,18 +145,21 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
     expandGridRequests(datesId, Math.max(500, dates.length + 20), 4),
   ])
 
+  // Write the new rows first, then drop only the leftover tail. Clearing the whole tab
+  // before the write used to leave every tab empty when a later write failed.
   await Promise.all([
-    clearRange(`${SHEET_TITLES.bookings}!A:ZZ`),
-    clearRange(`${SHEET_TITLES.guests}!A:ZZ`),
-    clearRange(`${SHEET_TITLES.merge}!A:ZZ`),
-    clearRange(`${SHEET_TITLES.invoices}!A:ZZ`),
-    clearRange(`${SHEET_TITLES.invoiceLines}!A:ZZ`),
-    clearRange(`${SHEET_TITLES.allotments}!A:ZZ`),
-    clearRange(`${SHEET_TITLES.allotmentDaily}!A:ZZ`),
-    clearRange(`${SHEET_TITLES.monthly}!A:ZZ`),
-    clearRange(`${SHEET_TITLES.months}!A:ZZ`),
-    clearRange(`${SHEET_TITLES.dates}!A:ZZ`),
+    writeReplacing(SHEET_TITLES.bookings, bookingRows),
+    writeReplacing(SHEET_TITLES.guests, guestRows),
+    writeReplacing(SHEET_TITLES.merge, mergeRows),
+    writeReplacing(SHEET_TITLES.invoices, invoiceRows),
+    writeReplacing(SHEET_TITLES.invoiceLines, invoiceLineRows),
+    writeReplacing(SHEET_TITLES.allotments, allotmentRows),
+    writeReplacing(SHEET_TITLES.allotmentDaily, allotmentDailyRows),
+    writeReplacing(SHEET_TITLES.months, [['Month'], ...months.map((month) => [month])]),
+    writeReplacing(SHEET_TITLES.dates, [['Date'], [ALL_DATES_LABEL], ...dates.map((date) => [date])]),
   ])
+
+  await clearRange(`${SHEET_TITLES.monthly}!A:ZZ`)
 
   const summaryStart = 3
   const bookingsQueryRow = summaryStart + summaryRows.length + 2
@@ -142,13 +168,6 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
   const allotmentQueryCol = columnLetter(allotmentQueryIndex)
 
   await Promise.all([
-    writeValues(`${SHEET_TITLES.bookings}!A1`, bookingRows),
-    writeValues(`${SHEET_TITLES.guests}!A1`, guestRows),
-    writeValues(`${SHEET_TITLES.merge}!A1`, mergeRows),
-    writeValues(`${SHEET_TITLES.invoices}!A1`, invoiceRows),
-    writeValues(`${SHEET_TITLES.invoiceLines}!A1`, invoiceLineRows),
-    writeValues(`${SHEET_TITLES.allotments}!A1`, allotmentRows),
-    writeValues(`${SHEET_TITLES.allotmentDaily}!A1`, allotmentDailyRows),
     writeValues(`${SHEET_TITLES.monthly}!A1`, [
       ['Pick a month', selectedMonth, 'Pick a date', selectedDate, 'Synced (Thai time)', source.syncedAt],
       [
@@ -188,12 +207,6 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
       ],
       'USER_ENTERED',
     ),
-    writeValues(`${SHEET_TITLES.months}!A1`, [['Month'], ...months.map((month) => [month])]),
-    writeValues(`${SHEET_TITLES.dates}!A1`, [
-      ['Date'],
-      [ALL_DATES_LABEL],
-      ...dates.map((date) => [date]),
-    ]),
   ])
 
   await batchUpdate([
@@ -228,6 +241,7 @@ export async function runSheetsBackup(): Promise<SheetsBackupResult> {
     invoices: source.invoices.length,
     allotments: source.allotments.length,
     months: months.length,
+    snapshot,
   }
 }
 

@@ -21,6 +21,7 @@ export function AdminSheetsBackup({ onBack }: { onBack: () => void }) {
   const [missing, setMissing] = useState<string[]>([])
   const [spreadsheetId, setSpreadsheetId] = useState('')
   const [sheetUrl, setSheetUrl] = useState('')
+  const [snapshotUrl, setSnapshotUrl] = useState('')
   const [email, setEmail] = useState('')
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -33,6 +34,7 @@ export function AdminSheetsBackup({ onBack }: { onBack: () => void }) {
     setMissing(status.missing)
     setSpreadsheetId(status.spreadsheetId)
     setSheetUrl(status.spreadsheetUrl)
+    setSnapshotUrl(status.snapshotSpreadsheetUrl)
     if (status.shareEmail && !email) setEmail(status.shareEmail)
     setLoading(false)
   }
@@ -73,7 +75,7 @@ export function AdminSheetsBackup({ onBack }: { onBack: () => void }) {
       return
     }
     setMessage(
-      `Synced ${result.bookings} bookings, ${result.guests} check-in guests, ${result.invoices} invoices, and ${result.allotments} agent allotments at ${result.syncedAt} Thai time.`,
+      `Synced ${result.bookings} bookings, ${result.guests} check-in guests, ${result.invoices} invoices, and ${result.allotments} agent allotments at ${result.syncedAt} Thai time.${result.snapshot.saved ? ` Frozen copy kept ${result.snapshot.bookings} booking rows.` : ''}`,
     )
   }
 
@@ -87,7 +89,7 @@ export function AdminSheetsBackup({ onBack }: { onBack: () => void }) {
       </div>
       <PageHeader
         title="Google Sheets backup"
-        description="Full history backup into Google Sheets. Nightly sync at 4:00 AM Thai time. On Monthly, pick a month in B1 and a date in D1 — choose (All dates) to see the whole month, sorted by date."
+        description="Full history backup into Google Sheets. At 3:00 AM Thai time the current sheet is copied and left untouched. At 4:00 AM the fresh export is saved, then the live sheet is updated. On Monthly, pick a month in B1 and a date in D1 — choose (All dates) to see the whole month, sorted by date."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -216,6 +218,22 @@ export function AdminSheetsBackup({ onBack }: { onBack: () => void }) {
                   >
                     Open the backup sheet
                   </a>
+                </p>
+              ) : null}
+              {snapshotUrl ? (
+                <p>
+                  <a
+                    href={snapshotUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-semibold text-teal-800 underline-offset-2 hover:underline"
+                  >
+                    Open the frozen daily copy
+                  </a>
+                  <span className="mt-1 block text-teal-900/70">
+                    Plain values saved before the 4:00 AM sync. Kept when the live sheet is cleared
+                    or the new export is much smaller than the saved copy.
+                  </span>
                 </p>
               ) : null}
             </div>

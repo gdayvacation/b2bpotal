@@ -16,6 +16,8 @@ export const SHEET_TITLES = {
 
 export const BACKUP_SPREADSHEET_TITLE = "G'Day Tours — Daily backup"
 
+export const SNAPSHOT_SPREADSHEET_TITLE = "ภาพนิ่งรายวัน — G'Day backup"
+
 export function hasServiceAccount() {
   return Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim()) ||
     (Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL?.trim()) &&
@@ -28,6 +30,11 @@ export function resolvedSpreadsheetId() {
     readStoredSpreadsheet()?.spreadsheetId ||
     ''
   )
+}
+
+/** Separate workbook of plain values. The nightly job writes this before it touches the live sheet. */
+export function snapshotSpreadsheetId() {
+  return process.env.GOOGLE_SHEETS_SNAPSHOT_ID?.trim() || ''
 }
 
 export function sheetsBackupConfigured() {

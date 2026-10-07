@@ -10,6 +10,8 @@ import {
   ClipboardList,
   Copy,
   ExternalLink,
+  Eye,
+  EyeOff,
   Pencil,
   Plus,
   Printer,
@@ -2270,6 +2272,7 @@ function DriverGroupCard({
   const [addingNote, setAddingNote] = useState<Record<string, boolean>>({})
   const [qrBooking, setQrBooking] = useState<Booking | null>(null)
   const [qrCopied, setQrCopied] = useState(false)
+  const [collapsed, setCollapsed] = useState(false)
   const [editBooking, setEditBooking] = useState<Booking | null>(null)
   const [paxEditBooking, setPaxEditBooking] = useState<Booking | null>(null)
   const [serviceBooking, setServiceBooking] = useState<Booking | null>(null)
@@ -2326,7 +2329,12 @@ function DriverGroupCard({
 
   return (
     <div className="gday-sheet overflow-hidden rounded-[1.25rem] sm:rounded-[1.5rem]">
-      <div className="flex items-start justify-between gap-2 border-b border-teal-900/8 bg-gradient-to-r from-teal-50 to-white px-3 py-2.5 sm:px-5 sm:py-3">
+      <div
+        className={cn(
+          'flex items-start justify-between gap-2 bg-gradient-to-r from-teal-50 to-white px-3 py-2.5 sm:px-5 sm:py-3',
+          !collapsed && 'border-b border-teal-900/8',
+        )}
+      >
         <div className="min-w-0">
           <p
             className={cn(
@@ -2386,15 +2394,28 @@ function DriverGroupCard({
             </p>
           )}
         </div>
-        <p className="shrink-0 rounded-full border border-teal-900/10 bg-white/90 px-2 py-1 text-[11px] font-medium tabular-nums text-teal-800/70 sm:px-2.5 sm:text-xs">
-          {visibleLines.length} bk · {group.seatsTotal} pax
-          <span className="text-teal-900/40">
-            {' '}
-            · {visibleLines.filter((line) => line.status === 'checked').length}/{visibleLines.length} in
-          </span>
-        </p>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <p className="rounded-full border border-teal-900/10 bg-white/90 px-2 py-1 text-[11px] font-medium tabular-nums text-teal-800/70 sm:px-2.5 sm:text-xs">
+            {visibleLines.length} bk · {group.seatsTotal} pax
+            <span className="text-teal-900/40">
+              {' '}
+              · {visibleLines.filter((line) => line.status === 'checked').length}/{visibleLines.length} in
+            </span>
+          </p>
+          <button
+            type="button"
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? 'Show bookings in this card' : 'Hide bookings in this card'}
+            onClick={() => setCollapsed((current) => !current)}
+            className="inline-flex h-8 shrink-0 items-center gap-1 rounded-full border border-teal-900/10 bg-white/90 px-2.5 text-[11px] font-semibold text-teal-800 shadow-sm hover:bg-white sm:text-xs"
+          >
+            {collapsed ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+            {collapsed ? 'Show' : 'Hide'}
+          </button>
+        </div>
       </div>
 
+      <div className={cn(collapsed && 'hidden')}>
       <div className="divide-y divide-teal-900/8 md:hidden">
         {visibleLines.map((line) => {
           const payment = bookingPayment(
@@ -3220,6 +3241,7 @@ function DriverGroupCard({
           })}
         </TableBody>
       </Table>
+      </div>
 
       <Dialog
         open={Boolean(qrBooking)}

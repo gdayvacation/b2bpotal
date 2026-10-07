@@ -25,8 +25,6 @@ import {
   formatLongDate,
   formatShortDate,
 } from '@/lib/format'
-import { parseAgentBillingType, ratesForAgent } from '@/lib/invoice'
-import { readLocalAgencyRates } from '@/lib/supabase/invoice-db'
 import { cn } from '@/lib/utils'
 import {
   NO_TRANSFER_TIME,
@@ -1018,16 +1016,11 @@ export function AdminCheckInBookingPanel({
                       ? ` · extra ${extraChargeAmount.toLocaleString('en-US')} THB`
                       : ''}
                   </p>
-                  {booking &&
-                  parseAgentBillingType(
-                    ratesForAgent(readLocalAgencyRates(), booking.agentSlug).billingType,
-                  ) === 'prebuy' ? (
-                    <p className="text-xs text-teal-900/70">
-                      Before 10 PM the original date is not charged. The new date's bill deducts
-                      those heads for the original date, then adds {bookingCutoffs.dateChangeFeePerPerson}{' '}
-                      THB per AD/CH. After 10 PM the original date stays charged as normal.
-                    </p>
-                  ) : null}
+                  <p className="text-xs text-teal-900/70">
+                    No-shows stay charged on the original booked date. The change-date fee on this
+                    day is only for guests who check in ({bookingCutoffs.dateChangeFeePerPerson} THB
+                    per AD/CH).
+                  </p>
                   {dateError ? <p className="text-sm text-rose-700">{dateError}</p> : null}
                   <Button
                     size="sm"

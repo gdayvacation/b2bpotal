@@ -70,8 +70,7 @@ import {
   newInvoiceDocument,
   parseAgentBillingType,
   prebuyDeductHeads,
-  prebuyNoShowMoveMoney,
-  invoiceBillDate,
+  invoiceListedDates,
   ratesForAgent,
   type AgentBillingType,
   type InvoiceDocument,
@@ -203,6 +202,10 @@ const EXTRA_LINE_KINDS = new Set([
 ])
 
 const EXTRA_CHARGE_KINDS = new Set(['change_date', 'private_transfer', 'extra_zone'])
+
+function isChangeDateFeeLine(item: { lineKind?: string; description?: string }) {
+  return item.lineKind === 'other' && /^Change date Fee\b/i.test(item.description ?? '')
+}
 
 /** Saved invoice/draft total for this booking, including lines added without a booking code. */
 function savedChargeForBooking(doc: InvoiceDocument, bookingCode: string) {
@@ -644,11 +647,19 @@ export function AdminInvoices() {
 
   function bookingInvoiceItems(booking: Booking, otherService = includeOtherService) {
     const enrollments = getCheckInEnrollments(booking.date, booking.program, booking.code)
-    return buildInvoiceItemsForBooking(booking, ratesForAgent(store.rates, booking.agentSlug), {
+    const items = buildInvoiceItemsForBooking(booking, ratesForAgent(store.rates, booking.agentSlug), {
       includeOtherService: otherService,
       attendance: getCheckInAttendance(booking.date, booking.program, booking.code),
       thaiGuests: thaiParkSeatsFromGuests(booking.adults, booking.children, enrollments),
       groupGuides: enrollments.filter(isGuideEnrollment).length,
+      checkedInSeats: enrollments
+        .filter((enrollment) => !isGuideEnrollment(enrollment))
+        .reduce((sum, enrollment) => sum + Math.max(0, enrollment.seats), 0),
+    })
+    if (isSearching) return items
+    return items.filter((item) => {
+      const day = (item.travelDate || booking.date).slice(0, 10)
+      return day >= fromDate && day <= toDate
     })
   }
 
@@ -667,11 +678,7 @@ export function AdminInvoices() {
     const list = bookings
       .filter((booking) => {
         if (isSearching) return true
-        const prebuy =
-          parseAgentBillingType(ratesForAgent(store.rates, booking.agentSlug).billingType) ===
-          'prebuy'
-        const billedOn = invoiceBillDate(booking, prebuy)
-        return billedOn >= fromDate && billedOn <= toDate
+        return invoiceListedDates(booking).some((day) => day >= fromDate && day <= toDate)
       })
       .filter((booking) =>
         isSearching || agentSlug === 'all' ? true : booking.agentSlug === agentSlug,
@@ -710,7 +717,9 @@ export function AdminInvoices() {
         const billedItems = (priced?.items ?? items).filter(
           (item) => !priced || item.bookingCode === booking.code,
         )
-        const extraItems = billedItems.filter((item) => EXTRA_CHARGE_KINDS.has(item.lineKind))
+        const extraItems = billedItems.filter(
+          (item) => EXTRA_CHARGE_KINDS.has(item.lineKind) || isChangeDateFeeLine(item),
+        )
         const parkItems = billedItems.filter((item) => item.lineKind === 'park_fee')
         const noTransfer = isNoTransfer(booking.pickupZone)
         const noTfHeads =
@@ -1811,6 +1820,12 @@ export function AdminInvoices() {
                     {visibleBillRows.map((row) => {
                       const { booking } = row
                       const issued = Boolean(row.invoice)
+                      const movedOntoThisDay =
+                        Boolean(booking.movedFrom?.date) &&
+                        booking.movedFrom.date !== booking.date &&
+                        booking.status !== 'Cancelled' &&
+                        booking.date >= fromDate &&
+                        booking.date <= toDate
                       return (
                         <TableRow
                           key={booking.code}
@@ -1854,14 +1869,25 @@ export function AdminInvoices() {
                               issued ? 'text-neutral-400' : 'text-teal-900/75',
                             )}
                             title={
-                              row.billingType === 'prebuy' && booking.noShowDateMove && booking.movedFrom?.date
-                                ? (booking.lateChangeFee ?? 0) > 0
-                                  ? `New date bill. Heads deducted on ${formatShortDate(booking.movedFrom.date)}`
-                                  : `After 10 PM — still charged on ${formatShortDate(booking.movedFrom.date)}`
+                              booking.movedFrom?.date &&
+                              booking.movedFrom.date !== booking.date &&
+                              booking.status !== 'Cancelled'
+                                ? booking.date >= fromDate && booking.date <= toDate
+                                  ? `Change-date fee on this day. Head use stays on ${formatShortDate(booking.movedFrom.date)}`
+                                  : `Original date. Head use and no-show stay here. Change-date fee is on ${formatShortDate(booking.date)}`
                                 : formatShortDate(booking.date)
                             }
                           >
-                            {formatDayMonth(invoiceBillDate(booking, row.billingType === 'prebuy'))}
+                            {formatDayMonth(
+                              booking.movedFrom?.date &&
+                                booking.movedFrom.date !== booking.date &&
+                                booking.status !== 'Cancelled' &&
+                                !(booking.date >= fromDate && booking.date <= toDate) &&
+                                booking.movedFrom.date >= fromDate &&
+                                booking.movedFrom.date <= toDate
+                                ? booking.movedFrom.date
+                                : booking.date,
+                            )}
                           </TableCell>
                           <TableCell
                             className={cn(
@@ -1885,9 +1911,22 @@ export function AdminInvoices() {
                           >
                             {formatAgentBillingType(row.billingType)}
                           </TableCell>
-                          <TableCell className="w-[7.5rem] max-w-[7.5rem] px-1.5" title={booking.leadGuest}>
+                          <TableCell
+                            className="w-[7.5rem] max-w-[7.5rem] px-1.5"
+                            title={
+                              movedOntoThisDay && booking.movedFrom
+                                ? `${booking.leadGuest} · moved from ${formatShortDate(booking.movedFrom.date)}`
+                                : booking.leadGuest
+                            }
+                          >
                             <span className="inline-flex min-w-0 max-w-full items-center gap-1">
                               <span className="truncate">{booking.leadGuest}</span>
+                              {movedOntoThisDay && booking.movedFrom ? (
+                                <BillFlag
+                                  label="Moved"
+                                  title={`Moved from ${formatShortDate(booking.movedFrom.date)}. Change-date fee is on this day.`}
+                                />
+                              ) : null}
                               {booking.status === 'Cancelled' ? (
                                 <BillFlag label="Cancelled" title="Cancelled — included on the invoice as Cancelled" />
                               ) : null}
@@ -1960,10 +1999,10 @@ export function AdminInvoices() {
                               issued ? 'text-neutral-400' : 'text-teal-950',
                             )}
                             title={
-                              row.billingType === 'prebuy' && booking.noShowDateMove
-                                ? (booking.lateChangeFee ?? 0) > 0
-                                  ? `Heads deducted on ${formatShortDate(booking.movedFrom?.date ?? booking.date)}`
-                                  : 'Heads deducted from the agent\'s pre-buy'
+                              booking.movedFrom?.date && booking.movedFrom.date !== booking.date
+                                ? booking.date >= fromDate && booking.date <= toDate
+                                  ? `Heads already used on ${formatShortDate(booking.movedFrom.date)}`
+                                  : `Heads used on the original booked date`
                                 : row.billingType === 'prebuy'
                                   ? 'Heads deducted from the agent\'s pre-buy'
                                   : 'Pax count — this agent is billed the tour price'
@@ -1977,13 +2016,11 @@ export function AdminInvoices() {
                               issued ? 'text-neutral-400' : 'text-teal-950',
                             )}
                             title={
-                              row.billingType === 'prebuy' &&
-                              booking.noShowDateMove &&
-                              (booking.lateChangeFee ?? 0) > 0
-                                ? (() => {
-                                    const move = prebuyNoShowMoveMoney(booking)
-                                    return `Deducted on ${formatShortDate(move.fromDate)}. Next line: Extra Charge for Changed date ${move.perPerson} THB / person (${formatInvoiceMoney(move.amount)})`
-                                  })()
+                              booking.movedFrom?.date &&
+                              booking.movedFrom.date !== booking.date &&
+                              booking.date >= fromDate &&
+                              booking.date <= toDate
+                                ? `Change-date fee only. The original head charge stays on ${formatShortDate(booking.movedFrom.date)}`
                                 : undefined
                             }
                           >

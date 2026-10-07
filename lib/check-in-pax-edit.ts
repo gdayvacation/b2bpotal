@@ -246,7 +246,7 @@ export function applyPaxChangeToInvoice(
         amount: prebuy ? 0 : qty * unitPrice,
         lineKind: 'tour',
         sortOrder: items.length,
-        unit: 'Pax',
+        unit: 'Person',
       })
     }
     const adultPrice =
@@ -320,7 +320,7 @@ export function applyPaxChangeToInvoice(
         amount: park.thaiAmount,
         lineKind: 'park_fee',
         sortOrder: items.length,
-        unit: 'Pax',
+        unit: 'Person',
       })
     }
   }

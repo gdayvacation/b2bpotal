@@ -120,8 +120,8 @@ export type InvoiceItem = {
 }
 
 export function defaultChargeUnit(kind: InvoiceLineKind) {
-  if (kind === 'tour' || kind === 'no_show' || kind === 'cancel' || kind === 'park_fee') return 'Pax'
-  if (kind === 'change_date') return 'Pax'
+  if (kind === 'tour' || kind === 'no_show' || kind === 'cancel' || kind === 'park_fee') return 'Person'
+  if (kind === 'change_date') return 'Person'
   if (kind === 'private_transfer') return 'Van'
   return ''
 }
@@ -273,18 +273,34 @@ export function agencyRatesReady(rates: AgencyInvoiceRates) {
 }
 
 /**
- * Day this booking is billed on.
- * Before 10 PM the moved booking is billed on the new date.
- * After 10 PM a staff move stays charged on the original date.
+ * Days a booking can show on Bills.
+ * A date change is listed on the original booked day (head / tour charge) and on the new day (change-date fee).
+ */
+export function invoiceListedDates(
+  booking: Pick<Booking, 'date' | 'status' | 'movedFrom'>,
+): string[] {
+  const origin = dateMoveOrigin(booking)
+  if (!origin) return [booking.date]
+  return origin < booking.date ? [origin, booking.date] : [booking.date, origin]
+}
+
+/** Original booked day when this booking was moved to another date. */
+export function dateMoveOrigin(
+  booking: Pick<Booking, 'date' | 'status' | 'movedFrom'>,
+): string | null {
+  const origin = booking.movedFrom?.date
+  if (booking.status === 'Cancelled' || !origin || origin === booking.date) return null
+  return origin
+}
+
+/**
+ * Day shown in the bills date column when the filter covers the booking's current travel date.
+ * Head use for a date change is still listed on the original day via `invoiceListedDates`.
  */
 export function invoiceBillDate(
   booking: Pick<Booking, 'date' | 'noShowDateMove' | 'movedFrom' | 'lateChangeFee'>,
-  prebuy = false,
+  _prebuy = false,
 ) {
-  if (prebuy && booking.noShowDateMove && booking.movedFrom?.date) {
-    const earlyMove = Math.max(0, Math.floor(Number(booking.lateChangeFee) || 0)) > 0
-    return earlyMove ? booking.date : booking.movedFrom.date
-  }
   return booking.date
 }
 
@@ -327,6 +343,29 @@ export function prebuyOriginalDeductDescription(fromDate: string) {
 
 export function prebuyNoShowMoveFeeDescription(input: { perPerson: number }) {
   return `Extra Charge for Changed date · ${input.perPerson} THB / person`
+}
+
+/** New-day bill line: the original heads were already charged on the booked date. */
+export function tripsAlreadyChargedDescription(fromDate: string, heads: number) {
+  const people = Math.max(0, Math.floor(heads))
+  return `Trips booked ${formatShortDate(fromDate)} ${people} People already charged`
+}
+
+/** AD+CH who checked in on the new date. Guides are excluded. Tour leaders and infants are free, so the fee never exceeds booked AD+CH. */
+export function arrivedChangeDateHeads(
+  booking: Pick<Booking, 'adults' | 'children'>,
+  checkedInSeats: number,
+) {
+  const chargeable = Math.max(0, booking.adults) + Math.max(0, booking.children)
+  const arrived = Math.max(0, Math.floor(checkedInSeats))
+  return Math.min(chargeable, arrived)
+}
+
+/** New-day bill line: the only money charged for guests who checked in after a date change. */
+export function changeDateFeeLineDescription(heads: number, perPerson: number) {
+  const people = Math.max(0, Math.floor(heads))
+  const per = Math.max(0, Math.floor(perPerson))
+  return `Change date Fee ${people} People (${per} THB / Person)`
 }
 
 /** AD+CH heads that count against prebuy (tour + no-show + late change date). */
@@ -544,7 +583,10 @@ export function formatInvoiceLineDescription(
   ) {
     return lateReduceFeeDescription(item)
   }
-  if (item.lineKind === 'change_date' || /^Change date/i.test(text) || /^Late Change Date/i.test(text)) {
+  if (
+    !/^Change date Fee\b/i.test(text) &&
+    (item.lineKind === 'change_date' || /^Change date/i.test(text) || /^Late Change Date/i.test(text))
+  ) {
     const heads = Math.max(0, item.adults) + Math.max(0, item.children)
     const prebuy = /deduct/i.test(text) || item.amount === 0
     return lateChangeDateDescription({ heads, prebuy })
@@ -626,7 +668,7 @@ function displayPartsForItem(item: InvoiceItem): InvoiceDisplayPart[] {
       {
         label: stripDeductWord(formatInvoiceLineDescription(item)),
         qty: late.heads || '',
-        unit: late.heads > 0 ? 'Pax' : 'Fee',
+        unit: late.heads > 0 ? 'Person' : 'Fee',
         unitPrice: late.perPerson || '',
         amount: item.amount,
         guestCollect: isGuestCollectLine(item),
@@ -672,7 +714,7 @@ function displayPartsForItem(item: InvoiceItem): InvoiceDisplayPart[] {
     return parts.map((part) => ({
       label: stripDeductWord(programPaxLineLabel(program, part.kind, { prebuy, prefix })),
       qty: part.qty,
-      unit: 'Pax',
+      unit: 'Person',
       unitPrice: part.unitPrice || '',
       amount: prebuy ? 0 : part.qty * part.unitPrice,
       guestCollect: false,
@@ -697,7 +739,7 @@ function displayPartsForItem(item: InvoiceItem): InvoiceDisplayPart[] {
     {
       label: stripDeductWord(formatInvoiceLineDescription(item)),
       qty: qty || '',
-      unit: chargeUnit(item) || (qty ? 'Pax' : ''),
+      unit: chargeUnit(item) || (qty ? 'Person' : ''),
       unitPrice: unitPrice || '',
       amount: item.amount,
       guestCollect: isGuestCollectLine(item),
@@ -1056,7 +1098,7 @@ function pushProgramPaxLines(
       amount: prebuy ? 0 : row.qty * row.unitPrice,
       lineKind,
       sortOrder: items.length,
-      unit: 'Pax',
+      unit: 'Person',
     })
   }
 }
@@ -1097,6 +1139,11 @@ export function buildInvoiceItemsForBooking(
     thaiGuests?: number
     /** Checked-in Tour Group Guide enrollments (scope 'guide'). */
     groupGuides?: number
+    /**
+     * Non-guide seats checked in on the new date.
+     * The change-date fee is only these guests who actually came.
+     */
+    checkedInSeats?: number
   },
 ): Omit<InvoiceItem, 'invoiceId'>[] {
   const items: Omit<InvoiceItem, 'invoiceId'>[] = []
@@ -1181,19 +1228,101 @@ export function buildInvoiceItemsForBooking(
         sortOrder: items.length,
       })
     }
-  } else if (isPrebuyNoShowDateMove(booking, prebuy) && booking.movedFrom) {
-    const earlyMove = Math.max(0, Math.floor(Number(booking.lateChangeFee) || 0)) > 0
-    const heads = Math.max(0, booking.adults) + Math.max(0, booking.children)
-    if (earlyMove && heads > 0) {
-      // Before 10 PM: heads are deducted for the original date, shown on the new date's bill.
+  } else if (dateMoveOrigin(booking)) {
+    const origin = dateMoveOrigin(booking)!
+    const original = originalBookedPax(booking.date, booking.program, booking)
+    const noShowBeforeMove = noShowPaxForInvoice(booking, original, options?.attendance)
+    const movedOut = booking.movedOutPax
+    const noShow = movedOut
+      ? {
+          adults: Math.max(0, noShowBeforeMove.adults - movedOut.adults),
+          children: Math.max(0, noShowBeforeMove.children - movedOut.children),
+          infants: Math.max(0, noShowBeforeMove.infants - movedOut.infants),
+          tourLeaders: Math.max(0, noShowBeforeMove.tourLeaders - movedOut.tourLeaders),
+        }
+      : noShowBeforeMove
+    const wholeNoShow = options?.attendance === 'no-show'
+    // The live booking size is the cap. No-shows are part of that group, not extra people on top.
+    const bookedAdults = Math.max(0, booking.adults)
+    const bookedChildren = Math.max(0, booking.children)
+    const nsAdults = wholeNoShow
+      ? bookedAdults
+      : Math.min(bookedAdults, Math.max(0, noShow.adults))
+    const nsChildren = wholeNoShow
+      ? bookedChildren
+      : Math.min(bookedChildren, Math.max(0, noShow.children))
+    const cameAdults = bookedAdults - nsAdults
+    const cameChildren = bookedChildren - nsChildren
+    const bookedHeads = bookedAdults + bookedChildren
+    const cameHeads = cameAdults + cameChildren
+    const nsHeads = nsAdults + nsChildren
+    const programName = programShortLabel(booking.program)
+
+    if (cameHeads > 0) {
+      const amount = prebuy
+        ? 0
+        : cameAdults * rates.adultPrice + cameChildren * rates.childPrice
       items.push({
         id: moneyId(),
         bookingCode: booking.code,
-        travelDate: booking.movedFrom.date,
+        travelDate: origin,
         voucherNo,
-        description: prebuyOriginalDeductDescription(booking.movedFrom.date),
-        adults: booking.adults,
-        children: booking.children,
+        description: `${programName} booked ${bookedHeads}, check in ${cameHeads}`,
+        adults: cameAdults,
+        children: cameChildren,
+        infants: 0,
+        tourLeaders: 0,
+        adultPrice: prebuy ? 0 : rates.adultPrice,
+        childPrice: prebuy ? 0 : rates.childPrice,
+        infantPrice: 0,
+        tourLeaderPrice: 0,
+        cot: 0,
+        amount,
+        lineKind: 'tour',
+        unit: 'Person',
+        sortOrder: items.length,
+      })
+    }
+
+    if (nsHeads > 0) {
+      const amount = prebuy ? 0 : nsAdults * rates.adultPrice + nsChildren * rates.childPrice
+      items.push({
+        id: moneyId(),
+        bookingCode: booking.code,
+        travelDate: origin,
+        voucherNo,
+        description: `No Show ${nsHeads} pax`,
+        adults: nsAdults,
+        children: nsChildren,
+        infants: 0,
+        tourLeaders: 0,
+        adultPrice: prebuy ? 0 : rates.adultPrice,
+        childPrice: prebuy ? 0 : rates.childPrice,
+        infantPrice: 0,
+        tourLeaderPrice: 0,
+        cot: 0,
+        amount,
+        lineKind: 'no_show',
+        unit: 'Person',
+        sortOrder: items.length,
+      })
+    }
+
+    // New day: fee only for guests who checked in. No-shows stay on the original date.
+    const movedHeads = wholeNoShow
+      ? 0
+      : arrivedChangeDateHeads(booking, options?.checkedInSeats ?? 0)
+    if (movedHeads > 0) {
+      const perPerson = Math.max(0, DEFAULT_BOOKING_CUTOFFS.dateChangeFeePerPerson)
+      const amount = movedHeads * perPerson
+      items.push({
+        id: moneyId(),
+        bookingCode: booking.code,
+        travelDate: booking.date,
+        voucherNo,
+        description: tripsAlreadyChargedDescription(origin, movedHeads),
+        adults: movedHeads,
+        children: 0,
         infants: 0,
         tourLeaders: 0,
         adultPrice: 0,
@@ -1202,27 +1331,30 @@ export function buildInvoiceItemsForBooking(
         tourLeaderPrice: 0,
         cot: 0,
         amount: 0,
-        lineKind: 'tour',
-        unit: 'Pax',
+        lineKind: 'other',
+        unit: 'Person',
         sortOrder: items.length,
       })
-    } else {
-      // After 10 PM: the original date keeps a normal head deduct. No extra 300 line.
-      const pax = {
-        adults: booking.adults,
-        children: booking.children,
-        infants: booking.infants,
-        tourLeaders: booking.tourLeaders,
-      }
-      if (snapshotTotal(pax) > 0) {
-        pushProgramPaxLines(items, {
-          booking,
+      if (amount > 0) {
+        items.push({
+          id: moneyId(),
+          bookingCode: booking.code,
+          travelDate: booking.date,
           voucherNo,
-          pax,
-          rates,
-          prebuy,
-          lineKind: 'tour',
-          travelDate: booking.movedFrom.date,
+          description: changeDateFeeLineDescription(movedHeads, perPerson),
+          adults: movedHeads,
+          children: 0,
+          infants: 0,
+          tourLeaders: 0,
+          adultPrice: perPerson,
+          childPrice: 0,
+          infantPrice: 0,
+          tourLeaderPrice: 0,
+          cot: 0,
+          amount,
+          lineKind: 'other',
+          unit: 'Person',
+          sortOrder: items.length,
         })
       }
     }
@@ -1282,7 +1414,7 @@ export function buildInvoiceItemsForBooking(
         cot: 0,
         amount: 0,
         lineKind: 'other',
-        unit: 'Pax',
+        unit: 'Person',
         sortOrder: items.length,
       })
     }
@@ -1308,7 +1440,9 @@ export function buildInvoiceItemsForBooking(
   const lateDateFlagged = booking.lateDateChange === true
   const lateDateLegacy = booking.lateDateChange == null && reduceFee > 0
 
-  if (prebuyNoShowMove && booking.movedFrom && Math.max(0, booking.lateChangeFee ?? 0) > 0) {
+  const movedOrigin = dateMoveOrigin(booking)
+
+  if (!movedOrigin && prebuyNoShowMove && booking.movedFrom && Math.max(0, booking.lateChangeFee ?? 0) > 0) {
     const move = prebuyNoShowMoveMoney(booking)
     if (move.amount > 0) {
       items.push({
@@ -1328,13 +1462,13 @@ export function buildInvoiceItemsForBooking(
         cot: 0,
         amount: move.amount,
         lineKind: 'other',
-        unit: 'Pax',
+        unit: 'Person',
         sortOrder: items.length,
       })
     }
   }
 
-  if (!prebuyNoShowMove && (lateDateFlagged || lateDateLegacy)) {
+  if (!movedOrigin && !prebuyNoShowMove && (lateDateFlagged || lateDateLegacy)) {
     const changePax = {
       adults: booking.adults,
       children: booking.children,
@@ -1367,7 +1501,7 @@ export function buildInvoiceItemsForBooking(
 
   // Late reduce AD/CH after lateFeeFromTime (not late cancel, not late date change).
   // Prebuy no-show moves already added their own per-person line above.
-  if (!prebuyNoShowMove && reduceFee > 0 && booking.lateDateChange != null) {
+  if (!movedOrigin && !prebuyNoShowMove && reduceFee > 0 && booking.lateDateChange != null) {
     const perPerson = Math.max(0, DEFAULT_BOOKING_CUTOFFS.dateChangeFeePerPerson)
     const heads =
       perPerson > 0 && reduceFee % perPerson === 0 ? Math.floor(reduceFee / perPerson) : 0
@@ -1395,7 +1529,7 @@ export function buildInvoiceItemsForBooking(
       cot: 0,
       amount: reduceFee,
       lineKind: 'other',
-      unit: heads > 0 ? 'Pax' : 'Fee',
+      unit: heads > 0 ? 'Person' : 'Fee',
       sortOrder: items.length,
     })
   }
@@ -1464,7 +1598,7 @@ export function buildInvoiceItemsForBooking(
       items.push({
         id: moneyId(),
         bookingCode: booking.code,
-        travelDate: booking.date,
+        travelDate: movedOrigin ?? booking.date,
         voucherNo,
         description: `No Transfer · -${per} THB / Person`,
         adults: booking.adults,
@@ -1478,7 +1612,7 @@ export function buildInvoiceItemsForBooking(
         cot: 0,
         amount: -(heads * per),
         lineKind: 'other',
-        unit: 'Pax',
+        unit: 'Person',
         sortOrder: items.length,
       })
     }
@@ -1506,7 +1640,7 @@ export function buildInvoiceItemsForBooking(
       items.push({
         id: moneyId(),
         bookingCode: booking.code,
-        travelDate: booking.date,
+        travelDate: movedOrigin ?? booking.date,
         voucherNo,
         description: 'National Park Fee · Included',
         adults: park.foreignAdults,
@@ -1527,7 +1661,7 @@ export function buildInvoiceItemsForBooking(
       items.push({
         id: moneyId(),
         bookingCode: booking.code,
-        travelDate: booking.date,
+        travelDate: movedOrigin ?? booking.date,
         voucherNo,
         description: 'Thai nationality · National Park',
         adults: park.thaiAdults,
