@@ -1017,9 +1017,9 @@ export function AdminCheckInBookingPanel({
                       : ''}
                   </p>
                   <p className="text-xs text-teal-900/70">
-                    No-shows stay charged on the original booked date. The change-date fee on this
-                    day is only for guests who check in ({bookingCutoffs.dateChangeFeePerPerson} THB
-                    per AD/CH).
+                    No-shows stay charged on the original booked date. The new day bills the
+                    change-date fee ({bookingCutoffs.dateChangeFeePerPerson} THB per AD/CH). After
+                    check-in, that fee is only for guests who came.
                   </p>
                   {dateError ? <p className="text-sm text-rose-700">{dateError}</p> : null}
                   <Button

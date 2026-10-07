@@ -1323,10 +1323,11 @@ export function buildInvoiceItemsForBooking(
       })
     }
 
-    // New day: fee only for guests who checked in. No-shows stay on the original date.
-    const movedHeads = wholeNoShow
-      ? 0
-      : arrivedChangeDateHeads(booking, options?.checkedInSeats ?? 0)
+    // New day: 300 THB per person who moved. Before check-in, that is the live party
+    // so the bill can be opened. Once guests check in, only those who came are charged.
+    const chargeableMoved = Math.max(0, booking.adults) + Math.max(0, booking.children)
+    const checkedInHeads = arrivedChangeDateHeads(booking, options?.checkedInSeats ?? 0)
+    const movedHeads = wholeNoShow ? 0 : checkedInHeads > 0 ? checkedInHeads : chargeableMoved
     if (movedHeads > 0) {
       const perPerson = Math.max(0, DEFAULT_BOOKING_CUTOFFS.dateChangeFeePerPerson)
       const amount = movedHeads * perPerson

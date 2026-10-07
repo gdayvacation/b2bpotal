@@ -218,10 +218,21 @@ function savedChargeForBooking(doc: InvoiceDocument, bookingCode: string) {
   return itemsAgentTotal(lines)
 }
 
-function BillFlag({ label, title }: { label: string; title: string }) {
+function BillFlag({
+  label,
+  title,
+  tone = 'rose',
+}: {
+  label: string
+  title: string
+  tone?: 'rose' | 'sky'
+}) {
   return (
     <span
-      className="inline-flex shrink-0 rounded px-1 py-px text-[10px] font-bold leading-none tracking-wide text-rose-600"
+      className={cn(
+        'inline-flex shrink-0 rounded px-1 py-px text-[10px] font-bold leading-none tracking-wide',
+        tone === 'sky' ? 'text-sky-700' : 'text-rose-600',
+      )}
       title={title}
     >
       {label}
@@ -1793,8 +1804,8 @@ export function AdminInvoices() {
                       >
                         Type
                       </BillSortHead>
-                      <TableHead className="w-[7.5rem] px-1.5 font-bold">Guest</TableHead>
-                      <TableHead className="w-[7rem] px-1.5 font-bold">Pax</TableHead>
+                      <TableHead className="w-[10rem] px-1.5 font-bold">Guest</TableHead>
+                      <TableHead className="w-[5.99rem] px-1.5 font-bold">Pax</TableHead>
                       <TableHead className="w-[7rem] px-1 font-bold">Hotel</TableHead>
                       <TableHead
                         className="w-[4.25rem] px-1 font-bold"
@@ -1803,7 +1814,7 @@ export function AdminInvoices() {
                         Park Fee
                       </TableHead>
                       <TableHead
-                        className="w-[4.75rem] px-1.5 text-right font-bold"
+                        className="w-[4.51rem] px-1.5 text-right font-bold"
                         title="No Transfer: −100 THB per AD+CH for Invoice agents only. Transfer bookings stay blank."
                       >
                         TF /
@@ -1820,12 +1831,18 @@ export function AdminInvoices() {
                     {visibleBillRows.map((row) => {
                       const { booking } = row
                       const issued = Boolean(row.invoice)
+                      const movedFromDate = booking.movedFrom?.date ?? ''
+                      const dateMoved =
+                        movedFromDate !== '' &&
+                        movedFromDate !== booking.date &&
+                        booking.status !== 'Cancelled'
                       const movedOntoThisDay =
-                        Boolean(booking.movedFrom?.date) &&
-                        booking.movedFrom.date !== booking.date &&
-                        booking.status !== 'Cancelled' &&
-                        booking.date >= fromDate &&
-                        booking.date <= toDate
+                        dateMoved && booking.date >= fromDate && booking.date <= toDate
+                      const movedAwayFromThisDay =
+                        dateMoved &&
+                        !movedOntoThisDay &&
+                        movedFromDate >= fromDate &&
+                        movedFromDate <= toDate
                       return (
                         <TableRow
                           key={booking.code}
@@ -1912,19 +1929,28 @@ export function AdminInvoices() {
                             {formatAgentBillingType(row.billingType)}
                           </TableCell>
                           <TableCell
-                            className="w-[7.5rem] max-w-[7.5rem] px-1.5"
+                            className="w-[10rem] max-w-[10rem] px-1.5"
                             title={
-                              movedOntoThisDay && booking.movedFrom
-                                ? `${booking.leadGuest} · moved from ${formatShortDate(booking.movedFrom.date)}`
-                                : booking.leadGuest
+                              movedOntoThisDay
+                                ? `${booking.leadGuest} · moved from ${formatShortDate(movedFromDate)}`
+                                : movedAwayFromThisDay
+                                  ? `${booking.leadGuest} · move to ${formatShortDate(booking.date)}`
+                                  : booking.leadGuest
                             }
                           >
                             <span className="inline-flex min-w-0 max-w-full items-center gap-1">
                               <span className="truncate">{booking.leadGuest}</span>
-                              {movedOntoThisDay && booking.movedFrom ? (
+                              {movedOntoThisDay ? (
                                 <BillFlag
                                   label="Moved"
-                                  title={`Moved from ${formatShortDate(booking.movedFrom.date)}. Change-date fee is on this day.`}
+                                  title={`Moved from ${formatShortDate(movedFromDate)}. Change-date fee is on this day.`}
+                                />
+                              ) : null}
+                              {movedAwayFromThisDay ? (
+                                <BillFlag
+                                  label="Move to"
+                                  tone="sky"
+                                  title={`Move to ${formatShortDate(booking.date)}. Head use stays on this day.`}
                                 />
                               ) : null}
                               {booking.status === 'Cancelled' ? (
