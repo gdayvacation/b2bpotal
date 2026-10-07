@@ -1242,40 +1242,50 @@ export function buildInvoiceItemsForBooking(
         }
       : noShowBeforeMove
     const wholeNoShow = options?.attendance === 'no-show'
-    // The live booking size is the cap. No-shows are part of that group, not extra people on top.
-    const bookedAdults = Math.max(0, booking.adults)
-    const bookedChildren = Math.max(0, booking.children)
+    // Live pax is who remains after marina reduced the booking. The original booked
+    // size is live + no-show, so a 24→20 reduction bills 20 check-in and 4 no-show.
+    const cameAdults = wholeNoShow ? 0 : Math.max(0, booking.adults)
+    const cameChildren = wholeNoShow ? 0 : Math.max(0, booking.children)
+    const cameLeaders = wholeNoShow ? 0 : Math.max(0, booking.tourLeaders)
     const nsAdults = wholeNoShow
-      ? bookedAdults
-      : Math.min(bookedAdults, Math.max(0, noShow.adults))
+      ? Math.max(booking.adults, original.adults)
+      : Math.max(0, noShow.adults)
     const nsChildren = wholeNoShow
-      ? bookedChildren
-      : Math.min(bookedChildren, Math.max(0, noShow.children))
-    const cameAdults = bookedAdults - nsAdults
-    const cameChildren = bookedChildren - nsChildren
-    const bookedHeads = bookedAdults + bookedChildren
-    const cameHeads = cameAdults + cameChildren
+      ? Math.max(booking.children, original.children)
+      : Math.max(0, noShow.children)
+    const nsLeaders = wholeNoShow
+      ? Math.max(booking.tourLeaders, original.tourLeaders)
+      : Math.max(0, noShow.tourLeaders)
+    const bookedAdults = cameAdults + nsAdults
+    const bookedChildren = cameChildren + nsChildren
+    const bookedLeaders = cameLeaders + nsLeaders
     const nsHeads = nsAdults + nsChildren
     const programName = programShortLabel(booking.program)
+    const partyLabel = (adults: number, children: number, leaders: number) => {
+      const heads = adults + children
+      return leaders > 0 ? `${heads} + ${leaders} TL` : String(heads)
+    }
 
-    if (cameHeads > 0) {
+    if (cameAdults + cameChildren + cameLeaders > 0) {
       const amount = prebuy
         ? 0
-        : cameAdults * rates.adultPrice + cameChildren * rates.childPrice
+        : cameAdults * rates.adultPrice +
+          cameChildren * rates.childPrice +
+          cameLeaders * rates.tourLeaderPrice
       items.push({
         id: moneyId(),
         bookingCode: booking.code,
         travelDate: origin,
         voucherNo,
-        description: `${programName} booked ${bookedHeads}, check in ${cameHeads}`,
+        description: `${programName} booked ${partyLabel(bookedAdults, bookedChildren, bookedLeaders)}, check in ${partyLabel(cameAdults, cameChildren, cameLeaders)}`,
         adults: cameAdults,
         children: cameChildren,
         infants: 0,
-        tourLeaders: 0,
+        tourLeaders: cameLeaders,
         adultPrice: prebuy ? 0 : rates.adultPrice,
         childPrice: prebuy ? 0 : rates.childPrice,
         infantPrice: 0,
-        tourLeaderPrice: 0,
+        tourLeaderPrice: prebuy ? 0 : rates.tourLeaderPrice,
         cot: 0,
         amount,
         lineKind: 'tour',
@@ -1284,22 +1294,27 @@ export function buildInvoiceItemsForBooking(
       })
     }
 
-    if (nsHeads > 0) {
-      const amount = prebuy ? 0 : nsAdults * rates.adultPrice + nsChildren * rates.childPrice
+    if (nsHeads + nsLeaders > 0) {
+      const amount = prebuy
+        ? 0
+        : nsAdults * rates.adultPrice +
+          nsChildren * rates.childPrice +
+          nsLeaders * rates.tourLeaderPrice
       items.push({
         id: moneyId(),
         bookingCode: booking.code,
         travelDate: origin,
         voucherNo,
-        description: `No Show ${nsHeads} pax`,
+        description:
+          nsLeaders > 0 ? `No Show ${partyLabel(nsAdults, nsChildren, nsLeaders)}` : `No Show ${nsHeads} pax`,
         adults: nsAdults,
         children: nsChildren,
         infants: 0,
-        tourLeaders: 0,
+        tourLeaders: nsLeaders,
         adultPrice: prebuy ? 0 : rates.adultPrice,
         childPrice: prebuy ? 0 : rates.childPrice,
         infantPrice: 0,
-        tourLeaderPrice: 0,
+        tourLeaderPrice: prebuy ? 0 : rates.tourLeaderPrice,
         cot: 0,
         amount,
         lineKind: 'no_show',
