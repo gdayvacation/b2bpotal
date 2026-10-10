@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { CalendarDays, ClipboardList, Plus } from 'lucide-react'
+import { ClipboardList, Plus } from 'lucide-react'
 import { BrandMark } from '@/components/brand-mark'
 import { usePartnerDataLive } from '@/components/portal-provider'
 import { cn } from '@/lib/utils'
@@ -11,7 +11,6 @@ import type { Agent } from '@/lib/types'
 const nav = [
   { href: '', label: 'Book', icon: Plus },
   { href: '/bookings', label: 'Bookings', icon: ClipboardList },
-  { href: '/calendar', label: 'Calendar', icon: CalendarDays },
 ]
 
 export function AgentShell({ agent, children }: { agent: Agent; children: React.ReactNode }) {

@@ -661,7 +661,7 @@ function BookingReport({ onBack }: { onBack: () => void }) {
             margin: 7mm;
           }
           html, body {
-            width: 100% !important;
+            width: auto !important;
             height: auto !important;
             margin: 0 !important;
             padding: 0 !important;
@@ -669,6 +669,32 @@ function BookingReport({ onBack }: { onBack: () => void }) {
             overflow: visible !important;
             -webkit-print-color-adjust: exact !important;
             print-color-adjust: exact !important;
+          }
+          /* Keep the report in normal flow. An absolutely positioned sheet
+             inside the app shell, plus a section marked break-inside:avoid,
+             makes Chrome leave page 1 empty and start the table on page 2. */
+          .gday-app,
+          .gday-app > div,
+          .gday-admin-main,
+          .gday-admin-main > * {
+            position: static !important;
+            min-height: 0 !important;
+            height: auto !important;
+            width: auto !important;
+            max-width: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow: visible !important;
+            background: transparent !important;
+          }
+          .gday-admin-main::before {
+            display: none !important;
+            content: none !important;
+          }
+          header,
+          aside,
+          nav {
+            display: none !important;
           }
           body * {
             visibility: hidden !important;
@@ -679,9 +705,9 @@ function BookingReport({ onBack }: { onBack: () => void }) {
           }
           .report-print-sheet {
             display: block !important;
-            position: absolute !important;
-            left: 0 !important;
-            top: 0 !important;
+            position: static !important;
+            left: auto !important;
+            top: auto !important;
             width: 100% !important;
             max-width: none !important;
             margin: 0 !important;
@@ -690,15 +716,23 @@ function BookingReport({ onBack }: { onBack: () => void }) {
             color: #0f3d3e !important;
             box-shadow: none !important;
             border: 0 !important;
-            z-index: 99999 !important;
+            overflow: visible !important;
           }
           .report-print-sheet table {
             width: 100% !important;
             border-collapse: collapse !important;
           }
-          .report-print-section {
+          .report-print-sheet thead {
+            display: table-header-group;
+          }
+          .report-print-sheet tr {
             break-inside: avoid;
             page-break-inside: avoid;
+          }
+          .report-print-section {
+            overflow: visible !important;
+            break-inside: auto !important;
+            page-break-inside: auto !important;
           }
         }
       `}</style>
@@ -992,7 +1026,7 @@ function BookingPrintSection({
   }
 
   return (
-    <div className="report-print-section overflow-hidden rounded-xl border border-teal-900/15">
+    <div className="report-print-section rounded-xl border border-teal-900/15">
       {title ? (
         <div className="border-b border-teal-900/10 bg-gradient-to-r from-teal-50 to-white px-3 py-2">
           <p className="text-xs font-bold text-teal-950">{title}</p>

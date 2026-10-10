@@ -3,7 +3,6 @@
 import { ConfirmationView } from '@/components/agent/confirmation-view'
 import { VoucherView } from '@/components/agent/voucher-view'
 import { BookingsTable } from '@/components/agent/bookings-table'
-import { BookingCalendar } from '@/components/agent/booking-calendar'
 import { usePortal } from '@/components/portal-provider'
 
 export function AgentBookingsPage({ slug }: { slug: string }) {
@@ -14,11 +13,6 @@ export function AgentBookingsPage({ slug }: { slug: string }) {
       bookings={bookings.filter((booking) => booking.agentSlug === slug)}
     />
   )
-}
-
-export function AgentCalendarPage() {
-  const { bookings } = usePortal()
-  return <BookingCalendar bookings={bookings} />
 }
 
 export function ConfirmationPage({ slug, code }: { slug: string; code: string }) {
