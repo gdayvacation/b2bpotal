@@ -591,6 +591,21 @@ export function prebuyCancelChargeDescription(program: Program) {
   return `Cancel charge · ${programLabel(program)}`
 }
 
+/** Saved draft is missing the prebuy cancel head line, the money charge, or still has a no-show line. */
+export function prebuyCancelDraftIsStale(
+  stored: { lineKind?: string; description?: string }[],
+  live: { lineKind?: string; description?: string }[],
+) {
+  const isHead = (item: { lineKind?: string; description?: string }) =>
+    item.lineKind === 'cancel' && /^Cancelled · head deduct/i.test(item.description ?? '')
+  const isCharge = (item: { lineKind?: string; description?: string }) =>
+    item.lineKind === 'cancel' && /^Cancel charge · /i.test(item.description ?? '')
+  if (!live.some(isHead)) return false
+  if (stored.some((item) => item.lineKind === 'no_show')) return true
+  if (!stored.some(isHead)) return true
+  return live.some(isCharge) && !stored.some(isCharge)
+}
+
 /** Normalize older vague labels on print / edit. */
 export function formatInvoiceLineDescription(
   item: Pick<InvoiceItem, 'description' | 'amount' | 'adults' | 'children' | 'adultPrice' | 'lineKind'>,
@@ -1220,13 +1235,14 @@ export function buildInvoiceItemsForBooking(
           children: 0,
           infants: 0,
           tourLeaders: 0,
-          adultPrice: 0,
+          adultPrice: Math.max(0, Math.floor(adminFee)),
           childPrice: 0,
           infantPrice: 0,
           tourLeaderPrice: 0,
           cot: 0,
           amount: Math.max(0, Math.floor(adminFee)),
           lineKind: 'cancel',
+          unit: 'Fee',
           sortOrder: items.length,
         })
       } else {

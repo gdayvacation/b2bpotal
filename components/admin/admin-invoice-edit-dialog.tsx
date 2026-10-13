@@ -21,6 +21,7 @@ import {
   invoiceLineKindLabel,
   invoiceLineUnitPrice,
   isInvoiceAmountStale,
+  prebuyDeductHeads,
   isLateReduceFeeLine,
   itemsAgentTotal,
   itemsGuestTotal,
@@ -166,22 +167,16 @@ export function InvoiceEditDialog({
       (item) =>
         item.lineKind === 'change_date' && /deduct \d+ heads?/i.test(item.description),
     )
-    return tourIsDeduct || hasNoShowDeduct || hasChangeDateDeduct
+    const hasCancelHead = draft.items.some(
+      (item) =>
+        item.lineKind === 'cancel' && /^Cancelled · head deduct/i.test(item.description),
+    )
+    return tourIsDeduct || hasNoShowDeduct || hasChangeDateDeduct || hasCancelHead
   }, [draft])
-  const deductHeads = useMemo(() => {
-    if (!draft || !prebuy) return 0
-    return draft.items
-      .filter(
-        (item) =>
-          item.lineKind === 'tour' ||
-          item.lineKind === 'no_show' ||
-          item.lineKind === 'change_date',
-      )
-      .reduce(
-        (sum, item) => sum + Math.max(0, item.adults) + Math.max(0, item.children),
-        0,
-      )
-  }, [draft, prebuy])
+  const deductHeads = useMemo(
+    () => (draft && prebuy ? prebuyDeductHeads(draft.items) : 0),
+    [draft, prebuy],
+  )
 
   const bookingCodes = useMemo(
     () => [...new Set((draft?.items ?? []).map((item) => item.bookingCode).filter(Boolean))],

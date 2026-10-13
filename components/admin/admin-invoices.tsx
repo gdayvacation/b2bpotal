@@ -69,6 +69,7 @@ import {
   newCreditNoteFromInvoice,
   newInvoiceDocument,
   parseAgentBillingType,
+  prebuyCancelDraftIsStale,
   prebuyDeductHeads,
   invoiceListedDates,
   ratesForAgent,
@@ -1250,6 +1251,18 @@ export function AdminInvoices() {
         doc.items.some((item) => item.bookingCode === row.booking.code),
     )
     if (draft) {
+      const live = bookingInvoiceItems(row.booking)
+      const stored = draft.items.filter((item) => item.bookingCode === row.booking.code)
+      if (draft.isDraft && prebuyCancelDraftIsStale(stored, live)) {
+        const rest = draft.items.filter((item) => item.bookingCode !== row.booking.code)
+        const items = [
+          ...live.map((item, index) => ({ ...item, invoiceId: draft.id, sortOrder: index })),
+          ...rest.map((item, index) => ({ ...item, sortOrder: live.length + index })),
+        ]
+        setEditInvoiceIsNew(false)
+        setEditInvoice({ ...draft, items, grandTotal: itemsAgentTotal(items) })
+        return
+      }
       setEditInvoiceIsNew(false)
       setEditInvoice(draft)
       return
