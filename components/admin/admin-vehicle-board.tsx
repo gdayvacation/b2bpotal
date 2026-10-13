@@ -1577,8 +1577,33 @@ function VehicleBoard({
           : 'Drop guests here'
     const boatVotes = new Map<BoatNumber, number>()
     for (const item of items) {
-      for (const leg of normalizeBoatAssignment(boatPlan.assignments[item.booking.code])) {
-        boatVotes.set(leg.boat, (boatVotes.get(leg.boat) ?? 0) + 1)
+      const isSplitVan =
+        (item.legs?.length ?? 0) > 1 && item.paxOnVan < totalPassengers(item.booking)
+      if (isSplitVan) {
+        // For a booking split across multiple vans, only count the boat that
+        // carries THIS van's pax portion — not every boat leg on the booking.
+        // Without this, the other van's boat creates a spurious extra vote and
+        // prevents the van card from showing any boat as selected.
+        const boatAssign = boatPlan.assignments[item.booking.code]
+        const boatLegs = normalizeBoatAssignment(boatAssign, totalPassengers(item.booking))
+        for (const boatLeg of boatLegs) {
+          if (
+            bookingPaxOnVanAndBoat(
+              item.booking,
+              item.legs,
+              boatAssign,
+              van,
+              boatLeg.boat,
+            ) > 0
+          ) {
+            boatVotes.set(boatLeg.boat, (boatVotes.get(boatLeg.boat) ?? 0) + 1)
+            break
+          }
+        }
+      } else {
+        for (const leg of normalizeBoatAssignment(boatPlan.assignments[item.booking.code])) {
+          boatVotes.set(leg.boat, (boatVotes.get(leg.boat) ?? 0) + 1)
+        }
       }
     }
     let assignedBoat: BoatNumber | null = null
@@ -2855,6 +2880,16 @@ function VehicleBoard({
                       )
                     )
                   }, 0)
+                  const boatCheckedIn = items.reduce(
+                    (acc, booking) =>
+                      getCheckInAttendance(date, program, booking.code) === 'checked'
+                        ? addPaxBreakdown(
+                            acc,
+                            bookingMixOnBoat(booking, boatPlan.assignments[booking.code], boat),
+                          )
+                        : acc,
+                    emptyPaxBreakdown(),
+                  )
                   return (
                   <div
                     key={boat}
@@ -3339,6 +3374,11 @@ function VehicleBoard({
                         Drop guests or vans here — including no transfer.
                       </p>
                     )}
+                    {items.length > 0 ? (
+                      <p className="mt-2 text-[11px] font-semibold text-rose-600 tabular-nums">
+                        Checked-in: {formatPaxShort(boatCheckedIn)}
+                      </p>
+                    ) : null}
                       </>
                     )}
                   </div>
