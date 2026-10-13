@@ -1,9 +1,13 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { ClipboardList, Plus } from 'lucide-react'
+import { Building2, ClipboardList, Plus } from 'lucide-react'
+import { CompanyLogo } from '@/components/agent/company-logo'
 import { BrandMark } from '@/components/brand-mark'
+import { agentVoucherName } from '@/lib/agent-company'
+import { loadAgentCompany } from '@/lib/supabase/portal-db'
 import { usePartnerDataLive } from '@/components/portal-provider'
 import { cn } from '@/lib/utils'
 import type { Agent } from '@/lib/types'
@@ -11,6 +15,7 @@ import type { Agent } from '@/lib/types'
 const nav = [
   { href: '', label: 'Book', icon: Plus },
   { href: '/bookings', label: 'Bookings', icon: ClipboardList },
+  { href: '/company', label: 'Company', icon: Building2 },
 ]
 
 export function AgentShell({ agent, children }: { agent: Agent; children: React.ReactNode }) {
@@ -18,6 +23,26 @@ export function AgentShell({ agent, children }: { agent: Agent; children: React.
   const dataLive = usePartnerDataLive()
   const base = `/agent/${agent.slug}`
   const items = agent.status === 'Inactive' ? nav.filter((item) => item.href !== '') : nav
+  const displayName = agentVoucherName(agent)
+  const [logoUrl, setLogoUrl] = useState(agent.logoDataUrl)
+
+  useEffect(() => {
+    if (agent.logoDataUrl !== undefined) {
+      setLogoUrl(agent.logoDataUrl)
+      return
+    }
+    let cancelled = false
+    loadAgentCompany(agent.slug)
+      .then((row) => {
+        if (!cancelled) setLogoUrl(row?.logoDataUrl ?? '')
+      })
+      .catch(() => {
+        if (!cancelled) setLogoUrl('')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [agent.slug, agent.logoDataUrl])
 
   return (
     <div className="gday-app relative">
@@ -64,18 +89,16 @@ export function AgentShell({ agent, children }: { agent: Agent; children: React.
             })}
           </nav>
 
-          <div className="flex min-w-0 shrink-0 items-center gap-2.5 sm:gap-3">
+          <Link
+            href={`${base}/company`}
+            aria-label={`${displayName} company details`}
+            className="flex min-w-0 shrink-0 items-center gap-2.5 rounded-full sm:gap-3"
+          >
             <div className="hidden min-w-0 text-right sm:block">
-              <div className="truncate text-sm font-semibold text-teal-950">{agent.name}</div>
+              <div className="truncate text-sm font-semibold text-teal-950">{displayName}</div>
             </div>
-            <div className="flex size-9 items-center justify-center rounded-full bg-gradient-to-br from-sky-400 via-teal-500 to-cyan-700 text-xs font-semibold text-white shadow-md shadow-teal-600/25">
-              {agent.name
-                .split(' ')
-                .slice(0, 2)
-                .map((part) => part[0])
-                .join('')}
-            </div>
-          </div>
+            <CompanyLogo name={displayName} logoUrl={logoUrl} className="size-9 text-xs" />
+          </Link>
         </div>
       </header>
 

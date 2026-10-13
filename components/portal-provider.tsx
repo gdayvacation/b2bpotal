@@ -10,6 +10,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import { normalizeAgentCompany, type AgentCompanyProfile } from '@/lib/agent-company'
 import { bookingCodeStem, formatThb, nextBookingCode, todayISO, uniqueAgentSlug } from '@/lib/format'
 import { guestQrRepeatFetchOpen, msUntilGuestQrRepeatFetchCutoff } from '@/lib/guest-qr-sync'
 import { autoAssignBoats } from '@/lib/boat-assign'
@@ -244,6 +245,7 @@ import {
   updateBookingRebook,
   updateBookingStatus,
   updateBookingsAgentName,
+  saveAgentCompany,
   upsertAgent,
   upsertAvailability,
   upsertAvailabilityRows,
@@ -512,6 +514,7 @@ type PortalContextValue = {
   setAgentStatus: (slug: string, status: AgentStatus) => void
   addAgent: (name: string) => string | null
   updateAgent: (slug: string, name: string) => string | null
+  saveAgentCompanyProfile: (slug: string, profile: AgentCompanyProfile) => Promise<string | null>
   removeAgent: (slug: string) => void
   setCapacity: (date: string, program: 'PP' | 'James Bond', capacity: number) => void
   setCapacityForDates: (
@@ -4762,6 +4765,32 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           )
           persistQuietly('updateBookingsAgentName', updateBookingsAgentName(slug, trimmedName))
         }
+        return null
+      },
+      saveAgentCompanyProfile: async (slug, profile) => {
+        const existing = agents.find((agent) => agent.slug === slug)
+        if (!existing) return 'Agent not found.'
+        const normalized = normalizeAgentCompany(profile)
+        if (!normalized.ok) return normalized.error
+        try {
+          await saveAgentCompany(slug, normalized.value)
+        } catch (caught) {
+          return caught instanceof Error ? caught.message : 'Could not save company details.'
+        }
+        const saved = normalized.value
+        setAgents((current) =>
+          current.map((agent) =>
+            agent.slug === slug
+              ? {
+                  ...agent,
+                  companyName: saved.companyName,
+                  companyPhone: saved.companyPhone,
+                  companyEmail: saved.companyEmail,
+                  logoDataUrl: saved.logoDataUrl,
+                }
+              : agent,
+          ),
+        )
         return null
       },
       removeAgent: (slug) => {

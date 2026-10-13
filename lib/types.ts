@@ -121,6 +121,16 @@ export type Agent = {
   name: string
   country: string
   status: AgentStatus
+  /** Legal / printed name on this agent's vouchers. Falls back to `name`. */
+  companyName?: string
+  /** Guest contact printed on the voucher. */
+  companyPhone?: string
+  companyEmail?: string
+  /**
+   * Resized logo as a data URL. The full admin snapshot omits this so the
+   * board stays small; partner pages and vouchers load it when needed.
+   */
+  logoDataUrl?: string
 }
 
 export type PortalUserStatus = 'pending' | 'active' | 'inactive'

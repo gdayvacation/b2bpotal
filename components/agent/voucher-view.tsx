@@ -1,21 +1,22 @@
 'use client'
 
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { ArrowLeft, CalendarDays, MapPin, MessageSquareText, Plus, Printer, Ship, Users } from 'lucide-react'
-import { BrandMark } from '@/components/brand-mark'
+import { CompanyLogo } from '@/components/agent/company-logo'
 import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { voucherUrl } from '@/components/voucher-share-actions'
+import { agentVoucherName, type AgentCompanyProfile } from '@/lib/agent-company'
 import { BRAND_LEGAL } from '@/lib/brand'
+import { loadAgentCompany } from '@/lib/supabase/portal-db'
 import { formatThbAmount } from '@/lib/booking-cutoffs'
 import { formatIncludeLabel, formatLongDate, formatShortDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
   bookingMoveNote,
-  formatPaxBreakdown,
   isNoTransfer,
   totalPassengers,
   type Booking,
@@ -45,8 +46,38 @@ export function VoucherPreview({
   embedded?: boolean
 }) {
   const { bookings, agents } = usePortal()
-  const canBook = agents.find((item) => item.slug === slug)?.status !== 'Inactive'
+  const agent = agents.find((item) => item.slug === slug)
+  const canBook = agent?.status !== 'Inactive'
   const live = bookings.find((item) => item.code === booking.code) ?? booking
+  const [company, setCompany] = useState<AgentCompanyProfile | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    loadAgentCompany(slug)
+      .then((row) => {
+        if (!cancelled && row) setCompany(row)
+      })
+      .catch(() => {
+        if (!cancelled) setCompany(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [slug])
+
+  const issuerName = agentVoucherName(
+    {
+      name: agent?.name || live.agentName,
+      companyName: company?.companyName || agent?.companyName,
+    },
+    live.agentName,
+  )
+  const issuerPhone = (company?.companyPhone || agent?.companyPhone || '').trim()
+  const issuerEmail = (company?.companyEmail || agent?.companyEmail || '').trim()
+  const issuerLogo = company?.logoDataUrl || agent?.logoDataUrl || ''
+  const issuerContact = [issuerPhone, issuerEmail].filter(Boolean).join(' · ')
+  const showBookingAgent =
+    live.agentName.trim().toLowerCase() !== issuerName.trim().toLowerCase()
   const total = totalPassengers(live)
   const cancelled = live.status === 'Cancelled'
   const pickupLine = [
@@ -114,7 +145,22 @@ export function VoucherPreview({
         )}
       >
         <div className="flex items-center justify-between gap-3 border-b border-teal-900/8 px-4 py-3.5 sm:px-5">
-          <BrandMark variant="company" />
+          <div className="flex min-w-0 items-center gap-2.5">
+            <CompanyLogo
+              name={issuerName}
+              logoUrl={issuerLogo}
+              rounded="sheet"
+              className="size-9 shrink-0 text-[13px]"
+            />
+            <div className="min-w-0 leading-tight">
+              <div className="font-display text-[13px] font-semibold tracking-tight text-teal-950 sm:text-[14px]">
+                {issuerName}
+              </div>
+              <div className="text-[11px] break-words text-teal-800/55">
+                {issuerContact || 'Travel partner'}
+              </div>
+            </div>
+          </div>
           <StatusBadge status={live.status} />
         </div>
 
@@ -139,7 +185,9 @@ export function VoucherPreview({
               >
                 {live.code}
               </h1>
-              <p className="mt-1 truncate text-sm text-white/70">{live.agentName}</p>
+              {showBookingAgent ? (
+                <p className="mt-1 truncate text-sm text-white/70">{live.agentName}</p>
+              ) : null}
             </div>
             <div className="rounded-lg bg-white/12 px-3 py-2 text-right backdrop-blur-sm">
               <p className="text-[10px] font-medium tracking-wide text-white/55 uppercase">
@@ -160,7 +208,7 @@ export function VoucherPreview({
             <HeroFact label="Guest name" value={live.leadGuest} />
             <HeroFact
               label="Passengers"
-              value={`${formatPaxBreakdown(live)} · ${total}`}
+              value={String(total)}
               className="col-span-2 sm:col-span-1"
             />
             {bookingMoveNote(live, formatShortDate) ? (
@@ -258,8 +306,8 @@ export function VoucherPreview({
         </div>
 
         <div className="border-t border-teal-900/8 bg-teal-950/[0.03] px-4 py-3 text-[11px] leading-relaxed text-teal-900/50 sm:px-5">
-          Issued by {BRAND_LEGAL}. Present this voucher on the tour date. Partner confirmation — no
-          price shown.
+          Issued by {issuerName}. Tour operated by {BRAND_LEGAL}. Present this voucher on the tour
+          date. Partner confirmation — no price shown.
         </div>
       </article>
     </div>

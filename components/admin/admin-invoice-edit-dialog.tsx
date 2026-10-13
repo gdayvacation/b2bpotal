@@ -20,8 +20,10 @@ import {
   formatInvoiceMoney,
   invoiceLineKindLabel,
   invoiceLineUnitPrice,
+  invoiceLinesWereEdited,
   isInvoiceAmountStale,
   prebuyDeductHeads,
+  splitMixedRateInvoiceItems,
   isLateReduceFeeLine,
   itemsAgentTotal,
   itemsGuestTotal,
@@ -34,6 +36,19 @@ import {
   type InvoiceLineKind,
 } from '@/lib/invoice'
 import { cn } from '@/lib/utils'
+
+const LINE_KINDS = [
+  'tour',
+  'no_show',
+  'change_date',
+  'cancel',
+  'private_transfer',
+  'extra_zone',
+  'park_fee',
+  'park_guest',
+  'service',
+  'other',
+] as const satisfies readonly InvoiceLineKind[]
 
 const LINE_KIND_TONE: Record<InvoiceLineKind, string> = {
   tour: 'bg-teal-900/8 text-teal-900/70',
@@ -107,7 +122,6 @@ export function InvoiceEditDialog({
   onOpenChange,
   onSave,
   liveItemsForCodes,
-  guestByBookingCode,
 }: {
   doc: InvoiceDocument | null
   isNew: boolean
@@ -132,20 +146,22 @@ export function InvoiceEditDialog({
     }
     setDraft({
       ...doc,
-      items: doc.items.map((item) => {
-        if (!isLateReduceFeeLine(item)) {
-          const unit = chargeUnit(item)
-          return { ...item, unit: unit === 'Pax' ? 'Person' : unit }
-        }
-        const display = lateReduceFeeDisplay(item)
-        return {
-          ...item,
-          description: formatInvoiceLineDescription(item),
-          adults: display.heads || item.adults,
-          adultPrice: display.perPerson || item.adultPrice,
-          unit: display.heads > 0 ? 'Person' : 'Fee',
-        }
-      }),
+      items: splitMixedRateInvoiceItems(
+        doc.items.map((item) => {
+          if (!isLateReduceFeeLine(item)) {
+            const unit = chargeUnit(item)
+            return { ...item, unit: unit === 'Pax' ? 'Person' : unit }
+          }
+          const display = lateReduceFeeDisplay(item)
+          return {
+            ...item,
+            description: formatInvoiceLineDescription(item),
+            adults: display.heads || item.adults,
+            adultPrice: display.perPerson || item.adultPrice,
+            unit: display.heads > 0 ? 'Person' : 'Fee',
+          }
+        }),
+      ),
     })
     setError('')
     setSaving(false)
@@ -195,6 +211,16 @@ export function InvoiceEditDialog({
     const liveAuto = itemsAgentTotal(liveItems.filter((item) => item.lineKind !== 'other'))
     return isInvoiceAmountStale(storedAuto, liveAuto)
   }, [draft, liveItems])
+  const handEdited = useMemo(() => {
+    if (!doc || liveItems.length === 0) return false
+    const liveCodes = new Set(liveItems.map((item) => item.bookingCode))
+    const liveDates = new Set(liveItems.map((item) => item.travelDate))
+    const stored = doc.items.filter((item) => {
+      if (!item.bookingCode) return true
+      return liveCodes.has(item.bookingCode) && (!item.travelDate || liveDates.has(item.travelDate))
+    })
+    return invoiceLinesWereEdited(stored, liveItems) && !amountStale
+  }, [doc, liveItems, amountStale])
 
   function refreshFromBookings() {
     if (!draft || liveItems.length === 0) return
@@ -305,7 +331,7 @@ export function InvoiceEditDialog({
   const paid = draft.status === 'paid'
   const unissued = isNew || draft.isDraft === true
   const uniqueVouchers = [...new Set(draft.items.map((item) => item.voucherNo.trim()).filter(Boolean))]
-  const headerVoucher = uniqueVouchers[0] ?? draft.items[0]?.voucherNo ?? ''
+  const headerVoucher = uniqueVouchers.join(', ')
   const travelDate =
     [...new Set(draft.items.map((item) => item.travelDate).filter(Boolean))][0] || ''
 
@@ -380,17 +406,20 @@ export function InvoiceEditDialog({
               <label htmlFor="invoice-voucher" className="text-[11px] font-semibold uppercase tracking-wide text-teal-900/40">
                 Voucher
               </label>
-              {uniqueVouchers.length > 1 ? (
-                <p className="mt-1 text-sm text-teal-900/55">Each line has its own reference.</p>
-              ) : (
-                <Input
-                  id="invoice-voucher"
-                  value={headerVoucher}
-                  onChange={(event) => patchVoucher(event.target.value)}
-                  className="mt-1 h-9"
-                  placeholder="Voucher no."
-                />
-              )}
+              <Input
+                id="invoice-voucher"
+                value={headerVoucher}
+                onChange={(event) => {
+                  const value = event.target.value
+                  const parts = value
+                    .split(',')
+                    .map((part) => part.trim())
+                    .filter(Boolean)
+                  if (parts.length <= 1) patchVoucher(parts[0] ?? value.trim())
+                }}
+                className="mt-1 h-9"
+                placeholder="Voucher no."
+              />
               {travelDate ? (
                 <p className="mt-1.5 text-sm text-teal-900/50">Travel {formatInvoiceDate(travelDate)}</p>
               ) : null}
@@ -410,9 +439,27 @@ export function InvoiceEditDialog({
           </div>
 
           <div>
-            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-teal-900/40">
-              Line items
-            </p>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-teal-900/40">
+                Line items
+              </p>
+              {liveItems.length > 0 ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-8 rounded-lg"
+                  onClick={refreshFromBookings}
+                >
+                  <RotateCcw className="size-3.5" />
+                  Refresh from booking
+                </Button>
+              ) : null}
+            </div>
+            {handEdited ? (
+              <p className="mb-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                This bill was edited by hand. These lines stay until you refresh from the booking.
+              </p>
+            ) : null}
             <div className="overflow-x-auto rounded-xl border border-teal-900/12">
               <table className="w-full min-w-[44rem] text-sm">
                 <thead>
@@ -430,8 +477,6 @@ export function InvoiceEditDialog({
                 <tbody>
                   {draft.items.map((item, index) => {
                     const unitPrice = invoiceLineUnitPrice(item)
-                    const guestName = guestByBookingCode?.get(item.bookingCode)?.trim() ?? ''
-                    const ownVoucher = uniqueVouchers.length > 1
                     return (
                     <tr key={item.id} className="border-b border-teal-900/8 last:border-0">
                       <td className="px-2 py-1 text-center text-xs tabular-nums text-teal-900/35">
@@ -439,19 +484,25 @@ export function InvoiceEditDialog({
                       </td>
                       <td className="px-2 py-1">
                         <div className="flex min-w-0 items-center gap-1.5">
-                          <span
+                          <select
+                            aria-label={`Line type ${index + 1}`}
+                            value={item.lineKind}
+                            onChange={(event) =>
+                              patchItem(item.id, {
+                                lineKind: event.target.value as InvoiceLineKind,
+                              })
+                            }
                             className={cn(
-                              'inline-flex shrink-0 rounded px-1 py-px text-[10px] font-semibold tracking-wide uppercase',
+                              'h-6 max-w-[7.5rem] shrink-0 rounded border-0 px-1 text-[10px] font-semibold tracking-wide uppercase outline-none',
                               LINE_KIND_TONE[item.lineKind],
                             )}
                           >
-                            {invoiceLineKindLabel(item.lineKind)}
-                          </span>
-                          {guestName ? (
-                            <span className="max-w-[7rem] shrink-0 truncate text-xs font-semibold text-teal-950" title={guestName}>
-                              {guestName}
-                            </span>
-                          ) : null}
+                            {LINE_KINDS.map((kind) => (
+                              <option key={kind} value={kind}>
+                                {invoiceLineKindLabel(kind)}
+                              </option>
+                            ))}
+                          </select>
                           <Input
                             value={item.description}
                             onChange={(event) =>
@@ -459,19 +510,9 @@ export function InvoiceEditDialog({
                             }
                             className="h-7 min-w-0 flex-1 border-transparent bg-transparent px-1.5 shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
                             placeholder="Description"
+                            aria-label={`Description ${index + 1}`}
                           />
                         </div>
-                        {ownVoucher ? (
-                          <Input
-                            value={item.voucherNo}
-                            onChange={(event) =>
-                              patchItem(item.id, { voucherNo: event.target.value })
-                            }
-                            className="mt-1 h-7 border-transparent bg-transparent px-1.5 text-xs shadow-none hover:border-teal-900/15 focus-visible:border-teal-700/40 focus-visible:bg-white"
-                            placeholder="Reference"
-                            aria-label={`Reference for line ${index + 1}`}
-                          />
-                        ) : null}
                       </td>
                       <td className="px-2 py-1">
                         <Input
@@ -582,7 +623,7 @@ export function InvoiceEditDialog({
                             fallbackCode,
                             fallbackDate,
                             current.items.length,
-                            headerVoucher,
+                            uniqueVouchers[0] ?? '',
                           ),
                         ],
                       }

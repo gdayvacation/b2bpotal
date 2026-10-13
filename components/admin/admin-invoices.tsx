@@ -1012,6 +1012,13 @@ export function AdminInvoices() {
       setMessage('No billable lines for the selected bookings.')
       return
     }
+    if (markPaidAfter) {
+      const bookingCount = toBill.length
+      const ok = window.confirm(
+        `Create the invoice and issue a receipt now? This marks ${bookingCount} booking${bookingCount === 1 ? '' : 's'} as paid.`,
+      )
+      if (!ok) return
+    }
     await store.addDocuments(created)
     if (markPaidAfter) {
       await store.markPaid(
@@ -1836,7 +1843,12 @@ export function AdminInvoices() {
                       </TableHead>
                       <TableHead className="w-[4.75rem] px-1.5 text-right font-bold">Extra</TableHead>
                       <TableHead className="w-[6.5rem] px-1.5 font-bold">Note</TableHead>
-                      <TableHead className="w-12 px-1.5 text-right font-bold">Deduct</TableHead>
+                      <TableHead
+                        className="w-[4.75rem] px-1.5 text-right font-bold"
+                        title="Prebuy only: how many heads are deducted from allotment"
+                      >
+                        Heads
+                      </TableHead>
                       <TableHead className="w-[5rem] px-1.5 text-right font-bold">Charge</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -2038,16 +2050,12 @@ export function AdminInvoices() {
                               issued ? 'text-neutral-400' : 'text-teal-950',
                             )}
                             title={
-                              booking.movedFrom?.date && booking.movedFrom.date !== booking.date
-                                ? booking.date >= fromDate && booking.date <= toDate
-                                  ? `Heads already used on ${formatShortDate(booking.movedFrom.date)}`
-                                  : `Heads used on the original booked date`
-                                : row.billingType === 'prebuy'
-                                  ? 'Heads deducted from the agent\'s pre-buy'
-                                  : 'Pax count — this agent is billed the tour price'
+                              row.billingType === 'prebuy'
+                                ? `${row.deductHeads} heads deducted from this agent's prebuy`
+                                : 'Invoice agent — tour price is billed in Charge, heads are not deducted'
                             }
                           >
-                            {row.billingType === 'prebuy' ? row.deductHeads : '—'}
+                            {row.billingType === 'prebuy' ? `${row.deductHeads} heads` : '—'}
                           </TableCell>
                           <TableCell
                             className={cn(

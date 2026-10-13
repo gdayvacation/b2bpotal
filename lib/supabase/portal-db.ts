@@ -1,3 +1,4 @@
+import type { AgentCompanyProfile } from '@/lib/agent-company'
 import { addDaysISO, todayISO } from '@/lib/format'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { selectAllPaged, runWithConcurrencyLimit } from '@/lib/supabase/paged'
@@ -130,6 +131,10 @@ type AgentRow = {
   name: string
   country: string
   status: AgentStatus
+  company_name?: string | null
+  company_phone?: string | null
+  company_email?: string | null
+  logo_data_url?: string | null
 }
 
 type ZoneRow = {
@@ -544,10 +549,17 @@ export async function loadPartnerPortalSnapshot(): Promise<PortalSnapshot> {
   const fromDate = partnerBookingsFromDate()
   const { data: sessionData } = await supabase.auth.getSession()
   const agentSlug = String(sessionData.session?.user.app_metadata?.agent_slug ?? '').trim()
-  const agentCols = 'slug,name,country,status'
   const agentsRequest = agentSlug
-    ? supabase.from('agents').select(agentCols).eq('slug', agentSlug)
-    : supabase.from('agents').select(agentCols).order('name')
+    ? supabase
+        .from('agents')
+        .select(
+          'slug,name,country,status,company_name,company_phone,company_email,logo_data_url',
+        )
+        .eq('slug', agentSlug)
+    : supabase
+        .from('agents')
+        .select('slug,name,country,status,company_name,company_phone,company_email')
+        .order('name')
   const [agentsRes, zonesRes, hotelsRes, bookings, settings] = await Promise.all([
     agentsRequest,
     supabase.from('pickup_zones').select('name,time,pending').order('sort_order'),
@@ -590,6 +602,10 @@ function mapAgent(row: AgentRow): Agent {
     name: row.name,
     country: row.country,
     status: row.status,
+    companyName: row.company_name ?? '',
+    companyPhone: row.company_phone ?? '',
+    companyEmail: row.company_email ?? '',
+    ...(row.logo_data_url === undefined ? {} : { logoDataUrl: row.logo_data_url ?? '' }),
   }
 }
 
@@ -1023,7 +1039,12 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     closuresRes,
   ] = await Promise.all([
     // PERF sprint-2: select only mapped columns for catalog and config tables.
-    guestLite ? emptyRows() : supabase.from('agents').select('slug,name,country,status').order('name'),
+    guestLite
+      ? emptyRows()
+      : supabase
+          .from('agents')
+          .select('slug,name,country,status,company_name,company_phone,company_email')
+          .order('name'),
     guestLite ? emptyRows() : supabase.from('pickup_zones').select('name,time,pending').order('sort_order'),
     guestLite ? emptyRows() : supabase.from('hotels').select('id,name,zone_name,active,extra_charge_transfer').order('name'),
     fetchBookingsInDateRange(operationalBookingsFromDate()),
@@ -1748,6 +1769,58 @@ export async function upsertAgent(agent: Agent) {
     status: agent.status,
   })
   if (error) throw new Error(`upsert agent: ${error.message}`)
+}
+
+export async function loadAgentCompany(slug: string): Promise<AgentCompanyProfile | null> {
+  const supabase = getSupabaseBrowserClient()
+  const { data, error } = await supabase
+    .from('agents')
+    .select('company_name,company_phone,company_email,logo_data_url')
+    .eq('slug', slug)
+    .maybeSingle()
+  if (error) throw new Error(`load agent company: ${error.message}`)
+  if (!data) return null
+  const row = data as {
+    company_name?: string | null
+    company_phone?: string | null
+    company_email?: string | null
+    logo_data_url?: string | null
+  }
+  return {
+    companyName: row.company_name ?? '',
+    companyPhone: row.company_phone ?? '',
+    companyEmail: row.company_email ?? '',
+    logoDataUrl: row.logo_data_url ?? '',
+  }
+}
+
+export async function saveAgentCompany(slug: string, profile: AgentCompanyProfile) {
+  const supabase = getSupabaseBrowserClient()
+  const { data } = await supabase.auth.getSession()
+  const role = String(data.session?.user.app_metadata?.role ?? '')
+  if (role === 'partner') {
+    const { error } = await supabase.rpc('update_own_agent_company', {
+      p_company_name: profile.companyName,
+      p_company_phone: profile.companyPhone,
+      p_company_email: profile.companyEmail,
+      p_logo_data_url: profile.logoDataUrl,
+    })
+    if (error) throw new Error(error.message)
+    return
+  }
+  if (role !== 'admin' && role !== 'accounting') {
+    throw new Error('Sign in again to save company details.')
+  }
+  const { error } = await supabase
+    .from('agents')
+    .update({
+      company_name: profile.companyName,
+      company_phone: profile.companyPhone,
+      company_email: profile.companyEmail,
+      logo_data_url: profile.logoDataUrl,
+    })
+    .eq('slug', slug)
+  if (error) throw new Error(error.message)
 }
 
 export async function deleteAgent(slug: string) {

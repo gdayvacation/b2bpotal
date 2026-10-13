@@ -27,6 +27,10 @@ create table if not exists public.agents (
   country text not null default '',
   status text not null default 'Active'
     check (status in ('Active', 'Inactive')),
+  company_name text not null default '',
+  company_phone text not null default '',
+  company_email text not null default '',
+  logo_data_url text not null default '',
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );

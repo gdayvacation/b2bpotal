@@ -117,6 +117,8 @@ export type InvoiceItem = {
   sortOrder: number
   /** Qty unit the agent can type, e.g. Pax, Box, Pcs, Van. */
   unit?: string
+  /** Name printed on this line. Empty means use the booking guest. */
+  guestName?: string
 }
 
 export function defaultChargeUnit(kind: InvoiceLineKind) {
@@ -700,6 +702,122 @@ type InvoiceDisplayPart = {
   travelDate: string
 }
 
+type PaxPriceRole = 'Adult' | 'Child' | 'Infant' | 'Tour Leader'
+
+function roundInvoiceMoney(amount: number) {
+  return Math.round((Number(amount) || 0) * 100) / 100
+}
+
+function descriptionWithRole(description: string, role: PaxPriceRole) {
+  const text = description.trim()
+  if (role === 'Adult' && /\bAdults?\b/i.test(text)) return text
+  if (role === 'Child' && /\bChild(ren)?\b/i.test(text)) return text
+  if (role === 'Infant' && /\bInfants?\b/i.test(text)) return text
+  if (role === 'Tour Leader' && /\bTour Leader\b/i.test(text)) return text
+  return text ? `${text} · ${role}` : role
+}
+
+function mixedRateSlices(
+  item: Pick<
+    InvoiceItem,
+    | 'adults'
+    | 'children'
+    | 'infants'
+    | 'tourLeaders'
+    | 'adultPrice'
+    | 'childPrice'
+    | 'infantPrice'
+    | 'tourLeaderPrice'
+    | 'description'
+    | 'lineKind'
+  >,
+) {
+  if (isLateReduceFeeLine(item)) return null
+  const slices: Array<{ role: PaxPriceRole; qty: number; price: number }> = []
+  if (item.adults > 0) slices.push({ role: 'Adult', qty: item.adults, price: item.adultPrice })
+  if (item.children > 0) slices.push({ role: 'Child', qty: item.children, price: item.childPrice })
+  if (item.infants > 0) slices.push({ role: 'Infant', qty: item.infants, price: item.infantPrice })
+  if (item.tourLeaders > 0) {
+    slices.push({ role: 'Tour Leader', qty: item.tourLeaders, price: item.tourLeaderPrice })
+  }
+  if (slices.length < 2) return null
+  const first = slices[0]!.price
+  if (slices.every((slice) => slice.price === first)) return null
+  return slices
+}
+
+/** One row per rate when adults and children (or other seats) are priced differently. */
+export function splitMixedRateInvoiceItems<T extends Omit<InvoiceItem, 'invoiceId'> & { invoiceId?: string }>(
+  items: T[],
+): T[] {
+  const out: T[] = []
+  for (const item of items) {
+    const slices = mixedRateSlices(item)
+    if (!slices) {
+      out.push(item)
+      continue
+    }
+    let consumed = 0
+    slices.forEach((slice, index) => {
+      const computed = roundInvoiceMoney(slice.qty * slice.price)
+      const amount =
+        index === slices.length - 1 ? roundInvoiceMoney(item.amount - consumed) : computed
+      consumed = roundInvoiceMoney(consumed + computed)
+      out.push({
+        ...item,
+        id: moneyId(),
+        description: descriptionWithRole(item.description, slice.role),
+        adults: slice.role === 'Adult' ? slice.qty : 0,
+        children: slice.role === 'Child' ? slice.qty : 0,
+        infants: slice.role === 'Infant' ? slice.qty : 0,
+        tourLeaders: slice.role === 'Tour Leader' ? slice.qty : 0,
+        adultPrice: slice.role === 'Adult' ? slice.price : 0,
+        childPrice: slice.role === 'Child' ? slice.price : 0,
+        infantPrice: slice.role === 'Infant' ? slice.price : 0,
+        tourLeaderPrice: slice.role === 'Tour Leader' ? slice.price : 0,
+        amount,
+        unit: item.unit || 'Person',
+      })
+    })
+  }
+  return out.map((item, index) => ({ ...item, sortOrder: index }))
+}
+
+function invoiceLineFingerprint(
+  items: Array<Omit<InvoiceItem, 'invoiceId'> & { invoiceId?: string }>,
+) {
+  return splitMixedRateInvoiceItems(items)
+    .map((item) =>
+      [
+        item.bookingCode,
+        item.lineKind,
+        item.description.trim(),
+        item.adults,
+        item.children,
+        item.infants,
+        item.tourLeaders,
+        item.adultPrice,
+        item.childPrice,
+        item.infantPrice,
+        item.tourLeaderPrice,
+        item.amount,
+        chargeUnit(item),
+        item.voucherNo,
+      ].join('|'),
+    )
+    .sort()
+    .join('\n')
+}
+
+/** True when the saved lines are not the lines the booking would build now. */
+export function invoiceLinesWereEdited(
+  stored: Array<Omit<InvoiceItem, 'invoiceId'> & { invoiceId?: string }>,
+  live: Array<Omit<InvoiceItem, 'invoiceId'> & { invoiceId?: string }>,
+) {
+  if (live.length === 0) return false
+  return invoiceLineFingerprint(stored) !== invoiceLineFingerprint(live)
+}
+
 function displayPartsForItem(item: InvoiceItem): InvoiceDisplayPart[] {
   if (isLateReduceFeeLine(item)) {
     const late = lateReduceFeeDisplay(item)
@@ -714,6 +832,27 @@ function displayPartsForItem(item: InvoiceItem): InvoiceDisplayPart[] {
         travelDate: item.travelDate,
       },
     ]
+  }
+
+  const mixed = mixedRateSlices(item)
+  if (mixed) {
+    const base = stripDeductWord(formatInvoiceLineDescription(item))
+    let consumed = 0
+    return mixed.map((slice, index) => {
+      const computed = roundInvoiceMoney(slice.qty * slice.price)
+      const amount =
+        index === mixed.length - 1 ? roundInvoiceMoney(item.amount - consumed) : computed
+      consumed = roundInvoiceMoney(consumed + computed)
+      return {
+        label: descriptionWithRole(base, slice.role),
+        qty: slice.qty,
+        unit: 'Person',
+        unitPrice: slice.price,
+        amount,
+        guestCollect: isGuestCollectLine(item),
+        travelDate: item.travelDate,
+      }
+    })
   }
 
   if (isLegacyCombinedTourLine(item)) {
@@ -761,12 +900,12 @@ function displayPartsForItem(item: InvoiceItem): InvoiceDisplayPart[] {
     }))
   }
 
-  const qty =
-    item.adults ||
-    item.children ||
-    item.infants ||
-    item.tourLeaders ||
-    (item.amount !== 0 || item.lineKind === 'tour' ? 1 : 0)
+  const heads =
+    Math.max(0, item.adults) +
+    Math.max(0, item.children) +
+    Math.max(0, item.infants) +
+    Math.max(0, item.tourLeaders)
+  const qty = heads || (item.amount !== 0 || item.lineKind === 'tour' ? 1 : 0)
   const unitPrice =
     item.adultPrice ||
     item.childPrice ||
@@ -787,62 +926,20 @@ function displayPartsForItem(item: InvoiceItem): InvoiceDisplayPart[] {
   ]
 }
 
-function partQty(qty: number | '') {
-  return typeof qty === 'number' && Number.isFinite(qty) ? qty : 0
-}
-
-/** One print row per booking: charges together, guest and reference once, no "deduct". */
-export function expandInvoiceDisplayLines(
-  items: InvoiceItem[],
-  guests?: ReadonlyMap<string, string>,
-): InvoiceDisplayLine[] {
-  const groups: InvoiceItem[][] = []
-  const indexByKey = new Map<string, number>()
-  items.forEach((item, index) => {
-    const key = item.bookingCode.trim() || `line:${item.id || index}`
-    const at = indexByKey.get(key)
-    if (at == null) {
-      indexByKey.set(key, groups.length)
-      groups.push([item])
-    } else {
-      groups[at]!.push(item)
-    }
-  })
-
-  return groups.map((group) => {
-    const first = group[0]!
-    const parts = group.flatMap(displayPartsForItem)
-    const qtys = parts.map((part) => partQty(part.qty)).filter((qty) => qty > 0)
-    const sameQty = qtys.length > 0 && qtys.every((qty) => qty === qtys[0])
-    const charges = parts
-      .map((part) => {
-        const qty = partQty(part.qty)
-        if (!part.label) return ''
-        if (sameQty || qty <= 0) return part.label
-        return `${part.label} ${qty}`
-      })
-      .filter(Boolean)
-      .join(', ')
-    const who = invoiceLineIdentity(first, guests?.get(first.bookingCode))
-    const prices = [
-      ...new Set(
-        parts
-          .map((part) => part.unitPrice)
-          .filter((price): price is number => typeof price === 'number' && price !== 0),
-      ),
-    ]
-    const units = [...new Set(parts.map((part) => part.unit).filter(Boolean))]
-    return {
-      key: first.bookingCode.trim() || first.id,
-      travelDate: parts.find((part) => part.travelDate)?.travelDate || first.travelDate,
-      description: who ? `${charges}\n${who}` : charges,
-      qty: sameQty ? qtys[0]! : qtys.reduce((sum, qty) => sum + qty, 0) || '',
-      unit: units.length === 1 ? units[0]! : units[0] || '',
-      unitPrice: prices.length === 1 ? prices[0]! : '',
-      amount: parts.reduce((sum, part) => sum + part.amount, 0),
-      guestCollect: parts.length > 0 && parts.every((part) => part.guestCollect),
-    }
-  })
+/** One print row per bill line, in the same order as the invoice editor. */
+export function expandInvoiceDisplayLines(items: InvoiceItem[]): InvoiceDisplayLine[] {
+  return items.flatMap((item, index) =>
+    displayPartsForItem(item).map((part, partIndex) => ({
+      key: `${item.id || index}:${partIndex}`,
+      travelDate: part.travelDate || item.travelDate,
+      description: part.label,
+      qty: part.qty,
+      unit: part.unit,
+      unitPrice: part.unitPrice,
+      amount: part.amount,
+      guestCollect: part.guestCollect,
+    })),
+  )
 }
 
 export function isLateReduceFeeLine(
@@ -1812,7 +1909,7 @@ export function buildInvoiceItemsForBooking(
     })
   }
 
-  return items.map((item) => ({ ...item, unit: chargeUnit(item) }))
+  return splitMixedRateInvoiceItems(items.map((item) => ({ ...item, unit: chargeUnit(item) })))
 }
 
 export function itemsGrandTotal(items: Pick<InvoiceItem, 'amount'>[]) {

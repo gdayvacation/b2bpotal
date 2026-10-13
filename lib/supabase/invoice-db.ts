@@ -103,6 +103,7 @@ type ItemRow = {
   line_kind: string | null
   sort_order: number | null
   unit?: string | null
+  guest_name?: string | null
 }
 
 function num(value: unknown) {
@@ -255,6 +256,7 @@ function mapItem(row: ItemRow): InvoiceItem {
     lineKind: isLineKind(row.line_kind) ? row.line_kind : 'tour',
     sortOrder: num(row.sort_order),
     unit: row.unit?.trim() || '',
+    guestName: row.guest_name?.trim() || undefined,
   }
 }
 
@@ -278,7 +280,9 @@ function itemToRow(item: InvoiceItem, includeUnit = true): ItemRow {
     amount: item.amount,
     line_kind: item.lineKind,
     sort_order: item.sortOrder,
-    ...(includeUnit ? { unit: item.unit?.trim() || '' } : {}),
+    ...(includeUnit
+      ? { unit: item.unit?.trim() || '', guest_name: item.guestName?.trim() || '' }
+      : {}),
   }
 }
 

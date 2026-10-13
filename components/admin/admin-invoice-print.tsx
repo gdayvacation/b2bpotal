@@ -141,17 +141,12 @@ function SignatureBlock({
 
 function LineTable({
   doc,
-  emptyRows = 6,
   tone = 'invoice',
-  guests,
 }: {
   doc: InvoiceDocument
-  emptyRows?: number
   tone?: 'invoice' | 'receipt'
-  guests?: ReadonlyMap<string, string>
 }) {
-  const lines = expandInvoiceDisplayLines(doc.items, guests)
-  const filler = Math.max(0, emptyRows - lines.length)
+  const lines = expandInvoiceDisplayLines(doc.items)
   const head = tone === 'receipt' ? 'bg-[#c8ecd4] text-emerald-950' : 'bg-[#f3d4ff] text-neutral-900'
   return (
     <table className="w-full border-collapse text-[11px]">
@@ -182,7 +177,11 @@ function LineTable({
             </td>
             <td className="border border-neutral-300 px-1.5 py-1 whitespace-pre-line">{line.description}</td>
             <td className="border border-neutral-300 px-1.5 py-1 text-right tabular-nums">
-              {line.qty === '' ? '' : Number(line.qty).toFixed(2)}
+              {line.qty === ''
+                ? ''
+                : Number.isInteger(line.qty)
+                  ? String(line.qty)
+                  : Number(line.qty).toFixed(2)}
             </td>
             <td className="border border-neutral-300 px-1.5 py-1">{line.unit}</td>
             <td className="border border-neutral-300 px-1.5 py-1 text-right tabular-nums">
@@ -198,15 +197,6 @@ function LineTable({
             </td>
           </tr>
         ))}
-        {Array.from({ length: filler }, (_, index) => (
-          <tr key={`empty-${index}`}>
-            {Array.from({ length: 7 }, (__, cell) => (
-              <td key={cell} className="border border-neutral-300 px-1.5 py-2.5">
-                &nbsp;
-              </td>
-            ))}
-          </tr>
-        ))}
       </tbody>
     </table>
   )
@@ -218,7 +208,6 @@ export function InvoicePrintSheet({
   linked,
   mode = 'invoice',
   paymentId = null,
-  guests,
 }: {
   doc: InvoiceDocument
   settings: InvoiceSettings
@@ -374,7 +363,7 @@ export function InvoicePrintSheet({
         </table>
       ) : (
         <div className="mt-4">
-          <LineTable doc={doc} tone={tone} guests={guests} />
+          <LineTable doc={doc} tone={tone} />
         </div>
       )}
 
