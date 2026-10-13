@@ -305,6 +305,8 @@ function GuestCheckInForm({
   const [ticketSequence, setTicketSequence] = useState<GuestSequenceBlock | null>(null)
   const lockedBootstrappedRef = useRef(false)
   const lockedFetchingRef = useRef(false)
+  /** Prevents the DB-vs-localStorage retreat check from running more than once per session. */
+  const retreatedAfterSyncRef = useRef(false)
 
   const detailsReady = guests.length > 0 && guests.every(guestDraftReady)
 
@@ -652,6 +654,42 @@ function GuestCheckInForm({
     getCheckInGroupGuide,
     isLocked,
     scope,
+    selectedBooking,
+    step,
+  ])
+
+  /**
+   * Retreat guard — fires exactly once per page session, right after the first cloud sync.
+   * If localStorage had a stale 'done' state (e.g. admin deleted the check-in for a retest)
+   * but the DB now shows the booking is not checked in, roll back to 'scope' so a fresh
+   * check-in is possible. In normal production use the DB will confirm 'checked', so this
+   * effect is a harmless no-op.
+   */
+  useEffect(() => {
+    if (retreatedAfterSyncRef.current) return
+    if (!isLocked || !checkInReady || step !== 'done' || !selectedBooking) return
+    retreatedAfterSyncRef.current = true
+    const enrollment = getCheckInEnrollments(
+      selectedBooking.date,
+      selectedBooking.program,
+      selectedBooking.code,
+    )
+    const attendance = getCheckInAttendance(
+      selectedBooking.date,
+      selectedBooking.program,
+      selectedBooking.code,
+    )
+    const seats = totalPassengers(selectedBooking)
+    if (attendance !== 'checked' && enrolledSeatCount(enrollment) < seats) {
+      // Fresh DB data contradicts the cached 'done' — retreat so check-in can proceed.
+      setStep('scope')
+    }
+  }, [
+    checkInReady,
+    enrolledSeatCount,
+    getCheckInAttendance,
+    getCheckInEnrollments,
+    isLocked,
     selectedBooking,
     step,
   ])
