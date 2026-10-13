@@ -871,11 +871,11 @@ const REALTIME_REFRESH_MS = 1_500
  * instead of ~1 per 4 s, cutting Realtime-triggered sync queries by ~87 %.
  * Staff see check-ins appear within 30 s — acceptable for the admin board.
  */
-// Trial (Oct 14): reduced from 30s → 10s to test faster board refresh before upgrading to Pro.
-// Sprint 9b made each sync = 1 RPC (was 13 table queries), so 10s × 1 call is still far cheaper
-// than the old 30s × 13 queries. Failure backoff remains: 20s → 40s → 80s → cap 120s.
+// Trial: 60s -> 30s so the staff check-in board shows changes within about 30s.
+// Sprint 9 widened this to 60s to cut request volume. The 13-table snapshot is now one
+// RPC, so this trial checks whether 30s stays comfortable for Log Ingestion.
 // Guest confirmations still use the separate low-latency guest path.
-const CHECK_IN_REALTIME_DEBOUNCE_MS = 10_000
+const CHECK_IN_REALTIME_DEBOUNCE_MS = 30_000
 /**
  * Guest success screen fallback only (realtime is the fast path).
  * PERF sprint-8: 60 s → 180 s. During morning rush 100-150 guests can have this screen open
@@ -2271,11 +2271,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     let cachedProfile: SyncProfile | null = null
 
     // Throttle (not debounce): during a guest rush realtime fires constantly, and every admin
-    // device would otherwise refetch tables every second.
-    // PERF sprint-1a: base window increased from 4 s → 30 s. Sprint 9b: RPC consolidates 13
-    // tables into 1 call, allowing the Oct-14 trial to reduce back to 10 s safely.
-    // Realtime fires ~200 times during morning rush; coalescing to 10 s keeps the board
-    // fresh within ~10 s of each check-in with manageable pool pressure.
+    // device would otherwise refetch ~12 tables each second.
+    // PERF sprint-1a: base window increased from 4 s → CHECK_IN_REALTIME_DEBOUNCE_MS (30 s).
+    // Realtime fires ~200 times during morning rush; coalescing to 30 s cuts triggered
+    // sync queries by ~87 % while keeping the board fresh within 30 s of each check-in.
     function schedulePartialSync() {
       if (debounceTimer != null) return
       // After failures (e.g. DB timeouts) wait longer each time: 60s, 120s … max 2 min.
