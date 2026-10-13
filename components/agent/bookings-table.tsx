@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { CalendarDays, ChevronDown, History, Pencil, Search, X } from 'lucide-react'
+import { CalendarDays, ChevronDown, History, Pencil, Search, Ticket, X } from 'lucide-react'
 import { CancelConditionNotice } from '@/components/amendment-policy-notice'
 import { BookingHistoryDialog } from '@/components/booking-history-dialog'
 import { ChangeBookingDateDialog } from '@/components/change-booking-date-dialog'
@@ -64,6 +64,7 @@ function AgentStatusMenu({
   onRebook,
   onEdit,
   onHistory,
+  onVoucher,
 }: {
   booking: Booking
   onCancel: (booking: Booking) => void
@@ -71,6 +72,7 @@ function AgentStatusMenu({
   onRebook: (booking: Booking) => void
   onEdit: (booking: Booking) => void
   onHistory: (booking: Booking) => void
+  onVoucher?: (booking: Booking) => void
 }) {
   const { isCancelOpen, isProgramClosed } = usePortal()
   const [open, setOpen] = useState(false)
@@ -100,6 +102,19 @@ function AgentStatusMenu({
         <ChevronDown className="size-3.5 text-teal-800/45" />
       </PopoverTrigger>
       <PopoverContent align="end" className="w-52 gap-1 p-1.5">
+        {onVoucher ? (
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-teal-950 hover:bg-teal-50"
+            onClick={() => {
+              setOpen(false)
+              onVoucher(booking)
+            }}
+          >
+            <Ticket className="size-3.5 text-teal-800/50" />
+            View Voucher
+          </button>
+        ) : null}
         {cancelled ? (
           <button
             type="button"
@@ -513,7 +528,12 @@ export function BookingsTable({
                       {formatShortDate(booking.date)} · {booking.program}
                     </p>
                   </div>
-                  <StatusBadge status={booking.status} />
+                  <div className="flex flex-col items-end gap-1.5">
+                    <StatusBadge status={booking.status} />
+                    {slug ? (
+                      <ViewVoucherButton onClick={() => setVoucherTarget(booking)} />
+                    ) : null}
+                  </div>
                 </div>
                 <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
                   <div>
@@ -759,14 +779,20 @@ export function BookingsTable({
                     <p className="whitespace-pre-wrap break-words">{booking.note.trim() || '—'}</p>
                   </TableCell>
                   <TableCell className="px-4">
-                    <AgentStatusMenu
-                      booking={booking}
-                      onCancel={requestCancel}
-                      onChangeDate={setDateTarget}
-                      onRebook={setRebookTarget}
-                      onEdit={setEditTarget}
-                      onHistory={setHistoryTarget}
-                    />
+                    <div className="flex flex-col items-start gap-1.5">
+                      <AgentStatusMenu
+                        booking={booking}
+                        onCancel={requestCancel}
+                        onChangeDate={setDateTarget}
+                        onRebook={setRebookTarget}
+                        onEdit={setEditTarget}
+                        onHistory={setHistoryTarget}
+                        onVoucher={slug ? setVoucherTarget : undefined}
+                      />
+                      {slug ? (
+                        <ViewVoucherButton onClick={() => setVoucherTarget(booking)} />
+                      ) : null}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))
@@ -871,6 +897,19 @@ export function BookingsTable({
         }}
       />
     </>
+  )
+}
+
+function ViewVoucherButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center gap-1 text-[11px] font-semibold text-teal-800 hover:text-teal-950 hover:underline"
+    >
+      <Ticket className="size-3" />
+      View Voucher
+    </button>
   )
 }
 

@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { Check, Ticket } from 'lucide-react'
+import { ArrowLeft, Check, Plus, Ticket } from 'lucide-react'
 import { AmendmentPolicyNotice } from '@/components/amendment-policy-notice'
 import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
@@ -14,7 +14,8 @@ import { formatPaxBreakdown, isNoTransfer, totalPassengers } from '@/lib/types'
 import type { Booking } from '@/lib/types'
 
 export function ConfirmationView({ booking, slug }: { booking: Booking; slug: string }) {
-  const { bookingCutoffs } = usePortal()
+  const { bookingCutoffs, agents } = usePortal()
+  const canBook = agents.find((item) => item.slug === slug)?.status !== 'Inactive'
   const total = totalPassengers(booking)
 
   return (
@@ -98,6 +99,24 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
           guestName={booking.leadGuest}
           className="justify-center"
         />
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <Link
+            href={`/agent/${slug}/bookings`}
+            className={cn(buttonVariants({ variant: 'outline' }), 'h-11 rounded-xl px-4')}
+          >
+            <ArrowLeft data-icon="inline-start" />
+            Back to bookings
+          </Link>
+          {canBook ? (
+            <Link
+              href={`/agent/${slug}`}
+              className={cn(buttonVariants({ variant: 'outline' }), 'h-11 rounded-xl px-4')}
+            >
+              <Plus data-icon="inline-start" />
+              New booking
+            </Link>
+          ) : null}
+        </div>
       </div>
     </div>
   )

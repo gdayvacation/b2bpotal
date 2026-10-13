@@ -1,12 +1,13 @@
 'use client'
 
 import { useEffect, type ReactNode } from 'react'
+import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { CalendarDays, MapPin, MessageSquareText, Printer, Ship, Users } from 'lucide-react'
+import { ArrowLeft, CalendarDays, MapPin, MessageSquareText, Plus, Printer, Ship, Users } from 'lucide-react'
 import { BrandMark } from '@/components/brand-mark'
 import { usePortal } from '@/components/portal-provider'
 import { StatusBadge } from '@/components/status-badge'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { voucherUrl } from '@/components/voucher-share-actions'
 import { BRAND_LEGAL } from '@/lib/brand'
 import { formatThbAmount } from '@/lib/booking-cutoffs'
@@ -43,7 +44,8 @@ export function VoucherPreview({
   slug: string
   embedded?: boolean
 }) {
-  const { bookings } = usePortal()
+  const { bookings, agents } = usePortal()
+  const canBook = agents.find((item) => item.slug === slug)?.status !== 'Inactive'
   const live = bookings.find((item) => item.code === booking.code) ?? booking
   const total = totalPassengers(live)
   const cancelled = live.status === 'Cancelled'
@@ -56,7 +58,32 @@ export function VoucherPreview({
 
   return (
     <div className="mx-auto max-w-2xl">
-      <div className={cn('mb-4 flex justify-end print:hidden', embedded && 'pr-8')}>
+      <div
+        className={cn(
+          'mb-4 flex flex-wrap items-center justify-between gap-2 print:hidden',
+          embedded && 'justify-end pr-8',
+        )}
+      >
+        {embedded ? null : (
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              href={`/agent/${slug}/bookings`}
+              className={cn(buttonVariants({ variant: 'outline' }), 'h-10 rounded-xl px-3.5')}
+            >
+              <ArrowLeft data-icon="inline-start" />
+              Back to bookings
+            </Link>
+            {canBook ? (
+              <Link
+                href={`/agent/${slug}`}
+                className={cn(buttonVariants(), 'h-10 rounded-xl px-3.5')}
+              >
+                <Plus data-icon="inline-start" />
+                New booking
+              </Link>
+            ) : null}
+          </div>
+        )}
         <Button
           type="button"
           variant="outline"
