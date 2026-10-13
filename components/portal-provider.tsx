@@ -213,7 +213,7 @@ import {
   fetchCheckInMaps,
   fetchCheckInSnapshotRpc,
   fetchAvailabilitySettings,
-  fetchGuestBoatForCode,
+  fetchBoatPlansForDate,
   fetchDayBoatPlans,
   fetchDayVehiclePlans,
   boardPlanWindow,
@@ -839,7 +839,6 @@ type PortalContextValue = {
 }
 
 const PortalContext = createContext<PortalContextValue | null>(null)
-const StaffDataLiveContext = createContext(true)
 
 /** Partner booking tabs poll this often while someone is using the page.
  *  PERF sprint-4: increased from 2 min → 10 min. Partners use Realtime for live updates;
@@ -847,8 +846,6 @@ const StaffDataLiveContext = createContext(true)
 const PARTNER_POLL_MS = 10 * 60_000
 /** After this long with no tap or keypress, partner tabs stop every Supabase poll. */
 const PARTNER_IDLE_MS = 15 * 60_000
-/** After this long with no interaction, staff check-in sync pauses (revives on any touch). */
-const STAFF_IDLE_MS = 20 * 60_000
 /**
  * Staff safety nets only. Live updates still come from Realtime.
  * These intervals exist so a dropped websocket still catches up.
@@ -972,10 +969,6 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [checkInReady, setCheckInReady] = useState(false)
   /** False only for a partner tab that has sat unused for PARTNER_IDLE_MS. */
   const [partnerLive, setPartnerLive] = useState(true)
-  /** False when a staff tab has had no touch/key/pointer for STAFF_IDLE_MS. */
-  const [staffLive, setStaffLive] = useState(true)
-  /** Ref mirror of staffLive — read by schedulePartialSync without causing effect re-runs. */
-  const staffLiveRef = useRef(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
   const [bookings, setBookings] = useState<Booking[]>([])
@@ -1460,37 +1453,6 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     }
   }, [sessionRole])
 
-  /**
-   * Staff check-in tabs pause syncing after STAFF_IDLE_MS of no interaction.
-   * Any touch/key/pointer immediately marks the tab live again — the next
-   * Realtime event or poll tick will then call schedulePartialSync as usual.
-   */
-  useEffect(() => {
-    if (!sessionRole || sessionRole === 'partner' || sessionRole === 'guest') return
-    let lastActivity = Date.now()
-    const mark = () => {
-      lastActivity = Date.now()
-      if (!staffLiveRef.current) {
-        staffLiveRef.current = true
-        setStaffLive(true)
-      }
-    }
-    const events = ['pointerdown', 'keydown', 'touchstart'] as const
-    for (const event of events) {
-      window.addEventListener(event, mark, { capture: true, passive: true })
-    }
-    const timer = window.setInterval(() => {
-      if (Date.now() - lastActivity >= STAFF_IDLE_MS) {
-        staffLiveRef.current = false
-        setStaffLive(false)
-      }
-    }, 30_000)
-    return () => {
-      for (const event of events) window.removeEventListener(event, mark, { capture: true })
-      window.clearInterval(timer)
-    }
-  }, [sessionRole])
-
   /** Keep bookings live across devices via Supabase poll + Realtime. */
   useEffect(() => {
     if (!hydrated) return
@@ -1754,8 +1716,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       busy = true
       try {
-        // Code C: fetch only this booking's assignment rows (not all guests on the day).
-        const incoming = await fetchGuestBoatForCode(date, bookingCode)
+        const incoming = await fetchBoatPlansForDate(date)
         if (cancelled) return
         setDayBoatPlans((current) => {
           let changed = false
@@ -2316,8 +2277,6 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     // Realtime fires ~200 times during morning rush; coalescing to 10 s keeps the board
     // fresh within ~10 s of each check-in with manageable pool pressure.
     function schedulePartialSync() {
-      // Code B: skip entirely when the staff tab has been idle for STAFF_IDLE_MS.
-      if (!staffLiveRef.current) return
       if (debounceTimer != null) return
       // After failures (e.g. DB timeouts) wait longer each time: 60s, 120s … max 2 min.
       const baseDelay =
@@ -5773,16 +5732,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   }, [agents, bookings, ensureBookingsForRange, ensureBookingByCode, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, checkInGroupGuides, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, checkInReady, sessionRole, setGuestBoatWatchStable, loadError])
 
   const partnerDataLive = sessionRole !== 'partner' || partnerLive
-  // True for everyone except a staff tab that has been idle for STAFF_IDLE_MS.
-  const staffDataLive =
-    !sessionRole || sessionRole === 'partner' || sessionRole === 'guest' || staffLive
 
   return (
-    <StaffDataLiveContext.Provider value={staffDataLive}>
-      <PartnerDataLiveContext.Provider value={partnerDataLive}>
-        <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
-      </PartnerDataLiveContext.Provider>
-    </StaffDataLiveContext.Provider>
+    <PartnerDataLiveContext.Provider value={partnerDataLive}>
+      <PortalContext.Provider value={value}>{children}</PortalContext.Provider>
+    </PartnerDataLiveContext.Provider>
   )
 }
 
@@ -5797,9 +5751,4 @@ export function usePortal() {
 /** True while this tab should keep loading. Partner tabs go false after 15 idle minutes. */
 export function usePartnerDataLive() {
   return useContext(PartnerDataLiveContext)
-}
-
-/** True while check-in sync is active. Staff tabs go false after 20 idle minutes. */
-export function useStaffDataLive() {
-  return useContext(StaffDataLiveContext)
 }
