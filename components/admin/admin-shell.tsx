@@ -27,6 +27,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/co
 import { cn } from '@/lib/utils'
 
 import { logoutStaff, readStaffSession } from '@/lib/staff-auth'
+import { useStaffDataLive } from '@/components/portal-provider'
 
 const nav = [
   {
@@ -141,6 +142,7 @@ function currentPageLabel(pathname: string) {
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const [authed, setAuthed] = useState<boolean | null>(null)
+  const staffDataLive = useStaffDataLive()
 
   useEffect(() => {
     let cancelled = false
@@ -172,6 +174,21 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="gday-app relative">
+      {/* Code B: idle overlay — shown when staff tab has had no interaction for 20 min. */}
+      {staffDataLive ? null : (
+        <button
+          type="button"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-teal-950/25 px-4 pb-28 sm:items-center sm:pb-4"
+          onPointerDown={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+          }}
+        >
+          <span className="max-w-md rounded-2xl bg-white px-5 py-4 text-center text-sm leading-relaxed text-teal-950 shadow-lg">
+            หน้าจอหยุดอัปเดตอัตโนมัติหลังไม่ได้ใช้งาน 20 นาที แตะที่นี่เพื่อรีเฟรชข้อมูล
+          </span>
+        </button>
+      )}
       <aside className="gday-admin-sidebar fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-teal-900/8 lg:flex lg:flex-col">
         <div className="flex h-16 items-center px-5">
           <Link href="/admin">
