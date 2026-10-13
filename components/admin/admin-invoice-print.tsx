@@ -255,6 +255,12 @@ export function InvoicePrintSheet({
       (item) =>
         (item.lineKind === 'no_show' || item.lineKind === 'change_date') &&
         /deduct \d+ heads?/i.test(item.description),
+    ) ||
+    // Prebuy cancel-with-charge: cancel kind with head deduct description.
+    doc.items.some(
+      (item) =>
+        item.lineKind === 'cancel' &&
+        /^Cancelled · head deduct/i.test(item.description ?? ''),
     )
   const deductHeads = prebuy
     ? related.length > 0

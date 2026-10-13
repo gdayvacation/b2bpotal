@@ -77,13 +77,14 @@ export async function syncPrebuyDeductFromInvoice(
 
   const byDate = new Map<string, number>()
   for (const item of doc.items) {
-    if (
-      item.lineKind !== 'tour' &&
-      item.lineKind !== 'no_show' &&
-      item.lineKind !== 'change_date'
-    ) {
-      continue
-    }
+    const isDeductLine =
+      item.lineKind === 'tour' ||
+      item.lineKind === 'no_show' ||
+      item.lineKind === 'change_date' ||
+      // Prebuy cancel-with-charge head deduct: cancel kind + specific description prefix.
+      (item.lineKind === 'cancel' &&
+        /^Cancelled · head deduct/i.test(item.description ?? ''))
+    if (!isDeductLine) continue
     const day = (item.travelDate || doc.issueDate || '').slice(0, 10)
     if (!day) continue
     const lineHeads = Math.max(0, item.adults) + Math.max(0, item.children)

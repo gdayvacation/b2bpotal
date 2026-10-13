@@ -55,7 +55,7 @@ import {
 } from '@/components/ui/table'
 import { addDaysISO, formatShortDate, startOfToday, toISODate } from '@/lib/format'
 import { OPS_BOOKING_LOOKBACK_DAYS } from '@/lib/supabase/portal-db'
-import { bookingTourAmount, ratesForAgent } from '@/lib/invoice'
+import { bookingTourAmount, parseAgentBillingType, ratesForAgent } from '@/lib/invoice'
 import { formatThbAmount, isLateAmendmentForDate } from '@/lib/booking-cutoffs'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import {
@@ -74,11 +74,13 @@ function AdminCancelChargeField({
   value,
   onChange,
   lateWindow,
+  prebuy = false,
 }: {
   suggested: number
   value: string
   onChange: (value: string) => void
   lateWindow: boolean
+  prebuy?: boolean
 }) {
   const parsed = Math.max(0, Math.floor(Number(value.replace(/,/g, '')) || 0))
   return (
@@ -90,7 +92,9 @@ function AdminCancelChargeField({
         {lateWindow
           ? 'Agent rule now is late cancel — full tour price. You can still choose no charge or another amount.'
           : 'Agent rule now is free cancel. You can still add a charge if needed.'}{' '}
-        This cancel amount, plus any existing change-date fee, goes to Bills.
+        {prebuy
+          ? 'Prebuy agent: heads are deducted from allotment (like no-show) and the charge amount is billed separately on the Invoice.'
+          : 'This cancel amount, plus any existing change-date fee, goes to Bills.'}
       </p>
       <div className="mt-2.5 flex flex-wrap gap-1.5">
         <button
@@ -1091,6 +1095,11 @@ export function AdminBookings() {
                 value={cancelCharge}
                 onChange={setCancelCharge}
                 lateWindow={isLateAmendmentForDate(bookingCutoffs, cancelTarget.date)}
+                prebuy={
+                  parseAgentBillingType(
+                    ratesForAgent(invoiceStore.rates, cancelTarget.agentSlug).billingType,
+                  ) === 'prebuy'
+                }
               />
             </div>
           ) : null}

@@ -368,16 +368,20 @@ export function changeDateFeeLineDescription(heads: number, perPerson: number) {
   return `Change date Fee ${people} People (${per} THB / Person)`
 }
 
-/** AD+CH heads that count against prebuy (tour + no-show + late change date). */
+/** AD+CH heads that count against prebuy (tour + no-show + late change date + prebuy cancel with charge). */
 export function prebuyDeductHeads(
-  items: Pick<InvoiceItem, 'lineKind' | 'adults' | 'children'>[],
+  items: Pick<InvoiceItem, 'lineKind' | 'adults' | 'children' | 'description'>[],
 ) {
   return items
     .filter(
       (item) =>
         item.lineKind === 'tour' ||
         item.lineKind === 'no_show' ||
-        item.lineKind === 'change_date',
+        item.lineKind === 'change_date' ||
+        // Prebuy cancel-with-charge: a cancel line that carries a head-deduct description
+        // (as opposed to free-cancel which uses "Cancelled · no charge …").
+        (item.lineKind === 'cancel' &&
+          /^Cancelled · head deduct/i.test(item.description ?? '')),
     )
     .reduce(
       (sum, item) => sum + Math.max(0, item.adults) + Math.max(0, item.children),
@@ -571,6 +575,22 @@ export function freeCancelDescription(program: Program) {
   return `Cancelled · no charge · ${programLabel(program)}`
 }
 
+/**
+ * Prebuy-agent late cancel: the booked heads are deducted from the allotment
+ * (treated identically to a no-show). Money charge is a separate line.
+ */
+export function prebuyCancelDeductDescription(program: Program) {
+  return `Cancelled · head deduct · ${programLabel(program)}`
+}
+
+/**
+ * Prebuy-agent late cancel: extra money charge billed in addition to the head
+ * deduct. Appears alongside the head-deduct line on the same invoice.
+ */
+export function prebuyCancelChargeDescription(program: Program) {
+  return `Cancel charge · ${programLabel(program)}`
+}
+
 /** Normalize older vague labels on print / edit. */
 export function formatInvoiceLineDescription(
   item: Pick<InvoiceItem, 'description' | 'amount' | 'adults' | 'children' | 'adultPrice' | 'lineKind'>,
@@ -590,6 +610,10 @@ export function formatInvoiceLineDescription(
     const heads = Math.max(0, item.adults) + Math.max(0, item.children)
     const prebuy = /deduct/i.test(text) || item.amount === 0
     return lateChangeDateDescription({ heads, prebuy })
+  }
+  // Preserve prebuy cancel-with-charge descriptions — do not collapse into generic cancel labels.
+  if (/^Cancelled · head deduct/i.test(text) || /^Cancel charge · /i.test(text)) {
+    return text
   }
   if (
     item.lineKind === 'cancel' ||
@@ -1154,25 +1178,79 @@ export function buildInvoiceItemsForBooking(
     const adminFee = booking.cancelFee
     const hasAdminFee = typeof adminFee === 'number' && Number.isFinite(adminFee)
     if (hasAdminFee && adminFee > 0) {
-      items.push({
-        id: moneyId(),
-        bookingCode: booking.code,
-        travelDate: booking.date,
-        voucherNo,
-        description: lateCancelDescription(booking.program, false),
-        adults: booking.adults,
-        children: booking.children,
-        infants: booking.infants,
-        tourLeaders: booking.tourLeaders,
-        adultPrice: 0,
-        childPrice: 0,
-        infantPrice: 0,
-        tourLeaderPrice: 0,
-        cot: 0,
-        amount: Math.max(0, Math.floor(adminFee)),
-        lineKind: 'cancel',
-        sortOrder: items.length,
-      })
+      if (prebuy) {
+        // Prebuy cancel with charge:
+        //   • Line 1 — head deduct (amount = 0, pax counts consume the allotment like a no-show)
+        //   • Line 2 — extra money charge (the late-cancel penalty billed as cash)
+        const original = originalBookedPax(booking.date, booking.program, booking)
+        const pax = {
+          adults: Math.max(booking.adults, original.adults),
+          children: Math.max(booking.children, original.children),
+          infants: Math.max(booking.infants, original.infants),
+          tourLeaders: Math.max(booking.tourLeaders, original.tourLeaders),
+        }
+        items.push({
+          id: moneyId(),
+          bookingCode: booking.code,
+          travelDate: booking.date,
+          voucherNo,
+          description: prebuyCancelDeductDescription(booking.program),
+          adults: pax.adults,
+          children: pax.children,
+          infants: pax.infants,
+          tourLeaders: pax.tourLeaders,
+          adultPrice: 0,
+          childPrice: 0,
+          infantPrice: 0,
+          tourLeaderPrice: 0,
+          cot: 0,
+          amount: 0,
+          // 'cancel' kind with head-deduct description — prebuyDeductHeads() recognises this
+          // specific pattern and counts the AD+CH against the allotment.
+          lineKind: 'cancel',
+          sortOrder: items.length,
+        })
+        items.push({
+          id: moneyId(),
+          bookingCode: booking.code,
+          travelDate: booking.date,
+          voucherNo,
+          description: prebuyCancelChargeDescription(booking.program),
+          adults: 0,
+          children: 0,
+          infants: 0,
+          tourLeaders: 0,
+          adultPrice: 0,
+          childPrice: 0,
+          infantPrice: 0,
+          tourLeaderPrice: 0,
+          cot: 0,
+          amount: Math.max(0, Math.floor(adminFee)),
+          lineKind: 'cancel',
+          sortOrder: items.length,
+        })
+      } else {
+        // Non-prebuy: flat money cancel line.
+        items.push({
+          id: moneyId(),
+          bookingCode: booking.code,
+          travelDate: booking.date,
+          voucherNo,
+          description: lateCancelDescription(booking.program, false),
+          adults: booking.adults,
+          children: booking.children,
+          infants: booking.infants,
+          tourLeaders: booking.tourLeaders,
+          adultPrice: 0,
+          childPrice: 0,
+          infantPrice: 0,
+          tourLeaderPrice: 0,
+          cot: 0,
+          amount: Math.max(0, Math.floor(adminFee)),
+          lineKind: 'cancel',
+          sortOrder: items.length,
+        })
+      }
     } else if (!hasAdminFee && booking.lateCancel) {
       const pax = {
         adults: booking.adults,
