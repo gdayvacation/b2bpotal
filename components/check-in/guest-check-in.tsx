@@ -546,7 +546,6 @@ function GuestCheckInForm({
     const already = enrolledSeatCount(
       getCheckInEnrollments(booking.date, booking.program, booking.code),
     )
-    const attendance = getCheckInAttendance(booking.date, booking.program, booking.code)
     const guideName = getCheckInGroupGuide(
       booking.date,
       booking.program,
@@ -555,7 +554,10 @@ function GuestCheckInForm({
     const guideDone =
       guideEnrollmentCount(getCheckInEnrollments(booking.date, booking.program, booking.code)) >=
       parseGroupGuideNames(guideName).length
-    const guestsDone = attendance === 'checked' || already >= seats
+    // Do NOT rely on the 'checked' flag alone — if the booking pax count grew after the
+    // original check-in completed (admin added guests on the day), 'checked' stays set but
+    // the new guests haven't scanned yet.  Treat as done only when enrollment covers every seat.
+    const guestsDone = already >= seats
     if (guestsDone && !(guideName && !guideDone)) {
       setLockedReady(true)
       setDoneGuideOnly(false)
@@ -626,12 +628,9 @@ function GuestCheckInForm({
       selectedBooking.program,
       selectedBooking.code,
     )
-    const attendance = getCheckInAttendance(
-      selectedBooking.date,
-      selectedBooking.program,
-      selectedBooking.code,
-    )
-    if (attendance !== 'checked' && enrolledSeatCount(enrolled) < seats) return
+    // Seats may have grown after 'checked' was set (admin added guests on the day).
+    // Only skip the retreat if enrollment truly covers all current seats.
+    if (enrolledSeatCount(enrolled) < seats) return
     const guideName = getCheckInGroupGuide(
       selectedBooking.date,
       selectedBooking.program,
@@ -649,7 +648,6 @@ function GuestCheckInForm({
     )
     setStep('done')
   }, [
-    getCheckInAttendance,
     getCheckInEnrollments,
     getCheckInGroupGuide,
     isLocked,
@@ -674,20 +672,16 @@ function GuestCheckInForm({
       selectedBooking.program,
       selectedBooking.code,
     )
-    const attendance = getCheckInAttendance(
-      selectedBooking.date,
-      selectedBooking.program,
-      selectedBooking.code,
-    )
     const seats = totalPassengers(selectedBooking)
-    if (attendance !== 'checked' && enrolledSeatCount(enrollment) < seats) {
+    // Retreat if enrollment is still short — covers both the stale-cache case and the
+    // "admin added guests after the original full check-in" case.
+    if (enrolledSeatCount(enrollment) < seats) {
       // Fresh DB data contradicts the cached 'done' — retreat so check-in can proceed.
       setStep('scope')
     }
   }, [
     checkInReady,
     enrolledSeatCount,
-    getCheckInAttendance,
     getCheckInEnrollments,
     isLocked,
     selectedBooking,
@@ -749,11 +743,6 @@ function GuestCheckInForm({
         lockedBooking.code,
       )
       const already = enrolledSeatCount(enrolledList)
-      const attendance = getCheckInAttendance(
-        lockedBooking.date,
-        lockedBooking.program,
-        lockedBooking.code,
-      )
       const guideName = getCheckInGroupGuide(
         lockedBooking.date,
         lockedBooking.program,
@@ -761,7 +750,8 @@ function GuestCheckInForm({
       ).trim()
       const guideDone =
         guideEnrollmentCount(enrolledList) >= parseGroupGuideNames(guideName).length
-      const guestsDone = attendance === 'checked' || already >= seats
+      // Same guard as the locked-code effect: only mark done when enrollment covers all seats.
+      const guestsDone = already >= seats
       if (guestsDone && !(guideName && !guideDone)) {
         setDoneNeedsPayment(
           paymentDue(
@@ -824,7 +814,6 @@ function GuestCheckInForm({
     const seats = totalPassengers(booking)
     const enrolledList = getCheckInEnrollments(tourDate, booking.program, booking.code)
     const enrolledCount = enrolledSeatCount(enrolledList)
-    const attendance = getCheckInAttendance(tourDate, booking.program, booking.code)
     const guideName = getCheckInGroupGuide(
       booking.date,
       booking.program,
@@ -832,7 +821,9 @@ function GuestCheckInForm({
     ).trim()
     const guideDone =
       guideEnrollmentCount(enrolledList) >= parseGroupGuideNames(guideName).length
-    const guestsDone = attendance === 'checked' || enrolledCount >= seats
+    // Only treat as done when enrollment covers all seats — not solely from the 'checked' flag,
+    // which stays set even when the admin adds more guests to the booking on the day.
+    const guestsDone = enrolledCount >= seats
     setBookingCode(code)
     if (guestsDone && !(guideName && !guideDone)) {
       setDoneGuideOnly(false)
