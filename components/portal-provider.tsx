@@ -1584,11 +1584,24 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         return
       }
 
-      // Partners book from a link. Poll slowly, and never subscribe to every booking change.
+      // Partners book from a link. Poll as a slow safety net + Realtime for instant updates.
       if (sessionRole === 'partner' || role === 'partner') {
         poll = window.setInterval(() => {
           void refreshBookings()
         }, PARTNER_POLL_MS)
+        // Realtime: agent sees status changes (cancellations, admin edits) within 1.5 s
+        // instead of waiting up to 10 min for the next poll. Safe on Micro pool.
+        try {
+          unsubscribeRealtime = subscribeBookings(() => {
+            if (realtimeTimer != null) return
+            realtimeTimer = window.setTimeout(() => {
+              realtimeTimer = undefined
+              void refreshBookings()
+            }, REALTIME_REFRESH_MS)
+          })
+        } catch (error) {
+          console.error('[portal] partner bookings realtime subscribe failed', error)
+        }
         void refreshBookings()
         return
       }
