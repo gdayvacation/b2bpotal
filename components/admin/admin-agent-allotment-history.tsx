@@ -16,6 +16,11 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { BRAND_LEGAL, BRAND_SHORT } from '@/lib/brand'
+import {
+  allocateDailyHeadsFifo,
+  lotUsageMap,
+  type LotFifoInput,
+} from '@/lib/allotment-lot-fifo'
 import { formatMonthLabel, formatShortDate, todayISO } from '@/lib/format'
 import { listAgentAllotments, type AgentAllotment } from '@/lib/supabase/agent-allotment-db'
 import {
@@ -229,76 +234,63 @@ export function AdminAgentAllotmentHistory({
     const byAgent = new Map<string, AgentAllotment[]>()
     for (const lot of purchases) {
       if (lot.program !== program) continue
-      const existing = byAgent.get(lot.agentSlug) ?? []
-      byAgent.set(lot.agentSlug, [...existing, lot])
+      byAgent.set(lot.agentSlug, [...(byAgent.get(lot.agentSlug) ?? []), lot])
     }
     const today = todayISO()
     const result: LotCard[] = []
 
     for (const [agentSlug, agentLots] of byAgent.entries()) {
-      // Sort oldest → newest
+      // Sort oldest → newest by paid/open date
       const sorted = [...agentLots].sort((a, b) => {
         const aDate = a.paidDate || a.createdAt.slice(0, 10)
         const bDate = b.paidDate || b.createdAt.slice(0, 10)
-        return aDate.localeCompare(bDate)
+        return aDate.localeCompare(bDate) || a.createdAt.localeCompare(b.createdAt)
       })
 
-      // All bookings for this agent sorted chronologically (sequential seat-consumption model)
-      let bookingPool = bookings
-        .filter((b) => b.agentSlug === agentSlug && isActiveBooking(b) && b.date <= today)
-        .sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code))
+      // Build daily totals for FIFO allocation
+      const agentBookings = bookings.filter(
+        (b) => b.agentSlug === agentSlug && isActiveBooking(b) && b.date <= today,
+      )
+      const dailyTotals = new Map<string, number>()
+      for (const bk of agentBookings) {
+        dailyTotals.set(bk.date, (dailyTotals.get(bk.date) ?? 0) + chargeablePax(bk))
+      }
+      const daily = [...dailyTotals.entries()].map(([day, totalDeduct]) => ({ day, totalDeduct }))
 
-      // Sequential carry: remaining seats from previous lot roll into the next
-      let seqCarryIn = 0
+      // FIFO: oldest lot fills first; only lots open on that day are eligible;
+      // newest eligible lot absorbs any overage (can go negative).
+      const fifoLots: LotFifoInput[] = sorted.map((lot) => ({
+        id: lot.id,
+        seats: lot.seats,
+        openedAt: lot.paidDate || lot.createdAt.slice(0, 10),
+        createdAt: lot.createdAt,
+      }))
+      const { summaries } = allocateDailyHeadsFifo(fifoLots, daily)
+      const usageMap = lotUsageMap(summaries)
 
+      const totalLots = sorted.length
       for (let i = 0; i < sorted.length; i++) {
-        const lot = sorted[i]
+        const lot = sorted[i]!
         const nextLot = sorted[i + 1]
-        const isLastLot = i === sorted.length - 1
-
-        // Date metadata (used only for display / date range shown on lot card)
         const lotStart = lot.paidDate || lot.createdAt.slice(0, 10)
         const endDate = nextLot
           ? isoSubtractDay(nextLot.paidDate || nextLot.createdAt.slice(0, 10))
           : today
         const startDate = i === 0 ? null : lotStart
 
-        // Seat budget = this lot's purchased seats + whatever rolled in from the previous lot
-        const carryIn = seqCarryIn
-        const effectiveSeats = lot.seats + carryIn
-
-        // Greedily assign bookings to this lot until budget exhausted;
-        // too-large (doesn't fit) bookings spill over to the next lot.
-        let used = 0
-        const overflow: Booking[] = []
-
-        if (isLastLot) {
-          // Last lot absorbs every remaining booking (may go negative)
-          used = bookingPool.reduce((s, bk) => s + chargeablePax(bk), 0)
-          bookingPool = []
-        } else {
-          let remaining = effectiveSeats
-          for (const bk of bookingPool) {
-            const heads = chargeablePax(bk)
-            if (remaining >= heads) {
-              used += heads
-              remaining -= heads
-            } else {
-              overflow.push(bk)
-            }
-          }
-          bookingPool = overflow
-          seqCarryIn = Math.max(0, remaining) // positive remainder carries to next lot
-        }
-
-        const left = effectiveSeats - used
-        const carryOut = isLastLot ? 0 : Math.max(0, left)
-        const displayLeft = left - carryOut // 0 when all seats carry forward, negative if overspent
+        const usage = usageMap.get(lot.id) ?? { purchased: lot.seats, used: 0, remaining: lot.seats }
+        const effectiveSeats = lot.seats  // FIFO: each lot has its own fixed capacity
+        const used = usage.used
+        const left = effectiveSeats - used  // negative if this lot absorbed overage
+        // FIFO has no carry-in / carry-out between lots
+        const carryIn = 0
+        const carryOut = 0
+        const displayLeft = left
 
         result.push({
           lot,
           lotIndex: i + 1,
-          totalLots: sorted.length,
+          totalLots,
           startDate,
           endDate,
           used,
@@ -635,74 +627,87 @@ export function AdminAgentAllotmentHistory({
     if (!group) return []
     const todayCap = todayISO()
 
-    // All bookings for this agent, chronological order (date ASC, then booking code for stability)
-    let bookingPool = bookings
+    // All agent bookings sorted chronologically
+    const agentBookings = bookings
       .filter((bk) => bk.agentSlug === expandedAgentSlug && isActiveBooking(bk) && bk.date <= todayCap)
       .sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code))
+
+    // Daily totals for FIFO
+    const dailyTotals = new Map<string, number>()
+    for (const bk of agentBookings) {
+      dailyTotals.set(bk.date, (dailyTotals.get(bk.date) ?? 0) + chargeablePax(bk))
+    }
+    const daily = [...dailyTotals.entries()].map(([day, totalDeduct]) => ({ day, totalDeduct }))
 
     // Lots oldest → newest
     const lotsOldest = [...group.lots].sort((a, b) => a.lotIndex - b.lotIndex)
 
-    // Sequential seat-consumption:
-    // Each lot absorbs bookings until its budget (lot.seats + seqCarryIn) is exhausted.
-    // Any booking that fits (remainingBudget ≥ heads) is assigned; too-large ones skip to
-    // the next lot. The last lot takes everything remaining (may go negative).
-    let seqCarryIn = 0
+    // Run FIFO allocation — same algorithm as the main allotment page
+    const fifoLots: LotFifoInput[] = lotsOldest.map((lc) => ({
+      id: lc.lot.id,
+      seats: lc.lot.seats,
+      openedAt: lc.lot.paidDate || lc.lot.createdAt.slice(0, 10),
+      createdAt: lc.lot.createdAt,
+    }))
+    const { byLotId } = allocateDailyHeadsFifo(fifoLots, daily)
 
-    const views: LotView[] = lotsOldest.map((lc, i) => {
-      const isLastLot = i === lotsOldest.length - 1
-      const budget = lc.lot.seats + seqCarryIn
+    // Per-day booking pool: for each day, bookings available to assign to lots
+    // We greedily assign bookings to each lot in chronological order up to the
+    // FIFO-allocated head count for that lot on that day.
+    const dayBookingPool = new Map<string, Booking[]>()
+    for (const bk of agentBookings) {
+      const list = dayBookingPool.get(bk.date) ?? []
+      list.push(bk)
+      dayBookingPool.set(bk.date, list)
+    }
 
-      const lotBookings: Booking[] = []
-      const overflow: Booking[] = []
+    return lotsOldest.map((lc) => {
+      const effectiveSeats = lc.lot.seats
+      const lotDayUsages = [...(byLotId.get(lc.lot.id) ?? [])].sort((a, b) =>
+        a.day.localeCompare(b.day),
+      )
 
-      if (isLastLot) {
-        lotBookings.push(...bookingPool)
-      } else {
-        let remaining = budget
-        for (const bk of bookingPool) {
-          const heads = chargeablePax(bk)
-          if (remaining >= heads) {
-            lotBookings.push(bk)
-            remaining -= heads
+      let runningBalance = effectiveSeats
+      const days: DayView[] = []
+
+      for (const { day, heads: allocatedHeads } of lotDayUsages) {
+        if (allocatedHeads <= 0) continue
+        const pool = dayBookingPool.get(day) ?? []
+
+        // Greedily take bookings from this day's pool up to allocatedHeads
+        let headsLeft = allocatedHeads
+        const lotDayBookings: Booking[] = []
+        const leftover: Booking[] = []
+        for (const bk of pool) {
+          const h = chargeablePax(bk)
+          if (headsLeft >= h) {
+            lotDayBookings.push(bk)
+            headsLeft -= h
           } else {
-            overflow.push(bk)
+            leftover.push(bk)
           }
         }
-        // What's left after filling this lot becomes carry-in for the next lot
-        seqCarryIn = Math.max(0, remaining)
+        dayBookingPool.set(day, leftover)
+
+        runningBalance -= allocatedHeads  // use FIFO-allocated heads for balance
+        days.push({ date: day, bookings: lotDayBookings, dayHeads: allocatedHeads, balanceAfterDay: runningBalance })
       }
-      bookingPool = overflow
 
-      const usedSeats = lotBookings.reduce((s, bk) => s + chargeablePax(bk), 0)
-      const seqLeft = budget - usedSeats
-      const seqCarryOut = isLastLot ? 0 : Math.max(0, seqLeft)
+      const used = lotDayUsages.reduce((s, d) => s + d.heads, 0)
+      const left = effectiveSeats - used
 
-      // Build the per-day breakdown, balance counts down from budget
-      const dayDates = [...new Set(lotBookings.map((b) => b.date))].sort()
-      let runningBalance = budget
-      const days: DayView[] = dayDates.map((date) => {
-        const dayBookings = lotBookings.filter((b) => b.date === date)
-        const dayHeads = dayBookings.reduce((s, b) => s + chargeablePax(b), 0)
-        runningBalance -= dayHeads
-        return { date, bookings: dayBookings, dayHeads, balanceAfterDay: runningBalance }
-      })
-
-      // Override lotCard fields with sequential-allocation values for display
-      const seqLotCard: LotCard = {
+      const fifoLotCard: LotCard = {
         ...lc,
-        carryIn: isLastLot ? 0 : lc.carryIn,  // keep original for carry pill display on lots 2+
-        effectiveSeats: budget,
-        used: usedSeats,
-        left: seqLeft,
-        carryOut: seqCarryOut,
-        displayLeft: seqCarryOut > 0 ? 0 : seqLeft,
+        carryIn: 0,
+        effectiveSeats,
+        used,
+        left,
+        carryOut: 0,
+        displayLeft: left,
       }
 
-      return { lotCard: seqLotCard, days }
+      return { lotCard: fifoLotCard, days }
     })
-
-    return views
   }, [expandedAgentSlug, agentGroups, bookings])
 
   const bookingTotals = useMemo(() => {
