@@ -73,7 +73,7 @@ import {
 import type { Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
-type View = 'hub' | 'add' | 'history' | 'daily' | 'agent' | 'lot'
+type View = 'hub' | 'add' | 'history' | 'agent' | 'lot'
 
 type Draft = {
   agentSlug: string
@@ -1778,31 +1778,14 @@ export function AdminAgentAllotment() {
             }}
           />
           <AllotmentModeCard
-            tone="sky"
-            title="Daily checker"
-            subtitle="Each tour date: Booking Head, Check in, No Show, Invoice, and editable Total Deduct."
-            meta="Deduct heads"
-            icon={<CalendarCheck2 className="size-7" strokeWidth={1.75} />}
-            onClick={() => setView('daily')}
-          />
-          <AllotmentModeCard
             tone="amber"
             title="Allotment history"
-            subtitle="Bookings used, Daily checker heads, and seats left per agent."
+            subtitle="Booking usage, head count, and seat balance per agent — auto-synced from bookings."
             meta="Usage & balance"
             icon={<History className="size-7" strokeWidth={1.75} />}
             onClick={() => setView('history')}
           />
         </div>
-      </div>
-    )
-  }
-
-  if (view === 'daily') {
-    return (
-      <div className="w-full">
-        {programBar}
-        <AdminAgentAllotmentDailyChecker program={workProgram} onBack={() => setView('hub')} />
       </div>
     )
   }

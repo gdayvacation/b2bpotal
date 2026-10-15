@@ -1,13 +1,12 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, Plus, Printer, X } from 'lucide-react'
+import { ArrowLeft, Plus, Printer } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
 import { PageHeader, Surface } from '@/components/ui-primitives'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   Table,
   TableBody,
@@ -20,10 +19,6 @@ import { BRAND_LEGAL, BRAND_SHORT } from '@/lib/brand'
 import { formatMonthLabel, formatShortDate, todayISO } from '@/lib/format'
 import { listAgentAllotments, type AgentAllotment } from '@/lib/supabase/agent-allotment-db'
 import {
-  listAgentAllotmentDaily,
-  type AgentAllotmentDaily,
-} from '@/lib/supabase/agent-allotment-daily-db'
-import {
   chargeablePax,
   formatPaxBreakdown,
   isActiveBooking,
@@ -32,15 +27,6 @@ import {
 } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
-type FilterKind = 'date' | 'month' | 'agent' | 'program' | 'checker' | 'guest' | 'vc'
-type CheckerFilter = '' | 'confirmed' | 'pending'
-
-const EXTRA_FILTER_OPTIONS: { kind: FilterKind; label: string; hint: string }[] = [
-  { kind: 'program', label: 'Program', hint: 'PP or James Bond' },
-  { kind: 'checker', label: 'Checker', hint: 'Confirmed or still pending' },
-  { kind: 'guest', label: 'Guest', hint: 'Lead guest name' },
-  { kind: 'vc', label: 'VC No', hint: 'Agent voucher number' },
-]
 
 type HistoryLine = {
   key: string
@@ -62,11 +48,19 @@ type HistoryLine = {
   amountCh: number | null
   /** AD+CH heads for this booking (or day total when no booking rows). */
   totalHeadUse: number | null
-  /** Running seats left after this day — shown on the last line of the day. */
+  /** Running seats left after this event. */
   balance: number | null
   isDayEnd: boolean
-  /** True when Total head use was confirmed in Daily checker (day may differ from booking sum). */
-  checkerConfirmed: boolean
+  /** Sum of all chargeable heads on this date. Only set on isDayEnd rows. */
+  dayTotalHeads: number | null
+  /** True when this row represents an allotment purchase (credit / top-up). */
+  isTopUp?: true
+  /** Number of seats added by this top-up purchase. */
+  topUpSeats?: number
+  /** THB amount paid for this top-up. */
+  topUpAmount?: number
+  /** Human label for the lot, e.g. "Lot 2 · 5 Oct 2026". */
+  topUpLabel?: string
 }
 
 function formatMoney(value: number) {
@@ -88,6 +82,39 @@ function programLabel(program: Booking['program']) {
   return program === 'PP' ? 'PP' : 'JB'
 }
 
+type LotCard = {
+  lot: AgentAllotment
+  /** 1 = oldest, N = newest for this agent. */
+  lotIndex: number
+  totalLots: number
+  /** First tour date included (null = from the very beginning). */
+  startDate: string | null
+  /** Last tour date included (inclusive). */
+  endDate: string
+  used: number
+  /** Unused seats rolled in from the immediately preceding lot (≥ 0). */
+  carryIn: number
+  /** lot.seats + carryIn — the true available capacity for this period. */
+  effectiveSeats: number
+  /** effectiveSeats − used — positive = seats remaining, negative = overspent. */
+  left: number
+  /** Seats carried OUT to the next lot (0 for the last lot). */
+  carryOut: number
+  /**
+   * What to show as "Left" on the card.
+   * = 0 when this lot's remaining seats are all carried to the next lot (fully consumed).
+   * = left when this is the last lot (shows true balance, positive or negative).
+   * = negative when this lot was overspent (no carry possible).
+   */
+  displayLeft: number
+}
+
+function isoSubtractDay(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number)
+  const date = new Date(y, m - 1, d - 1)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
 export function AdminAgentAllotmentHistory({
   onBack,
   onAdd,
@@ -99,18 +126,13 @@ export function AdminAgentAllotmentHistory({
 }) {
   const { bookings, agents } = usePortal()
   const [purchases, setPurchases] = useState<AgentAllotment[]>([])
-  const [daily, setDaily] = useState<AgentAllotmentDaily[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
-  const [filterDate, setFilterDate] = useState('')
-  const [filterMonth, setFilterMonth] = useState(() => currentMonthValue())
-  const [filterAgent, setFilterAgent] = useState('')
   const [filterProgram, setFilterProgram] = useState<Program | ''>(program)
-  const [filterChecker, setFilterChecker] = useState<CheckerFilter>('')
   const [filterGuest, setFilterGuest] = useState('')
   const [filterVc, setFilterVc] = useState('')
-  const [extraFilters, setExtraFilters] = useState<FilterKind[]>([])
-  const [addFilterOpen, setAddFilterOpen] = useState(false)
+  const [selectedLotIds, setSelectedLotIds] = useState<string[]>([])
+  const [expandedAgentSlug, setExpandedAgentSlug] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -118,13 +140,9 @@ export function AdminAgentAllotmentHistory({
       setLoading(true)
       setLoadError('')
       try {
-        const [nextPurchases, nextDaily] = await Promise.all([
-          listAgentAllotments(),
-          listAgentAllotmentDaily(),
-        ])
+        const nextPurchases = await listAgentAllotments()
         if (!cancelled) {
           setPurchases(nextPurchases)
-          setDaily(nextDaily)
         }
       } catch (caught) {
         if (!cancelled) {
@@ -206,306 +224,491 @@ export function AdminAgentAllotmentHistory({
     )
   }
 
-  const selectedAgentMeta = filterAgent
-    ? {
-        slug: filterAgent,
-        name:
-          purchasedByAgent.get(filterAgent)?.name ||
-          agents.find((agent) => agent.slug === filterAgent)?.name ||
-          filterAgent,
-      }
-    : null
-  const selectedAgentRates = selectedAgentMeta
-    ? ratesForAgent(selectedAgentMeta.slug, selectedAgentMeta.name)
-    : undefined
-  const adultHeader =
-    selectedAgentRates && selectedAgentRates.adultPrice > 0
-      ? `Adult ${formatMoney(selectedAgentRates.adultPrice)}`
-      : 'Adult'
-  const childHeader =
-    selectedAgentRates && selectedAgentRates.childPrice > 0
-      ? `CH ${formatMoney(selectedAgentRates.childPrice)}`
-      : 'CH'
-
-  const dailyByAgentDay = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const row of daily) {
-      if (row.program !== program) continue
-      map.set(`${row.agentSlug}|${row.day}`, row.totalDeduct)
+  /** All lots for this program with their date range and real-time usage. */
+  const lotCards = useMemo<LotCard[]>(() => {
+    const byAgent = new Map<string, AgentAllotment[]>()
+    for (const lot of purchases) {
+      if (lot.program !== program) continue
+      const existing = byAgent.get(lot.agentSlug) ?? []
+      byAgent.set(lot.agentSlug, [...existing, lot])
     }
-    return map
-  }, [daily, program])
+    const today = todayISO()
+    const result: LotCard[] = []
 
-  const agentOptions = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const [slug, info] of purchasedByAgent) map.set(slug, info.name)
-    for (const row of daily) map.set(row.agentSlug, row.agentName)
-    for (const agent of agents) {
-      if (!map.has(agent.slug) && purchasedByAgent.has(agent.slug)) {
-        map.set(agent.slug, agent.name)
-      }
-    }
-    for (const booking of bookings) {
-      if (purchasedByAgent.has(booking.agentSlug) || daily.some((d) => d.agentSlug === booking.agentSlug)) {
-        map.set(booking.agentSlug, booking.agentName)
-      }
-    }
-    return [...map.entries()]
-      .map(([slug, name]) => ({ slug, name }))
-      .sort((a, b) => a.name.localeCompare(b.name))
-  }, [agents, bookings, daily, purchasedByAgent])
+    for (const [agentSlug, agentLots] of byAgent.entries()) {
+      // Sort oldest → newest
+      const sorted = [...agentLots].sort((a, b) => {
+        const aDate = a.paidDate || a.createdAt.slice(0, 10)
+        const bDate = b.paidDate || b.createdAt.slice(0, 10)
+        return aDate.localeCompare(bDate)
+      })
 
-  const lines = useMemo<HistoryLine[]>(() => {
-    const agentSlugs = filterAgent
-      ? [filterAgent]
-      : [...new Set([...purchasedByAgent.keys(), ...daily.map((row) => row.agentSlug)])]
+      // All bookings for this agent sorted chronologically (sequential seat-consumption model)
+      let bookingPool = bookings
+        .filter((b) => b.agentSlug === agentSlug && isActiveBooking(b) && b.date <= today)
+        .sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code))
 
-    const result: HistoryLine[] = []
+      // Sequential carry: remaining seats from previous lot roll into the next
+      let seqCarryIn = 0
 
-    for (const agentSlug of agentSlugs) {
-      const purchased = purchasedByAgent.get(agentSlug)?.seats ?? 0
-      const agentName =
-        purchasedByAgent.get(agentSlug)?.name ||
-        daily.find((row) => row.agentSlug === agentSlug)?.agentName ||
-        agents.find((agent) => agent.slug === agentSlug)?.name ||
-        agentSlug
+      for (let i = 0; i < sorted.length; i++) {
+        const lot = sorted[i]
+        const nextLot = sorted[i + 1]
+        const isLastLot = i === sorted.length - 1
 
-      const allAgentBookings = bookings
-        .filter((booking) => booking.agentSlug === agentSlug && isActiveBooking(booking))
-        .sort(
-          (a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code),
-        )
+        // Date metadata (used only for display / date range shown on lot card)
+        const lotStart = lot.paidDate || lot.createdAt.slice(0, 10)
+        const endDate = nextLot
+          ? isoSubtractDay(nextLot.paidDate || nextLot.createdAt.slice(0, 10))
+          : today
+        const startDate = i === 0 ? null : lotStart
 
-      const agentBookings = allAgentBookings.filter(
-        (booking) =>
-          (!filterDate || booking.date === filterDate) &&
-          (!filterMonth || booking.date.startsWith(filterMonth)) &&
-          (!filterProgram || booking.program === filterProgram),
-      )
+        // Seat budget = this lot's purchased seats + whatever rolled in from the previous lot
+        const carryIn = seqCarryIn
+        const effectiveSeats = lot.seats + carryIn
 
-      const checkerDays = daily
-        .filter((row) => {
-          if (row.agentSlug !== agentSlug) return false
-          if (row.program !== program) return false
-          if (filterDate && row.day !== filterDate) return false
-          if (filterMonth && !row.day.startsWith(filterMonth)) return false
-          return true
-        })
-        .map((row) => row.day)
+        // Greedily assign bookings to this lot until budget exhausted;
+        // too-large (doesn't fit) bookings spill over to the next lot.
+        let used = 0
+        const overflow: Booking[] = []
 
-      const days = [...new Set([...agentBookings.map((b) => b.date), ...checkerDays])].sort()
-
-      const bookingHeadsByDay = new Map<string, number>()
-      for (const booking of allAgentBookings) {
-        if (filterProgram && booking.program !== filterProgram) continue
-        bookingHeadsByDay.set(
-          booking.date,
-          (bookingHeadsByDay.get(booking.date) ?? 0) + chargeablePax(booking),
-        )
-      }
-
-      /** Confirmed Daily checker when saved; otherwise booking AD+CH for that day. */
-      function dayDeduct(day: string) {
-        const saved = dailyByAgentDay.get(`${agentSlug}|${day}`)
-        if (saved !== undefined) return saved
-        return bookingHeadsByDay.get(day) ?? 0
-      }
-
-      const allDaysForBalance = [
-        ...new Set([
-          ...allAgentBookings.map((b) => b.date),
-          ...daily.filter((row) => row.agentSlug === agentSlug).map((row) => row.day),
-        ]),
-      ].sort()
-
-      for (const day of days) {
-        const dayBookings = agentBookings.filter((booking) => booking.date === day)
-        const hasChecker = dailyByAgentDay.has(`${agentSlug}|${day}`)
-        const deductedBefore = allDaysForBalance
-          .filter((iso) => iso < day)
-          .reduce((sum, iso) => sum + dayDeduct(iso), 0)
-        const balanceAfter = purchased - deductedBefore - dayDeduct(day)
-        const rates = ratesForAgent(agentSlug, agentName)
-
-        if (dayBookings.length === 0) {
-          result.push({
-            key: `${agentSlug}|${day}|checker`,
-            date: day,
-            vcNo: '—',
-            agentSlug,
-            agentName,
-            guestName: '—',
-            bookingLabel: hasChecker ? 'Daily checker' : 'No bookings',
-            paxLabel: '—',
-            program: filterProgram || null,
-            adults: 0,
-            children: 0,
-            adultPrice: rates.adultPrice,
-            childPrice: rates.childPrice,
-            amountAd: null,
-            amountCh: null,
-            totalHeadUse: dayDeduct(day),
-            balance: balanceAfter,
-            isDayEnd: true,
-            checkerConfirmed: hasChecker,
-          })
-          continue
+        if (isLastLot) {
+          // Last lot absorbs every remaining booking (may go negative)
+          used = bookingPool.reduce((s, bk) => s + chargeablePax(bk), 0)
+          bookingPool = []
+        } else {
+          let remaining = effectiveSeats
+          for (const bk of bookingPool) {
+            const heads = chargeablePax(bk)
+            if (remaining >= heads) {
+              used += heads
+              remaining -= heads
+            } else {
+              overflow.push(bk)
+            }
+          }
+          bookingPool = overflow
+          seqCarryIn = Math.max(0, remaining) // positive remainder carries to next lot
         }
 
-        dayBookings.forEach((booking, index) => {
-          const isLast = index === dayBookings.length - 1
-          const adults = Math.max(0, booking.adults)
-          const children = Math.max(0, booking.children)
-          result.push({
-            key: `${booking.code}|${day}`,
-            date: day,
-            vcNo: booking.agentRef.trim() || '—',
-            agentSlug,
-            agentName,
-            guestName: booking.leadGuest,
-            bookingLabel: `${programLabel(booking.program)} · ${booking.status}`,
-            paxLabel: formatPaxBreakdown(booking),
-            program: booking.program,
-            adults,
-            children,
-            adultPrice: rates.adultPrice,
-            childPrice: rates.childPrice,
-            amountAd: rates.adultPrice > 0 ? adults * rates.adultPrice : null,
-            amountCh: rates.childPrice > 0 ? children * rates.childPrice : null,
-            totalHeadUse: chargeablePax(booking),
-            balance: isLast ? balanceAfter : null,
-            isDayEnd: isLast,
-            checkerConfirmed: hasChecker,
-          })
+        const left = effectiveSeats - used
+        const carryOut = isLastLot ? 0 : Math.max(0, left)
+        const displayLeft = left - carryOut // 0 when all seats carry forward, negative if overspent
+
+        result.push({
+          lot,
+          lotIndex: i + 1,
+          totalLots: sorted.length,
+          startDate,
+          endDate,
+          used,
+          carryIn,
+          effectiveSeats,
+          left,
+          carryOut,
+          displayLeft,
         })
       }
     }
 
-    const sorted = result.sort(
-      (a, b) =>
-        b.date.localeCompare(a.date) ||
-        a.agentName.localeCompare(b.agentName) ||
-        a.vcNo.localeCompare(b.vcNo),
-    )
+    // Sort: newest lot first, then by agent name
+    return result.sort((a, b) => {
+      const aDate = a.lot.paidDate || a.lot.createdAt.slice(0, 10)
+      const bDate = b.lot.paidDate || b.lot.createdAt.slice(0, 10)
+      return bDate.localeCompare(aDate) || a.lot.agentName.localeCompare(b.lot.agentName)
+    })
+  }, [purchases, bookings, program])
 
+  /** Per-agent summary groups, sorted by most-recent lot date. */
+  const agentGroups = useMemo(() => {
+    const map = new Map<string, { agentSlug: string; agentName: string; lots: LotCard[] }>()
+    for (const lc of lotCards) {
+      const slug = lc.lot.agentSlug
+      if (!map.has(slug)) map.set(slug, { agentSlug: slug, agentName: lc.lot.agentName, lots: [] })
+      map.get(slug)!.lots.push(lc)
+    }
+    return [...map.values()].sort((a, b) => {
+      // Sort by most-recent lot date descending
+      const aDate = a.lots[a.lots.length - 1].lot.paidDate || a.lots[a.lots.length - 1].lot.createdAt.slice(0, 10)
+      const bDate = b.lots[b.lots.length - 1].lot.paidDate || b.lots[b.lots.length - 1].lot.createdAt.slice(0, 10)
+      return bDate.localeCompare(aDate) || a.agentName.localeCompare(b.agentName)
+    })
+  }, [lotCards])
+
+  // Derive the ordered array of selected lot cards (preserving lot order oldest→newest)
+  const selectedLotCards = useMemo(
+    () =>
+      lotCards
+        .filter((lc) => selectedLotIds.includes(lc.lot.id))
+        // stable sort: oldest lot first for balance accumulation
+        .sort((a, b) => {
+          const aDate = a.lot.paidDate || a.lot.createdAt.slice(0, 10)
+          const bDate = b.lot.paidDate || b.lot.createdAt.slice(0, 10)
+          return aDate.localeCompare(bDate)
+        }),
+    [lotCards, selectedLotIds],
+  )
+
+  const isMerged = selectedLotCards.length > 1
+
+  // Combined stats across all selected lots
+  // "Purchased" = actual seats bought (for amount display)
+  const mergedPurchased = selectedLotCards.reduce((s, lc) => s + lc.lot.seats, 0)
+  const mergedUsed = selectedLotCards.reduce((s, lc) => s + lc.used, 0)
+  const mergedEffective = selectedLotCards.reduce((s, lc) => s + lc.effectiveSeats, 0)
+  // mergedLeft: only the last lot's left contributes true balance (earlier lots cancel via carry)
+  const mergedLeft = selectedLotCards.length === 0
+    ? 0
+    : selectedLotCards[selectedLotCards.length - 1].left
+  const mergedAmount = selectedLotCards.reduce(
+    (s, lc) => s + Math.max(0, Number(lc.lot.totalAmount) || 0),
+    0,
+  )
+
+  const adultHeader = 'Adult'
+  const childHeader = 'CH'
+
+  function toggleLot(id: string) {
+    setSelectedLotIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    )
+  }
+
+  function selectAgentLots(agentSlug: string) {
+    const ids = lotCards.filter((lc) => lc.lot.agentSlug === agentSlug).map((lc) => lc.lot.id)
+    setSelectedLotIds((prev) => {
+      const alreadyAll = ids.every((id) => prev.includes(id))
+      if (alreadyAll) return prev.filter((id) => !ids.includes(id))
+      return [...new Set([...prev, ...ids])]
+    })
+  }
+
+  const lines = useMemo<HistoryLine[]>(() => {
+    if (selectedLotCards.length === 0) return []
+
+    const today = todayISO()
     const guestQ = filterGuest.trim().toLowerCase()
     const vcQ = filterVc.trim().toLowerCase()
 
-    return sorted.filter((line) => {
-      if (filterChecker === 'confirmed' && !line.checkerConfirmed) return false
-      if (filterChecker === 'pending' && line.checkerConfirmed) return false
-      if (filterProgram && line.program && line.program !== filterProgram) return false
-      if (filterProgram && !line.program) return false
-      if (guestQ && !line.guestName.toLowerCase().includes(guestQ)) return false
-      if (vcQ && !line.vcNo.toLowerCase().includes(vcQ)) return false
-      return true
-    })
+    // ─────────────────────────────────────────────────────────────────────────
+    // LEDGER APPROACH: balance = Σ(credits) − Σ(debits) up to each date
+    //   credits = lot seat purchases (top-ups), sorted oldest → newest
+    //   debits  = chargeable booking heads per day
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // 1. Collect all booking-heads-per-day across all selected lots (unfiltered for balance)
+    const rawHeadsByDay = new Map<string, number>()
+    for (const lc of selectedLotCards) {
+      const effectiveStart = lc.startDate ?? '0000-00-00'
+      for (const bk of bookings) {
+        if (bk.agentSlug !== lc.lot.agentSlug || !isActiveBooking(bk)) continue
+        if (bk.date > today || bk.date > lc.endDate || bk.date < effectiveStart) continue
+        rawHeadsByDay.set(bk.date, (rawHeadsByDay.get(bk.date) ?? 0) + chargeablePax(bk))
+      }
+    }
+
+    // 2. Build top-up events — one per selected lot (sorted oldest → newest)
+    type TopUpEvent = {
+      date: string
+      seats: number          // actual new seats in this lot
+      carryIn: number        // seats rolled in from the previous lot (≥ 0)
+      amount: number
+      label: string
+      agentSlug: string
+      agentName: string
+      lotCard: LotCard
+    }
+    const topUpEvents: TopUpEvent[] = selectedLotCards.map((lc) => ({
+      date: lc.lot.paidDate || lc.lot.createdAt.slice(0, 10),
+      seats: lc.lot.seats,
+      carryIn: lc.carryIn,
+      amount: Math.max(0, Number(lc.lot.totalAmount) || 0),
+      label: `Lot ${lc.lotIndex}${lc.totalLots > 1 ? ` / ${lc.totalLots}` : ''} · ${formatShortDate(lc.lot.paidDate || lc.lot.createdAt.slice(0, 10))}`,
+      agentSlug: lc.lot.agentSlug,
+      agentName: lc.lot.agentName,
+      lotCard: lc,
+    }))
+
+    // 3. Build a sorted list of all unique event dates (top-up + booking days)
+    const topUpByDate = new Map<string, TopUpEvent[]>()
+    for (const ev of topUpEvents) {
+      topUpByDate.set(ev.date, [...(topUpByDate.get(ev.date) ?? []), ev])
+    }
+
+    const allEventDates = [
+      ...new Set([...rawHeadsByDay.keys(), ...topUpByDate.keys()]),
+    ].sort() // oldest → newest
+
+    // 4. Walk oldest → newest, accumulating the running balance
+    let runningBalance = 0
+    type DateSnapshot = {
+      date: string
+      topUps: Array<TopUpEvent & { carryBalanceAfter: number; balanceAfter: number }>
+      dayHeads: number
+      balanceAfterDay: number
+    }
+    const snapshots: DateSnapshot[] = []
+
+    for (const date of allEventDates) {
+      if (date > today) continue
+
+      const topUpsToday = topUpByDate.get(date) ?? []
+      type TopUpWithBalance = TopUpEvent & { carryBalanceAfter: number; balanceAfter: number }
+      const topUpsWithBalance: TopUpWithBalance[] = []
+      for (const ev of topUpsToday) {
+        // First apply carry-in (if any) — seats that rolled over from previous lot
+        if (ev.carryIn > 0) runningBalance += ev.carryIn
+        const carryBalanceAfter = runningBalance
+        // Then add the new lot's own seats
+        runningBalance += ev.seats
+        topUpsWithBalance.push({ ...ev, carryBalanceAfter, balanceAfter: runningBalance })
+      }
+
+      const dayHeads = rawHeadsByDay.get(date) ?? 0
+      runningBalance -= dayHeads
+
+      snapshots.push({
+        date,
+        topUps: topUpsWithBalance,
+        dayHeads,
+        balanceAfterDay: runningBalance,
+      })
+    }
+
+    // 5. Collect display bookings (program / guest / vc filtered)
+    const displayBookings: (Booking & { _lc: LotCard })[] = []
+    for (const lc of selectedLotCards) {
+      const effectiveStart = lc.startDate ?? '0000-00-00'
+      for (const bk of bookings) {
+        if (bk.agentSlug !== lc.lot.agentSlug || !isActiveBooking(bk)) continue
+        if (bk.date > today || bk.date > lc.endDate || bk.date < effectiveStart) continue
+        if (filterProgram && bk.program !== filterProgram) continue
+        if (guestQ && !bk.leadGuest.toLowerCase().includes(guestQ)) continue
+        if (vcQ && !(bk.agentRef.trim() || '').toLowerCase().includes(vcQ)) continue
+        displayBookings.push({ ...bk, _lc: lc })
+      }
+    }
+    displayBookings.sort(
+      (a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code),
+    )
+
+    // 6. Build HistoryLine rows from snapshots (display order: newest → oldest)
+    const result: HistoryLine[] = []
+
+    for (const snap of [...snapshots].reverse()) {
+      const { date, topUps, dayHeads, balanceAfterDay } = snap
+      const dayBookings = displayBookings.filter((b) => b.date === date)
+
+      // ── Booking rows ──
+      dayBookings.forEach((booking, index) => {
+        const isLast = index === dayBookings.length - 1
+        const agentSlug = booking.agentSlug
+        const agentName =
+          purchasedByAgent.get(agentSlug)?.name ||
+          agents.find((a) => a.slug === agentSlug)?.name ||
+          agentSlug
+        const rates = ratesForAgent(agentSlug, agentName)
+        const adults = Math.max(0, booking.adults)
+        const children = Math.max(0, booking.children)
+
+        result.push({
+          key: `${booking.code}|${date}`,
+          date,
+          vcNo: booking.agentRef.trim() || '—',
+          agentSlug,
+          agentName,
+          guestName: booking.leadGuest,
+          bookingLabel: `${programLabel(booking.program)} · ${booking.status}`,
+          paxLabel: formatPaxBreakdown(booking),
+          program: booking.program,
+          adults,
+          children,
+          adultPrice: rates.adultPrice,
+          childPrice: rates.childPrice,
+          amountAd: rates.adultPrice > 0 ? adults * rates.adultPrice : null,
+          amountCh: rates.childPrice > 0 ? children * rates.childPrice : null,
+          totalHeadUse: chargeablePax(booking),
+          balance: isLast ? balanceAfterDay : null,
+          isDayEnd: isLast,
+          dayTotalHeads: isLast ? dayHeads : null,
+        })
+      })
+
+      // ── Top-up + carry-in rows for this date (shown after booking rows in newest-first view,
+      //    because the credit happened before the day's bookings chronologically) ──
+      for (const ev of [...topUps].reverse()) {
+        // The new-lot purchase row
+        result.push({
+          key: `topup|${ev.lotCard.lot.id}|${date}`,
+          date,
+          vcNo: '—',
+          agentSlug: ev.agentSlug,
+          agentName: ev.agentName,
+          guestName: '—',
+          bookingLabel: '',
+          paxLabel: '',
+          program: null,
+          adults: 0,
+          children: 0,
+          adultPrice: 0,
+          childPrice: 0,
+          amountAd: null,
+          amountCh: null,
+          totalHeadUse: null,
+          balance: ev.balanceAfter,
+          isDayEnd: false,
+          dayTotalHeads: null,
+          isTopUp: true,
+          topUpSeats: ev.seats,
+          topUpAmount: ev.amount,
+          topUpLabel: ev.label,
+        })
+
+        // Carry-in row — shown immediately before the top-up row (below it in newest-first display)
+        if (ev.carryIn > 0) {
+          const prevLotIndex = ev.lotCard.lotIndex - 1
+          result.push({
+            key: `carryin|${ev.lotCard.lot.id}|${date}`,
+            date,
+            vcNo: '—',
+            agentSlug: ev.agentSlug,
+            agentName: ev.agentName,
+            guestName: '—',
+            bookingLabel: '',
+            paxLabel: '',
+            program: null,
+            adults: 0,
+            children: 0,
+            adultPrice: 0,
+            childPrice: 0,
+            amountAd: null,
+            amountCh: null,
+            totalHeadUse: null,
+            balance: ev.carryBalanceAfter,
+            isDayEnd: false,
+            dayTotalHeads: null,
+            isTopUp: true,
+            topUpSeats: ev.carryIn,
+            topUpAmount: 0,
+            topUpLabel: `Carry over from Lot ${prevLotIndex}`,
+          })
+        }
+      }
+    }
+
+    return result
   }, [
     agents,
     bookings,
-    daily,
-    dailyByAgentDay,
-    filterAgent,
-    filterChecker,
-    filterDate,
     filterGuest,
-    filterMonth,
     filterProgram,
     filterVc,
     purchasedByAgent,
     ratesByAgent,
+    selectedLotCards,
   ])
 
-  const balanceSummary = useMemo(() => {
-    const slugs = filterAgent ? [filterAgent] : [...purchasedByAgent.keys()]
-    return slugs
-      .map((slug) => {
-        const purchased = purchasedByAgent.get(slug)?.seats ?? 0
-        const bookingHeadsByDay = new Map<string, number>()
-        for (const booking of bookings) {
-          if (booking.agentSlug !== slug || !isActiveBooking(booking)) continue
-          bookingHeadsByDay.set(
-            booking.date,
-            (bookingHeadsByDay.get(booking.date) ?? 0) + chargeablePax(booking),
-          )
-        }
-        const days = [
-          ...new Set([
-            ...bookingHeadsByDay.keys(),
-            ...daily.filter((row) => row.agentSlug === slug).map((row) => row.day),
-          ]),
-        ]
-        const used = days.reduce((sum, day) => {
-          const saved = dailyByAgentDay.get(`${slug}|${day}`)
-          return sum + (saved !== undefined ? saved : bookingHeadsByDay.get(day) ?? 0)
-        }, 0)
-        const name =
-          purchasedByAgent.get(slug)?.name ||
-          agents.find((agent) => agent.slug === slug)?.name ||
-          slug
-        const rates = ratesForAgent(slug, name)
-        const totalAmount = purchasedByAgent.get(slug)?.totalAmount ?? 0
-        return {
-          slug,
-          name,
-          purchased,
-          used,
-          left: purchased - used,
-          adultPrice: rates.adultPrice,
-          childPrice: rates.childPrice,
-          totalAmount,
-        }
-      })
-      .filter((row) => row.purchased > 0 || row.used > 0)
-      .sort((a, b) => a.name.localeCompare(b.name))
-  }, [agents, bookings, daily, dailyByAgentDay, filterAgent, purchasedByAgent, ratesByAgent])
 
-  const hasActiveFilters = Boolean(
-    filterDate ||
-      filterAgent ||
-      filterProgram ||
-      filterChecker ||
-      filterGuest.trim() ||
-      filterVc.trim() ||
-      extraFilters.length > 0 ||
-      (filterMonth && filterMonth !== currentMonthValue()),
-  )
+  const hasNarrowFilters = Boolean(filterProgram || filterGuest.trim() || filterVc.trim())
 
-  function clearExtraFilterValue(kind: FilterKind) {
-    if (kind === 'program') setFilterProgram('')
-    if (kind === 'checker') setFilterChecker('')
-    if (kind === 'guest') setFilterGuest('')
-    if (kind === 'vc') setFilterVc('')
-  }
-
-  function removeExtraFilter(kind: FilterKind) {
-    clearExtraFilterValue(kind)
-    setExtraFilters((current) => current.filter((item) => item !== kind))
-  }
-
-  function addExtraFilter(kind: FilterKind) {
-    setExtraFilters((current) => (current.includes(kind) ? current : [...current, kind]))
-    setAddFilterOpen(false)
-  }
-
-  function clearFilters() {
-    setFilterDate('')
-    setFilterMonth(currentMonthValue())
-    setFilterAgent('')
+  function clearNarrowFilters() {
     setFilterProgram('')
-    setFilterChecker('')
     setFilterGuest('')
     setFilterVc('')
-    setExtraFilters([])
   }
 
-  const availableExtraFilters = EXTRA_FILTER_OPTIONS.filter(
-    (option) => !extraFilters.includes(option.kind),
-  )
+  // ── Per-lot section data (for the new stacked-section screen view) ──
+  type DayView = {
+    date: string
+    bookings: Booking[]
+    dayHeads: number
+    balanceAfterDay: number
+  }
+  type LotView = {
+    lotCard: LotCard
+    days: DayView[]  // oldest → newest
+  }
+
+  const lotViews = useMemo<LotView[]>(() => {
+    if (!expandedAgentSlug) return []
+    const group = agentGroups.find((g) => g.agentSlug === expandedAgentSlug)
+    if (!group) return []
+    const todayCap = todayISO()
+
+    // All bookings for this agent, chronological order (date ASC, then booking code for stability)
+    let bookingPool = bookings
+      .filter((bk) => bk.agentSlug === expandedAgentSlug && isActiveBooking(bk) && bk.date <= todayCap)
+      .sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code))
+
+    // Lots oldest → newest
+    const lotsOldest = [...group.lots].sort((a, b) => a.lotIndex - b.lotIndex)
+
+    // Sequential seat-consumption:
+    // Each lot absorbs bookings until its budget (lot.seats + seqCarryIn) is exhausted.
+    // Any booking that fits (remainingBudget ≥ heads) is assigned; too-large ones skip to
+    // the next lot. The last lot takes everything remaining (may go negative).
+    let seqCarryIn = 0
+
+    const views: LotView[] = lotsOldest.map((lc, i) => {
+      const isLastLot = i === lotsOldest.length - 1
+      const budget = lc.lot.seats + seqCarryIn
+
+      const lotBookings: Booking[] = []
+      const overflow: Booking[] = []
+
+      if (isLastLot) {
+        lotBookings.push(...bookingPool)
+      } else {
+        let remaining = budget
+        for (const bk of bookingPool) {
+          const heads = chargeablePax(bk)
+          if (remaining >= heads) {
+            lotBookings.push(bk)
+            remaining -= heads
+          } else {
+            overflow.push(bk)
+          }
+        }
+        // What's left after filling this lot becomes carry-in for the next lot
+        seqCarryIn = Math.max(0, remaining)
+      }
+      bookingPool = overflow
+
+      const usedSeats = lotBookings.reduce((s, bk) => s + chargeablePax(bk), 0)
+      const seqLeft = budget - usedSeats
+      const seqCarryOut = isLastLot ? 0 : Math.max(0, seqLeft)
+
+      // Build the per-day breakdown, balance counts down from budget
+      const dayDates = [...new Set(lotBookings.map((b) => b.date))].sort()
+      let runningBalance = budget
+      const days: DayView[] = dayDates.map((date) => {
+        const dayBookings = lotBookings.filter((b) => b.date === date)
+        const dayHeads = dayBookings.reduce((s, b) => s + chargeablePax(b), 0)
+        runningBalance -= dayHeads
+        return { date, bookings: dayBookings, dayHeads, balanceAfterDay: runningBalance }
+      })
+
+      // Override lotCard fields with sequential-allocation values for display
+      const seqLotCard: LotCard = {
+        ...lc,
+        carryIn: isLastLot ? 0 : lc.carryIn,  // keep original for carry pill display on lots 2+
+        effectiveSeats: budget,
+        used: usedSeats,
+        left: seqLeft,
+        carryOut: seqCarryOut,
+        displayLeft: seqCarryOut > 0 ? 0 : seqLeft,
+      }
+
+      return { lotCard: seqLotCard, days }
+    })
+
+    return views
+  }, [expandedAgentSlug, agentGroups, bookings])
 
   const bookingTotals = useMemo(() => {
     return lines.reduce(
       (acc, line) => {
+        if (line.isTopUp) return acc
         if (line.vcNo === '—' && line.guestName === '—') return acc
         acc.adults += line.adults
         acc.children += line.children
@@ -519,26 +722,46 @@ export function AdminAgentAllotmentHistory({
     )
   }, [lines])
 
-  const reportPeriodLabel = filterDate
-    ? formatShortDate(filterDate)
-    : filterMonth
-      ? formatMonthLabel(`${filterMonth}-01`)
-      : 'All dates'
+  const today = todayISO()
 
-  const reportAgentLabel = filterAgent
-    ? purchasedByAgent.get(filterAgent)?.name ||
-      agents.find((agent) => agent.slug === filterAgent)?.name ||
-      filterAgent
-    : 'All agents'
+  // Report label helpers
+  const uniqueAgentNames = [...new Set(selectedLotCards.map((lc) => lc.lot.agentName))]
+  const reportAgentLabel =
+    uniqueAgentNames.length === 0
+      ? 'All agents'
+      : uniqueAgentNames.length === 1
+        ? uniqueAgentNames[0]
+        : uniqueAgentNames.join(' + ')
 
-  const printSummary = filterAgent
-    ? balanceSummary.find((row) => row.slug === filterAgent) ?? balanceSummary[0]
-    : balanceSummary.length === 1
-      ? balanceSummary[0]
+  const reportPeriodLabel =
+    selectedLotCards.length === 0
+      ? 'All dates'
+      : (() => {
+          const starts = selectedLotCards.map((lc) => lc.startDate ?? '0000-00-00')
+          const ends = selectedLotCards.map((lc) => lc.endDate)
+          const minStart = starts.reduce((a, b) => (a < b ? a : b))
+          const maxEnd = ends.reduce((a, b) => (a > b ? a : b))
+          return [
+            minStart === '0000-00-00' ? 'start' : formatShortDate(minStart),
+            '–',
+            maxEnd >= today ? 'today' : formatShortDate(maxEnd),
+          ].join(' ')
+        })()
+
+  const printSummary =
+    selectedLotCards.length > 0
+      ? {
+          adultPrice: selectedLotCards[0].lot.adultPrice,
+          childPrice: selectedLotCards[0].lot.childPrice,
+          totalAmount: mergedAmount,
+          purchased: mergedPurchased,
+          used: mergedUsed,
+          left: mergedLeft,   // displayLeft-based: last lot balance, others 0
+        }
       : null
 
   function handlePrint() {
-    if (lines.length === 0 && balanceSummary.length === 0) return
+    if (lines.length === 0 && selectedLotCards.length === 0) return
     const previousTitle = document.title
     document.title = `Allotment report · ${reportAgentLabel} · ${reportPeriodLabel}`
     let restored = false
@@ -558,7 +781,7 @@ export function AdminAgentAllotmentHistory({
       <div className="print:hidden">
       <PageHeader
         title="Allotment history"
-        description="Each booking shows its AD+CH heads. Balance updates from bookings; Daily checker can confirm or adjust the day total."
+        description="Each booking shows its AD+CH heads. Balance auto-syncs from confirmed bookings up to today."
         actions={
           <div className="flex flex-wrap gap-2">
             <Button type="button" variant="outline" size="sm" onClick={onBack}>
@@ -570,7 +793,7 @@ export function AdminAgentAllotmentHistory({
               variant="outline"
               size="sm"
               onClick={handlePrint}
-              disabled={lines.length === 0 && balanceSummary.length === 0}
+              disabled={lines.length === 0}
             >
               <Printer className="size-3.5" />
               Print / PDF
@@ -583,536 +806,530 @@ export function AdminAgentAllotmentHistory({
         }
       />
 
-      <Surface className="mb-4 p-4 sm:p-5">
-        <p className="mb-3 text-xs text-teal-900/45">
-          Fill in order: <span className="font-medium text-teal-900/70">1. Date or Month</span>
-          {' · '}
-          <span className="font-medium text-teal-900/70">2. Agent</span>
-        </p>
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="min-w-[9rem] space-y-1.5">
-            <Label htmlFor="usage-filter-date" className="text-xs text-neutral-400">
-              1a. Date
-            </Label>
-            <Input
-              id="usage-filter-date"
-              type="date"
-              value={filterDate}
-              onChange={(event) => {
-                const next = event.target.value
-                setFilterDate(next)
-                if (next) setFilterMonth('')
-              }}
-              className="h-10"
-            />
-          </div>
-          <div className="flex h-10 items-center px-1 text-xs font-medium text-teal-900/35">
-            or
-          </div>
-          <div className="min-w-[9rem] space-y-1.5">
-            <Label htmlFor="usage-filter-month" className="text-xs text-neutral-400">
-              1b. Month
-            </Label>
-            <Input
-              id="usage-filter-month"
-              type="month"
-              value={filterMonth}
-              onChange={(event) => {
-                const next = event.target.value
-                setFilterMonth(next)
-                if (next) setFilterDate('')
-              }}
-              onClick={(event) => {
-                try {
-                  event.currentTarget.showPicker?.()
-                } catch {
-                  /* older browsers */
-                }
-              }}
-              className="h-10 cursor-pointer"
-            />
-          </div>
-          <div className="min-w-[10rem] flex-1 space-y-1.5 sm:max-w-[14rem]">
-            <Label htmlFor="usage-filter-agent" className="text-xs text-neutral-400">
-              2. Agent
-            </Label>
-            <select
-              id="usage-filter-agent"
-              value={filterAgent}
-              onChange={(event) => setFilterAgent(event.target.value)}
-              className="h-10 w-full rounded-xl border border-teal-900/12 bg-white/80 px-3 text-sm outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
-            >
-              <option value="">All agents</option>
-              {agentOptions.map((agent) => (
-                <option key={agent.slug} value={agent.slug}>
-                  {agent.name}
-                </option>
-              ))}
-            </select>
-          </div>
+      {/* ── Agent → Lot picker (2-level) ── */}
+      <div className="mb-4">
 
-          {extraFilters.includes('program') ? (
-            <div className="min-w-[8rem] space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <Label htmlFor="usage-filter-program" className="text-xs text-neutral-400">
-                  Program
-                </Label>
-                <button
-                  type="button"
-                  className="text-teal-900/35 hover:text-teal-900/70"
-                  aria-label="Remove program filter"
-                  onClick={() => removeExtraFilter('program')}
-                >
-                  <X className="size-3.5" />
-                </button>
-              </div>
-              <select
-                id="usage-filter-program"
-                value={filterProgram}
-                onChange={(event) => setFilterProgram(event.target.value as Program | '')}
-                className="h-10 w-full rounded-xl border border-teal-900/12 bg-white/80 px-3 text-sm outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
-              >
-                <option value="">All programs</option>
-                <option value="PP">PP</option>
-                <option value="James Bond">James Bond</option>
-              </select>
-            </div>
-          ) : null}
+        {/* ── Level 1: Agent summary cards (shown when no agent expanded) ── */}
+        {!expandedAgentSlug && !loading && (
+          <>
+            <p className="mb-2.5 text-xs font-medium text-teal-900/50">
+              Select an agent to view their allotment lots
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              {agentGroups.map((group) => {
+                const lastLot = group.lots[group.lots.length - 1]
+                const totalSeats = group.lots.reduce((s, lc) => s + lc.lot.seats, 0)
+                const totalUsed = group.lots.reduce((s, lc) => s + lc.used, 0)
+                const finalLeft = lastLot.left  // carry-aware final balance
+                const totalAmount = group.lots.reduce((s, lc) => s + Math.max(0, Number(lc.lot.totalAmount) || 0), 0)
+                const hasActive = group.lots.some((lc) => lc.lot.receivesBookings)
+                const nSelected = group.lots.filter((lc) => selectedLotIds.includes(lc.lot.id)).length
 
-          {extraFilters.includes('checker') ? (
-            <div className="min-w-[9rem] space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <Label htmlFor="usage-filter-checker" className="text-xs text-neutral-400">
-                  Checker
-                </Label>
-                <button
-                  type="button"
-                  className="text-teal-900/35 hover:text-teal-900/70"
-                  aria-label="Remove checker filter"
-                  onClick={() => removeExtraFilter('checker')}
-                >
-                  <X className="size-3.5" />
-                </button>
-              </div>
-              <select
-                id="usage-filter-checker"
-                value={filterChecker}
-                onChange={(event) => setFilterChecker(event.target.value as CheckerFilter)}
-                className="h-10 w-full rounded-xl border border-teal-900/12 bg-white/80 px-3 text-sm outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
-              >
-                <option value="">All</option>
-                <option value="confirmed">Confirmed</option>
-                <option value="pending">Pending</option>
-              </select>
-            </div>
-          ) : null}
-
-          {extraFilters.includes('guest') ? (
-            <div className="min-w-[9rem] flex-1 space-y-1.5 sm:max-w-[12rem]">
-              <div className="flex items-center justify-between gap-2">
-                <Label htmlFor="usage-filter-guest" className="text-xs text-neutral-400">
-                  Guest
-                </Label>
-                <button
-                  type="button"
-                  className="text-teal-900/35 hover:text-teal-900/70"
-                  aria-label="Remove guest filter"
-                  onClick={() => removeExtraFilter('guest')}
-                >
-                  <X className="size-3.5" />
-                </button>
-              </div>
-              <Input
-                id="usage-filter-guest"
-                value={filterGuest}
-                onChange={(event) => setFilterGuest(event.target.value)}
-                placeholder="Guest name"
-                className="h-10"
-              />
-            </div>
-          ) : null}
-
-          {extraFilters.includes('vc') ? (
-            <div className="min-w-[9rem] flex-1 space-y-1.5 sm:max-w-[12rem]">
-              <div className="flex items-center justify-between gap-2">
-                <Label htmlFor="usage-filter-vc" className="text-xs text-neutral-400">
-                  VC No
-                </Label>
-                <button
-                  type="button"
-                  className="text-teal-900/35 hover:text-teal-900/70"
-                  aria-label="Remove VC filter"
-                  onClick={() => removeExtraFilter('vc')}
-                >
-                  <X className="size-3.5" />
-                </button>
-              </div>
-              <Input
-                id="usage-filter-vc"
-                value={filterVc}
-                onChange={(event) => setFilterVc(event.target.value)}
-                placeholder="Voucher no."
-                className="h-10"
-              />
-            </div>
-          ) : null}
-
-          <div className="flex flex-wrap items-center gap-2">
-            {availableExtraFilters.length > 0 ? (
-              <Popover open={addFilterOpen} onOpenChange={setAddFilterOpen}>
-                <PopoverTrigger
-                  render={
-                    <Button type="button" variant="outline" className="h-10 rounded-xl" />
-                  }
-                >
-                  <Plus className="size-3.5" />
-                  More
-                </PopoverTrigger>
-                <PopoverContent align="start" className="w-64 gap-1 p-2">
-                  {availableExtraFilters.map((option) => (
-                    <button
-                      key={option.kind}
-                      type="button"
-                      className="flex w-full flex-col rounded-lg px-2.5 py-2 text-left hover:bg-teal-950/[0.04]"
-                      onClick={() => addExtraFilter(option.kind)}
-                    >
-                      <span className="text-sm font-medium text-teal-950">{option.label}</span>
-                      <span className="text-[11px] text-teal-900/45">{option.hint}</span>
-                    </button>
-                  ))}
-                </PopoverContent>
-              </Popover>
-            ) : null}
-            {hasActiveFilters ? (
-              <Button
-                type="button"
-                variant="outline"
-                className="h-10 rounded-xl"
-                onClick={clearFilters}
-              >
-                Reset
-              </Button>
-            ) : null}
-          </div>
-        </div>
-      </Surface>
-
-      {balanceSummary.length > 0 ? (
-        <div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-          {balanceSummary.map((row) => (
-            <Surface key={row.slug} className="px-4 py-3">
-              <p className="text-sm font-semibold text-teal-950">{row.name}</p>
-              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
-                <div>
-                  <p className="text-teal-900/45">Price AD</p>
-                  <p className="font-semibold tabular-nums text-teal-950">
-                    {row.adultPrice > 0 ? `${formatMoney(row.adultPrice)} THB` : '—'}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-teal-900/45">Price CH</p>
-                  <p className="font-semibold tabular-nums text-teal-950">
-                    {row.childPrice > 0 ? `${formatMoney(row.childPrice)} THB` : '—'}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-teal-900/45">Lot total</p>
-                  <p className="font-semibold tabular-nums text-teal-950">
-                    {row.totalAmount > 0 ? `${formatMoney(row.totalAmount)} THB` : '—'}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-teal-900/45">Seat Left Balance</p>
-                  <p
-                    className={cn(
-                      'font-semibold tabular-nums',
-                      row.left <= 0 ? 'text-rose-600' : 'text-teal-800',
-                    )}
+                return (
+                  <button
+                    key={group.agentSlug}
+                    type="button"
+                    onClick={() => setExpandedAgentSlug(group.agentSlug)}
+                    className="w-full rounded-[1.35rem] border border-teal-900/10 bg-white p-4 text-left transition-all hover:border-teal-900/20 hover:shadow-sm sm:p-5"
                   >
-                    {row.left}
-                  </p>
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-[11px] text-teal-900/45">
+                          {group.lots.length} lot{group.lots.length > 1 ? 's' : ''}
+                        </p>
+                        <p className="mt-0.5 text-sm font-semibold text-teal-950">
+                          {group.agentName}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-1">
+                        {hasActive && (
+                          <span className="rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-semibold text-teal-700">
+                            Active
+                          </span>
+                        )}
+                        {nSelected > 0 && (
+                          <span className="rounded-full bg-teal-600 px-2 py-0.5 text-[10px] font-semibold text-white">
+                            {nSelected} selected
+                          </span>
+                        )}
+                        {/* Chevron */}
+                        <svg viewBox="0 0 6 10" fill="none" className="mt-0.5 size-3 text-teal-900/30">
+                          <path d="M1 1l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-3 gap-x-3 text-xs">
+                      <div>
+                        <p className="text-teal-900/40">Seats</p>
+                        <p className="font-semibold tabular-nums text-teal-950">{totalSeats}</p>
+                      </div>
+                      <div>
+                        <p className="text-teal-900/40">Used</p>
+                        <p className="font-semibold tabular-nums text-teal-950">{totalUsed}</p>
+                      </div>
+                      <div>
+                        <p className="text-teal-900/40">Left</p>
+                        <p className={cn('font-semibold tabular-nums', finalLeft <= 0 ? 'text-rose-600' : 'text-teal-700')}>
+                          {finalLeft}
+                        </p>
+                      </div>
+                    </div>
+                    {totalAmount > 0 && (
+                      <p className="mt-2 text-[10px] text-teal-900/35">
+                        {formatMoney(totalAmount)} THB total
+                      </p>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          </>
+        )}
+
+        {/* ── Level 2: Lot cards for expanded agent ── */}
+        {expandedAgentSlug && !loading && (() => {
+          const group = agentGroups.find((g) => g.agentSlug === expandedAgentSlug)
+          if (!group) return null
+          const allSelected = group.lots.every((lc) => selectedLotIds.includes(lc.lot.id))
+
+          return (
+            <div>
+              {/* Back + header row */}
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedAgentSlug(null)}
+                    className="flex items-center gap-1 text-xs text-teal-700 hover:underline"
+                  >
+                    <svg viewBox="0 0 6 10" fill="none" className="size-2.5 rotate-180">
+                      <path d="M1 1l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    All agents
+                  </button>
+                  <span className="text-teal-900/25">/</span>
+                  <span className="text-xs font-medium text-teal-950">{group.agentName}</span>
+                  <span className="text-[11px] text-teal-900/40">
+                    · {group.lots.length} lot{group.lots.length > 1 ? 's' : ''}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3">
+                  {group.lots.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => selectAgentLots(group.agentSlug)}
+                      className="text-xs text-teal-700 hover:underline"
+                    >
+                      {allSelected ? 'Deselect all' : `Select all ${group.lots.length}`}
+                    </button>
+                  )}
+                  {selectedLotIds.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedLotIds([])}
+                      className="text-xs text-teal-900/40 hover:text-teal-700 hover:underline"
+                    >
+                      Clear
+                    </button>
+                  )}
                 </div>
               </div>
-              <p className="mt-2 text-[11px] text-teal-900/45">
-                Purchased {row.purchased} · Used {row.used}
-              </p>
-            </Surface>
-          ))}
-        </div>
-      ) : null}
 
-      {loadError ? (
+              {/* Merged summary strip — shown when 2+ lots selected */}
+              {isMerged && (
+                <div className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-2xl border border-teal-500/30 bg-teal-50/70 px-4 py-3">
+                  <p className="text-xs font-semibold text-teal-800">
+                    Merged: {uniqueAgentNames.join(' + ')}
+                  </p>
+                  <div className="flex flex-wrap gap-x-5 gap-y-0.5 text-xs tabular-nums">
+                    <span className="text-teal-900/60">
+                      Seats <span className="font-semibold text-teal-950">{mergedPurchased}</span>
+                      {mergedEffective > mergedPurchased && (
+                        <span className="ml-1 text-emerald-600">+{mergedEffective - mergedPurchased} carry</span>
+                      )}
+                    </span>
+                    <span className="text-teal-900/60">
+                      Used <span className="font-semibold text-teal-950">{mergedUsed}</span>
+                    </span>
+                    <span className="text-teal-900/60">
+                      Left{' '}
+                      <span className={cn('font-semibold', mergedLeft <= 0 ? 'text-rose-600' : 'text-teal-700')}>
+                        {mergedLeft}
+                      </span>
+                    </span>
+                    {mergedAmount > 0 && (
+                      <span className="text-teal-900/60">
+                        Amount <span className="font-semibold text-teal-950">{formatMoney(mergedAmount)} THB</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Lot cards (newest first — lotCards are already sorted that way) */}
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {[...group.lots].reverse().map((lc) => {
+                  const isSelected = selectedLotIds.includes(lc.lot.id)
+                  const lotDate = lc.lot.paidDate || lc.lot.createdAt.slice(0, 10)
+
+                  return (
+                    <button
+                      key={lc.lot.id}
+                      type="button"
+                      onClick={() => {
+                        toggleLot(lc.lot.id)
+                        setTimeout(() => {
+                          document
+                            .getElementById(`lot-section-${lc.lot.id}`)
+                            ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                        }, 60)
+                      }}
+                      className={cn(
+                        'w-full rounded-[1.35rem] border p-4 text-left transition-all sm:p-5',
+                        isSelected
+                          ? 'border-teal-500/50 bg-teal-50/80 shadow-sm ring-2 ring-teal-500/25'
+                          : 'border-teal-900/10 bg-white hover:border-teal-900/20 hover:shadow-sm',
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-[11px] text-teal-900/45">
+                            Lot {lc.lotIndex} / {lc.totalLots} · {formatShortDate(lotDate)}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 flex-col items-end gap-1">
+                          <span
+                            className={cn(
+                              'flex size-5 items-center justify-center rounded-full border-2 transition-colors',
+                              isSelected
+                                ? 'border-teal-600 bg-teal-600 text-white'
+                                : 'border-teal-900/20 bg-white',
+                            )}
+                          >
+                            {isSelected && (
+                              <svg viewBox="0 0 10 8" fill="none" className="size-2.5">
+                                <path d="M1 4l3 3 5-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            )}
+                          </span>
+                          {lc.lot.receivesBookings && (
+                            <span className="rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-semibold text-teal-700">
+                              Active
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="mt-3 grid grid-cols-3 gap-x-3 text-xs">
+                        <div>
+                          <p className="text-teal-900/40">Seats</p>
+                          <p className="font-semibold tabular-nums text-teal-950">
+                            {lc.lot.seats}
+                            {lc.carryIn > 0 && (
+                              <span className="ml-1 font-normal text-emerald-600">+{lc.carryIn}</span>
+                            )}
+                          </p>
+                          {lc.carryIn > 0 && <p className="text-[10px] text-emerald-600/70">carry</p>}
+                        </div>
+                        <div>
+                          <p className="text-teal-900/40">Used</p>
+                          <p className="font-semibold tabular-nums text-teal-950">{lc.used}</p>
+                        </div>
+                        <div>
+                          <p className="text-teal-900/40">Left</p>
+                          <p
+                            className={cn(
+                              'font-semibold tabular-nums',
+                              lc.left < 0
+                                ? 'text-rose-600'
+                                : lc.carryOut > 0
+                                  ? 'text-emerald-600'
+                                  : 'text-teal-700',
+                            )}
+                          >
+                            {lc.left}
+                          </p>
+                          {lc.carryOut > 0 && (
+                            <p className="text-[10px] text-emerald-600/70">↗ Lot {lc.lotIndex + 1}</p>
+                          )}
+                        </div>
+                      </div>
+                      <p className="mt-2 text-[10px] text-teal-900/35">
+                        {lc.startDate ? formatShortDate(lc.startDate) : 'From start'}
+                        {' – '}
+                        {lc.endDate >= today ? 'today' : formatShortDate(lc.endDate)}
+                        {lc.lot.totalAmount > 0 ? ` · ${formatMoney(lc.lot.totalAmount)} THB` : ''}
+                      </p>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })()}
+      </div>
+
+
+      
+            {loadError ? (
         <p className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-800">
           {loadError}
         </p>
       ) : null}
 
-      {loading ? <p className="text-sm text-teal-900/50">Loading usage history…</p> : null}
+      {loading ? <p className="text-sm text-teal-900/50">Loading…</p> : null}
 
-      {!loading && lines.length === 0 && !loadError ? (
-        <Surface className="p-6 text-sm text-teal-900/55">
-          No booking usage yet. Add allotment seats, then review usage here.
-        </Surface>
-      ) : null}
-
-      {lines.length > 0 ? (
+      {/* ── Stacked per-lot sections (new screen view) ── */}
+      {!loading && expandedAgentSlug ? (
         <>
-          <div className="mb-3 text-sm text-teal-900/60">
-            <span className="font-semibold text-teal-950">{lines.length}</span> booking line
-            {lines.length === 1 ? '' : 's'}
-            <span className="mx-1.5">·</span>
-            Heads = AD+CH per booking · gray until Daily checker is saved · Balance on last line of each day
-          </div>
-
-          <div className="space-y-3 md:hidden">
-            {lines.map((line) => (
-              <Surface key={line.key} className="p-4">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="text-xs text-teal-900/45">{formatShortDate(line.date)}</p>
-                    <p
-                      className="mt-0.5 break-all font-semibold leading-snug text-teal-950 [overflow-wrap:anywhere]"
-                      title={line.vcNo}
-                    >
-                      {line.vcNo.includes('/')
-                        ? line.vcNo.split('/').map((part, index, parts) => (
-                            <span key={`${line.key}-m-vc-${index}`}>
-                              {index > 0 ? '/' : ''}
-                              {part}
-                              {index < parts.length - 1 ? <br /> : null}
-                            </span>
-                          ))
-                        : line.vcNo}
-                    </p>
-                    <p className="mt-1 text-sm text-teal-900/70">{line.guestName}</p>
-                  </div>
-                  <p className="text-xs tabular-nums text-teal-900/55">{line.paxLabel}</p>
-                </div>
-                <p className="mt-2 text-xs text-teal-900/55">
-                  Adult{' '}
-                  {line.adultPrice > 0 ? (
-                    <span className="text-teal-900/40">({formatMoney(line.adultPrice)}) </span>
-                  ) : null}
-                  <span className="font-medium tabular-nums text-teal-950">
-                    {line.amountAd === null
-                      ? '—'
-                      : line.adults === 0
-                        ? '—'
-                        : formatMoney(line.amountAd)}
-                  </span>
-                  <span className="mx-1.5 text-teal-900/30">·</span>
-                  CH{' '}
-                  {line.childPrice > 0 ? (
-                    <span className="text-teal-900/40">({formatMoney(line.childPrice)}) </span>
-                  ) : null}
-                  <span className="font-medium tabular-nums text-teal-950">
-                    {line.amountCh === null
-                      ? '—'
-                      : line.children === 0
-                        ? '—'
-                        : formatMoney(line.amountCh)}
-                  </span>
-                  <span className="mx-1.5 text-teal-900/30">·</span>
-                  Total{' '}
-                  <span className="font-semibold tabular-nums text-teal-950">
-                    {(() => {
-                      const total = lineTicketTotal(line)
-                      if (total === null) return '—'
-                      return formatMoney(total)
-                    })()}
-                  </span>
-                </p>
-                <p className="mt-2 text-sm text-teal-950">
-                  Heads{' '}
-                  <span
-                    className={cn(
-                      'tabular-nums',
-                      line.checkerConfirmed
-                        ? 'font-semibold text-teal-950'
-                        : 'font-normal text-teal-900/35',
-                    )}
-                  >
-                    {line.totalHeadUse === null ? '—' : line.totalHeadUse}
-                  </span>
-                  {line.isDayEnd ? (
-                    <>
-                      <span className="mx-1.5 text-teal-900/35">·</span>
-                      Balance{' '}
-                      <span
-                        className={cn(
-                          'tabular-nums',
-                          !line.checkerConfirmed
-                            ? 'font-normal text-teal-900/35'
-                            : line.balance !== null && line.balance <= 0
-                              ? 'font-semibold text-rose-600'
-                              : 'font-semibold text-teal-800',
-                        )}
-                      >
-                        {line.balance === null ? '—' : line.balance}
-                      </span>
-                    </>
-                  ) : null}
-                </p>
-              </Surface>
-            ))}
-          </div>
-
-          <Surface className="hidden overflow-x-auto md:block">
-            <Table className="table-fixed">
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="w-[6.5rem] px-2 text-teal-700/45">Date</TableHead>
-                  <TableHead className="w-[8rem] px-2 text-teal-700/45">VC No</TableHead>
-                  <TableHead className="w-[8rem] px-2 text-teal-700/45">Guest</TableHead>
-                  <TableHead className="w-[6.5rem] px-2 text-teal-700/45">AD+CH+IF+TL</TableHead>
-                  <TableHead className="w-[5.5rem] px-2 text-right text-teal-700/45">
-                    {adultHeader}
-                  </TableHead>
-                  <TableHead className="w-[5.5rem] px-2 text-right text-teal-700/45">
-                    {childHeader}
-                  </TableHead>
-                  <TableHead className="w-[5.5rem] px-2 text-right text-teal-700/45">
-                    Total Amount
-                  </TableHead>
-                  <TableHead className="w-[4.5rem] px-2 text-right text-teal-700/45">Heads</TableHead>
-                  <TableHead className="w-[5rem] px-2 text-right text-teal-700/45">Left</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {lines.map((line) => (
-                  <TableRow
-                    key={line.key}
-                    className={cn(line.isDayEnd && 'border-b-teal-900/15')}
-                  >
-                    <TableCell className="px-2 whitespace-nowrap">
-                      {formatShortDate(line.date)}
-                    </TableCell>
-                    <TableCell className="w-[8rem] max-w-[8rem] whitespace-normal px-2">
-                      <span
-                        className="block w-full break-all font-medium leading-snug tabular-nums [overflow-wrap:anywhere]"
-                        title={line.vcNo}
-                      >
-                        {line.vcNo.includes('/')
-                          ? line.vcNo.split('/').map((part, index, parts) => (
-                              <span key={`${line.key}-vc-${index}`}>
-                                {index > 0 ? '/' : ''}
-                                {part}
-                                {index < parts.length - 1 ? <br /> : null}
-                              </span>
-                            ))
-                          : line.vcNo}
-                      </span>
-                    </TableCell>
-                    <TableCell className="max-w-[8rem] truncate px-2" title={line.guestName}>
-                      {line.guestName}
-                    </TableCell>
-                    <TableCell className="px-2 tabular-nums">{line.paxLabel}</TableCell>
-                    <TableCell
-                      className="px-2 text-right tabular-nums font-medium"
-                      title={
-                        line.amountAd === null || line.adultPrice <= 0
-                          ? 'No allotment AD price for this agent'
-                          : `${line.adults} × ${formatMoney(line.adultPrice)} = ${formatMoney(line.amountAd)}`
-                      }
-                    >
-                      {line.amountAd === null
-                        ? line.adults > 0
-                          ? '—'
-                          : ''
-                        : formatMoney(line.amountAd)}
-                    </TableCell>
-                    <TableCell
-                      className="px-2 text-right tabular-nums font-medium"
-                      title={
-                        line.amountCh === null || line.childPrice <= 0
-                          ? 'No allotment CH price for this agent'
-                          : `${line.children} × ${formatMoney(line.childPrice)} = ${formatMoney(line.amountCh)}`
-                      }
-                    >
-                      {line.amountCh === null
-                        ? line.children > 0
-                          ? '—'
-                          : '—'
-                        : line.children === 0
-                          ? '—'
-                          : formatMoney(line.amountCh)}
-                    </TableCell>
-                    <TableCell
-                      className="px-2 text-right tabular-nums font-semibold text-teal-950"
-                      title={
-                        (() => {
-                          const total = lineTicketTotal(line)
-                          if (total === null) return 'No allotment AD/CH price for this agent'
-                          const ad = line.amountAd ?? 0
-                          const ch = line.amountCh ?? 0
-                          return `${formatMoney(ad)} + ${formatMoney(ch)} = ${formatMoney(total)}`
-                        })()
-                      }
-                    >
-                      {(() => {
-                        const total = lineTicketTotal(line)
-                        if (total === null) {
-                          return line.adults > 0 || line.children > 0 ? '—' : ''
-                        }
-                        return formatMoney(total)
-                      })()}
-                    </TableCell>
-                    <TableCell
-                      className={cn(
-                        'px-2 text-right tabular-nums',
-                        line.checkerConfirmed
-                          ? 'font-semibold text-teal-950'
-                          : 'font-normal text-teal-900/35',
-                      )}
-                    >
-                      {line.totalHeadUse === null ? '' : line.totalHeadUse}
-                    </TableCell>
-                    <TableCell
-                      className={cn(
-                        'px-2 text-right tabular-nums',
-                        !line.isDayEnd
-                          ? ''
-                          : !line.checkerConfirmed
-                            ? 'font-normal text-teal-900/35'
-                            : line.balance !== null && line.balance <= 0
-                              ? 'font-semibold text-rose-600'
-                              : 'font-semibold text-teal-900',
-                      )}
-                    >
-                      {line.isDayEnd
-                        ? line.balance === null
-                          ? '—'
-                          : line.balance
-                        : ''}
-                    </TableCell>
-                  </TableRow>
-                ))}
-                <TableRow className="border-t-2 border-teal-900/15 bg-teal-950/[0.03] hover:bg-teal-950/[0.03]">
-                  <TableCell className="px-2 font-semibold text-teal-950" colSpan={3}>
-                    Booking total
-                  </TableCell>
-                  <TableCell className="px-2 tabular-nums font-semibold text-teal-950">
-                    {bookingTotals.adults}+{bookingTotals.children}
-                  </TableCell>
-                  <TableCell className="px-2 text-right font-semibold tabular-nums text-teal-950">
-                    {formatMoney(bookingTotals.amountAd)}
-                  </TableCell>
-                  <TableCell className="px-2 text-right font-semibold tabular-nums text-teal-950">
-                    {formatMoney(bookingTotals.amountCh)}
-                  </TableCell>
-                  <TableCell className="px-2 text-right font-semibold tabular-nums text-teal-950">
-                    {formatMoney(bookingTotals.totalAmount)}
-                  </TableCell>
-                  <TableCell className="px-2 text-right font-semibold tabular-nums text-teal-950">
-                    {bookingTotals.heads}
-                  </TableCell>
-                  <TableCell />
-                </TableRow>
-              </TableBody>
-            </Table>
+          {/* Narrow filters row */}
+          <Surface className="mb-4 p-3 sm:p-4">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="min-w-[8rem] space-y-1">
+                <Label htmlFor="narrow-program" className="text-xs text-neutral-400">Program</Label>
+                <select
+                  id="narrow-program"
+                  value={filterProgram}
+                  onChange={(e) => setFilterProgram(e.target.value as Program | '')}
+                  className="h-9 w-full rounded-xl border border-teal-900/12 bg-white/80 px-3 text-sm outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
+                >
+                  <option value="">All programs</option>
+                  <option value="PP">PP</option>
+                  <option value="James Bond">James Bond</option>
+                </select>
+              </div>
+              <div className="min-w-[9rem] flex-1 space-y-1 sm:max-w-[13rem]">
+                <Label htmlFor="narrow-guest" className="text-xs text-neutral-400">Guest</Label>
+                <Input id="narrow-guest" value={filterGuest} onChange={(e) => setFilterGuest(e.target.value)} placeholder="Guest name" className="h-9" />
+              </div>
+              <div className="min-w-[9rem] flex-1 space-y-1 sm:max-w-[13rem]">
+                <Label htmlFor="narrow-vc" className="text-xs text-neutral-400">VC No</Label>
+                <Input id="narrow-vc" value={filterVc} onChange={(e) => setFilterVc(e.target.value)} placeholder="Voucher no." className="h-9" />
+              </div>
+              {hasNarrowFilters && (
+                <Button type="button" variant="outline" className="h-9 rounded-xl" onClick={clearNarrowFilters}>Reset</Button>
+              )}
+            </div>
           </Surface>
+
+          {/* Per-lot stacked sections — newest lot first */}
+          <div className="space-y-3">
+            {[...lotViews].reverse().map((lv, reversedIndex) => {
+              const { lotCard: lc, days } = lv
+              const isSelected = selectedLotIds.includes(lc.lot.id)
+              const lotDate = lc.lot.paidDate || lc.lot.createdAt.slice(0, 10)
+              const isNewest = reversedIndex === 0
+              const guestQ = filterGuest.trim().toLowerCase()
+              const vcQ = filterVc.trim().toLowerCase()
+
+              // Filter booking rows for display (balance calc uses all bookings regardless)
+              const filteredDays = days.map((dv) => ({
+                ...dv,
+                bookings: dv.bookings.filter((bk) => {
+                  if (filterProgram && bk.program !== filterProgram) return false
+                  if (guestQ && !bk.leadGuest.toLowerCase().includes(guestQ)) return false
+                  if (vcQ && !(bk.agentRef.trim() || '').toLowerCase().includes(vcQ)) return false
+                  return true
+                }),
+              })).filter((dv) => dv.bookings.length > 0)
+
+              const totalBookingHeads = days.reduce((s, dv) => s + dv.dayHeads, 0)
+
+              return (
+                <div key={lc.lot.id} id={`lot-section-${lc.lot.id}`}>
+                  {/* Carry-over connector between lots (shown below the older lot) */}
+                  {!isNewest && lc.carryOut > 0 && (
+                    <div className="my-2 flex items-center gap-2 px-2 text-xs text-emerald-600">
+                      <div className="h-px flex-1 bg-emerald-200/60" />
+                      <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 font-medium">
+                        ↗ {lc.carryOut} seats carry to Lot {lc.lotIndex + 1}
+                      </span>
+                      <div className="h-px flex-1 bg-emerald-200/60" />
+                    </div>
+                  )}
+
+                  <Surface className={cn('overflow-hidden transition-shadow', isSelected && 'ring-2 ring-teal-500/30')}>
+                    {/* ── Lot header ── */}
+                    <div className="border-b border-teal-900/8 bg-teal-950/[0.025] px-4 py-3 sm:px-5 sm:py-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-[11px] font-semibold tracking-wide text-teal-900/45 uppercase">
+                              Lot {lc.lotIndex} / {lc.totalLots}
+                            </p>
+                            {lc.lot.receivesBookings && (
+                              <span className="rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-bold text-teal-700 uppercase tracking-wide">
+                                Active
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-0.5 text-base font-bold text-teal-950">
+                            +{lc.lot.seats} seats purchased
+                          </p>
+                          <p className="text-xs text-teal-900/50">
+                            {formatShortDate(lotDate)}
+                            {lc.lot.totalAmount > 0 && ` · ${formatMoney(lc.lot.totalAmount)} THB`}
+                          </p>
+                        </div>
+
+                        {/* Lot balance summary */}
+                        <div className="flex gap-4 text-right text-xs">
+                          <div>
+                            <p className="text-teal-900/40">Effective</p>
+                            <p className="font-semibold tabular-nums text-teal-950">
+                              {lc.effectiveSeats}
+                              {lc.carryIn > 0 && (
+                                <span className="ml-1 font-normal text-emerald-600 text-[11px]">
+                                  (+{lc.carryIn})
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-teal-900/40">Used</p>
+                            <p className="font-semibold tabular-nums text-teal-950">{lc.used}</p>
+                          </div>
+                          <div>
+                            <p className="text-teal-900/40">Balance</p>
+                            <p
+                              className={cn(
+                                'font-bold tabular-nums text-sm',
+                                lc.left < 0 ? 'text-rose-600' : 'text-teal-700',
+                              )}
+                            >
+                              {lc.left}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Credit pills: carry-in + purchase */}
+                      <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[11px]">
+                        {lc.carryIn > 0 && (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-teal-200 bg-teal-50 px-2.5 py-0.5 font-medium text-teal-700">
+                            ↗ +{lc.carryIn} carry from Lot {lc.lotIndex - 1}
+                          </span>
+                        )}
+                        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 font-medium text-emerald-700">
+                          ▲ +{lc.lot.seats} top up
+                          {lc.lot.totalAmount > 0 && ` · ${formatMoney(lc.lot.totalAmount)} THB`}
+                        </span>
+                        <span className="text-teal-900/35">→ starts at {lc.effectiveSeats}</span>
+                      </div>
+                    </div>
+
+                    {/* ── Booking rows (desktop table) ── */}
+                    {filteredDays.length === 0 ? (
+                      <p className="px-5 py-4 text-sm text-teal-900/40">
+                        {days.length === 0
+                          ? "No bookings in this lot's date range."
+                          : 'No bookings match the current filter.'}
+                      </p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="border-b border-teal-900/8 bg-teal-950/[0.02] text-teal-900/45">
+                              <th className="px-4 py-2 text-left font-medium">Date</th>
+                              <th className="px-2 py-2 text-left font-medium">VC No</th>
+                              <th className="px-2 py-2 text-left font-medium">Guest</th>
+                              <th className="px-2 py-2 text-left font-medium">Pax</th>
+                              <th className="px-2 py-2 text-right font-medium">Heads</th>
+                              <th className="px-4 py-2 text-right font-medium">Balance</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filteredDays.map((dv) => (
+                              <>
+                                {dv.bookings.map((bk) => (
+                                  <tr
+                                    key={bk.code}
+                                    className="border-b border-teal-900/5 hover:bg-teal-950/[0.015]"
+                                  >
+                                    <td className="px-4 py-1.5 whitespace-nowrap text-teal-900/55">
+                                      {formatShortDate(dv.date)}
+                                    </td>
+                                    <td className="px-2 py-1.5 font-medium tabular-nums break-all max-w-[7rem]">
+                                      {bk.agentRef.trim() || '—'}
+                                    </td>
+                                    <td className="px-2 py-1.5 max-w-[9rem] truncate" title={bk.leadGuest}>
+                                      {bk.leadGuest}
+                                    </td>
+                                    <td className="px-2 py-1.5 tabular-nums text-teal-900/70">
+                                      {formatPaxBreakdown(bk)}
+                                    </td>
+                                    <td className="px-2 py-1.5 text-right font-semibold tabular-nums text-teal-950">
+                                      {chargeablePax(bk)}
+                                    </td>
+                                    <td className="px-4 py-1.5 text-right tabular-nums text-teal-900/30">
+                                      —
+                                    </td>
+                                  </tr>
+                                ))}
+                                {/* Day total row */}
+                                <tr className="border-b-2 border-teal-900/10 bg-teal-950/[0.03]">
+                                  <td
+                                    colSpan={4}
+                                    className="px-4 py-1.5 text-[11px] font-semibold text-teal-900/50"
+                                  >
+                                    {formatShortDate(dv.date)}
+                                    <span className="ml-1.5 font-normal text-teal-900/30">
+                                      · day total
+                                    </span>
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right text-[11px] font-bold tabular-nums text-teal-950">
+                                    {dv.dayHeads}
+                                  </td>
+                                  <td
+                                    className={cn(
+                                      'px-4 py-1.5 text-right text-[11px] font-bold tabular-nums',
+                                      dv.balanceAfterDay < 0 ? 'text-rose-600' : 'text-teal-700',
+                                    )}
+                                  >
+                                    {dv.balanceAfterDay}
+                                  </td>
+                                </tr>
+                              </>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {/* ── Lot footer ── */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-teal-900/8 bg-teal-950/[0.015] px-4 py-2.5 sm:px-5">
+                      <p className="text-[11px] text-teal-900/45">
+                        {lc.startDate ? formatShortDate(lc.startDate) : 'From start'}
+                        {' – '}
+                        {lc.endDate >= today ? 'today' : formatShortDate(lc.endDate)}
+                        <span className="mx-1.5 text-teal-900/25">·</span>
+                        {totalBookingHeads} heads used
+                      </p>
+                      {lc.carryOut > 0 ? (
+                        <p className="text-[11px] font-medium text-emerald-600">
+                          ↗ {lc.carryOut} seats carry to Lot {lc.lotIndex + 1}
+                        </p>
+                      ) : lc.left < 0 ? (
+                        <p className="text-[11px] font-medium text-rose-600">
+                          Overdrawn by {Math.abs(lc.left)} seats
+                        </p>
+                      ) : (
+                        <p className="text-[11px] text-teal-700">{lc.left} seats remaining</p>
+                      )}
+                    </div>
+                  </Surface>
+                </div>
+              )
+            })}
+          </div>
+
+          {lotViews.length === 0 && !loading && (
+            <Surface className="p-6 text-sm text-teal-900/55">
+              No allotment lots found for this agent.
+            </Surface>
+          )}
         </>
-      ) : null}
+      ) : !loading && !expandedAgentSlug ? null : null}
+
       </div>
 
       <div className="allotment-print-sheet hidden print:block">
@@ -1131,7 +1348,7 @@ export function AdminAgentAllotmentHistory({
               <p>{BRAND_LEGAL}</p>
               <p>Printed {formatShortDate(todayISO())}</p>
               <p>
-                {lines.filter((line) => !(line.vcNo === '—' && line.guestName === '—')).length}{' '}
+                {lines.filter((line) => !line.isTopUp && !(line.vcNo === '—' && line.guestName === '—')).length}{' '}
                 booking lines
               </p>
             </div>
@@ -1187,28 +1404,6 @@ export function AdminAgentAllotmentHistory({
               </p>
             </div>
           </section>
-        ) : balanceSummary.length > 1 ? (
-          <section className="mb-4 grid grid-cols-2 gap-2">
-            {balanceSummary.map((row) => (
-              <div
-                key={`print-${row.slug}`}
-                className="rounded-lg border border-teal-900/12 bg-teal-950/[0.03] px-2.5 py-2"
-              >
-                <p className="text-[11px] font-semibold text-teal-950">{row.name}</p>
-                <p className="mt-1 text-[9px] text-teal-900/55">
-                  AD {row.adultPrice > 0 ? formatMoney(row.adultPrice) : '—'} · CH{' '}
-                  {row.childPrice > 0 ? formatMoney(row.childPrice) : '—'} · Amount{' '}
-                  {row.totalAmount > 0 ? `${formatMoney(row.totalAmount)} THB` : '—'}
-                </p>
-                <p className="mt-0.5 text-[10px] font-semibold tabular-nums text-teal-950">
-                  Left {row.left}
-                  <span className="ml-1.5 font-normal text-teal-900/45">
-                    (bought {row.purchased} · used {row.used})
-                  </span>
-                </p>
-              </div>
-            ))}
-          </section>
         ) : null}
 
         {lines.length === 0 ? (
@@ -1222,15 +1417,6 @@ export function AdminAgentAllotmentHistory({
                 <th className="border border-teal-900/15 px-1.5 py-1.5 font-bold uppercase">Guest</th>
                 <th className="border border-teal-900/15 px-1.5 py-1.5 font-bold uppercase">Pax</th>
                 <th className="border border-teal-900/15 px-1.5 py-1.5 text-right font-bold uppercase">
-                  Adult
-                </th>
-                <th className="border border-teal-900/15 px-1.5 py-1.5 text-right font-bold uppercase">
-                  CH
-                </th>
-                <th className="border border-teal-900/15 px-1.5 py-1.5 text-right font-bold uppercase">
-                  Total
-                </th>
-                <th className="border border-teal-900/15 px-1.5 py-1.5 text-right font-bold uppercase">
                   Heads
                 </th>
                 <th className="border border-teal-900/15 px-1.5 py-1.5 text-right font-bold uppercase">
@@ -1239,81 +1425,97 @@ export function AdminAgentAllotmentHistory({
               </tr>
             </thead>
             <tbody>
-              {lines.map((line) => (
-                <tr
-                  key={`print-${line.key}`}
-                  className={cn(line.isDayEnd && 'border-b-2 border-b-teal-900/20')}
-                >
-                  <td className="border border-teal-900/10 px-1.5 py-1 whitespace-nowrap">
-                    {formatShortDate(line.date)}
-                  </td>
-                  <td className="border border-teal-900/10 px-1.5 py-1 font-medium break-all">
-                    {line.vcNo}
-                  </td>
-                  <td className="border border-teal-900/10 px-1.5 py-1">{line.guestName}</td>
-                  <td className="border border-teal-900/10 px-1.5 py-1 tabular-nums">
-                    {line.paxLabel}
-                  </td>
-                  <td className="border border-teal-900/10 px-1.5 py-1 text-right tabular-nums">
-                    {line.amountAd === null || line.adults === 0
-                      ? '—'
-                      : formatMoney(line.amountAd)}
-                  </td>
-                  <td className="border border-teal-900/10 px-1.5 py-1 text-right tabular-nums">
-                    {line.amountCh === null || line.children === 0
-                      ? '—'
-                      : formatMoney(line.amountCh)}
-                  </td>
-                  <td className="border border-teal-900/10 px-1.5 py-1 text-right tabular-nums font-semibold">
-                    {(() => {
-                      const total = lineTicketTotal(line)
-                      if (total === null) {
-                        return line.adults > 0 || line.children > 0 ? '—' : ''
-                      }
-                      return formatMoney(total)
-                    })()}
-                  </td>
-                  <td
-                    className={cn(
-                      'border border-teal-900/10 px-1.5 py-1 text-right tabular-nums',
-                      !line.checkerConfirmed && 'text-teal-900/40',
-                    )}
+              {lines.flatMap((line) => {
+                // ── Print top-up row ──
+                if (line.isTopUp) {
+                  return [
+                    <tr key={`print-${line.key}`} className="bg-emerald-50">
+                      <td className="border border-emerald-200 px-1.5 py-1 whitespace-nowrap text-[9px] text-emerald-800">
+                        {formatShortDate(line.date)}
+                      </td>
+                      <td
+                        colSpan={3}
+                        className="border border-emerald-200 px-1.5 py-1 text-[9px] font-bold text-emerald-800"
+                      >
+                        ▲ TOP UP — {line.topUpLabel}
+                        {line.topUpAmount ? ` · ${formatMoney(line.topUpAmount)} THB` : ''}
+                        {' · '}{line.agentName}
+                      </td>
+                      <td className="border border-emerald-200 px-1.5 py-1 text-right text-[9px] font-bold tabular-nums text-emerald-800">
+                        +{line.topUpSeats}
+                      </td>
+                      <td
+                        className={cn(
+                          'border border-emerald-200 px-1.5 py-1 text-right text-[9px] font-bold tabular-nums',
+                          line.balance !== null && line.balance <= 0
+                            ? 'text-rose-700'
+                            : 'text-emerald-700',
+                        )}
+                      >
+                        {line.balance === null ? '—' : line.balance}
+                      </td>
+                    </tr>,
+                  ]
+                }
+
+                const isRealBooking = !(line.vcNo === '—' && line.guestName === '—')
+
+                const bookingTr = (
+                  <tr key={`print-${line.key}`}>
+                    <td className="border border-teal-900/10 px-1.5 py-1 whitespace-nowrap">
+                      {formatShortDate(line.date)}
+                    </td>
+                    <td className="border border-teal-900/10 px-1.5 py-1 font-medium break-all">
+                      {line.vcNo}
+                    </td>
+                    <td className="border border-teal-900/10 px-1.5 py-1">{line.guestName}</td>
+                    <td className="border border-teal-900/10 px-1.5 py-1 tabular-nums">
+                      {line.paxLabel}
+                    </td>
+                    <td className="border border-teal-900/10 px-1.5 py-1 text-right tabular-nums font-semibold text-teal-950">
+                      {line.totalHeadUse === null ? '' : line.totalHeadUse}
+                    </td>
+                    <td className="border border-teal-900/10 px-1.5 py-1" />
+                  </tr>
+                )
+
+                if (!line.isDayEnd) return [bookingTr]
+
+                const summaryTr = (
+                  <tr
+                    key={`print-${line.key}-day-total`}
+                    className="border-b-2 border-b-teal-900/25 bg-teal-950/[0.04]"
                   >
-                    {line.totalHeadUse === null ? '' : line.totalHeadUse}
-                  </td>
-                  <td
-                    className={cn(
-                      'border border-teal-900/10 px-1.5 py-1 text-right tabular-nums font-semibold',
-                      line.isDayEnd &&
-                        line.balance !== null &&
-                        line.balance <= 0 &&
-                        'text-rose-700',
-                      line.isDayEnd && !line.checkerConfirmed && 'font-normal text-teal-900/40',
-                    )}
-                  >
-                    {line.isDayEnd
-                      ? line.balance === null
-                        ? '—'
-                        : line.balance
-                      : ''}
-                  </td>
-                </tr>
-              ))}
+                    <td
+                      colSpan={4}
+                      className="border border-teal-900/12 px-1.5 py-1 text-[9px] font-bold text-teal-900/60"
+                    >
+                      {formatShortDate(line.date)}
+                      {isRealBooking ? ' · day total' : ` · ${line.bookingLabel}`}
+                    </td>
+                    <td className="border border-teal-900/12 px-1.5 py-1 text-right text-[9px] font-bold tabular-nums text-teal-950">
+                      {line.dayTotalHeads === null ? '—' : line.dayTotalHeads}
+                    </td>
+                    <td
+                      className={cn(
+                        'border border-teal-900/12 px-1.5 py-1 text-right text-[9px] font-bold tabular-nums',
+                        line.balance !== null && line.balance <= 0 ? 'text-rose-700' : 'text-teal-900',
+                      )}
+                    >
+                      {line.balance === null ? '—' : line.balance}
+                    </td>
+                  </tr>
+                )
+
+                if (!isRealBooking) return [summaryTr]
+                return [bookingTr, summaryTr]
+              })}
               <tr className="bg-teal-50 font-semibold">
                 <td className="border border-teal-900/15 px-1.5 py-1.5" colSpan={3}>
                   Booking total
                 </td>
                 <td className="border border-teal-900/15 px-1.5 py-1.5 tabular-nums">
                   {bookingTotals.adults}+{bookingTotals.children}
-                </td>
-                <td className="border border-teal-900/15 px-1.5 py-1.5 text-right tabular-nums">
-                  {formatMoney(bookingTotals.amountAd)}
-                </td>
-                <td className="border border-teal-900/15 px-1.5 py-1.5 text-right tabular-nums">
-                  {formatMoney(bookingTotals.amountCh)}
-                </td>
-                <td className="border border-teal-900/15 px-1.5 py-1.5 text-right tabular-nums">
-                  {formatMoney(bookingTotals.totalAmount)}
                 </td>
                 <td className="border border-teal-900/15 px-1.5 py-1.5 text-right tabular-nums">
                   {bookingTotals.heads}
@@ -1325,8 +1527,7 @@ export function AdminAgentAllotmentHistory({
         )}
 
         <footer className="mt-4 border-t border-teal-900/15 pt-2 text-[9px] text-teal-900/45">
-          Gray heads / balance = Daily checker not confirmed yet. Amounts use the agent&apos;s
-          allotment AD/CH price. Save as PDF from the print dialog.
+          Balance auto-syncs from booking head counts up to today. Save as PDF from the print dialog.
         </footer>
       </div>
 
