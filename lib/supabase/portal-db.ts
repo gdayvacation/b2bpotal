@@ -1584,6 +1584,36 @@ export async function fetchBoatPlansForDate(date: string): Promise<Record<string
   )
 }
 
+/**
+ * Code C: Boat plans for one guest booking only.
+ * Fetches all day_boat_plans for the date (needed for boat name/guide/capacity)
+ * but filters boat_assignments to just the one booking code — avoids scanning
+ * 100-200 assignment rows for all guests during morning rush.
+ */
+export async function fetchGuestBoatForCode(
+  date: string,
+  bookingCode: string,
+): Promise<Record<string, DayBoatPlan>> {
+  const dateStr = date.slice(0, 10)
+  const code = bookingCode.trim()
+  const supabase = getSupabaseBrowserClient()
+  const [boatPlansRes, boatAssignRes] = await Promise.all([
+    supabase.from('day_boat_plans').select('*').eq('date', dateStr).order('program'),
+    supabase
+      .from('boat_assignments')
+      .select('*')
+      .eq('date', dateStr)
+      .eq('booking_code', code)
+      .order('booking_code'),
+  ])
+  await assertOk('day_boat_plans', boatPlansRes.error, boatPlansRes.data)
+  await assertOk('boat_assignments', boatAssignRes.error, boatAssignRes.data)
+  return buildBoatPlans(
+    (boatPlansRes.data ?? []) as BoatPlanRow[],
+    (boatAssignRes.data ?? []) as BoatAssignmentRow[],
+  )
+}
+
 /** Live updates when bookings change in Supabase (requires Realtime on `bookings`). */
 export function subscribeBookings(onChange: () => void) {
   const supabase = getSupabaseBrowserClient()
