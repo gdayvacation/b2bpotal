@@ -333,8 +333,8 @@ export function AdminDailyJobOrder({
             isAgentView
               ? 'Grouped by agency with van number for each pickup — filter one agent, then print to send.'
               : isCheckInView
-                ? 'Pick a date and program, then print the check-in sheet (same layout as Driver Job Order for now).'
-                : 'Pick a date and program, then print the ops day sheet grouped by van with driver details.'
+                ? 'Pick a date and program, then print the marina check-in sheet.'
+                : 'One print of every van. Capture a van from the PDF and send it to that driver.'
           }
           actions={
             program ? (
@@ -491,8 +491,9 @@ export function AdminDailyJobOrder({
                       </p>
                     </div>
                     <p className="text-xs font-medium text-teal-800/55">
-                      AD {totals.adults} · CHD {totals.children} · INF {totals.infants} · TL{' '}
-                      {totals.tourLeaders}
+                      {isCheckInView
+                        ? `AD ${totals.adults} · CHD ${totals.children} · INF ${totals.infants} · TL ${totals.tourLeaders}`
+                        : driverGuestLabel(totals.adults, totals.children)}
                     </p>
                   </div>
                 </Surface>
@@ -710,7 +711,7 @@ export function AdminDailyJobOrder({
         @media print {
           @page {
             size: A4 landscape;
-            margin: 7mm;
+            margin: 8mm;
           }
           html, body {
             width: 100% !important;
@@ -1003,7 +1004,7 @@ function VanGroupSection({
       <div className="flex flex-wrap items-center justify-between gap-2 bg-teal-50/70 px-4 py-3 sm:px-5">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm font-semibold text-teal-950">{title}</p>
+            <p className={cn('font-semibold text-teal-950', isCheckIn ? 'text-sm' : 'text-lg')}>{title}</p>
             {group.mockMeta ? (
               <span className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
                 Needs details
@@ -1021,7 +1022,7 @@ function VanGroupSection({
             ) : null}
           </div>
           {group.van !== null ? (
-            <p className="mt-0.5 text-xs text-teal-900/60">
+            <p className={cn('mt-0.5 text-teal-900/60', isCheckIn ? 'text-xs' : 'text-sm')}>
               Driver:{' '}
               <span className="font-medium text-teal-950">{group.driver || '—'}</span>
               {group.phone ? (
@@ -1041,16 +1042,19 @@ function VanGroupSection({
             </p>
           )}
         </div>
-        <p className="text-xs font-medium tabular-nums text-teal-800/60">
-          {group.rows.length} booking{group.rows.length === 1 ? '' : 's'} · {group.totals.pax} pax
+        <p className={cn('font-medium tabular-nums text-teal-800/70', isCheckIn ? 'text-xs' : 'text-sm')}>
+          {group.rows.length} booking{group.rows.length === 1 ? '' : 's'} ·{' '}
+          {isCheckIn ? `${group.totals.pax} pax` : driverGuestLabel(group.totals.adults, group.totals.children)}
         </p>
       </div>
 
       <div className={cn(!isCheckIn && 'overflow-x-auto')}>
         <Table
           className={cn(
-            'table-fixed text-[13px] [&_th]:px-1 [&_td]:px-1',
-            isCheckIn && '[&_th]:px-1 [&_td]:px-1',
+            'table-fixed',
+            isCheckIn
+              ? 'text-[13px] [&_th]:px-1 [&_td]:px-1'
+              : 'text-base [&_th]:px-2 [&_td]:px-2 [&_th]:py-2.5 [&_td]:py-2.5',
           )}
           containerClassName={isCheckIn ? 'overflow-x-hidden' : undefined}
         >
@@ -1123,13 +1127,13 @@ function VanGroupSection({
                 </>
               ) : (
                 <>
-                  <TableHead className="w-[22%] pr-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[34%] pr-1 text-xs font-bold tracking-wide whitespace-normal text-teal-900/80 uppercase">
                     Hotel
                   </TableHead>
-                  <TableHead className="w-[18%] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[26%] text-xs font-bold tracking-wide whitespace-normal text-teal-900/80 uppercase">
                     Guest name
                   </TableHead>
-                  <TableHead className="w-[4.5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[4.5rem] max-w-[4.5rem] px-1 text-center text-[11px] font-bold tracking-normal whitespace-normal text-teal-900/80 uppercase">
                     <button
                       type="button"
                       className="inline-flex items-center gap-0.5 rounded-md transition-colors hover:text-teal-950"
@@ -1137,27 +1141,15 @@ function VanGroupSection({
                       aria-label={`Sort by pickup time, currently ${pickupSortDir === 'asc' ? 'earliest first' : 'latest first'}`}
                       title="Sort by pickup time"
                     >
-                      P/U Time
+                      P/U
                       <SortIcon className="size-3 opacity-70" />
                     </button>
                   </TableHead>
-                  <TableHead className="w-[5.5rem] px-1 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+                  <TableHead className="w-[8.5rem] px-2 text-xs font-bold tracking-wide whitespace-normal text-teal-900/80 uppercase">
                     Zone
                   </TableHead>
-                  <TableHead className="w-9 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    AD
-                  </TableHead>
-                  <TableHead className="w-9 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    CHD
-                  </TableHead>
-                  <TableHead className="w-9 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    INF
-                  </TableHead>
-                  <TableHead className="w-9 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    TL
-                  </TableHead>
-                  <TableHead className="w-10 px-0.5 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
-                    Tot
+                  <TableHead className="w-[7.5rem] px-2 text-center text-xs font-bold tracking-wide whitespace-normal text-teal-900/80 uppercase">
+                    Guests
                   </TableHead>
                 </>
               )}
@@ -1301,37 +1293,29 @@ function VanGroupSection({
                   </>
                 ) : (
                   <>
-                    <TableCell className="pr-1">
-                      <div className="truncate font-bold text-teal-950" title={booking.pickupHotel}>
+                    <TableCell className="pr-1 whitespace-normal">
+                      <div className="font-bold leading-snug text-teal-950" title={booking.pickupHotel}>
                         {booking.pickupHotel || '—'}
                       </div>
                     </TableCell>
-                    <TableCell>
-                      <div className="truncate font-normal" title={booking.leadGuest}>
+                    <TableCell className="whitespace-normal">
+                      <div className="leading-snug" title={booking.leadGuest}>
                         {booking.leadGuest}
                         {split ? (
-                          <span className="ml-1 text-[10px] font-semibold text-teal-700/55">
+                          <span className="ml-1 text-xs font-semibold text-teal-700/55">
                             split
                           </span>
                         ) : null}
                       </div>
                     </TableCell>
-                    <TableCell className="px-1 whitespace-nowrap tabular-nums text-teal-950">
+                    <TableCell className="w-[4.5rem] max-w-[4.5rem] px-1 text-center whitespace-nowrap tabular-nums text-teal-950">
                       {formatPickupTime(booking.pickupTime)}
                     </TableCell>
-                    <TableCell className="px-1">
-                      <div className="truncate" title={booking.pickupZone}>
-                        {booking.pickupZone || '—'}
-                      </div>
+                    <TableCell className="whitespace-normal px-2 leading-snug text-teal-950">
+                      {booking.pickupZone || '—'}
                     </TableCell>
-                    <TableCell className="px-0.5 text-center tabular-nums">{pax.adults || ''}</TableCell>
-                    <TableCell className="px-0.5 text-center tabular-nums">{pax.children || ''}</TableCell>
-                    <TableCell className="px-0.5 text-center tabular-nums">{pax.infants || ''}</TableCell>
-                    <TableCell className="px-0.5 text-center tabular-nums">
-                      {pax.tourLeaders || ''}
-                    </TableCell>
-                    <TableCell className="px-0.5 text-center font-medium tabular-nums text-teal-950">
-                      {paxBreakdownTotal(pax)}
+                    <TableCell className="px-2 text-center text-base font-semibold whitespace-nowrap text-teal-950">
+                      {driverGuestLabel(pax.adults, pax.children)}
                     </TableCell>
                   </>
                 )}
@@ -1382,23 +1366,11 @@ function VanGroupSection({
                 </>
               ) : (
                 <>
-                  <TableCell colSpan={5} className="text-xs font-semibold text-teal-900/70">
+                  <TableCell colSpan={5} className="text-sm font-semibold text-teal-900/70">
                     Group total
                   </TableCell>
-                  <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
-                    {group.totals.adults}
-                  </TableCell>
-                  <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
-                    {group.totals.children}
-                  </TableCell>
-                  <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
-                    {group.totals.infants}
-                  </TableCell>
-                  <TableCell className="px-1 text-center tabular-nums text-xs font-semibold">
-                    {group.totals.tourLeaders}
-                  </TableCell>
-                  <TableCell className="px-1 text-center tabular-nums text-xs font-semibold text-teal-950">
-                    {group.totals.pax}
+                  <TableCell className="px-2 text-center text-base font-semibold whitespace-nowrap text-teal-950">
+                    {driverGuestLabel(group.totals.adults, group.totals.children)}
                   </TableCell>
                 </>
               )}
@@ -1856,6 +1828,149 @@ function AgentJobOrderPrintSheet({
   )
 }
 
+function DriverMobilePrintSheet({
+  date,
+  program,
+  programLabel,
+  jobNumber,
+  groups,
+  totals,
+  usingMockAssignments,
+}: {
+  date: string
+  program: Program
+  programLabel: string
+  jobNumber: string
+  groups: VanGroup[]
+  totals: { adults: number; children: number; infants: number; tourLeaders: number }
+  usingMockAssignments: boolean
+}) {
+  const dayGuests = driverGuestLabel(totals.adults, totals.children)
+  const cell = 'border border-teal-900/25 px-3 py-2.5 align-middle'
+  const notes = groups.flatMap((group) =>
+    group.rows
+      .filter(({ booking }) => booking.note.trim())
+      .map(({ booking }) => ({ code: booking.code, guest: booking.leadGuest, note: booking.note.trim() })),
+  )
+  return (
+    <div className="job-order-print-sheet hidden print:block text-teal-950">
+      <div className="mb-4 flex items-end justify-between gap-6 border-b-2 border-teal-900/30 pb-3">
+        <div>
+          <p className="text-sm font-semibold tracking-[0.14em] text-teal-700/70 uppercase">
+            G&apos;Day Tours Phuket · Driver Job Order
+          </p>
+          <h1 className="mt-1 text-3xl font-bold">
+            {program === 'PP' ? 'PP' : 'JB'} · {programLabel}
+          </h1>
+          <p className="mt-1 text-lg">
+            {formatLongDate(date)} · Job {jobNumber}
+            {usingMockAssignments ? ' · preview vans' : ''}
+          </p>
+        </div>
+        <div className="text-right text-base text-teal-900/70">
+          <p>
+            Prepared by: <span className="inline-block min-w-[8rem] border-b border-teal-900/30" />
+          </p>
+          <p className="mt-2">
+            Checked by: <span className="inline-block min-w-[8rem] border-b border-teal-900/30" />
+          </p>
+        </div>
+      </div>
+
+      {groups.length === 0 ? (
+        <p className="py-10 text-center text-xl">No active bookings for this program on this date.</p>
+      ) : (
+        <>
+          {groups.map((group) => {
+            const tall = group.rows.length > 8
+            return (
+              <section
+                key={group.id}
+                className={cn(
+                  'job-order-van-card mb-5 overflow-hidden rounded-xl border border-teal-900/20',
+                  tall && 'job-order-van-card--tall',
+                )}
+              >
+                <div className="flex items-center justify-between gap-4 border-b border-teal-900/15 bg-teal-50 px-4 py-3">
+                  <div>
+                    <p className="text-2xl font-bold">{group.title}</p>
+                    {group.van !== null ? (
+                      <p className="mt-1 text-lg">
+                        Driver <span className="font-semibold">{group.driver.trim() || '—'}</span>
+                        {group.phone.trim() ? ` · Tel ${group.phone.trim()}` : ''}
+                        {' · '}Plate <span className="font-semibold">{group.plate.trim() || '—'}</span>
+                      </p>
+                    ) : null}
+                  </div>
+                  <p className="shrink-0 rounded-full border border-teal-900/15 bg-white px-4 py-1.5 text-lg font-semibold">
+                    {group.rows.length} booking{group.rows.length === 1 ? '' : 's'} ·{' '}
+                    {driverGuestLabel(group.totals.adults, group.totals.children)}
+                  </p>
+                </div>
+                <table className="w-full table-fixed border-collapse text-left text-[17px] leading-snug">
+                  <thead>
+                    <tr className="bg-teal-950/[0.06]">
+                      <th className={cn(cell, 'w-12 text-center text-sm font-bold uppercase')}>No.</th>
+                      <th className={cn(cell, 'w-[32%] text-sm font-bold uppercase')}>Hotel</th>
+                      <th className={cn(cell, 'w-[26%] text-sm font-bold uppercase')}>Guest name</th>
+                      <th className={cn(cell, 'w-16 px-1 text-center text-sm font-bold uppercase')}>P/U</th>
+                      <th className={cn(cell, 'w-[16%] text-sm font-bold uppercase')}>Zone</th>
+                      <th className={cn(cell, 'w-36 text-center text-sm font-bold uppercase')}>Guests</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {group.rows.map((row) => (
+                      <tr key={`${group.id}-${row.booking.code}`} className="break-inside-avoid">
+                        <td className={cn(cell, 'text-center tabular-nums')}>{row.no}</td>
+                        <td className={cn(cell, 'font-bold')}>{row.booking.pickupHotel || '—'}</td>
+                        <td className={cell}>
+                          {row.booking.leadGuest}
+                          {row.split ? ' · split' : ''}
+                        </td>
+                        <td className={cn(cell, 'font-semibold tabular-nums whitespace-nowrap')}>
+                          {formatPickupTime(row.booking.pickupTime)}
+                        </td>
+                        <td className={cell}>{row.booking.pickupZone || '—'}</td>
+                        <td className={cn(cell, 'text-center text-xl font-bold whitespace-nowrap')}>
+                          {driverGuestLabel(row.pax.adults, row.pax.children)}
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="bg-teal-50 font-bold">
+                      <td className={cell} colSpan={5}>
+                        Group total
+                      </td>
+                      <td className={cn(cell, 'text-center text-xl whitespace-nowrap')}>
+                        {driverGuestLabel(group.totals.adults, group.totals.children)}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </section>
+            )
+          })}
+
+          <p className="job-order-print-footer border border-teal-900/25 bg-teal-50 px-4 py-3 text-xl font-bold">
+            Day total · {dayGuests}
+          </p>
+          {notes.length > 0 ? (
+            <div className="job-order-print-footer mt-4 border border-teal-900/25">
+              <p className="border-b border-teal-900/25 bg-teal-50 px-4 py-2 text-lg font-bold">Notes</p>
+              <div className="space-y-1 px-4 py-3 text-base">
+                {notes.map((item) => (
+                  <p key={item.code}>
+                    {item.guest}: {item.note}
+                  </p>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  )
+}
+
 function ProgramCard({
   title,
   subtitle,
@@ -1921,6 +2036,19 @@ function JobOrderPrintSheet({
   getAction?: (bookingCode: string) => JobOrderAction | null
 }) {
   const isCheckIn = variant === 'check-in'
+  if (!isCheckIn) {
+    return (
+      <DriverMobilePrintSheet
+        date={date}
+        program={program}
+        programLabel={programLabel}
+        jobNumber={jobNumber}
+        groups={groups}
+        totals={totals}
+        usingMockAssignments={usingMockAssignments}
+      />
+    )
+  }
   const showCanoe = isCheckIn && program === 'James Bond'
   const trailingBeforeTotal = isCheckIn ? (showCanoe ? 3 : 2) : 0
   const trailingAfterTotal = isCheckIn ? 4 : 0
@@ -2653,6 +2781,13 @@ function makeGroup(
       }, 0),
     },
   }
+}
+
+function driverGuestLabel(adults: number, children: number) {
+  const parts: string[] = []
+  if (adults > 0) parts.push(`${adults} AD`)
+  if (children > 0) parts.push(`${children} CH`)
+  return parts.length > 0 ? parts.join(', ') : '—'
 }
 
 function blankIfZero(value: number) {

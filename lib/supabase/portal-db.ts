@@ -458,8 +458,38 @@ export async function fetchBookingByCode(code: string): Promise<Booking | null> 
 }
 
 /**
+ * Next code for this program and travel month (PP2610-0538).
+ * The database sees every booking and locks the counter, so two confirms
+ * cannot take the same number. Partners cannot do this from their own rows:
+ * RLS hides other agents' bookings.
+ */
+export async function allocateBookingCodeOnServer(
+  program: 'PP' | 'James Bond',
+  date: string,
+): Promise<string> {
+  const supabase = getSupabaseBrowserClient()
+  const { data, error } = await supabase.rpc('portal_allocate_booking_code', {
+    p_program: program,
+    p_date: date,
+  })
+  if (error) throw new Error(error.message)
+  const code = String(data ?? '').trim()
+  if (!/^(?:PP|JB)\d{4}-\d+$/.test(code)) {
+    throw new Error('Booking code allocator returned an invalid code.')
+  }
+  return code
+}
+
+export function isMissingBookingCodeAllocator(message: string) {
+  return /could not find the function|portal_allocate_booking_code[^\n]* does not exist|PGRST202|42883/i.test(
+    message,
+  )
+}
+
+/**
  * Every code sharing a monthly stem (PP2606-, JB2606-).
- * The live portal only holds a short date window, so new codes must be chosen from this list.
+ * Fallback only. Partners cannot see other agents' codes, so this list is
+ * incomplete for them. Prefer allocateBookingCodeOnServer.
  */
 export async function fetchBookingCodesByStem(stem: string): Promise<string[]> {
   const prefix = stem.trim()

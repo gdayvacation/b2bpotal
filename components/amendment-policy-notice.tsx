@@ -5,6 +5,7 @@ import {
   cancelWindowForDate,
   dateChangeFeeAmount,
   formatThbAmount,
+  isLateFeeTimeForDate,
   lateCancelNotice,
   lateDateChangeNotice,
   lateReduceNotice,
@@ -114,6 +115,7 @@ export function CancelConditionNotice({
   className?: string
 }) {
   const window = cancelWindowForDate(settings, travelDate)
+  const charging = isLateFeeTimeForDate(settings, travelDate)
   const chargeable = chargeablePax(booking)
   return (
     <div
@@ -134,7 +136,7 @@ export function CancelConditionNotice({
         </li>
         <li>After {window.closeUntil}: cancel is closed.</li>
       </ul>
-      {window.isLateCharge ? (
+      {charging ? (
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-rose-950">
           <p className="text-[10px] font-semibold tracking-wide text-rose-800/70 uppercase">
             Extra charge applies
@@ -200,7 +202,7 @@ export function AdminExtraChargeField({
       <p className="mt-1 text-xs leading-relaxed text-amber-950/80">
         {mode === 'full-price' ? (
           <>
-            Late date change (after 8:00 Thailand time) is full tour price
+            Late date change (after the cutoff time) is full tour price
             {suggested > 0 ? (
               <>
                 : <span className="font-semibold">{formatThbAmount(suggested)}</span>

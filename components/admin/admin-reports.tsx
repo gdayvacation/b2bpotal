@@ -180,7 +180,7 @@ export function AdminReports() {
           <ReportModeCard
             tone="amber"
             title="Driver Job Order"
-            subtitle="Day sheet grouped by van with driver and plate — from Arrange vehicles."
+            subtitle="One print of every van, in larger type. Guest total only — capture a van and send it."
             meta="For drivers"
             icon={<Bus className="size-7" strokeWidth={1.75} />}
             onClick={() => setMode('job-order-ops')}

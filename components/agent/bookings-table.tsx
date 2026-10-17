@@ -190,7 +190,7 @@ export function BookingsTable({
   slug?: string
   showAgent?: boolean
 }) {
-  const { agents, bookingCutoffs, cancelBooking, isCancelOpen, isLateAmendment, isProgramClosed } =
+  const { agents, bookingCutoffs, cancelBooking, isCancelOpen, isLateFeeTime, isProgramClosed } =
     usePortal()
   const [dateTarget, setDateTarget] = useState<Booking | null>(null)
   const [rebookTarget, setRebookTarget] = useState<Booking | null>(null)
@@ -853,7 +853,7 @@ export function BookingsTable({
               Keep booking
             </Button>
             <Button type="button" variant="destructive" onClick={confirmCancel}>
-              {cancelTarget && isLateAmendment(cancelTarget.date)
+              {cancelTarget && isLateFeeTime(cancelTarget.date)
                 ? 'Cancel — charge full price'
                 : 'Cancel booking'}
             </Button>

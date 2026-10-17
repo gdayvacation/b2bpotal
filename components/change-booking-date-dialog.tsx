@@ -46,7 +46,7 @@ export function ChangeBookingDateDialog({
     bookingCutoffs,
     getCapacity,
     isBookingOpen,
-    isLateAmendment,
+    isLateFeeTime,
     isProgramClosed,
   } = usePortal()
   const invoiceStore = useInvoiceStore()
@@ -63,9 +63,8 @@ export function ChangeBookingDateDialog({
     : null
   const prebuy = agentRates ? parseAgentBillingType(agentRates.billingType) === 'prebuy' : false
   const fullTourFee = booking && agentRates ? bookingTourAmount(booking, agentRates) : 0
-  /** Same auto rule as Add Booking policy: after lateFeeFromTime → charge. */
-  const autoLate =
-    !isRebook && Boolean(booking) && isLateAmendment(booking!.date)
+  /** After the saved late-fee time, including once the modify window has closed. */
+  const autoLate = !isRebook && Boolean(booking) && isLateFeeTime(booking!.date)
   const autoFee = autoLate ? fullTourFee : 0
 
   useEffect(() => {
@@ -144,7 +143,7 @@ export function ChangeBookingDateDialog({
       : changeBookingDate(booking.code, nextIso, {
           bypassCutoff,
           actor,
-          // Keep in sync with Add Booking cutoff policy (auto after 8:00 Thailand).
+          // Same cutoff as Add Booking: free before lateFeeFromTime, full charge after.
           lateDateChange: needsAdminConfirm ? parsedAdminFee > 0 : lateChange ? true : undefined,
           lateChangeFee: needsAdminConfirm ? parsedAdminFee : undefined,
         })
@@ -160,7 +159,7 @@ export function ChangeBookingDateDialog({
       ? `${booking.code} · ${pax} pax · was ${formatLongDate(booking.date)}. Grey days are closed or do not have enough seats.`
       : `${booking.code} · ${pax} pax · currently ${formatLongDate(booking.date)}. ${
           bypassCutoff
-            ? 'Admin can move any date, including closed or past days, if seats are left. Charge follows the same Add Booking rule (auto after 8:00 Thailand).'
+            ? `Admin can move any date, including closed or past days, if seats are left. Charge follows the cutoff (free before ${bookingCutoffs.lateFeeFromTime} Thailand).`
             : 'Grey days are closed or do not have enough seats.'
         }`
     : null
