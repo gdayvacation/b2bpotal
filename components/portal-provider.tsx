@@ -206,7 +206,9 @@ import {
   deleteZone,
   fetchBookingEvents,
   fetchBookingByCode,
+  allocateBookingCodeOnServer,
   fetchBookingCodesByStem,
+  isMissingBookingCodeAllocator,
   fetchBookingsChangedSince,
   fetchBookingsWithCursor,
   fetchBookingsInDateRange,
@@ -874,11 +876,11 @@ const REALTIME_REFRESH_MS = 1_500
  * instead of ~1 per 4 s, cutting Realtime-triggered sync queries by ~87 %.
  * Staff see check-ins appear within 30 s — acceptable for the admin board.
  */
-// Pro + Micro (Oct 15): reduced from 30s → 10s. Sprint 9b made each sync = 1 RPC (was 13
-// table queries), and Micro compute gives a larger PostgREST pool so 10s is safe under
-// rush-hour load. Failure backoff: 20s → 40s → 80s → cap 120s (unchanged).
+// Oct 17: reduced to 3s so admin sees check-in within ~3-5s instead of 10-15s.
+// Sprint 9b (1 RPC) + Pro Micro pool make this safe under 200-guest rush-hour load.
+// Failure backoff: 6s → 12s → 24s → cap 120s. Jitter reduced to 2s (was 5s).
 // Guest confirmations still use the separate low-latency 1.5s guest path.
-const CHECK_IN_REALTIME_DEBOUNCE_MS = 10_000
+const CHECK_IN_REALTIME_DEBOUNCE_MS = 3_000
 /**
  * Guest success screen fallback only (realtime is the fast path).
  * PERF sprint-8: 60 s → 180 s. During morning rush 100-150 guests can have this screen open
@@ -1472,6 +1474,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (!staffLiveRef.current) {
         staffLiveRef.current = true
         setStaffLive(true)
+        // Signal the check-in effect to sync immediately — missed events during idle are stale.
+        window.dispatchEvent(new CustomEvent('gday-staff-wake'))
       }
     }
     const events = ['pointerdown', 'keydown', 'touchstart'] as const
@@ -2332,11 +2336,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         syncFailures > 0
           ? Math.min(120_000, CHECK_IN_REALTIME_DEBOUNCE_MS * 2 ** Math.min(syncFailures, 2))
           : CHECK_IN_REALTIME_DEBOUNCE_MS
-      // PERF sprint-5: add up to +5s random jitter so multiple staff tabs/devices — which all
-      // receive the same realtime event at roughly the same moment — don't fire their sync
-      // requests in the exact same instant. Spreads the burst out instead of all tabs hitting
-      // the 10-connection pool together.
-      const delay = baseDelay + Math.floor(Math.random() * 5_000)
+      // Jitter: spread concurrent staff tabs so they don't all hit the DB in the exact same
+      // instant. Reduced from 5s → 2s now that Micro pool handles burst well.
+      const delay = baseDelay + Math.floor(Math.random() * 2_000)
       debounceTimer = window.setTimeout(() => {
         debounceTimer = null
         if (document.visibilityState === 'hidden') return
@@ -2353,9 +2355,15 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    // When the staff tab wakes from idle, sync immediately so stale data is replaced at once.
+    function onStaffWake() {
+      schedulePartialSync()
+    }
+
     window.addEventListener('storage', onStorage)
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('focus', onVisible)
+    window.addEventListener('gday-staff-wake', onStaffWake)
 
     let unsubCheckIn: (() => void) | undefined
     let poll: number | undefined
@@ -2397,6 +2405,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('storage', onStorage)
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
+      window.removeEventListener('gday-staff-wake', onStaffWake)
       if (debounceTimer != null) window.clearTimeout(debounceTimer)
       if (poll != null) window.clearInterval(poll)
       unsubCheckIn?.()
@@ -2516,6 +2525,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   function allocateBookingCode(program: 'PP' | 'James Bond', date: string): Promise<string> {
     const stem = bookingCodeStem(program, date)
     const task = bookingCodeAllocChainRef.current.then(async () => {
+      try {
+        const code = await allocateBookingCodeOnServer(program, date)
+        const seq = Number(code.slice(stem.length))
+        const known = bookingCodeMaxRef.current.get(stem) ?? 0
+        if (Number.isFinite(seq) && seq > known) bookingCodeMaxRef.current.set(stem, seq)
+        return code
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (!isMissingBookingCodeAllocator(message)) throw error
+        console.warn('[booking-code] server allocator unavailable, using local sequence', error)
+      }
+
       let remote: string[] = []
       if (!bookingCodeStemLoadedRef.current.has(stem)) {
         try {
@@ -3888,9 +3909,15 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        // In-memory bookings are only the recent ops window. Historical imports
-        // (for example June) must continue the monthly sequence already stored in Supabase.
-        const code = await allocateBookingCode(input.program, input.date)
+        // The database allocates the number from every booking in the month.
+        // A partner cannot see other agents' codes, so a local max would collide.
+        let code: string
+        try {
+          code = await allocateBookingCode(input.program, input.date)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Could not assign a booking number.'
+          return { ok: false, error: message }
+        }
         const noTransfer = isNoTransfer(input.pickupZone)
         const zone = zones.find((item) => item.name === input.pickupZone)
         const pending = !noTransfer && (zone?.pending ?? input.pickupZone === 'Other')
@@ -3908,6 +3935,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const policyFee = prebuyNoShowMoveFee(input, bookingCutoffs.dateChangeFeePerPerson)
         const trackedMove = options?.moveFee !== undefined
         const typedFee = Math.max(0, Math.floor(options?.moveFee ?? 0))
+        const originLate = originDate
+          ? isLateFeeTimeForDate(bookingCutoffs, originDate)
+          : false
         const booking: Booking = {
           ...input,
           agentRef: input.agentRef?.trim() ?? '',
@@ -3919,14 +3949,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           code,
           pickupTime,
           status: pending ? 'Pending Pickup Time' : 'Confirmed',
-          // Staff move: original day keeps the head charge. This new booking's bill is the change-date fee.
+          // Marina move: the typed extra charge is explicit. A staff move with no typed
+          // fee follows the cutoff — free before lateFeeFromTime, per-person fee after.
           lateChangeFee: staffMove
             ? trackedMove
               ? typedFee
-              : policyFee
+              : originLate
+                ? policyFee
+                : 0
             : Math.max(0, Math.floor(options?.moveFee ?? 0)),
           lateDateChange: false,
-          noShowDateMove: staffMove || options?.noShowDateMove === true,
+          noShowDateMove:
+            options?.noShowDateMove === true || (staffMove && (trackedMove || originLate)),
           movedFrom: options?.movedFrom ?? null,
         }
         setBookings((current) => [booking, ...current])
@@ -3938,10 +3972,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           }
         const createdSummary = `Created for ${booking.date} · ${booking.program} · ${totalPassengers(booking)} pax`
         const triedCodes = new Set<string>([code])
+        let failedCode = code
         const savePromise = (async () => {
           let current = booking
           for (let attempt = 0; attempt < 4; attempt++) {
             triedCodes.add(current.code)
+            failedCode = current.code
             try {
               await insertBooking(current)
               return current
@@ -3973,7 +4009,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           setBookings((rows) => rows.filter((row) => !triedCodes.has(row.code)))
           const message =
             error instanceof Error ? error.message : 'Failed to save booking to Supabase'
-          return { ok: false, error: `Booking ${code} was not saved: ${message}` }
+          return { ok: false, error: `Booking ${failedCode} was not saved: ${message}` }
         }
       },
       cancelBooking: (code, options) => {
@@ -3987,7 +4023,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const lateCancel =
           options?.lateCancel !== undefined
             ? options.lateCancel
-            : !options?.bypassCutoff && isLateAmendmentForDate(bookingCutoffs, existing.date)
+            : isLateFeeTimeForDate(bookingCutoffs, existing.date)
         const cancelFee =
           options?.cancelFee !== undefined
             ? Math.max(0, Math.floor(options.cancelFee))
@@ -4077,33 +4113,24 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
         const oldDate = existing.date
         const program = existing.program
-        const staffMove = options?.actor?.role !== 'agent'
-        const policyFee = prebuyNoShowMoveFee(existing, bookingCutoffs.dateChangeFeePerPerson)
-        const autoLateDateChange =
-          !options?.bypassCutoff && isLateAmendmentForDate(bookingCutoffs, existing.date)
-        const trackedMove = options?.moveFee !== undefined
+        // Marina check-in passes moveFee. That amount is the caller's extra charge.
+        // Every other date change — admin or agent — follows the saved cutoff.
+        // bypassCutoff only lets admin act after the window closes; it does not waive the fee.
+        const marinaMove = options?.moveFee !== undefined
         const typedFee = Math.max(0, Math.floor(options?.moveFee ?? 0))
-        // Staff date change: the original day keeps the head / tour charge.
-        // The new day is charged only the change-date fee (default 300 THB per AD/CH).
-        const chargeLateDateChange = staffMove
+        const inLateFeeWindow = isLateFeeTimeForDate(bookingCutoffs, oldDate)
+        const chargeLateDateChange = marinaMove
           ? false
           : options?.lateDateChange !== undefined
             ? options.lateDateChange
             : options?.lateChangeFee !== undefined
               ? options.lateChangeFee > 0
-              : autoLateDateChange
-        const nextLateDateChange = staffMove
+              : inLateFeeWindow
+        const nextLateDateChange = marinaMove
           ? false
           : existing.lateDateChange === true || chargeLateDateChange
-        const staffDateFee = trackedMove ? typedFee : policyFee
-        const applyFee = staffMove || trackedMove
-        const nextLateChangeFee = staffMove
-          ? staffDateFee
-          : trackedMove
-            ? (existing.lateChangeFee ?? 0) + typedFee
-            : (existing.lateChangeFee ?? 0)
-        const movedFrom = { code, date: oldDate }
-        const nextNoShowDateMove = staffMove || existing.noShowDateMove === true
+        const nextNoShowDateMove = marinaMove ? true : existing.noShowDateMove === true
+        const movedFrom = marinaMove ? { code, date: oldDate } : null
 
         setBookings((current) =>
           current.map((booking) =>
@@ -4113,26 +4140,28 @@ export function PortalProvider({ children }: { children: ReactNode }) {
                   date: trimmedDate,
                   lateDateChange: nextLateDateChange,
                   noShowDateMove: nextNoShowDateMove,
-                  movedFrom,
-                  ...(applyFee ? { lateChangeFee: nextLateChangeFee } : {}),
+                  ...(marinaMove
+                    ? { lateChangeFee: typedFee, movedFrom }
+                    : {}),
                 }
               : booking,
           ),
         )
-        const dateChangedSummary = staffMove
-          ? `Date changed ${oldDate} → ${trimmedDate} · head use stays on ${oldDate} · change-date fee ${staffDateFee.toLocaleString('en-US')} THB on ${trimmedDate}`
+        const dateChangedSummary = marinaMove
+          ? `Date changed ${oldDate} → ${trimmedDate} · head use stays on ${oldDate} · change-date fee ${typedFee.toLocaleString('en-US')} THB on ${trimmedDate}`
           : chargeLateDateChange
             ? `Date changed ${oldDate} → ${trimmedDate} · late change · full charge (Invoice) / head deduct (Prebuy)`
-            : options?.lateDateChange === false || options?.lateChangeFee === 0
+            : options?.lateDateChange === false && inLateFeeWindow
               ? `Date changed ${oldDate} → ${trimmedDate} · late change waived`
               : `Date changed ${oldDate} → ${trimmedDate}`
         persistBookingWrite(
           'updateBookingDate',
           updateBookingDate(code, trimmedDate, {
             lateDateChange: nextLateDateChange,
-            movedFrom,
             noShowDateMove: nextNoShowDateMove,
-            ...(applyFee ? { lateChangeFee: nextLateChangeFee } : {}),
+            ...(marinaMove && movedFrom
+              ? { lateChangeFee: typedFee, movedFrom }
+              : {}),
           }).then(() => {
             logBookingEvent(code, 'date_changed', dateChangedSummary, options?.actor)
           }),
@@ -4478,7 +4507,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const extraFee =
           options?.lateChangeFee !== undefined
             ? Math.max(0, Math.floor(options.lateChangeFee))
-            : !options?.bypassCutoff && lateFeeWindow && removedChargeable > 0
+            : lateFeeWindow && removedChargeable > 0
               ? removedChargeable * bookingCutoffs.dateChangeFeePerPerson
               : 0
         if (extraFee > 0) {
