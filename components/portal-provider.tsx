@@ -852,6 +852,19 @@ const PARTNER_IDLE_MS = 15 * 60_000
 /** After this long with no interaction, staff check-in sync pauses (revives on any touch). */
 const STAFF_IDLE_MS = 20 * 60_000
 /**
+ * During Bangkok rush hour (07:30–11:00) staff tabs never go idle — the board must stay
+ * live even if no one is touching the screen. Outside rush the normal idle-pause applies.
+ */
+const RUSH_HOUR_START_MIN = 7 * 60 + 30 // 07:30 Bangkok
+const RUSH_HOUR_END_MIN = 11 * 60 // 11:00 Bangkok
+
+/** True if the current Bangkok time (UTC+7) is within the morning check-in rush window. */
+function isBangkokRushHour(): boolean {
+  const nowUtcMin = new Date().getUTCHours() * 60 + new Date().getUTCMinutes()
+  const bangkokMin = (nowUtcMin + 7 * 60) % (24 * 60)
+  return bangkokMin >= RUSH_HOUR_START_MIN && bangkokMin < RUSH_HOUR_END_MIN
+}
+/**
  * Staff safety nets only. Live updates still come from Realtime.
  * These intervals exist so a dropped websocket still catches up.
  *
@@ -1483,6 +1496,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       window.addEventListener(event, mark, { capture: true, passive: true })
     }
     const timer = window.setInterval(() => {
+      if (isBangkokRushHour()) {
+        // During rush hour keep the tab live regardless of interaction — the board must
+        // always show the latest check-ins even if no one is touching the screen.
+        if (!staffLiveRef.current) {
+          staffLiveRef.current = true
+          setStaffLive(true)
+          window.dispatchEvent(new CustomEvent('gday-staff-wake'))
+        }
+        return
+      }
       if (Date.now() - lastActivity >= STAFF_IDLE_MS) {
         staffLiveRef.current = false
         setStaffLive(false)
