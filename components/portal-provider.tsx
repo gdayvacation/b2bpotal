@@ -2349,26 +2349,39 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     let cachedProfile: SyncProfile | null = null
 
     // Throttle: coalesce bursts of Realtime events so staff tabs don't all hit the DB at once.
-    // Sprint 9b: 13 table queries → 1 RPC; Pro+Micro pool allows reducing window to 10 s.
+    // Sprint 9b: 13 table queries → 1 RPC; Pro+Micro pool allows reducing debounce safely.
+    //
+    // Rush-hour mode (07:30–11:00 Bangkok): 1.5 s debounce + 200 ms jitter.
+    //   At peak ~3 check-ins/min, each tab fires at most 3 syncs/min — trivial for Micro.
+    //   Removing the visibility guard so a hidden tab still syncs (admin may have switched
+    //   apps momentarily — silently skipping the sync forces a manual refresh).
+    //
+    // Off-peak: 3 s + 1.5 s jitter (saves pool connections during quiet hours).
     function schedulePartialSync() {
       // Code B: skip entirely when the staff tab has been idle for STAFF_IDLE_MS.
       if (!staffLiveRef.current) return
       if (debounceTimer != null) return
-      // After failures (e.g. DB timeouts) wait longer each time: 60s, 120s … max 2 min.
-      const baseDelay =
-        syncFailures > 0
-          ? Math.min(120_000, CHECK_IN_REALTIME_DEBOUNCE_MS * 2 ** Math.min(syncFailures, 2))
-          : CHECK_IN_REALTIME_DEBOUNCE_MS
-      // Jitter: spread concurrent staff tabs so they don't all hit the DB in the exact same
-      // instant. Reduced from 5s → 2s now that Micro pool handles burst well.
-      const delay = baseDelay + Math.floor(Math.random() * 2_000)
+      // After failures (e.g. DB timeouts) wait longer each time: 6s, 12s, 24s → max 2 min.
+      if (syncFailures > 0) {
+        const backoff = Math.min(120_000, CHECK_IN_REALTIME_DEBOUNCE_MS * 2 ** Math.min(syncFailures, 2))
+        const delay = backoff + Math.floor(Math.random() * 2_000)
+        debounceTimer = window.setTimeout(() => {
+          debounceTimer = null
+          void syncCheckInFromCloud(false, { partial: true, profile: cachedProfile ?? undefined })
+        }, delay)
+        return
+      }
+      // Rush hour: fast path — 1.5 s + tiny jitter so multiple tabs don't pile up exactly.
+      // Off-peak: 3 s + up to 1.5 s jitter to spread concurrent tabs.
+      const [base, jitter] = isBangkokRushHour()
+        ? [1_500, 200]
+        : [CHECK_IN_REALTIME_DEBOUNCE_MS, 1_500]
+      const delay = base + Math.floor(Math.random() * jitter)
       debounceTimer = window.setTimeout(() => {
         debounceTimer = null
-        if (document.visibilityState === 'hidden') return
-        void syncCheckInFromCloud(false, {
-          partial: true,
-          profile: cachedProfile ?? undefined,
-        })
+        // Removed visibility guard: a hidden tab can still sync; skipping caused bookings
+        // to miss their update if the admin switched away during the debounce window.
+        void syncCheckInFromCloud(false, { partial: true, profile: cachedProfile ?? undefined })
       }, delay)
     }
 
