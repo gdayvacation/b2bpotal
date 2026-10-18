@@ -17,7 +17,7 @@ import {
   isLateAmendmentForDate,
   summarizeCutoffRule,
 } from '@/lib/booking-cutoffs'
-import { formatLongDate, formatShortDate, startOfThisMonth, toISODate } from '@/lib/format'
+import { addDaysISO, formatLongDate, formatShortDate, startOfThisMonth, toISODate } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { DEFAULT_JB_CAPACITY, DEFAULT_PP_CAPACITY, type Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -49,6 +49,9 @@ export function AdminAvailability() {
   const [programFilter, setProgramFilter] = useState<ProgramFilter>('all')
   const [closePrograms, setClosePrograms] = useState<Program[]>(['PP', 'James Bond'])
   const [closureReason, setClosureReason] = useState('')
+  const [rangeFrom, setRangeFrom] = useState(portalToday)
+  const [rangeTo, setRangeTo] = useState(portalToday)
+  const [rangeNote, setRangeNote] = useState('')
   const showPP = programFilter === 'all' || programFilter === 'PP'
   const showJB = programFilter === 'all' || programFilter === 'James Bond'
 
@@ -167,14 +170,54 @@ export function AdminAvailability() {
       )
     }
     setSelected(next)
+    setRangeFrom(next[0]!)
+    setRangeTo(next[next.length - 1]!)
+    setRangeNote(`${next.length} days selected.`)
+  }
+
+  function selectThisMonth() {
+    const year = month.getFullYear()
+    const monthIndex = month.getMonth()
+    const last = new Date(year, monthIndex + 1, 0).getDate()
+    const next: string[] = []
+    for (let day = 1; day <= last; day += 1) {
+      next.push(toISODate(new Date(year, monthIndex, day)))
+    }
+    setSelected(next)
+    setRangeFrom(next[0]!)
+    setRangeTo(next[next.length - 1]!)
+    setRangeNote(`${next.length} days selected.`)
+  }
+
+  function selectDateRange() {
+    const { dates, capped } = datesBetween(rangeFrom, rangeTo)
+    if (dates.length === 0) {
+      setRangeNote('Choose a from and to date.')
+      return
+    }
+    setSelected(dates)
+    const [year, monthIndex] = dates[0]!.split('-').map(Number)
+    setMonth(new Date(year!, (monthIndex ?? 1) - 1, 1))
+    setRangeNote(
+      capped
+        ? `${dates.length} days selected. A range stops at 366 days.`
+        : `${dates.length} day${dates.length === 1 ? '' : 's'} selected.`,
+    )
+  }
+
+  function closeProgramsOnSelected(programs: Program[]) {
+    if (selectedSorted.length === 0 || programs.length === 0) return
+    closeBookingForDates(selectedSorted, programs, closureReason)
   }
 
   const headerDescription =
     tab === 'cutoffs'
       ? `One time control per rule (${bookingCutoffs.timezone}). Agents may book or modify until the set time. After the late-fee time, date changes and cancels are charged. Admin can always bypass.`
       : tab === 'close'
-        ? 'Close booking on specific dates for PP, James Bond, or both — for weather, boat issues, or other ops holds. Agents cannot book closed dates; admin can still bypass.'
-        : `Default every day: PP ${DEFAULT_PP_CAPACITY} · James Bond ${DEFAULT_JB_CAPACITY}. Adjust per day or view live booking status.`
+        ? 'Open or close PP and James Bond on any date. Pick one day, a few days, this month, or a from–to range. Agents cannot book a closed program; admin can still book.'
+        : tab === 'status'
+          ? 'Green is seats still open. Red is seats already booked. A closed program is blocked for agents on that day.'
+          : `Default every day: PP ${DEFAULT_PP_CAPACITY} · James Bond ${DEFAULT_JB_CAPACITY}. Adjust seats, then open or close each program for one day or many.`
 
   return (
     <div className="w-full">
@@ -400,25 +443,61 @@ export function AdminAvailability() {
             </div>
 
             {tab === 'capacity' || tab === 'close' ? (
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs text-teal-950/50">
-                  {tab === 'close'
-                    ? 'Click days to select, then close or reopen booking in the panel.'
-                    : 'Click days to select. Use the panel to raise or lower seats.'}
-                </p>
-                <div className="flex gap-2">
-                  <Button type="button" variant="outline" size="sm" onClick={selectWeekFromFirst}>
-                    Next 7 days
+              <div className="mb-3 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs text-teal-950/50">
+                    {tab === 'close'
+                      ? 'Pick one day, a few days, or a range. Then open or close each program.'
+                      : 'Click days for seats. Use the range when you want many dates at once.'}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" variant="outline" size="sm" onClick={selectWeekFromFirst}>
+                      Next 7 days
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={selectThisMonth}>
+                      This month
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={selected.length === 0}
+                      onClick={() => {
+                        setSelected([])
+                        setRangeNote('')
+                      }}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-end gap-2">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[11px] font-medium text-teal-900/55">From</span>
+                    <Input
+                      type="date"
+                      aria-label="Range start"
+                      className="h-8 w-[9.5rem] rounded-lg px-2 text-xs"
+                      value={rangeFrom}
+                      onChange={(event) => setRangeFrom(event.target.value)}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[11px] font-medium text-teal-900/55">To</span>
+                    <Input
+                      type="date"
+                      aria-label="Range end"
+                      className="h-8 w-[9.5rem] rounded-lg px-2 text-xs"
+                      value={rangeTo}
+                      onChange={(event) => setRangeTo(event.target.value)}
+                    />
+                  </label>
+                  <Button type="button" size="sm" variant="outline" onClick={selectDateRange}>
+                    Select range
                   </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={selected.length === 0}
-                    onClick={() => setSelected([])}
-                  >
-                    Clear
-                  </Button>
+                  {rangeNote ? (
+                    <span className="pb-1 text-[11px] text-teal-800/70">{rangeNote}</span>
+                  ) : null}
                 </div>
               </div>
             ) : (
@@ -505,15 +584,21 @@ export function AdminAvailability() {
                         onClick={() => toggleDay(iso)}
                         className={cn(
                           'min-h-[88px] border-r border-b border-teal-900/12 bg-white p-1.5 text-left transition-colors hover:bg-teal-50/70 sm:min-h-[104px] sm:p-2',
-                          isSelected && 'bg-teal-50 shadow-[inset_0_0_0_2px_rgb(15_118_110)]',
+                          (ppClosed || jbClosed) && 'bg-rose-50/60',
+                          isSelected && 'shadow-[inset_0_0_0_2px_rgb(15_118_110)]',
+                          isSelected && !(ppClosed || jbClosed) && 'bg-teal-50',
                         )}
                       >
                         <div className="text-xs font-medium text-teal-900 sm:text-sm">
                           {cell.getDate()}
                         </div>
                         <div className="mt-1.5 space-y-1">
-                          <CapacityChip label="PP" value={capacity.ppCapacity} />
-                          <CapacityChip label="JB" value={capacity.jamesBondCapacity} />
+                          <CapacityChip label="PP" value={capacity.ppCapacity} closed={ppClosed} />
+                          <CapacityChip
+                            label="JB"
+                            value={capacity.jamesBondCapacity}
+                            closed={jbClosed}
+                          />
                         </div>
                       </button>
                     )
@@ -560,10 +645,18 @@ export function AdminAvailability() {
                       </div>
                       <div className="mt-1.5 space-y-1">
                         {showPP ? (
-                          <StatusChips label="PP" available={ppLeft} booked={ppBooked} />
+                          ppClosed ? (
+                            <ClosureChip label="PP" closed />
+                          ) : (
+                            <StatusChips label="PP" available={ppLeft} booked={ppBooked} />
+                          )
                         ) : null}
                         {showJB ? (
-                          <StatusChips label="JB" available={jbLeft} booked={jbBooked} />
+                          jbClosed ? (
+                            <ClosureChip label="JB" closed />
+                          ) : (
+                            <StatusChips label="JB" available={jbLeft} booked={jbBooked} />
+                          )
                         ) : null}
                       </div>
                     </button>
@@ -629,6 +722,44 @@ export function AdminAvailability() {
                     Mixed values across selected days. +/- adjusts each day from its current number.
                   </p>
                 ) : null}
+
+                <div className="mt-5 border-t border-teal-900/10 pt-4">
+                  <p className="text-xs font-medium text-teal-900/70">Open or close</p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-teal-950/45">
+                    Each program, for every selected day. Agents cannot book a closed program.
+                  </p>
+                  <div className="mt-3 space-y-2">
+                    <ProgramGate
+                      name="PP"
+                      state={selectedSorted.length === 0 ? 'empty' : selectedClosureState.pp}
+                      disabled={selectedSorted.length === 0}
+                      onOpen={() => applyOpenBooking(['PP'])}
+                      onClose={() => closeProgramsOnSelected(['PP'])}
+                    />
+                    <ProgramGate
+                      name="James Bond"
+                      state={selectedSorted.length === 0 ? 'empty' : selectedClosureState.jb}
+                      disabled={selectedSorted.length === 0}
+                      onOpen={() => applyOpenBooking(['James Bond'])}
+                      onClose={() => closeProgramsOnSelected(['James Bond'])}
+                    />
+                  </div>
+                  <div className="mt-3">
+                    <SoftLabel htmlFor="seat-closure-reason">Reason (optional)</SoftLabel>
+                    <Textarea
+                      id="seat-closure-reason"
+                      className="mt-1.5 min-h-[64px] resize-none"
+                      placeholder="e.g. Storm warning, boat maintenance"
+                      value={closureReason}
+                      onChange={(event) => setClosureReason(event.target.value)}
+                    />
+                    {selectedClosureState.reason && !closureReason ? (
+                      <p className="mt-1.5 text-[11px] text-teal-900/45">
+                        Current note: {selectedClosureState.reason}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
               </>
             ) : tab === 'close' ? (
               <>
@@ -736,6 +867,7 @@ export function AdminAvailability() {
                         name="PP"
                         capacity={getCapacity(singleIso).ppCapacity}
                         booked={bookedPaxFor(singleIso, 'PP')}
+                        closed={isProgramClosed(singleIso, 'PP')}
                       />
                     ) : null}
                     {showJB ? (
@@ -743,6 +875,7 @@ export function AdminAvailability() {
                         name="James Bond"
                         capacity={getCapacity(singleIso).jamesBondCapacity}
                         booked={bookedPaxFor(singleIso, 'James Bond')}
+                        closed={isProgramClosed(singleIso, 'James Bond')}
                       />
                     ) : null}
                   </div>
@@ -824,10 +957,81 @@ function LateFeePreviewCard({
   )
 }
 
-function CapacityChip({ label, value }: { label: string; value: number }) {
+function CapacityChip({
+  label,
+  value,
+  closed,
+}: {
+  label: string
+  value: number
+  closed?: boolean
+}) {
   return (
-    <div className="rounded-md bg-neutral-50 px-1.5 py-1 text-[10px] font-medium text-teal-900 sm:text-[11px]">
-      {label} {value}
+    <div
+      className={cn(
+        'rounded-md px-1.5 py-1 text-[10px] font-medium sm:text-[11px]',
+        closed ? 'bg-rose-100 text-rose-800' : 'bg-neutral-50 text-teal-900',
+      )}
+    >
+      {label} {closed ? 'Closed' : value}
+    </div>
+  )
+}
+
+function ProgramGate({
+  name,
+  state,
+  disabled,
+  onOpen,
+  onClose,
+}: {
+  name: string
+  state: 'all' | 'none' | 'mixed' | 'empty'
+  disabled?: boolean
+  onOpen: () => void
+  onClose: () => void
+}) {
+  const label =
+    state === 'all' ? 'Closed' : state === 'mixed' ? 'Mixed' : state === 'none' ? 'Open' : 'Select days'
+  return (
+    <div className="rounded-xl border border-teal-900/8 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-sm font-medium text-teal-950">{name}</div>
+        <span
+          className={cn(
+            'rounded-md px-2 py-0.5 text-[11px] font-semibold',
+            state === 'all'
+              ? 'bg-rose-50 text-rose-800'
+              : state === 'mixed'
+                ? 'bg-amber-50 text-amber-900'
+                : state === 'none'
+                  ? 'bg-emerald-50 text-emerald-800'
+                  : 'bg-neutral-50 text-neutral-500',
+          )}
+        >
+          {label}
+        </span>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-1.5">
+        <Button
+          type="button"
+          size="sm"
+          variant={state === 'none' ? 'default' : 'outline'}
+          disabled={disabled}
+          onClick={onOpen}
+        >
+          Open
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={state === 'all' ? 'destructive' : 'outline'}
+          disabled={disabled}
+          onClick={onClose}
+        >
+          Close
+        </Button>
+      </div>
     </div>
   )
 }
@@ -952,16 +1156,25 @@ function StatusDetail({
   name,
   capacity,
   booked,
+  closed,
 }: {
   name: string
   capacity: number
   booked: number
+  closed?: boolean
 }) {
   const available = Math.max(capacity - booked, 0)
   const overbooked = booked > capacity
   return (
     <div className="rounded-xl border border-teal-900/8 p-3">
-      <div className="mb-3 text-sm font-medium text-teal-950">{name}</div>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="text-sm font-medium text-teal-950">{name}</div>
+        {closed ? (
+          <span className="rounded-md bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-800">
+            Closed
+          </span>
+        ) : null}
+      </div>
       <div className="grid grid-cols-2 gap-2">
         <div className="rounded-lg bg-emerald-50 px-3 py-3 text-center">
           <div className="text-[10px] font-medium tracking-wide text-emerald-700/70 uppercase">
@@ -992,6 +1205,22 @@ function StatusDetail({
       </p>
     </div>
   )
+}
+
+function datesBetween(from: string, to: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return { dates: [] as string[], capped: false }
+  }
+  let start = from
+  let end = to
+  if (start > end) [start, end] = [end, start]
+  const dates: string[] = []
+  let cursor = start
+  while (cursor <= end && dates.length < 366) {
+    dates.push(cursor)
+    cursor = addDaysISO(cursor, 1)
+  }
+  return { dates, capped: cursor <= end }
 }
 
 function buildMonth(month: Date) {
