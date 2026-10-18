@@ -493,7 +493,7 @@ export function AdminDailyJobOrder({
                     <p className="text-xs font-medium text-teal-800/55">
                       {isCheckInView
                         ? `AD ${totals.adults} · CHD ${totals.children} · INF ${totals.infants} · TL ${totals.tourLeaders}`
-                        : driverGuestLabel(totals.adults, totals.children)}
+                        : driverGuestLabel(totals.adults, totals.children, totals.infants, totals.tourLeaders)}
                     </p>
                   </div>
                 </Surface>
@@ -1044,7 +1044,7 @@ function VanGroupSection({
         </div>
         <p className={cn('font-medium tabular-nums text-teal-800/70', isCheckIn ? 'text-xs' : 'text-sm')}>
           {group.rows.length} booking{group.rows.length === 1 ? '' : 's'} ·{' '}
-          {isCheckIn ? `${group.totals.pax} pax` : driverGuestLabel(group.totals.adults, group.totals.children)}
+          {isCheckIn ? `${group.totals.pax} pax` : driverGuestLabel(group.totals.adults, group.totals.children, group.totals.infants, group.totals.tourLeaders)}
         </p>
       </div>
 
@@ -1127,10 +1127,10 @@ function VanGroupSection({
                 </>
               ) : (
                 <>
-                  <TableHead className="w-[34%] pr-1 text-xs font-bold tracking-wide whitespace-normal text-teal-900/80 uppercase">
+                  <TableHead className="w-[30%] pr-1 text-xs font-bold tracking-wide whitespace-normal text-teal-900/80 uppercase">
                     Hotel
                   </TableHead>
-                  <TableHead className="w-[26%] text-xs font-bold tracking-wide whitespace-normal text-teal-900/80 uppercase">
+                  <TableHead className="w-[24%] text-xs font-bold tracking-wide whitespace-normal text-teal-900/80 uppercase">
                     Guest name
                   </TableHead>
                   <TableHead className="w-[4.5rem] max-w-[4.5rem] px-1 text-center text-[11px] font-bold tracking-normal whitespace-normal text-teal-900/80 uppercase">
@@ -1148,7 +1148,7 @@ function VanGroupSection({
                   <TableHead className="w-[8.5rem] px-2 text-xs font-bold tracking-wide whitespace-normal text-teal-900/80 uppercase">
                     Zone
                   </TableHead>
-                  <TableHead className="w-[7.5rem] px-2 text-center text-xs font-bold tracking-wide whitespace-normal text-teal-900/80 uppercase">
+                  <TableHead className="w-[12.5rem] px-2 text-center text-xs font-bold tracking-wide whitespace-normal text-teal-900/80 uppercase">
                     Guests
                   </TableHead>
                 </>
@@ -1315,7 +1315,7 @@ function VanGroupSection({
                       {booking.pickupZone || '—'}
                     </TableCell>
                     <TableCell className="px-2 text-center text-base font-semibold whitespace-nowrap text-teal-950">
-                      {driverGuestLabel(pax.adults, pax.children)}
+                      {driverGuestLabel(pax.adults, pax.children, pax.infants, pax.tourLeaders)}
                     </TableCell>
                   </>
                 )}
@@ -1370,7 +1370,7 @@ function VanGroupSection({
                     Group total
                   </TableCell>
                   <TableCell className="px-2 text-center text-base font-semibold whitespace-nowrap text-teal-950">
-                    {driverGuestLabel(group.totals.adults, group.totals.children)}
+                    {driverGuestLabel(group.totals.adults, group.totals.children, group.totals.infants, group.totals.tourLeaders)}
                   </TableCell>
                 </>
               )}
@@ -1845,7 +1845,7 @@ function DriverMobilePrintSheet({
   totals: { adults: number; children: number; infants: number; tourLeaders: number }
   usingMockAssignments: boolean
 }) {
-  const dayGuests = driverGuestLabel(totals.adults, totals.children)
+  const dayGuests = driverGuestLabel(totals.adults, totals.children, totals.infants, totals.tourLeaders)
   const cell = 'border border-teal-900/25 px-3 py-2.5 align-middle'
   const notes = groups.flatMap((group) =>
     group.rows
@@ -1904,18 +1904,18 @@ function DriverMobilePrintSheet({
                   </div>
                   <p className="shrink-0 rounded-full border border-teal-900/15 bg-white px-4 py-1.5 text-lg font-semibold">
                     {group.rows.length} booking{group.rows.length === 1 ? '' : 's'} ·{' '}
-                    {driverGuestLabel(group.totals.adults, group.totals.children)}
+                    {driverGuestLabel(group.totals.adults, group.totals.children, group.totals.infants, group.totals.tourLeaders)}
                   </p>
                 </div>
                 <table className="w-full table-fixed border-collapse text-left text-[17px] leading-snug">
                   <thead>
                     <tr className="bg-teal-950/[0.06]">
                       <th className={cn(cell, 'w-12 text-center text-sm font-bold uppercase')}>No.</th>
-                      <th className={cn(cell, 'w-[32%] text-sm font-bold uppercase')}>Hotel</th>
-                      <th className={cn(cell, 'w-[26%] text-sm font-bold uppercase')}>Guest name</th>
+                      <th className={cn(cell, 'w-[28%] text-sm font-bold uppercase')}>Hotel</th>
+                      <th className={cn(cell, 'w-[24%] text-sm font-bold uppercase')}>Guest name</th>
                       <th className={cn(cell, 'w-16 px-1 text-center text-sm font-bold uppercase')}>P/U</th>
-                      <th className={cn(cell, 'w-[16%] text-sm font-bold uppercase')}>Zone</th>
-                      <th className={cn(cell, 'w-36 text-center text-sm font-bold uppercase')}>Guests</th>
+                      <th className={cn(cell, 'w-[14%] text-sm font-bold uppercase')}>Zone</th>
+                      <th className={cn(cell, 'w-52 text-center text-sm font-bold uppercase')}>Guests</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1932,7 +1932,7 @@ function DriverMobilePrintSheet({
                         </td>
                         <td className={cell}>{row.booking.pickupZone || '—'}</td>
                         <td className={cn(cell, 'text-center text-xl font-bold whitespace-nowrap')}>
-                          {driverGuestLabel(row.pax.adults, row.pax.children)}
+                          {driverGuestLabel(row.pax.adults, row.pax.children, row.pax.infants, row.pax.tourLeaders)}
                         </td>
                       </tr>
                     ))}
@@ -1941,7 +1941,7 @@ function DriverMobilePrintSheet({
                         Group total
                       </td>
                       <td className={cn(cell, 'text-center text-xl whitespace-nowrap')}>
-                        {driverGuestLabel(group.totals.adults, group.totals.children)}
+                        {driverGuestLabel(group.totals.adults, group.totals.children, group.totals.infants, group.totals.tourLeaders)}
                       </td>
                     </tr>
                   </tbody>
@@ -2783,11 +2783,18 @@ function makeGroup(
   }
 }
 
-function driverGuestLabel(adults: number, children: number) {
+function driverGuestLabel(
+  adults: number,
+  children: number,
+  infants = 0,
+  tourLeaders = 0,
+) {
   const parts: string[] = []
-  if (adults > 0) parts.push(`${adults} AD`)
-  if (children > 0) parts.push(`${children} CH`)
-  return parts.length > 0 ? parts.join(', ') : '—'
+  if (adults > 0) parts.push(`${adults}AD`)
+  if (children > 0) parts.push(`${children}CH`)
+  if (infants > 0) parts.push(`${infants}IN`)
+  if (tourLeaders > 0) parts.push(`${tourLeaders}TL`)
+  return parts.length > 0 ? parts.join(',') : '—'
 }
 
 function blankIfZero(value: number) {
