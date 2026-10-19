@@ -79,9 +79,17 @@ export function AdminCheckInPaxDialog({
   }, [booking, open])
 
   const booked = booking ? bookingPaxSnapshot(booking) : null
+  const arrivedNow = booking
+    ? getArrivedPaxSnapshot(booking.date, booking.program, booking.code)
+    : null
   const next = { adults, children, infants, tourLeaders }
   const total = adults + children + infants + tourLeaders
   const mixChanged = booked ? !paxSnapshotsEqual(booked, next) : false
+  // A check-in-only save stores an arrived override. Putting the steppers back
+  // on the original booking is still a change until that override is cleared.
+  const checkInNow = arrivedNow ?? booked
+  const differsFromCheckIn = checkInNow ? !paxSnapshotsEqual(checkInNow, next) : false
+  const restoringBooked = Boolean(arrivedNow && differsFromCheckIn && !mixChanged)
   const syncBooking = scope === 'booking-invoice'
 
   async function save() {
@@ -197,6 +205,9 @@ export function AdminCheckInPaxDialog({
             <p className="text-xs text-teal-900/55">
               Booked {formatGuestPaxParts(booked)}
               {mixChanged ? ` → ${formatGuestPaxParts(next)}` : ''}
+              {restoringBooked && arrivedNow
+                ? ` · check-in ${formatGuestPaxParts(arrivedNow)} back to booked`
+                : ''}
             </p>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <PaxStepper label="AD" value={adults} onChange={setAdults} />
@@ -251,8 +262,12 @@ export function AdminCheckInPaxDialog({
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button type="button" disabled={saving || !mixChanged} onClick={() => void save()}>
-            {saving ? 'Saving…' : syncBooking ? 'Update booking & invoice' : 'Save check-in only'}
+          <Button type="button" disabled={saving || !differsFromCheckIn} onClick={() => void save()}>
+            {saving
+              ? 'Saving…'
+              : restoringBooked || !syncBooking
+                ? 'Save check-in only'
+                : 'Update booking & invoice'}
           </Button>
         </DialogFooter>
       </DialogContent>

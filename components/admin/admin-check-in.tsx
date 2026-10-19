@@ -300,15 +300,19 @@ function MovedDateNote({ booking, className }: { booking: Booking; className?: s
 
 /** Seats the booking actually needs checked in today — the same math admin board and the
  *  check-in / insurance reconciliation banner must agree on (uses the admin "arrived" pax
- *  override when one exists, otherwise the original booked pax). */
+ *  override when one exists, otherwise the original booked pax).
+ *
+ *  When the booking pax is increased from the Booking page (e.g. admin adds 1 adult after
+ *  the group has already fully checked in), the arrived override may be stale (lower than
+ *  the new booking total).  In that case we always require at least as many check-ins as
+ *  the current booking demands so the new guest slot appears on the board. */
 function effectiveBookingSeats(booking: Booking, today: string) {
   const arrived = getArrivedPaxSnapshot(today, booking.program, booking.code)
-  return Math.max(
-    1,
-    arrived
-      ? arrived.adults + arrived.children + arrived.infants + arrived.tourLeaders
-      : totalPassengers(booking),
-  )
+  const bookedTotal = totalPassengers(booking)
+  if (!arrived) return Math.max(1, bookedTotal)
+  const arrivedTotal = arrived.adults + arrived.children + arrived.infants + arrived.tourLeaders
+  // Use the arrived total unless the booking has grown beyond it (admin added guests).
+  return Math.max(1, arrivedTotal, bookedTotal)
 }
 
 function buildBookingLine(

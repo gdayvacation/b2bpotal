@@ -4,10 +4,10 @@ import { useMemo, useRef, useState } from 'react'
 import { Check, Globe2 } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { filterNationalities, matchNationality } from '@/lib/nationalities'
+import { filterNationalities, matchNationality, nationalityCountry } from '@/lib/nationalities'
 import { cn } from '@/lib/utils'
 
-const MAX_SUGGESTIONS = 10
+const MAX_SUGGESTIONS = 24
 
 export function NationalityCombobox({
   value,
@@ -120,6 +120,7 @@ export function NationalityCombobox({
           {suggestions.map((item, index) => {
             const selected = item.toLowerCase() === query.toLowerCase()
             const active = index === highlight
+            const country = nationalityCountry(item)
             return (
               <li key={item} role="option" aria-selected={selected}>
                 <button
@@ -133,7 +134,12 @@ export function NationalityCombobox({
                   onClick={() => pick(item)}
                 >
                   <Globe2 className="size-3.5 shrink-0 text-teal-800/45" />
-                  <span className="min-w-0 flex-1 truncate font-medium">{item}</span>
+                  <span className="min-w-0 flex-1 truncate">
+                    <span className="font-medium">{item}</span>
+                    {country ? (
+                      <span className="ml-2 text-xs font-normal text-teal-900/45">{country}</span>
+                    ) : null}
+                  </span>
                   {selected ? <Check className="size-3.5 shrink-0 text-teal-800" /> : null}
                 </button>
               </li>

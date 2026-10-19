@@ -38,6 +38,7 @@ import {
   type PickupZoneName,
   type PrivateTransferVehicle,
 } from '@/lib/types'
+import { clearArrivedPaxSnapshot, getArrivedPaxSnapshot } from '@/lib/check-in-arrived-pax'
 import { cn } from '@/lib/utils'
 
 type TransferKind = 'none' | 'join' | 'private'
@@ -326,6 +327,19 @@ export function EditBookingDialog({
     if (!result.ok) {
       setError(result.error)
       return
+    }
+    // If the pax changed and there is a check-in "arrived" override for this booking,
+    // clear it so the check-in board re-reads from the updated booking.  This handles
+    // the case where a group has already fully checked in and the admin then adds (or
+    // removes) guests from the Booking page — without clearing the override the board
+    // would keep using the stale arrived count and hide the new guest slot.
+    const newTotal = adults + children + infants + tourLeaders
+    const oldTotal = totalPassengers(booking)
+    if (newTotal !== oldTotal) {
+      const arrivedSnap = getArrivedPaxSnapshot(booking.date, booking.program, booking.code)
+      if (arrivedSnap) {
+        clearArrivedPaxSnapshot(booking.date, booking.program, booking.code)
+      }
     }
     onOpenChange(false)
   }
