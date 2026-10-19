@@ -1663,7 +1663,11 @@ export function subscribeBookings(onChange: () => void) {
 }
 
 /** Live marina check-in updates (requires Realtime on enrollments + attendance). */
-export function subscribeCheckInChanges(onChange: () => void) {
+export function subscribeCheckInChanges(
+  onChange: () => void,
+  /** Called when the Realtime channel (re-)connects. Use to re-sync after a WebSocket drop. */
+  onReconnect?: () => void,
+) {
   const supabase = getSupabaseBrowserClient()
   const channel = supabase
     .channel(`portal-check-in-${Date.now()}`)
@@ -1718,7 +1722,19 @@ export function subscribeCheckInChanges(onChange: () => void) {
       onChange()
     })
   }
-  channel.subscribe()
+  // Track whether we have ever reached SUBSCRIBED so we can distinguish first-connect
+  // from a reconnect. On reconnect we call onReconnect() so the caller can re-sync
+  // data that may have changed while the WebSocket was down.
+  let everSubscribed = false
+  channel.subscribe((status) => {
+    if (status === 'SUBSCRIBED') {
+      if (everSubscribed) {
+        // WebSocket reconnected after a drop — events during the gap were lost.
+        onReconnect?.()
+      }
+      everSubscribed = true
+    }
+  })
   return () => {
     void supabase.removeChannel(channel)
   }

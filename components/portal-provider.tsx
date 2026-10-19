@@ -881,7 +881,8 @@ const STAFF_BOOKINGS_FULL_REFRESH_MS = 45 * 60_000
 const STAFF_DAY_PLAN_POLL_MS = 5 * 60_000
 const STAFF_SETTINGS_POLL_MS = 15 * 60_000
 const STAFF_CHECK_IN_POLL_MS = 15 * 60_000
-const REALTIME_REFRESH_MS = 1_500
+/** Delay before re-fetching after a Realtime event (booking / day-plan / settings). */
+const REALTIME_REFRESH_MS = 500
 /**
  * PERF sprint-1a: check-in Realtime debounce increased from 4 s → 30 s.
  * During morning rush 200 guests scan within ~2 hours, firing ~200 Realtime events.
@@ -2436,17 +2437,31 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
       void syncCheckInFromCloud(true, { profile })
       try {
-        unsubCheckIn = subscribeCheckInChanges(() => {
-          checkInSyncEpochRef.current += 1
-          schedulePartialSync()
-        })
+        unsubCheckIn = subscribeCheckInChanges(
+          () => {
+            checkInSyncEpochRef.current += 1
+            schedulePartialSync()
+          },
+          // Realtime reconnect: WebSocket was down, events were missed — re-sync immediately.
+          () => {
+            if (cancelled) return
+            void syncCheckInFromCloud(false, { partial: true, profile: cachedProfile ?? undefined })
+          },
+        )
       } catch (error) {
         console.error('[portal] check-in realtime subscribe failed', error)
       }
-      // Staff/helper: day-scoped poll as fallback; realtime (debounced) covers the rush.
-      poll = window.setInterval(() => {
-        schedulePartialSync()
-      }, STAFF_CHECK_IN_POLL_MS)
+      // Adaptive fallback poll: 2 min during rush hour (safety net if Realtime drops),
+      // 15 min off-peak (quiet hours — Realtime handles all live updates).
+      // Using recursive setTimeout so the interval adjusts at each tick.
+      function scheduleCheckInPoll() {
+        const delay = isBangkokRushHour() ? 2 * 60_000 : STAFF_CHECK_IN_POLL_MS
+        poll = window.setTimeout(() => {
+          schedulePartialSync()
+          if (!cancelled) scheduleCheckInPoll()
+        }, delay)
+      }
+      scheduleCheckInPoll()
     })()
 
     return () => {
@@ -2456,7 +2471,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('focus', onVisible)
       window.removeEventListener('gday-staff-wake', onStaffWake)
       if (debounceTimer != null) window.clearTimeout(debounceTimer)
-      if (poll != null) window.clearInterval(poll)
+      if (poll != null) window.clearTimeout(poll) // adaptive poll uses setTimeout
       unsubCheckIn?.()
     }
   }, [hydrated, sessionRole])
