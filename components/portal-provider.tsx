@@ -2348,21 +2348,30 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     let debounceTimer: number | null = null
     let cachedProfile: SyncProfile | null = null
 
-    // Throttle: coalesce bursts of Realtime events so staff tabs don't all hit the DB at once.
-    // Sprint 9b: 13 table queries → 1 RPC; Pro+Micro pool allows reducing debounce safely.
+    // Leading-edge + trailing-coalesce sync (Pro+Micro, Sprint 9b 1-RPC).
     //
-    // Rush-hour mode (07:30–11:00 Bangkok): 1.5 s debounce + 200 ms jitter.
-    //   At peak ~3 check-ins/min, each tab fires at most 3 syncs/min — trivial for Micro.
-    //   Removing the visibility guard so a hidden tab still syncs (admin may have switched
-    //   apps momentarily — silently skipping the sync forces a manual refresh).
+    // Leading edge: when the board is quiet (no sync in-flight, no timer pending) the
+    // very first Realtime event fires a sync immediately — zero artificial wait.
+    // A single guest check-in therefore appears on the admin board within ~300-500 ms
+    // (just the RPC round-trip). The previous trailing-only approach always added ≥1.5 s.
     //
-    // Off-peak: 3 s + 1.5 s jitter (saves pool connections during quiet hours).
+    // Trailing coalesce: if a sync is already running when more events arrive, a 1 s
+    // trailing timer collects the burst and fires one follow-up sync. The epoch check
+    // inside syncCheckInFromCloud's finally block provides a second safety net.
+    //
+    // DB load (200 guests / 2 h = 1.7 check-ins/min, 4-8 admin tabs):
+    //   • Each check-in → at most 2 RPC calls per tab (leading + possible trailing).
+    //   • 8 tabs × 2 × 1.7/min ≈ 27 RPC/min at peak — well within Micro pool.
+    //   • Zero check-ins outside rush → zero Realtime events → zero extra calls.
+    //
+    // Failure backoff: leading edge disabled while failures > 0; backoff 6s→12s→24s→2min.
     function schedulePartialSync() {
       // Code B: skip entirely when the staff tab has been idle for STAFF_IDLE_MS.
       if (!staffLiveRef.current) return
-      if (debounceTimer != null) return
-      // After failures (e.g. DB timeouts) wait longer each time: 6s, 12s, 24s → max 2 min.
+
+      // Failure backoff — no immediate retry; trailing only after DB errors.
       if (syncFailures > 0) {
+        if (debounceTimer != null) return
         const backoff = Math.min(120_000, CHECK_IN_REALTIME_DEBOUNCE_MS * 2 ** Math.min(syncFailures, 2))
         const delay = backoff + Math.floor(Math.random() * 2_000)
         debounceTimer = window.setTimeout(() => {
@@ -2371,16 +2380,20 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }, delay)
         return
       }
-      // Rush hour: fast path — 1.5 s + tiny jitter so multiple tabs don't pile up exactly.
-      // Off-peak: 3 s + up to 1.5 s jitter to spread concurrent tabs.
-      const [base, jitter] = isBangkokRushHour()
-        ? [1_500, 200]
-        : [CHECK_IN_REALTIME_DEBOUNCE_MS, 1_500]
-      const delay = base + Math.floor(Math.random() * jitter)
+
+      // Leading edge: board is quiet → sync immediately, no debounce wait.
+      if (!checkInSyncInFlightRef.current && debounceTimer == null) {
+        void syncCheckInFromCloud(false, { partial: true, profile: cachedProfile ?? undefined })
+        return
+      }
+
+      // Trailing coalesce: a sync is already running or a timer is pending.
+      // One short follow-up window catches any events that land during the current sync.
+      // 200 ms jitter prevents all tabs from firing the trailing sync at the same instant.
+      if (debounceTimer != null) return
+      const delay = 1_000 + Math.floor(Math.random() * 200)
       debounceTimer = window.setTimeout(() => {
         debounceTimer = null
-        // Removed visibility guard: a hidden tab can still sync; skipping caused bookings
-        // to miss their update if the admin switched away during the debounce window.
         void syncCheckInFromCloud(false, { partial: true, profile: cachedProfile ?? undefined })
       }, delay)
     }
