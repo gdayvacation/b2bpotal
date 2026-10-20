@@ -107,38 +107,46 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'This check-in QR is not valid.' }, { status: 401 })
   }
 
-  // ── Step 2a: Primary — Admin generateLink + verifyOtp ────────────────────
-  // Bypasses GoTrue /token rate-limit. Requires SUPABASE_SERVICE_ROLE_KEY.
-  if (canIssuePortalSession()) {
-    try {
-      const session = await issuePortalSession(authEmail)
-      // ✅ DO NOT log session.access_token or session.refresh_token
-      return NextResponse.json({
-        code:         row.booking_code,
-        accessToken:  session.access_token,
-        refreshToken: session.refresh_token,
-      })
-    } catch (err: unknown) {
-      // Log the error reason (not email/token) to help debug unexpected failures.
-      const reason = err instanceof Error ? err.message : String(err)
-      console.warn('[guest/enter] primary session path failed, using fallback —', reason)
-    }
-  }
-
-  // ── Step 2b: Fallback — signInWithPassword (original behaviour) ──────────
+  // ── Step 2a: Primary — signInWithPassword (1 API call, ~300 ms) ──────────
+  // Supabase Pro plan rate limits are high enough for 200 guests/day (avg 1.7/min).
+  // This is ~500-800 ms faster than the previous generateLink+verifyOtp path.
+  // Falls back to generateLink only if GoTrue returns HTTP 429 (rate-limit hit).
   // ✅ DO NOT log authEmail or accessKey
   const { data: sessionData, error: authError } = await supabase.auth.signInWithPassword({
     email:    authEmail,
     password: accessKey,
   })
-  if (authError || !sessionData.session) {
-    return NextResponse.json({ error: 'This check-in QR is not valid.' }, { status: 401 })
+  if (!authError && sessionData.session) {
+    // ✅ DO NOT log session tokens
+    return NextResponse.json({
+      code:         row.booking_code,
+      accessToken:  sessionData.session.access_token,
+      refreshToken: sessionData.session.refresh_token,
+    })
   }
 
-  // ✅ DO NOT log sessionData.session.access_token or .refresh_token
-  return NextResponse.json({
-    code:         row.booking_code,
-    accessToken:  sessionData.session.access_token,
-    refreshToken: sessionData.session.refresh_token,
-  })
+  // ── Step 2b: Fallback — generateLink + verifyOtp (2 API calls, ~1-1.5 s) ─
+  // Only triggered when signInWithPassword returns HTTP 429 (GoTrue rate limit).
+  // On Pro plan this should be extremely rare — fewer than 30 concurrent scans
+  // from the same Vercel egress IP are needed to hit the limit.
+  const isRateLimit =
+    (authError as { status?: number } | null)?.status === 429 ||
+    /rate.limit|too.many/i.test(authError?.message ?? '')
+  if (!isRateLimit || !canIssuePortalSession()) {
+    // Non-rate-limit failure or no service key — nothing more to try.
+    return NextResponse.json({ error: 'This check-in QR is not valid.' }, { status: 401 })
+  }
+  try {
+    const session = await issuePortalSession(authEmail)
+    // ✅ DO NOT log session tokens
+    return NextResponse.json({
+      code:         row.booking_code,
+      accessToken:  session.access_token,
+      refreshToken: session.refresh_token,
+    })
+  } catch (err: unknown) {
+    const reason = err instanceof Error ? err.message : String(err)
+    console.warn('[guest/enter] both auth paths failed —', reason)
+    return NextResponse.json({ error: 'This check-in QR is not valid.' }, { status: 401 })
+  }
 }
