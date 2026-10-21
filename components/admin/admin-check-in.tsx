@@ -79,7 +79,6 @@ import {
 import { getArrivedPaxSnapshot } from '@/lib/check-in-arrived-pax'
 import { formatGuestPaxParts, hasPartialNoShow, originalBookedPax } from '@/lib/check-in-booked-pax'
 import { publicOrigin } from '@/lib/public-origin'
-import { fetchGuestQrToken } from '@/lib/supabase/guest-qr-db'
 import {
   DEFAULT_HELPER_BOARD_HOURS,
   helperBoardHoursValid,
@@ -2288,33 +2287,13 @@ function DriverGroupCard({
     )
   }, [group.lines, searchQuery, sequences])
 
-  const [qrToken, setQrToken] = useState<{ code: string; token: string } | null>(null)
-  const [qrFailure, setQrFailure] = useState<{ code: string; message: string } | null>(null)
+  // QR code is generated immediately from the booking code alone.
+  // The link-token system is retained in the DB for backward-compat but is not
+  // required (guest_qr_require_token flag = false) so we skip the async token
+  // fetch that previously caused a "Preparing QR…" delay before the code appeared.
   const qrCode = qrBooking?.code ?? ''
-  const qrReadyToken = qrToken && qrToken.code === qrCode ? qrToken.token : ''
-  const qrError = qrFailure && qrFailure.code === qrCode ? qrFailure.message : ''
-  const qrUrl = qrCode && origin && qrReadyToken ? guestCheckInUrl(origin, qrCode, qrReadyToken) : ''
+  const qrUrl = qrCode && origin ? guestCheckInUrl(origin, qrCode) : ''
   const qrSrc = useQrDataUrl(qrUrl)
-
-  useEffect(() => {
-    if (!qrCode) return
-    let cancelled = false
-    fetchGuestQrToken(qrCode)
-      .then((token) => {
-        if (!cancelled) setQrToken({ code: qrCode, token })
-      })
-      .catch((caught: unknown) => {
-        if (!cancelled) {
-          setQrFailure({
-            code: qrCode,
-            message: caught instanceof Error ? caught.message : 'Could not create check-in QR.',
-          })
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [qrCode])
 
   function toggleExpanded(code: string) {
     setExpandedCodes((current) => ({ ...current, [code]: !current[code] }))
@@ -3279,13 +3258,9 @@ function DriverGroupCard({
                     height={512}
                     className="aspect-square h-auto w-full object-contain"
                   />
-                ) : qrError ? (
-                  <div className="flex aspect-square items-center justify-center px-6 text-center text-sm text-rose-700">
-                    {qrError}
-                  </div>
                 ) : (
                   <div className="flex aspect-square items-center justify-center text-sm text-teal-900/40">
-                    Preparing QR…
+                    Generating QR…
                   </div>
                 )}
               </div>
