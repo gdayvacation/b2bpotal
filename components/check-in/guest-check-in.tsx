@@ -232,13 +232,25 @@ function ThaiParkFeeNote({ count }: { count: number }) {
 export function GuestCheckIn({
   lockedBookingCode = null,
   linkToken = '',
+  initialBooking = null,
 }: {
   lockedBookingCode?: string | null
   linkToken?: string
+  /**
+   * Booking pre-fetched server-side. When provided the component skips the
+   * portal-hydration loading screen and shows the check-in form immediately.
+   * The portal still loads in the background so check-in records and vehicle
+   * assignments update once the guest session is established.
+   */
+  initialBooking?: import('@/lib/types').Booking | null
 }) {
   return (
     <CheckInI18nProvider>
-      <GuestCheckInForm lockedBookingCode={lockedBookingCode} linkToken={linkToken} />
+      <GuestCheckInForm
+        lockedBookingCode={lockedBookingCode}
+        linkToken={linkToken}
+        initialBooking={initialBooking}
+      />
     </CheckInI18nProvider>
   )
 }
@@ -246,9 +258,11 @@ export function GuestCheckIn({
 function GuestCheckInForm({
   lockedBookingCode = null,
   linkToken = '',
+  initialBooking = null,
 }: {
   lockedBookingCode?: string | null
   linkToken?: string
+  initialBooking?: import('@/lib/types').Booking | null
 }) {
   const { t, lang } = useCheckInI18n()
   const {
@@ -276,10 +290,13 @@ function GuestCheckInForm({
   const lockedCode = lockedBookingCode?.trim() || null
   const isLocked = Boolean(lockedCode)
 
+  // Use portal bookings when available; fall back to the server-pre-fetched
+  // initialBooking so the form renders immediately on fresh QR scans before
+  // the portal has authenticated and loaded its snapshot.
   const lockedBooking = useMemo(() => {
     if (!lockedCode) return null
-    return bookings.find((item) => item.code === lockedCode) ?? null
-  }, [bookings, lockedCode])
+    return bookings.find((item) => item.code === lockedCode) ?? initialBooking ?? null
+  }, [bookings, lockedCode, initialBooking])
 
   const tourDate = lockedBooking?.date ?? today
 
@@ -300,7 +317,9 @@ function GuestCheckInForm({
   const [detailsAttempted, setDetailsAttempted] = useState(false)
   const [doneNeedsPayment, setDoneNeedsPayment] = useState(false)
   const [doneGuideOnly, setDoneGuideOnly] = useState(false)
-  const [lockedReady, setLockedReady] = useState(!lockedCode)
+  // When the server already confirmed the booking, mark it ready immediately
+  // so we skip the portal-hydration loading screen on fresh QR scans.
+  const [lockedReady, setLockedReady] = useState(!lockedCode || Boolean(initialBooking))
   const [editEnrollmentId, setEditEnrollmentId] = useState<string | null>(null)
   const [ticketSequence, setTicketSequence] = useState<GuestSequenceBlock | null>(null)
   const lockedBootstrappedRef = useRef(false)
@@ -1041,7 +1060,11 @@ function GuestCheckInForm({
     setStep('done')
   }
 
-  if (!hydrated || (isLocked && !lockedReady)) {
+  // When initialBooking is provided the server already confirmed the booking
+  // and lockedReady is pre-set to true, so we skip this loading screen on
+  // fresh QR scans. The portal still loads in the background and overrides
+  // with live data (check-in records, vehicle assignments) once auth settles.
+  if (!initialBooking && (!hydrated || (isLocked && !lockedReady))) {
     return (
       <div className="gday-app flex min-h-dvh items-center justify-center px-4">
         <p className="text-sm text-teal-900/55">{t('loading')}</p>

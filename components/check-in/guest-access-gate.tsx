@@ -135,15 +135,31 @@ async function canReadBooking(code: string) {
 export function GuestAccessGate({
   bookingCode,
   token = '',
+  initialBooking = null,
   children,
 }: {
   bookingCode: string
   token?: string
+  /**
+   * Booking pre-fetched server-side (service role). When provided the gate
+   * starts in 'ok' state so the check-in page renders instantly — no
+   * "Opening your check-in QR…" loading screen. Auth still runs in the
+   * background so write operations are still protected by RLS.
+   */
+  initialBooking?: { code: string } | null
   children: React.ReactNode
 }) {
   const code = bookingCode.trim()
   const linkToken = token.trim()
-  const [state, setState] = useState<'loading' | 'ok' | 'blocked'>(code ? 'loading' : 'blocked')
+
+  // When the server already confirmed the booking exists (initialBooking),
+  // open the gate immediately. Auth still runs below so that:
+  //   a) The portal context can load check-in records after auth.
+  //   b) ensureGuestCheckInSession() works at form-submit time.
+  // Without initialBooking we fall back to the original blocking flow.
+  const [state, setState] = useState<'loading' | 'ok' | 'blocked'>(
+    code && initialBooking ? 'ok' : code ? 'loading' : 'blocked',
+  )
   const [message, setMessage] = useState(
     'Scan the check-in QR for this booking. The page only opens that one booking.',
   )
