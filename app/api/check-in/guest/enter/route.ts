@@ -3,6 +3,12 @@ import { type NextRequest, NextResponse } from 'next/server'
 import { rpcMessage } from '@/lib/rpc-error'
 import { canIssuePortalSession, issuePortalSession } from '@/lib/supabase/guest-session-server'
 
+// Edge Runtime: eliminates Vercel serverless cold starts (1-2s delay on first scan).
+// All dependencies (supabase-js, rpc-error, guest-session-server) use Web APIs only — no Node.js built-ins.
+// Rate-limiter Maps are per-edge-instance; effective ceiling is RL_*_MAX × instances,
+// which is fine on Pro plan (GoTrue itself is the primary rate-limit guard).
+export const runtime = 'edge'
+
 // ---------------------------------------------------------------------------
 // Rate limiter — two sliding-window buckets, both in-memory (free, no Redis).
 //
