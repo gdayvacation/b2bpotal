@@ -2,6 +2,10 @@ import { GuestAccessGate } from '@/components/check-in/guest-access-gate'
 import { GuestCheckIn } from '@/components/check-in/guest-check-in'
 import { fetchGuestBookingServer } from '@/lib/supabase/server-guest-db'
 
+// Edge Runtime: no cold starts on any Vercel plan (including Hobby).
+// supabase-js uses Web APIs only — fully compatible with the Edge runtime.
+export const runtime = 'edge'
+
 export default async function CheckInPage({
   searchParams,
 }: {
