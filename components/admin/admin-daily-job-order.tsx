@@ -782,6 +782,85 @@ export function AdminDailyJobOrder({
   )
 }
 
+function LongPressCopy({
+  text,
+  className,
+  label,
+}: {
+  text: string
+  className?: string
+  label: string
+}) {
+  const value = text.trim()
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<number | null>(null)
+  const longPressedRef = useRef(false)
+
+  function clearTimer() {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+  }
+
+  async function copyValue() {
+    if (!value) return
+    try {
+      await navigator.clipboard.writeText(value)
+    } catch {
+      window.prompt(`Copy ${label}:`, value)
+    }
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1600)
+  }
+
+  function startPress() {
+    if (!value) return
+    longPressedRef.current = false
+    clearTimer()
+    timerRef.current = window.setTimeout(() => {
+      longPressedRef.current = true
+      void copyValue()
+    }, 450)
+  }
+
+  function endPress() {
+    clearTimer()
+  }
+
+  if (!value) {
+    return <div className={cn('truncate', className)}>—</div>
+  }
+
+  return (
+    <button
+      type="button"
+      className={cn(
+        'block w-full select-none truncate text-left outline-none transition-colors',
+        copied ? 'text-emerald-700' : className,
+      )}
+      title={`Long-press to copy ${label}`}
+      aria-label={`${label} ${value}. Long-press to copy.`}
+      onPointerDown={startPress}
+      onPointerUp={endPress}
+      onPointerLeave={endPress}
+      onPointerCancel={endPress}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        void copyValue()
+      }}
+      onClick={(event) => {
+        if (longPressedRef.current) {
+          event.preventDefault()
+          longPressedRef.current = false
+        }
+      }}
+    >
+      {copied ? 'Copied' : value}
+    </button>
+  )
+}
+
 function CheckInGuestCopyCell({
   guestName,
   vcNo,
@@ -1413,7 +1492,7 @@ function AgentGroupSection({
               <TableHead className="w-8 text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 No.
               </TableHead>
-              <TableHead className="w-[6.2rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+              <TableHead className="w-[6.82rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 VC No.
               </TableHead>
               <TableHead className="w-[8.5rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
@@ -1454,7 +1533,7 @@ function AgentGroupSection({
               <TableHead className="w-[3.5rem] px-1 text-center text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 Total
               </TableHead>
-              <TableHead className="w-[12rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
+              <TableHead className="w-[10.8rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
                 Note
               </TableHead>
               <TableHead className="w-[10rem] text-[11px] font-bold tracking-wide text-teal-900/80 uppercase">
@@ -1484,14 +1563,18 @@ function AgentGroupSection({
                 >
                   <TableCell className="tabular-nums text-teal-900/55">{no}</TableCell>
                   <TableCell>
-                    <div className="truncate tabular-nums text-teal-950" title={booking.agentRef || undefined}>
-                      {booking.agentRef?.trim() || '—'}
-                    </div>
+                    <LongPressCopy
+                      text={booking.agentRef}
+                      label="VC No."
+                      className="tabular-nums text-teal-950 hover:text-sky-800"
+                    />
                   </TableCell>
                   <TableCell>
-                    <div className="truncate font-medium" title={booking.leadGuest}>
-                      {booking.leadGuest}
-                    </div>
+                    <LongPressCopy
+                      text={booking.leadGuest}
+                      label="guest name"
+                      className="font-medium text-teal-950 hover:text-sky-800"
+                    />
                   </TableCell>
                   <TableCell className="px-0.5 text-center tabular-nums">{booking.adults || ''}</TableCell>
                   <TableCell className="px-0.5 text-center tabular-nums">{booking.children || ''}</TableCell>

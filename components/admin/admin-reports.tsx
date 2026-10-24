@@ -51,6 +51,7 @@ import {
 } from '@/lib/report-export'
 import {
   isActiveBooking,
+  isNoTransfer,
   bookingMoveNote,
   totalMovedOut,
   totalPassengers,
@@ -899,7 +900,8 @@ function BookingReportSection({
               <TableHead className="w-[3.75rem]">Park</TableHead>
               <TableHead className="w-[4rem] text-right">Total</TableHead>
               {showCanoe ? <TableHead className="w-[4rem]">Canoe</TableHead> : null}
-              <TableHead className="w-[14rem]">Note</TableHead>
+              <TableHead className="w-[4.5rem] text-center">Transfers</TableHead>
+              <TableHead className="w-[12.6rem]">Note</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -962,6 +964,9 @@ function BookingReportSection({
                 {showCanoe ? (
                   <TableCell className="text-xs">{formatIncludeLabel(booking.canoe)}</TableCell>
                 ) : null}
+                <TableCell className="text-center text-xs font-medium text-teal-950">
+                  {isNoTransfer(booking.pickupZone) ? 'EXC' : 'INC'}
+                </TableCell>
                 <TableCell className="whitespace-normal">
                   <div
                     className="break-words text-xs leading-snug text-teal-900/55"
@@ -996,7 +1001,7 @@ function BookingReportSection({
               <TableCell className="text-right text-xs font-semibold tabular-nums text-teal-950">
                 {collectSum > 0 ? collectSum.toLocaleString('en-US') : ''}
               </TableCell>
-              <TableCell colSpan={showCanoe ? 2 : 1} />
+              <TableCell colSpan={showCanoe ? 3 : 2} />
             </TableRow>
           </TableBody>
         </Table>
@@ -1079,7 +1084,10 @@ function BookingPrintSection({
                 Canoe
               </th>
             ) : null}
-            <th className="w-[16%] border border-teal-900/15 px-1.5 py-1.5 font-bold tracking-wide text-teal-900/80 uppercase">
+            <th className="border border-teal-900/15 px-1.5 py-1.5 text-center font-bold tracking-wide text-teal-900/80 uppercase">
+              Transfers
+            </th>
+            <th className="w-[14.4%] border border-teal-900/15 px-1.5 py-1.5 font-bold tracking-wide text-teal-900/80 uppercase">
               Note
             </th>
           </tr>
@@ -1146,6 +1154,9 @@ function BookingPrintSection({
                   {formatIncludeLabel(booking.canoe)}
                 </td>
               ) : null}
+              <td className="border border-teal-900/10 px-1.5 py-1 text-center font-medium whitespace-nowrap">
+                {isNoTransfer(booking.pickupZone) ? 'EXC' : 'INC'}
+              </td>
               <td className="border border-teal-900/10 px-1.5 py-1 whitespace-normal break-words">
                 {booking.note || '—'}
               </td>
@@ -1175,7 +1186,7 @@ function BookingPrintSection({
             <td className="border border-teal-900/15 px-1.5 py-1.5 text-right tabular-nums">
               {collectSum > 0 ? collectSum.toLocaleString('en-US') : ''}
             </td>
-            <td className="border border-teal-900/15 px-1.5 py-1.5" colSpan={showCanoe ? 2 : 1} />
+            <td className="border border-teal-900/15 px-1.5 py-1.5" colSpan={showCanoe ? 3 : 2} />
           </tr>
         </tbody>
       </table>

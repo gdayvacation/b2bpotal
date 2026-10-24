@@ -3,6 +3,9 @@
 import { Fragment, startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   CalendarIcon,
   Check,
   CheckCircle2,
@@ -23,6 +26,7 @@ import {
   Waves,
 } from 'lucide-react'
 import { BoatFleetBadge } from '@/components/boat-badge'
+import { CheckInSummary } from '@/components/admin/check-in-summary'
 import { AdminCheckInBookingPanel } from '@/components/admin/admin-check-in-booking-panel'
 import { AdminCheckInPaxDialog } from '@/components/admin/admin-check-in-pax-dialog'
 import {
@@ -1621,6 +1625,7 @@ function TodayBoardTab({
   }, [groups])
 
   const [dayServicesOpen, setDayServicesOpen] = useState(false)
+  const [summaryOpen, setSummaryOpen] = useState(false)
 
   const dayServiceDetails = useMemo(() => {
     const rows: DayServiceDetail[] = []
@@ -1837,6 +1842,19 @@ function TodayBoardTab({
               Print Boat Guide JO
             </Button>
           ) : null}
+          {!isHelper ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              aria-expanded={summaryOpen}
+              className="h-10 shrink-0 gap-1.5 px-3 text-[13px]"
+              onClick={() => setSummaryOpen((open) => !open)}
+            >
+              <ClipboardList className="size-3.5" />
+              Check-in Summary
+            </Button>
+          ) : null}
         </div>
         {boardView === 'partner' && !isHelper ? (
           <div className="flex flex-wrap gap-1.5 text-[11px] font-semibold sm:gap-2 sm:text-xs">
@@ -1852,6 +1870,10 @@ function TodayBoardTab({
           </div>
         )}
       </div>
+
+      {!isHelper && summaryOpen ? (
+        <CheckInSummary date={boardDate} programFilter={programFilter} revision={paxBoardRev} />
+      ) : null}
 
       {!isHelper && boardView === 'check-in' ? (
         <DayServiceSummary rows={dayServiceSummary} onOpen={() => setDayServicesOpen(true)} />
@@ -4592,6 +4614,8 @@ function DayServiceSummary({
   )
 }
 
+type DayServiceSortKey = 'booking' | 'boat' | 'service' | 'total'
+
 function DayServicesDialog({
   open,
   onOpenChange,
@@ -4603,50 +4627,110 @@ function DayServicesDialog({
   dateLabel: string
   rows: DayServiceDetail[]
 }) {
+  const [sortKey, setSortKey] = useState<DayServiceSortKey | null>(null)
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+
+  useEffect(() => {
+    if (!open) {
+      setSortKey(null)
+      setSortDir('asc')
+    }
+  }, [open])
+
+  function toggleSort(key: DayServiceSortKey) {
+    if (sortKey === key) {
+      setSortDir((dir) => (dir === 'asc' ? 'desc' : 'asc'))
+      return
+    }
+    setSortKey(key)
+    setSortDir('asc')
+  }
+
+  const sortedRows = useMemo(() => {
+    if (!sortKey) return rows
+    const dir = sortDir === 'asc' ? 1 : -1
+    return [...rows].sort((a, b) => {
+      let cmp = 0
+      if (sortKey === 'booking') cmp = a.bookingName.localeCompare(b.bookingName)
+      else if (sortKey === 'boat') {
+        const aMissing = !a.boat
+        const bMissing = !b.boat
+        if (aMissing !== bMissing) return aMissing ? 1 : -1
+        cmp = (a.boat ?? 0) - (b.boat ?? 0)
+      } else if (sortKey === 'service') {
+        cmp = checkInServiceLabel(a.kind).localeCompare(checkInServiceLabel(b.kind))
+      } else cmp = a.total - b.total
+      return cmp * dir || a.bookingName.localeCompare(b.bookingName)
+    })
+  }, [rows, sortDir, sortKey])
+
   const unpaid = rows.filter((row) => !row.paid)
   const unpaidTotal = unpaid.reduce((sum, row) => sum + row.total, 0)
   const paidTotal = rows.filter((row) => row.paid).reduce((sum, row) => sum + row.total, 0)
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex w-full max-w-[calc(100%-1.5rem)] flex-col gap-0 overflow-visible p-0 sm:max-w-3xl">
-        <DialogHeader className="border-b border-teal-900/8 px-5 py-4">
+      <DialogContent className="flex max-h-[min(92dvh,900px)] w-full max-w-[calc(100%-1rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+        <DialogHeader className="shrink-0 border-b border-teal-900/8 px-5 py-4 pr-12">
           <DialogTitle>Service today · {dateLabel}</DialogTitle>
           <DialogDescription>
             Daily list across all vans. PAID is done. Not paid still needs follow-up.
           </DialogDescription>
         </DialogHeader>
-        <div className="px-5 py-3">
+        {rows.length > 0 ? (
+          <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-teal-900/8 px-3 py-2 sm:hidden">
+            {(
+              [
+                ['booking', 'Booking'],
+                ['boat', 'Boat'],
+                ['service', 'Service'],
+                ['total', 'Total'],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={cn(
+                  'shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1',
+                  sortKey === key
+                    ? 'bg-teal-800 text-white ring-teal-800'
+                    : 'bg-white text-teal-900/70 ring-teal-900/10',
+                )}
+                onClick={() => toggleSort(key)}
+              >
+                {label}
+                {sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3 sm:px-5">
           {rows.length === 0 ? (
             <p className="py-6 text-center text-sm text-teal-900/50">
               No scuba or longtail added today.
             </p>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Booking</TableHead>
-                  <TableHead>Boat name</TableHead>
-                  <TableHead>Service</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rows.map((row) => (
-                  <TableRow key={row.id}>
-                    <TableCell className="py-1.5">
-                      <p className="font-semibold text-teal-950">{row.bookingName}</p>
-                      <p className="text-[11px] text-teal-900/50">
-                        {row.hotel} · {row.bookingCode}
-                      </p>
-                    </TableCell>
-                    <TableCell className="py-1.5">
+            <>
+              <ul className="space-y-2 sm:hidden">
+                {sortedRows.map((row) => (
+                  <li
+                    key={row.id}
+                    className="rounded-xl border border-teal-900/10 bg-white px-3 py-2.5"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-semibold break-words text-teal-950">{row.bookingName}</p>
+                        <p className="text-[11px] break-words text-teal-900/50">
+                          {row.hotel} · {row.bookingCode}
+                        </p>
+                      </div>
+                      <DayServiceTotal row={row} />
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-teal-950">
                       <BoatFleetBadge
                         boat={row.boat}
                         showColorName
                         className="px-1.5 py-0.5 text-[11px] font-bold"
                       />
-                    </TableCell>
-                    <TableCell className="py-1.5">
                       <span className="inline-flex items-center gap-1.5">
                         <ServiceKindIcon kind={row.kind} size="sm" />
                         {checkInServiceLabel(row.kind)}
@@ -4657,27 +4741,85 @@ function DayServicesDialog({
                           </span>
                         ) : null}
                       </span>
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {row.paid ? (
-                        <span className="inline-flex items-center justify-end gap-1 font-semibold text-emerald-800">
-                          <Check className="size-3.5" />
-                          PAID
-                        </span>
-                      ) : (
-                        <span className="font-semibold text-orange-800">
-                          {row.total.toLocaleString('en-US')}
-                        </span>
-                      )}
-                    </TableCell>
-                  </TableRow>
+                    </div>
+                  </li>
                 ))}
-              </TableBody>
-            </Table>
+              </ul>
+              <Table className="hidden sm:table" containerClassName="hidden sm:block">
+                <TableHeader>
+                  <TableRow>
+                    <ServiceSortHead
+                      column="booking"
+                      label="Booking"
+                      active={sortKey === 'booking'}
+                      dir={sortDir}
+                      onSort={toggleSort}
+                    />
+                    <ServiceSortHead
+                      column="boat"
+                      label="Boat name"
+                      active={sortKey === 'boat'}
+                      dir={sortDir}
+                      onSort={toggleSort}
+                    />
+                    <ServiceSortHead
+                      column="service"
+                      label="Service"
+                      active={sortKey === 'service'}
+                      dir={sortDir}
+                      onSort={toggleSort}
+                    />
+                    <ServiceSortHead
+                      column="total"
+                      label="Total"
+                      active={sortKey === 'total'}
+                      dir={sortDir}
+                      onSort={toggleSort}
+                      className="text-right"
+                      align="end"
+                    />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {sortedRows.map((row) => (
+                    <TableRow key={row.id}>
+                      <TableCell className="py-1.5 whitespace-normal">
+                        <p className="font-semibold text-teal-950">{row.bookingName}</p>
+                        <p className="text-[11px] text-teal-900/50">
+                          {row.hotel} · {row.bookingCode}
+                        </p>
+                      </TableCell>
+                      <TableCell className="py-1.5">
+                        <BoatFleetBadge
+                          boat={row.boat}
+                          showColorName
+                          className="px-1.5 py-0.5 text-[11px] font-bold"
+                        />
+                      </TableCell>
+                      <TableCell className="py-1.5 whitespace-normal">
+                        <span className="inline-flex flex-wrap items-center gap-1.5">
+                          <ServiceKindIcon kind={row.kind} size="sm" />
+                          {checkInServiceLabel(row.kind)}
+                          {row.people > 1 ? (
+                            <span className="text-teal-900/45">
+                              ×{row.people}
+                              {servicePricedPerBoat(row.kind) ? ' boats' : ''}
+                            </span>
+                          ) : null}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        <DayServiceTotal row={row} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </>
           )}
         </div>
         {rows.length > 0 ? (
-          <div className="flex flex-wrap items-center justify-end gap-4 border-t border-teal-900/8 px-5 py-3 text-sm">
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-4 border-t border-teal-900/8 px-5 py-3 text-sm">
             <p className="text-emerald-800/80">
               PAID ({paidTotal.toLocaleString('en-US')})
             </p>
@@ -4688,6 +4830,59 @@ function DayServicesDialog({
         ) : null}
       </DialogContent>
     </Dialog>
+  )
+}
+
+function DayServiceTotal({ row }: { row: DayServiceDetail }) {
+  if (row.paid) {
+    return (
+      <span className="inline-flex shrink-0 items-center justify-end gap-1 font-semibold text-emerald-800">
+        <Check className="size-3.5" />
+        PAID
+      </span>
+    )
+  }
+  return (
+    <span className="shrink-0 font-semibold text-orange-800 tabular-nums">
+      {row.total.toLocaleString('en-US')}
+    </span>
+  )
+}
+
+function ServiceSortHead({
+  column,
+  label,
+  active,
+  dir,
+  onSort,
+  className,
+  align = 'start',
+}: {
+  column: DayServiceSortKey
+  label: string
+  active: boolean
+  dir: 'asc' | 'desc'
+  onSort: (key: DayServiceSortKey) => void
+  className?: string
+  align?: 'start' | 'end'
+}) {
+  const Icon = !active ? ArrowUpDown : dir === 'asc' ? ArrowUp : ArrowDown
+  return (
+    <TableHead className={className}>
+      <button
+        type="button"
+        className={cn(
+          'inline-flex items-center gap-1 rounded-md font-medium transition-colors hover:text-teal-900',
+          align === 'end' && 'w-full justify-end',
+          active && 'text-teal-900',
+        )}
+        onClick={() => onSort(column)}
+        aria-label={`Sort by ${label}${active ? `, currently ${dir === 'asc' ? 'ascending' : 'descending'}` : ''}`}
+      >
+        {label}
+        <Icon className={cn('size-3.5 shrink-0', active ? 'opacity-80' : 'opacity-40')} />
+      </button>
+    </TableHead>
   )
 }
 

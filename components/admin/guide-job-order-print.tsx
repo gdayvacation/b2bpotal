@@ -40,6 +40,59 @@ type GuidePassengerRow = {
   note: string
 }
 
+let guideJoPreviewTitle: string | null = null
+
+function usesMobileGuidePrint() {
+  return (
+    window.matchMedia('(max-width: 1023px)').matches ||
+    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+  )
+}
+
+function closeGuideJobOrderPreview() {
+  document.body.classList.remove('printing-guide-jo', 'printing-guide-jo-preview')
+  document.getElementById('guide-jo-print-preview')?.remove()
+  document.getElementById('guide-jo-print-bar')?.remove()
+  if (guideJoPreviewTitle !== null) {
+    document.title = guideJoPreviewTitle
+    guideJoPreviewTitle = null
+  }
+}
+
+/** Phones ignore window.print() while the sheet is display:none. Show it, then print from a tap. */
+function openGuideJobOrderMobilePreview(title: string) {
+  const source = document.querySelector('.guide-job-order-print')
+  if (!source) {
+    window.print()
+    return
+  }
+  closeGuideJobOrderPreview()
+  guideJoPreviewTitle = document.title
+  document.title = title
+  document.body.classList.add('printing-guide-jo', 'printing-guide-jo-preview')
+
+  const preview = document.createElement('div')
+  preview.id = 'guide-jo-print-preview'
+  preview.className = 'guide-job-order-print guide-job-order-print--preview'
+  preview.innerHTML = source.innerHTML
+  document.body.appendChild(preview)
+
+  const bar = document.createElement('div')
+  bar.id = 'guide-jo-print-bar'
+  bar.className = 'guide-jo-print-bar'
+  bar.innerHTML =
+    '<p>Print preview</p><div><button type="button" data-action="print">Print</button><button type="button" data-action="close">Close</button></div>'
+  bar.addEventListener('click', (event) => {
+    const target = event.target
+    if (!(target instanceof HTMLElement)) return
+    const action = target.closest('button')?.getAttribute('data-action')
+    if (action === 'print') window.print()
+    if (action === 'close') closeGuideJobOrderPreview()
+  })
+  document.body.appendChild(bar)
+  preview.scrollTop = 0
+}
+
 export function printGuideJobOrder(date: string, program: Program | Program[]) {
   const previous = document.title
   const programs = (Array.isArray(program) ? program : [program]).filter(Boolean)
@@ -47,7 +100,12 @@ export function printGuideJobOrder(date: string, program: Program | Program[]) {
     programs.length === 0
       ? 'All'
       : programs.map((item) => (item === 'PP' ? 'PP' : 'JB')).join('+')
-  document.title = `GuideJO-${date}-${programShort}`
+  const title = `GuideJO-${date}-${programShort}`
+  if (usesMobileGuidePrint()) {
+    openGuideJobOrderMobilePreview(title)
+    return
+  }
+  document.title = title
   document.body.classList.add('printing-guide-jo')
   const restore = () => {
     document.title = previous
@@ -456,6 +514,69 @@ function GuideBoatPassengerTable({
 }
 
 const GUIDE_JO_PRINT_CSS = `
+  body.printing-guide-jo-preview {
+    overflow: hidden;
+  }
+  body.printing-guide-jo-preview .guide-job-order-print--preview {
+    display: block !important;
+    position: fixed;
+    z-index: 110;
+    inset: 0;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    background: #e7eeec;
+    padding: 12px 12px 108px;
+    color: #042f2e;
+  }
+  body.printing-guide-jo-preview .guide-jo-boat {
+    margin-bottom: 12px;
+    padding: 14px 12px;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 8px 24px rgba(4, 47, 46, 0.08);
+  }
+  .guide-jo-print-bar {
+    position: fixed;
+    z-index: 120;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 14px calc(12px + env(safe-area-inset-bottom));
+    background: #fff;
+    border-top: 1px solid rgba(19, 78, 74, 0.15);
+  }
+  .guide-jo-print-bar p {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #0f766e;
+  }
+  .guide-jo-print-bar div {
+    display: flex;
+    gap: 8px;
+  }
+  .guide-jo-print-bar button {
+    height: 44px;
+    flex: 1;
+    border-radius: 12px;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .guide-jo-print-bar button[data-action='print'] {
+    border: 0;
+    background: #115e59;
+    color: #fff;
+  }
+  .guide-jo-print-bar button[data-action='close'] {
+    border: 1px solid rgba(19, 78, 74, 0.2);
+    background: #fff;
+    color: #134e4a;
+  }
   @media print {
     @page {
       size: A4 portrait;
@@ -546,6 +667,31 @@ const GUIDE_JO_PRINT_CSS = `
     body.printing-guide-jo .guide-jo-footer {
       font-size: 10px !important;
       margin-top: 8px !important;
+    }
+    .guide-jo-print-bar {
+      display: none !important;
+    }
+    body.printing-guide-jo-preview {
+      overflow: visible !important;
+    }
+    body.printing-guide-jo-preview .guide-job-order-print.hidden,
+    body.printing-guide-jo-preview .guide-job-order-print.hidden * {
+      display: none !important;
+      visibility: hidden !important;
+    }
+    body.printing-guide-jo-preview .guide-job-order-print--preview {
+      position: absolute !important;
+      inset: auto !important;
+      overflow: visible !important;
+      height: auto !important;
+      padding: 0 !important;
+      background: #fff !important;
+    }
+    body.printing-guide-jo-preview .guide-jo-boat {
+      margin: 0 !important;
+      padding: 0 !important;
+      border-radius: 0 !important;
+      box-shadow: none !important;
     }
   }
 `
