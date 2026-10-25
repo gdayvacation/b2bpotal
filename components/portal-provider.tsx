@@ -263,15 +263,21 @@ import {
   upsertCheckInGuestEdit,
   deleteCheckInSequenceStart,
   deleteCheckInGuestEdit,
+  deleteDriver as deleteDriverRow,
   upsertDriver as upsertDriverRow,
   upsertHotel,
   upsertZone,
 } from '@/lib/supabase/portal-db'
 import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/client'
 import {
+  clearDriverRemoval,
+  DEFAULT_DRIVERS,
+  driverNameKey,
   findDriver,
   loadLocalDrivers,
+  loadRemovedDriverKeys,
   mergeDriverRoster,
+  rememberDriverRemoval,
   saveLocalDrivers,
   type DriverRosterEntry,
 } from '@/lib/driver-roster'
@@ -418,6 +424,7 @@ type PortalContextValue = {
   fleetVans: FleetVan[]
   drivers: DriverRosterEntry[]
   upsertDriver: (entry: DriverRosterEntry) => void
+  removeDriver: (name: string) => void
   bookingCutoffs: BookingCutoffSettings
   updateBookingCutoffs: (patch: Partial<BookingCutoffSettings>) => void
   bookingClosures: BookingClosure[]
@@ -1015,7 +1022,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [ownArrivalMap, setOwnArrivalMap] = useState<BookedPaxMap>({})
   const [jobOrderActionMap, setJobOrderActionMap] = useState<DayJobOrderActionMap>({})
   const [fleetVans, setFleetVans] = useState<FleetVan[]>([])
-  const [drivers, setDrivers] = useState<DriverRosterEntry[]>(() => mergeDriverRoster(loadLocalDrivers()))
+  const [drivers, setDrivers] = useState<DriverRosterEntry[]>(() => {
+    const saved = mergeDriverRoster(loadLocalDrivers())
+    if (saved.length || loadRemovedDriverKeys().length) return saved
+    return DEFAULT_DRIVERS.map((driver) => ({ ...driver }))
+  })
   const [bookingCutoffs, setBookingCutoffs] = useState<BookingCutoffSettings>(DEFAULT_BOOKING_CUTOFFS)
   const [bookingClosures, setBookingClosures] = useState<BookingClosure[]>([])
   const [bookingEventsByCode, setBookingEventsByCode] = useState<Record<string, BookingEvent[]>>({})
@@ -1428,7 +1439,13 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         for (const plan of persistTouched) persistBoatPlanWrite(plan)
         setDayVehiclePlans(snapshot.dayVehiclePlans)
         setFleetVans(snapshot.fleetVans)
-        setDrivers(mergeDriverRoster([...snapshot.drivers, ...loadLocalDrivers()]))
+        const remote = mergeDriverRoster(snapshot.drivers)
+        const removed = loadRemovedDriverKeys().length > 0
+        const roster = remote.length || removed ? remote : mergeDriverRoster(loadLocalDrivers())
+        const next =
+          roster.length || removed ? roster : DEFAULT_DRIVERS.map((driver) => ({ ...driver }))
+        setDrivers(next)
+        if (remote.length || removed) saveLocalDrivers(next)
         setBookingCutoffs(snapshot.bookingCutoffs)
         setBookingClosures(snapshot.bookingClosures)
         setLoadError(null)
@@ -3851,16 +3868,34 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           plate: entry.plate.trim(),
         }
         if (!cleaned.name) return
+        clearDriverRemoval(cleaned.name)
         setDrivers((current) => {
           const existing = findDriver(current, cleaned.name)
           const merged: DriverRosterEntry = {
-            name: cleaned.name,
+            name: existing?.name || cleaned.name,
             phone: cleaned.phone || existing?.phone || '',
             plate: cleaned.plate || existing?.plate || '',
           }
-          const next = mergeDriverRoster([...current, merged])
+          const key = driverNameKey(merged.name)
+          const next = mergeDriverRoster([
+            ...current.filter((driver) => driverNameKey(driver.name) !== key),
+            merged,
+          ])
           saveLocalDrivers(next)
           persistQuietly('upsertDriver', upsertDriverRow(merged))
+          return next
+        })
+      },
+      removeDriver: (name) => {
+        const cleaned = name.trim()
+        if (!cleaned) return
+        rememberDriverRemoval(cleaned)
+        setDrivers((current) => {
+          const existing = findDriver(current, cleaned)
+          const key = driverNameKey(existing?.name ?? cleaned)
+          const next = current.filter((driver) => driverNameKey(driver.name) !== key)
+          saveLocalDrivers(next)
+          persistQuietly('deleteDriver', deleteDriverRow(existing?.name ?? cleaned))
           return next
         })
       },

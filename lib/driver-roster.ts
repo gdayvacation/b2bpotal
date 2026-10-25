@@ -16,7 +16,8 @@ export const DEFAULT_DRIVERS: DriverRosterEntry[] = [
 
 const STORAGE_KEY = 'gday-driver-roster'
 const RECENT_STORAGE_KEY = 'gday-driver-recent'
-const RECENT_DRIVER_LIMIT = 5
+const REMOVED_STORAGE_KEY = 'gday-driver-removed'
+export const RECENT_DRIVER_LIMIT = 7
 
 export function normalizeDriverName(name: string) {
   return name.trim()
@@ -32,12 +33,54 @@ export function findDriver(roster: DriverRosterEntry[], name: string) {
   return roster.find((driver) => driverNameKey(driver.name) === key) ?? null
 }
 
+export function driverContactLabel(driver: DriverRosterEntry) {
+  const phone = driver.phone.trim()
+  const plate = driver.plate.trim()
+  if (!phone && !plate) return ''
+  return [phone || 'No telephone', plate || 'No plate'].join(' · ')
+}
+
+export function loadRemovedDriverKeys(): string[] {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = window.localStorage.getItem(REMOVED_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .map((item) => (typeof item === 'string' ? driverNameKey(item) : ''))
+      .filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+export function rememberDriverRemoval(name: string) {
+  if (typeof window === 'undefined') return
+  const key = driverNameKey(name)
+  if (!key) return
+  const next = [key, ...loadRemovedDriverKeys().filter((item) => item !== key)]
+  window.localStorage.setItem(REMOVED_STORAGE_KEY, JSON.stringify(next))
+  forgetRecentDriver(name)
+}
+
+export function clearDriverRemoval(name: string) {
+  if (typeof window === 'undefined') return
+  const key = driverNameKey(name)
+  if (!key) return
+  const next = loadRemovedDriverKeys().filter((item) => item !== key)
+  window.localStorage.setItem(REMOVED_STORAGE_KEY, JSON.stringify(next))
+}
+
 export function mergeDriverRoster(saved: DriverRosterEntry[]): DriverRosterEntry[] {
+  const removed = new Set(loadRemovedDriverKeys())
   const byName = new Map<string, DriverRosterEntry>()
-  for (const driver of [...DEFAULT_DRIVERS, ...saved]) {
+  for (const driver of saved) {
     const name = normalizeDriverName(driver.name)
     if (!name) continue
-    byName.set(driverNameKey(name), {
+    const key = driverNameKey(name)
+    if (removed.has(key)) continue
+    byName.set(key, {
       name,
       phone: driver.phone.trim(),
       plate: driver.plate.trim(),
@@ -98,6 +141,14 @@ export function recordRecentDriver(name: string) {
   if (!key) return
   const prev = loadRecentDriverKeys().filter((item) => item !== key)
   const next = [key, ...prev].slice(0, RECENT_DRIVER_LIMIT)
+  window.localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(next))
+}
+
+export function forgetRecentDriver(name: string) {
+  if (typeof window === 'undefined') return
+  const key = driverNameKey(name)
+  if (!key) return
+  const next = loadRecentDriverKeys().filter((item) => item !== key)
   window.localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(next))
 }
 

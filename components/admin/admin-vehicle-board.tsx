@@ -2003,9 +2003,9 @@ function VehicleBoard({
             </div>
           </div>
 
-          <div className="grid items-start gap-4 xl:grid-cols-[minmax(32rem,1.4fr)_minmax(20rem,1fr)]">
-            {/* Left — guest pool */}
-            <Surface className="flex max-h-[min(78vh,52rem)] flex-col overflow-hidden">
+          <div className="flex flex-col gap-4">
+            {/* Top — guest pool */}
+            <Surface className="flex max-h-[min(40vh,26rem)] flex-col overflow-hidden">
               <div className="border-b border-teal-900/8 px-3 py-2.5 sm:px-3.5">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
@@ -2148,18 +2148,19 @@ function VehicleBoard({
                           : 'Everyone is on a van. Waiting is empty.'}
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
                     {sheetRows.map((booking) => {
                       const pax = totalPassengers(booking)
                       const largeGroup = pax > capacity
                       const checked = selectedCodes.has(booking.code)
                       const isDragging = dragCodes?.includes(booking.code)
-                      const transferKind = bookingTransferKind(booking, plan, boatPlan)
+                      const hotel = booking.pickupHotel.trim() || 'Hotel TBA'
 
                       return (
                         <LongPressCard
                           key={booking.code}
                           draggable
+                          title={`${hotel}${booking.roomNumber ? ` · Rm ${booking.roomNumber}` : ''} · ${booking.pickupTime} · ${pax} pax`}
                           onLongPress={() => setSplitCode(booking.code)}
                           onDragStart={(event) => {
                             beginDrag(event, codesForDrag(booking.code))
@@ -2184,73 +2185,54 @@ function VehicleBoard({
                                 : 'hover:border-teal-700/25 hover:bg-teal-50/40'),
                           )}
                         >
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-start gap-1.5">
                             <input
                               type="checkbox"
-                              className="size-3.5 shrink-0 rounded border-teal-900/25 accent-teal-700"
+                              className="mt-0.5 size-3.5 shrink-0 rounded border-teal-900/25 accent-teal-700"
                               checked={checked}
                               onClick={(event) => event.stopPropagation()}
                               onChange={() => toggleCode(booking.code)}
                               aria-label={`Select ${booking.leadGuest}`}
                             />
-                            <div className="min-w-0 flex-1">
-                              <p className="text-sm leading-snug font-semibold text-teal-950">
-                                {booking.pickupHotel.trim() || 'Hotel TBA'}
-                                {booking.roomNumber ? (
-                                  <span className="font-medium text-teal-900/50">
-                                    {' '}
-                                    · Rm {booking.roomNumber}
-                                  </span>
-                                ) : null}
-                              </p>
-                              <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] leading-snug">
-                                <span className="shrink-0 tabular-nums text-teal-900/55">
-                                  {booking.pickupTime}
+                            <p className="min-w-0 flex-1 text-[13px] leading-snug font-semibold break-words text-teal-950">
+                              {hotel}
+                              {booking.roomNumber ? (
+                                <span className="font-medium text-teal-900/45">
+                                  {' '}
+                                  · {booking.roomNumber}
                                 </span>
-                                <span
-                                  className={cn(
-                                    'font-medium',
-                                    largeGroup ? 'text-amber-950' : 'text-teal-900',
-                                  )}
-                                >
-                                  <PaxShortWithNoShow
-                                    current={booking}
-                                    noShowCount={bookingNoShowCount(
-                                      date,
-                                      program,
-                                      booking,
-                                      getPickupNoShow(date, program, booking.code),
-                                      getCheckInAttendance(date, program, booking.code) ===
-                                        'no-show',
-                                    )}
-                                    wholeNoShow={
-                                      getCheckInAttendance(date, program, booking.code) ===
-                                      'no-show'
-                                    }
-                                  />
-                                </span>
-                                <TransferKindBadge kind={transferKind} />
-                                {booking.note ? (
-                                  <span className="min-w-0 text-teal-900/45">· {booking.note}</span>
-                                ) : null}
-                              </div>
-                              {largeGroup ? (
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  className="mt-1.5 h-6 border-amber-400 bg-amber-100 px-2 text-[11px] text-amber-950 hover:bg-amber-200"
-                                  onClick={(event) => {
-                                    event.stopPropagation()
-                                    setSplitCode(booking.code)
-                                  }}
-                                >
-                                  <SplitSquareVertical className="size-3" />
-                                  Same or split
-                                </Button>
                               ) : null}
-                            </div>
-                            <GripVertical className="size-3.5 shrink-0 text-teal-800/30" />
+                            </p>
+                            <span className="shrink-0 pt-0.5 text-sm leading-none font-bold tabular-nums text-emerald-600">
+                              <PaxShortWithNoShow
+                                current={booking}
+                                noShowCount={bookingNoShowCount(
+                                  date,
+                                  program,
+                                  booking,
+                                  getPickupNoShow(date, program, booking.code),
+                                  getCheckInAttendance(date, program, booking.code) ===
+                                    'no-show',
+                                )}
+                                wholeNoShow={
+                                  getCheckInAttendance(date, program, booking.code) ===
+                                  'no-show'
+                                }
+                              />
+                            </span>
+                            {largeGroup ? (
+                              <button
+                                type="button"
+                                className="shrink-0 rounded border border-amber-400 bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-950 hover:bg-amber-200"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  setSplitCode(booking.code)
+                                }}
+                              >
+                                Split
+                              </button>
+                            ) : null}
+                            <GripVertical className="mt-0.5 size-3.5 shrink-0 text-teal-800/25" />
                           </div>
                         </LongPressCard>
                       )
@@ -2260,9 +2242,9 @@ function VehicleBoard({
               </div>
             </Surface>
 
-            {/* Right — van cards */}
-            <div className="min-w-0">
-              <div className="grid gap-2 sm:grid-cols-2">
+            {/* Bottom — van cards */}
+            <div>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 {byVan.map(
                   ({
                     van,

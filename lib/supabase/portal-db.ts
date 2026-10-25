@@ -53,6 +53,8 @@ import type { DayCheckInNoteMap } from '@/lib/check-in-notes'
 import { formatGroupGuideNames, type DayCheckInGroupGuideMap } from '@/lib/check-in-group-guide'
 import {
   DEFAULT_DRIVERS,
+  loadLocalDrivers,
+  loadRemovedDriverKeys,
   mergeDriverRoster,
   type DriverRosterEntry,
 } from '@/lib/driver-roster'
@@ -1141,13 +1143,22 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
       '[supabase] drivers table unavailable — run supabase/add-drivers.sql',
       driversRes.error.message,
     )
+    drivers = mergeDriverRoster(loadLocalDrivers())
+    if (drivers.length === 0 && loadRemovedDriverKeys().length === 0) {
+      drivers = DEFAULT_DRIVERS.map((driver) => ({ ...driver }))
+    }
   } else {
     drivers = (driversRes.data as DriverRow[]).map((row) => ({
       name: row.name ?? '',
       phone: row.phone ?? '',
       plate: row.plate ?? '',
     }))
-    if (drivers.length === 0) {
+    if (
+      drivers.length === 0 &&
+      loadRemovedDriverKeys().length === 0 &&
+      loadLocalDrivers().length === 0
+    ) {
+      drivers = DEFAULT_DRIVERS.map((driver) => ({ ...driver }))
       persistQuietly(
         'seedDrivers',
         Promise.resolve(
@@ -2384,6 +2395,12 @@ export async function upsertDriver(driver: DriverRosterEntry) {
     plate: driver.plate.trim(),
   })
   if (error) throw new Error(`upsert driver: ${error.message}`)
+}
+
+export async function deleteDriver(name: string) {
+  const supabase = getSupabaseBrowserClient()
+  const { error } = await supabase.from('drivers').delete().eq('name', name.trim())
+  if (error) throw new Error(`delete driver: ${error.message}`)
 }
 
 type CheckInEnrollmentRow = {
