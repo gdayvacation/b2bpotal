@@ -2,6 +2,8 @@ export const AGENT_KEY_QUERY = 'k'
 export const AGENT_SLUG_COOKIE = 'gday-agent-slug'
 export const AGENT_KEY_COOKIE = 'gday-agent-key'
 export const AGENT_COOKIE_MAX_AGE = 60 * 60 * 24 * 30
+/** Fired after a private booking link replaces the browser session. */
+export const PARTNER_SIGNED_IN_EVENT = 'gday-partner-signed-in'
 
 export function agentBookingPath(slug: string, key?: string | null) {
   const base = `/agent/${slug}`

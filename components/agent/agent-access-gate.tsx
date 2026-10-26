@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { BrandMark } from '@/components/brand-mark'
-import { AGENT_KEY_QUERY } from '@/lib/agent-access'
+import { AGENT_KEY_QUERY, PARTNER_SIGNED_IN_EVENT } from '@/lib/agent-access'
 import { readStaffSession } from '@/lib/staff-auth'
 import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/client'
 
@@ -82,6 +82,9 @@ export function AgentAccessGate({
         window.location.reload()
         return
       }
+      // Session is new on this page, so the agent list was loaded before sign-in.
+      // Ask the portal to load again instead of treating that empty list as a 404.
+      window.dispatchEvent(new Event(PARTNER_SIGNED_IN_EVENT))
       if (keyFromUrl) router.replace(pathname)
       setState('ok')
     }

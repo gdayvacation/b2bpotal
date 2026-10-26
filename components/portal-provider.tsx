@@ -21,6 +21,7 @@ import {
   saveCheckInAttendanceMap,
   withCheckInAttendance,
 } from '@/lib/check-in-attendance'
+import { PARTNER_SIGNED_IN_EVENT } from '@/lib/agent-access'
 import { GUEST_SIGNED_IN_EVENT } from '@/lib/check-in-access'
 import {
   CHECK_IN_RETRY_ERROR,
@@ -1459,16 +1460,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       }
     }
     void loadPortal()
-    const onGuestSignedIn = () => {
-      // Reset hydrated so GuestCheckIn waits for the fresh guest-session portal
-      // load instead of racing against a stale gen-1 empty-bookings render.
+    const onSessionChanged = () => {
+      // Reset hydrated so the next screen waits for this session's portal load
+      // instead of a list fetched before sign-in (empty agents become a false 404).
       setHydrated(false)
       void loadPortal()
     }
-    window.addEventListener(GUEST_SIGNED_IN_EVENT, onGuestSignedIn)
+    window.addEventListener(GUEST_SIGNED_IN_EVENT, onSessionChanged)
+    window.addEventListener(PARTNER_SIGNED_IN_EVENT, onSessionChanged)
     return () => {
       cancelled = true
-      window.removeEventListener(GUEST_SIGNED_IN_EVENT, onGuestSignedIn)
+      window.removeEventListener(GUEST_SIGNED_IN_EVENT, onSessionChanged)
+      window.removeEventListener(PARTNER_SIGNED_IN_EVENT, onSessionChanged)
     }
   }, [])
 

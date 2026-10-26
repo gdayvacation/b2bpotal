@@ -7,6 +7,18 @@ import { AgentShell } from '@/components/agent/agent-shell'
 import { GuestAccessGate } from '@/components/check-in/guest-access-gate'
 import { usePortal } from '@/components/portal-provider'
 
+function UnknownAgent() {
+  const { loadError } = usePortal()
+  if (loadError) {
+    return (
+      <p className="mx-auto max-w-md px-4 py-16 text-center text-sm text-teal-900/70">
+        Could not open this booking link. {loadError}
+      </p>
+    )
+  }
+  notFound()
+}
+
 export function AgentLayoutClient({
   slug,
   children,
@@ -23,8 +35,6 @@ export function AgentLayoutClient({
   if (!hydrated) {
     return <div className="min-h-screen bg-[var(--gday-canvas)]" />
   }
-
-  if (!agent) notFound()
 
   if (voucherCode) {
     return (
@@ -43,7 +53,7 @@ export function AgentLayoutClient({
   return (
     <Suspense fallback={<div className="min-h-screen bg-[var(--gday-canvas)]" />}>
       <AgentAccessGate slug={slug}>
-        <AgentShell agent={agent}>{children}</AgentShell>
+        {agent ? <AgentShell agent={agent}>{children}</AgentShell> : <UnknownAgent />}
       </AgentAccessGate>
     </Suspense>
   )
