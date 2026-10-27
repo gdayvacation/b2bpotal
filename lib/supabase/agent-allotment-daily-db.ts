@@ -137,11 +137,21 @@ export async function moveAgentAllotmentDaily(input: {
   if (error) throw new Error(error.message)
 }
 
+export type AgentBookingLine = {
+  code: string
+  agentRef: string
+  guestName: string
+  hotel: string
+  adults: number
+  children: number
+}
+
 export type AgentBookingDayPax = {
   day: string
   adults: number
   children: number
   totalDeduct: number
+  bookings: AgentBookingLine[]
 }
 
 /**
@@ -159,12 +169,12 @@ export async function fetchAgentBookingDayPax(
 
   const pageSize = 1000
   let from = 0
-  const byDay = new Map<string, { adults: number; children: number }>()
+  const byDay = new Map<string, { adults: number; children: number; bookings: AgentBookingLine[] }>()
 
   while (true) {
     const { data, error } = await supabase
       .from('bookings')
-      .select('date,adults,children,status')
+      .select('code,agent_ref,lead_guest,pickup_hotel,date,adults,children,status')
       .eq('agent_slug', slug)
       .eq('program', program)
       .neq('status', 'Cancelled')
@@ -175,6 +185,10 @@ export async function fetchAgentBookingDayPax(
     if (error) throw new Error(error.message)
 
     const rows = (data ?? []) as {
+      code: string | null
+      agent_ref: string | null
+      lead_guest: string | null
+      pickup_hotel: string | null
       date: string
       adults: number | string | null
       children: number | string | null
@@ -186,9 +200,20 @@ export async function fetchAgentBookingDayPax(
       if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue
       const adults = Math.max(0, Math.floor(Number(row.adults) || 0))
       const children = Math.max(0, Math.floor(Number(row.children) || 0))
-      const current = byDay.get(day) ?? { adults: 0, children: 0 }
+      const current = byDay.get(day) ?? { adults: 0, children: 0, bookings: [] }
       current.adults += adults
       current.children += children
+      const code = String(row.code ?? '').trim()
+      if (code) {
+        current.bookings.push({
+          code,
+          agentRef: String(row.agent_ref ?? '').trim(),
+          guestName: String(row.lead_guest ?? '').trim(),
+          hotel: String(row.pickup_hotel ?? '').trim(),
+          adults,
+          children,
+        })
+      }
       byDay.set(day, current)
     }
 
@@ -202,6 +227,7 @@ export async function fetchAgentBookingDayPax(
       adults: pax.adults,
       children: pax.children,
       totalDeduct: pax.adults + pax.children,
+      bookings: pax.bookings,
     }))
     .sort((a, b) => a.day.localeCompare(b.day))
 }

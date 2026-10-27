@@ -61,13 +61,13 @@ function purchasedSeats(lot: LotFifoInput) {
   return Math.max(0, Math.floor(Number(lot.seats) || 0))
 }
 
-/** Heads already topped up on or before this day. Without a schedule, the full lot is open from day one. */
+/** Heads already topped up on or before this day. Reductions count. Without a schedule, the full lot is open from day one. */
 function toppedHeadsByDay(lot: LotFifoInput, day: string) {
   if (!lot.topups || lot.topups.length === 0) return purchasedSeats(lot)
   return lot.topups.reduce((sum, topup) => {
     const date = String(topup.date || '').slice(0, 10)
     if (!date || date > day) return sum
-    return sum + Math.max(0, Math.floor(Number(topup.heads) || 0))
+    return sum + Math.trunc(Number(topup.heads) || 0)
   }, 0)
 }
 

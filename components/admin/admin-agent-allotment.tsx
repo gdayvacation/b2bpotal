@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { AdminAgentAllotmentDailyChecker } from '@/components/admin/admin-agent-allotment-daily'
 import { AdminAgentAllotmentHistory } from '@/components/admin/admin-agent-allotment-history'
+import { AllotmentSheet, type SheetLineDraft } from '@/components/admin/allotment-sheet'
 import { usePortal } from '@/components/portal-provider'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { PageHeader, Segment, SegmentedControl, Surface } from '@/components/ui-primitives'
@@ -42,6 +43,12 @@ import {
   lotUsageMap,
   type LotUsageSummary,
 } from '@/lib/allotment-lot-fifo'
+import {
+  allotmentSheetTotals,
+  buildAllotmentSheet,
+  lotTransfers,
+  type AllotmentSheetLine,
+} from '@/lib/allotment-sheet'
 import { formatShortDate, todayISO, uniqueAgentSlug } from '@/lib/format'
 import {
   addAgentAllotmentPayment,
@@ -59,6 +66,7 @@ import {
   setAgentAllotmentReceiving,
   topUpAgentAllotment,
   updateAgentAllotment,
+  updateAllotmentSheetLine,
   type AgentAllotment,
   type AgentAllotmentParkFee,
   type AgentAllotmentPayStatus,
@@ -161,58 +169,6 @@ function seatsToDraftHeads(row: Pick<AgentAllotment, 'seats' | 'adultSeats' | 'c
 
 function formatMoney(value: number) {
   return value.toLocaleString('en-US', { maximumFractionDigits: 0 })
-}
-
-function lotTransfers(lot: AgentAllotment) {
-  const payments = allotmentPayments(lot)
-  const date = (lot.paidDate || lot.createdAt).slice(0, 10)
-  const paid = allotmentPaidTotal(lot)
-  const headPayments = payments.filter((payment) => !payment.moneyOnly)
-  const moneyLines = payments
-    .filter((payment) => payment.moneyOnly)
-    .map((payment) => ({
-      id: payment.id,
-      date: (payment.headsDate || payment.paidDate).slice(0, 10),
-      heads: 0,
-      amount: payment.amount,
-      note: payment.note.replace(/^Ref\s*/i, '').trim(),
-    }))
-  const lump = {
-    id: lot.id,
-    date,
-    heads: lot.seats,
-    amount: paid > 0 ? paid : lot.totalAmount,
-    note: headPayments
-      .map((payment) => payment.note.replace(/^Ref\s*/i, '').trim())
-      .filter(Boolean)
-      .join(', '),
-  }
-  if (headPayments.length === 0) return [lump, ...moneyLines]
-  const known = headPayments.reduce((sum, payment) => sum + (payment.heads ?? 0), 0)
-  if (known <= 0) return [lump, ...moneyLines]
-  const missing = headPayments.filter((payment) => !(payment.heads && payment.heads > 0))
-  const shares = new Map<string, number>()
-  let leftover = Math.max(0, lot.seats - known)
-  if (missing.length > 0 && leftover > 0) {
-    const base = Math.floor(leftover / missing.length)
-    let extra = leftover - base * missing.length
-    for (const payment of missing) {
-      const heads = base + (extra > 0 ? 1 : 0)
-      if (extra > 0) extra -= 1
-      shares.set(payment.id, heads)
-    }
-  }
-  const headLines = headPayments.map((payment) => {
-    const noted = payment.note.replace(/^Ref\s*/i, '').trim()
-    return {
-      id: payment.id,
-      date: (payment.headsDate || payment.paidDate).slice(0, 10),
-      heads: payment.heads && payment.heads > 0 ? payment.heads : (shares.get(payment.id) ?? 0),
-      amount: payment.amount,
-      note: noted,
-    }
-  })
-  return [...headLines, ...moneyLines]
 }
 
 type DepositBookLine = {
@@ -876,6 +832,7 @@ export function AdminAgentAllotment() {
   const [ledgerDraft, setLedgerDraft] = useState<Draft>(emptyDraft)
   const [ledgerError, setLedgerError] = useState('')
   const [savingLedger, setSavingLedger] = useState(false)
+  const [savingRate, setSavingRate] = useState(false)
   const [topUpDraft, setTopUpDraft] = useState(() => ({
     paidDate: todayISO(),
     heads: '',
@@ -1180,6 +1137,17 @@ export function AdminAgentAllotment() {
     () => buildDepositBook(selectedAgentRows, bookSourceDaily),
     [selectedAgentRows, bookSourceDaily],
   )
+  const sheetLines = useMemo(
+    () =>
+      buildAllotmentSheet({
+        lots: selectedAgentRows,
+        daily: selectedAgentDaily,
+        bookings: bookingDayPax,
+        today,
+      }),
+    [selectedAgentRows, selectedAgentDaily, bookingDayPax, today],
+  )
+  const sheetTotals = useMemo(() => allotmentSheetTotals(sheetLines), [sheetLines])
   const lotBooks = useMemo(
     () =>
       buildLotBooks(
@@ -1513,75 +1481,130 @@ export function AdminAgentAllotment() {
     }
   }
 
-  async function handleTopUpCurrentLot(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setTopUpError('')
-    const targetId =
-      bookTab !== 'book' && selectedLotBook ? selectedLotBook.lotId : activeWorkingLotId
-    const lot =
-      selectedAgentRows.find((row) => row.id === targetId) ?? selectedAgentRows.at(-1) ?? null
+  function sheetAgent() {
+    const existing = resolveExistingAgent(selectedAgentSlug)
+    if (existing) return existing
+    const name =
+      selectedAgentSummary?.name ||
+      agents.find((item) => item.slug === selectedAgentSlug)?.name ||
+      selectedAgentSlug
+    return selectedAgentSlug ? { slug: selectedAgentSlug, name } : null
+  }
+
+  async function handleSheetAdd(draft: SheetLineDraft) {
+    const agent = sheetAgent()
+    if (!agent) throw new Error('Agent not found.')
+    const lot = selectedAgentRows.at(-1) ?? null
     if (!lot) {
-      setTopUpError('เปิดล็อตก่อน แล้วค่อยโอนเพิ่มเข้าล็อตนั้น')
-      return
-    }
-    const headsRaw = topUpDraft.heads.trim()
-    const heads = headsRaw === '' ? 0 : parseHeads(headsRaw)
-    const amount = parseMoney(topUpDraft.amount)
-    const moneyOnly = headsRaw === '' || heads === 0
-    if (moneyOnly) {
-      if (!Number.isFinite(amount) || amount === 0) {
-        setTopUpError('ใส่จำนวนเงิน — ติดลบเช่น -500 คือหักเงินก้อนนี้')
-        return
+      if (draft.heads <= 0) {
+        throw new Error('The first row needs the heads you are buying. Deduct money on the next row.')
       }
-      if (amount < 0 && !topUpDraft.note.trim()) {
-        setTopUpError('ใส่รายละเอียดว่าหักเงินนี้ไปทำอะไร')
-        return
+      const adultPrice = parseMoney(ledgerDraft.adultPrice)
+      const childPrice = parseMoney(ledgerDraft.childPrice)
+      const created = await createAgentAllotment({
+        agentSlug: agent.slug,
+        agentName: agent.name,
+        program: workProgram,
+        adultSeats: draft.heads,
+        childSeats: 0,
+        adultPrice: Number.isFinite(adultPrice) && adultPrice >= 0 ? adultPrice : 0,
+        childPrice: Number.isFinite(childPrice) && childPrice >= 0 ? childPrice : 0,
+        parkFee: ledgerDraft.parkFee,
+        paidDate: draft.date,
+        paidAmount: draft.amount > 0 ? draft.amount : 0,
+        note: draft.note,
+      })
+      await setAgentAllotmentReceiving(created.agentSlug, created.id)
+      await updateAllotmentSheetLine(created.id, {
+        paymentId: created.id,
+        heads: draft.heads,
+        previousHeads: created.seats,
+        amount: draft.amount,
+        paidDate: draft.date,
+        note: draft.note,
+        preserveTotal: true,
+      })
+    } else if (draft.heads < 0) {
+      const available = selectedAgentRows.reduce((sum, row) => sum + row.adultSeats, 0)
+      if (-draft.heads > available) {
+        throw new Error(`You can reduce at most ${available} purchased heads.`)
       }
-    } else if (!Number.isFinite(heads) || heads <= 0) {
-      setTopUpError('ใส่จำนวนหัวที่โอนเพิ่ม')
-      return
-    } else if (!Number.isFinite(amount) || amount < 0) {
-      setTopUpError('ใส่จำนวนเงินที่โอน')
+      let remaining = -draft.heads
+      let amountLeft = draft.amount
+      for (const row of [...selectedAgentRows].reverse()) {
+        if (remaining <= 0) break
+        const take = Math.min(row.adultSeats, remaining)
+        if (take <= 0) continue
+        await topUpAgentAllotment(row.id, {
+          heads: -take,
+          amount: amountLeft,
+          paidDate: draft.date,
+          note: draft.note,
+        })
+        amountLeft = 0
+        remaining -= take
+      }
+      if (!lot.receivesBookings) await setAgentAllotmentReceiving(lot.agentSlug, lot.id)
+    } else {
+      await topUpAgentAllotment(lot.id, {
+        heads: draft.heads,
+        amount: draft.amount,
+        paidDate: draft.date,
+        note: draft.note,
+      })
+      if (!lot.receivesBookings) await setAgentAllotmentReceiving(lot.agentSlug, lot.id)
+    }
+    await refresh()
+  }
+
+  async function handleSheetUpdate(line: AllotmentSheetLine, draft: SheetLineDraft) {
+    if (!line.lotId || !line.paymentId) {
+      throw new Error('This usage row comes from bookings. Add a new row to adjust it.')
+    }
+    await updateAllotmentSheetLine(line.lotId, {
+      paymentId: line.paymentId,
+      heads: draft.heads,
+      previousHeads: line.headsDelta,
+      amount: draft.amount,
+      paidDate: draft.date,
+      note: draft.note,
+    })
+    await refresh()
+  }
+
+  async function handleSaveRate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setLedgerError('')
+    const latest = selectedAgentRows.at(-1)
+    if (!latest) {
+      setLedgerError('This rate is saved with the first row.')
       return
     }
-    if (!isIsoDate(topUpDraft.paidDate)) {
-      setTopUpError('ใส่วันที่โอน')
+    const adultPrice = parseMoney(ledgerDraft.adultPrice)
+    const childPrice = parseMoney(ledgerDraft.childPrice)
+    if (!Number.isFinite(adultPrice) || adultPrice < 0 || !Number.isFinite(childPrice) || childPrice < 0) {
+      setLedgerError('Enter a valid rate.')
       return
     }
-    const remaining = selectedAgentUsageByLot.get(lot.id)?.remaining ?? lot.seats
-    setSavingTopUp(true)
+    setSavingRate(true)
     try {
-      if (!(moneyOnly || remaining > 0)) {
-        const created = await createAgentAllotment({
-          agentSlug: lot.agentSlug,
-          agentName: lot.agentName,
-          program: lot.program,
-          adultSeats: heads,
-          childSeats: 0,
-          adultPrice: lot.adultPrice,
-          childPrice: lot.childPrice,
-          parkFee: lot.parkFee,
-          paidDate: topUpDraft.paidDate,
-          paidAmount: amount,
-          note: topUpDraft.note,
-        })
-        await setAgentAllotmentReceiving(created.agentSlug, created.id)
-        setBookTab(created.id)
-      } else {
-        await topUpAgentAllotment(lot.id, {
-          heads,
-          amount,
-          paidDate: topUpDraft.paidDate,
-          note: topUpDraft.note,
-        })
-        setBookTab(lot.id)
-      }
-      setTopUpDraft({ paidDate: todayISO(), heads: '', amount: '', note: '' })
+      await updateAgentAllotment(latest.id, {
+        agentSlug: latest.agentSlug,
+        agentName: latest.agentName,
+        program: latest.program,
+        adultSeats: latest.adultSeats,
+        childSeats: latest.childSeats,
+        adultPrice,
+        childPrice,
+        parkFee: ledgerDraft.parkFee,
+        paidDate: latest.paidDate || today,
+        note: latest.note,
+      })
       await refresh()
     } catch (caught) {
-      setTopUpError(caught instanceof Error ? caught.message : 'บันทึกโอนเพิ่มไม่ได้')
+      setLedgerError(caught instanceof Error ? caught.message : 'Could not save the rate.')
     } finally {
-      setSavingTopUp(false)
+      setSavingRate(false)
     }
   }
 
@@ -1751,7 +1774,7 @@ export function AdminAgentAllotment() {
         </Segment>
       </SegmentedControl>
       <p className="text-xs text-teal-900/55">
-        Separate lots and head balance. Same transfer rules.
+        Phi Phi and James Bond keep separate head balances.
       </p>
     </div>
   )
@@ -1761,15 +1784,15 @@ export function AdminAgentAllotment() {
       <div className="w-full">
         <PageHeader
           title="Agent Allotment"
-          description="Phi Phi and James Bond keep separate lots. Payments, FIFO, and money-only cash work the same way."
+          description="Phi Phi and James Bond keep separate head balances. Open an agent for one running sheet."
         />
         {programBar}
         <div className="grid gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-3">
           <AllotmentModeCard
             tone="teal"
-            title="Lots & payments"
-            subtitle="Open a new lot, add transfers on that lot, and see paid / due / heads used / overage."
-            meta="Lots"
+            title="Allotment sheet"
+            subtitle="One sheet per agent. Add or reduce heads and money. Each day of usage is its own row."
+            meta="Sheet"
             icon={<Plus className="size-7" strokeWidth={1.75} />}
             onClick={() => {
               setDraft(emptyDraft())
@@ -2529,14 +2552,11 @@ export function AdminAgentAllotment() {
       selectedAgentRows[0]?.agentName ||
       agents.find((agent) => agent.slug === selectedAgentSlug)?.name ||
       selectedAgentSlug
-    const ledgerTotals = draftTotals(ledgerDraft)
-    const lotsNewestFirst = [...selectedAgentRows].reverse()
-
     return (
       <div className="w-full">
         <PageHeader
           title={agentName || 'Agent Allotment'}
-          description={`Each tab is one ${workProgram === 'PP' ? 'Phi Phi' : 'James Bond'} allotment. New bookings wait in Daily checker until Save, then land on the lot marked new.`}
+          description={`One ${workProgram === 'PP' ? 'Phi Phi' : 'James Bond'} sheet. Add or reduce heads and money on any row. Each day's used heads are filled in automatically.`}
           actions={
             <Button type="button" variant="outline" size="sm" onClick={() => setView('add')}>
               <ArrowLeft className="size-3.5" />
@@ -2548,32 +2568,37 @@ export function AdminAgentAllotment() {
 
         <div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           <Surface className="px-4 py-3">
-            <p className="text-xs text-teal-900/45">หัวเหลือ</p>
+            <p className="text-xs text-teal-900/45">Heads left</p>
             <p
               className={cn(
                 'mt-1 text-2xl font-semibold tabular-nums',
-                bookHeadsLeft < 0 ? 'text-rose-700' : 'text-teal-800',
+                sheetTotals.headsLeft < 0 ? 'text-rose-700' : 'text-teal-800',
               )}
             >
-              {bookHeadsLeft}
+              {sheetTotals.headsLeft}
             </p>
           </Surface>
           <Surface className="px-4 py-3">
-            <p className="text-xs text-teal-900/45">ใช้ไป / ซื้อไว้</p>
+            <p className="text-xs text-teal-900/45">Used / purchased</p>
             <p className="mt-1 text-lg font-semibold tabular-nums text-teal-950">
-              {fifoUsed}
+              {sheetTotals.used}
               <span className="mx-1 text-sm font-normal text-teal-900/35">/</span>
-              {fifoPurchased}
+              {sheetTotals.purchased}
             </p>
           </Surface>
           <Surface className="px-4 py-3">
-            <p className="text-xs text-teal-900/45">เงินที่รับ</p>
-            <p className="mt-1 text-lg font-semibold tabular-nums text-teal-950">
-              {formatMoney(selectedAgentSummary?.paidAmount ?? 0)}
+            <p className="text-xs text-teal-900/45">Money left</p>
+            <p
+              className={cn(
+                'mt-1 text-lg font-semibold tabular-nums',
+                sheetTotals.moneyLeft < 0 ? 'text-rose-700' : 'text-teal-950',
+              )}
+            >
+              {formatMoney(sheetTotals.moneyLeft)}
             </p>
           </Surface>
           <Surface className="px-4 py-3">
-            <p className="text-xs text-teal-900/45">เรทปัจจุบัน</p>
+            <p className="text-xs text-teal-900/45">Current rate</p>
             <p className="mt-1 text-lg font-semibold tabular-nums text-teal-950">
               {bookRate > 0 ? formatMoney(bookRate) : '—'}
               <span className="ml-1 text-sm font-normal text-teal-900/45">
@@ -2584,264 +2609,40 @@ export function AdminAgentAllotment() {
         </div>
 
         <Surface className="mb-4 overflow-hidden p-0">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-900/8 px-4 py-3">
-            <div>
-              <h2 className="text-sm font-semibold text-teal-950">สมุดรายล็อต</h2>
-              <p className="max-w-3xl text-xs text-teal-900/45">
-                Click a tab to see that lot, like the sheet: top-ups add heads, saved days deduct them.
-                The tab marked new receives the next Daily checker save. Move a saved day if it belongs on another lot.
-                {pendingChecker.heads > 0
-                  ? ` ${pendingChecker.heads} heads on ${pendingChecker.days} day${pendingChecker.days === 1 ? '' : 's'} are still only in Daily checker.`
-                  : ''}
-              </p>
-            </div>
-            <Button type="button" variant="outline" size="sm" onClick={() => setShowLots((open) => !open)}>
-              {showLots ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-              ก้อนโอน {selectedAgentRows.length}
-            </Button>
-          </div>
-          <div
-            ref={lotTabStripRef}
-            className="flex gap-1.5 overflow-x-auto border-b border-teal-900/8 px-3 py-2"
-          >
-            <button
-              type="button"
-              data-lot-tab="book"
-              onClick={() => setBookTab('book')}
-              className={cn(
-                'shrink-0 rounded-xl border px-2.5 py-1.5 text-left',
-                bookTab === 'book'
-                  ? 'border-teal-800 bg-teal-800 text-white'
-                  : 'border-teal-900/10 bg-white text-teal-950',
-              )}
-            >
-              <span className="block text-[11px] font-semibold">รวม</span>
-              <span className={cn('block text-[10px] tabular-nums', bookTab === 'book' ? 'text-white/75' : 'text-teal-900/45')}>
-                เหลือ {bookHeadsLeft}
-              </span>
-            </button>
-            {lotBooks.map((book) => {
-              const selected = bookTab !== 'book' && book.lotId === resolvedLotTabId
-              return (
-                <button
-                  key={book.lotId}
-                  type="button"
-                  data-lot-tab={book.lotId}
-                  onClick={() => setBookTab(book.lotId)}
-                  className={cn(
-                    'shrink-0 rounded-xl border px-2.5 py-1.5 text-left',
-                    selected && 'border-teal-800 bg-teal-800 text-white',
-                    !selected && book.status === 'active' && 'border-orange-400 bg-orange-50 text-orange-950',
-                    !selected && book.status === 'done' && 'border-teal-900/10 bg-teal-950/[0.03] text-teal-900/70',
-                    !selected && book.status === 'waiting' && 'border-teal-900/10 bg-white text-teal-950',
-                    !selected && book.status === 'over' && 'border-rose-300 bg-rose-50 text-rose-900',
-                  )}
-                >
-                  <span className="block text-[11px] font-semibold">ล็อต {book.index}</span>
-                  <span
-                    className={cn(
-                      'block text-[10px] tabular-nums',
-                      selected ? 'text-white/75' : 'text-teal-900/45',
-                      !selected && book.status === 'active' && 'text-orange-800/70',
-                      !selected && book.status === 'over' && 'text-rose-800/70',
-                    )}
-                  >
-                    {formatLotTabDate(book.openDate)} · {lotBookStatusLabel(book.status)} {book.remaining}
-                    {book.lotId === receivingLotId ? ' · new' : ''}
-                  </span>
-                </button>
-              )
-            })}
-          </div>
-          {bookTab !== 'book' && selectedLotBook ? (
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-900/8 px-4 py-2 text-xs text-teal-900/55">
-              <p>
-                Opened {formatShortDate(selectedLotBook.openDate)} · {selectedLotBook.seats} heads @{' '}
-                {formatMoney(selectedLotBook.rate)} · received {formatMoney(selectedLotBook.paid)} · used{' '}
-                {selectedLotBook.used} · left {selectedLotBook.remaining}
-                {selectedLotBook.lotId === receivingLotId
-                  ? ' · next Daily checker save loads here'
-                  : ''}
-                {selectedLotBook.lotId === receivingLotId && advanceBookingPreview.heads > 0
-                  ? ` · ${advanceBookingPreview.heads} future heads stay in Daily checker until that day is saved`
-                  : ''}
-              </p>
-              {selectedLotBook.lotId === receivingLotId ? null : (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    void setAgentAllotmentReceiving(selectedAgentSlug, selectedLotBook.lotId)
-                      .then(() => refresh())
-                      .catch((caught) => {
-                        window.alert(caught instanceof Error ? caught.message : 'Could not switch the open lot.')
-                      })
-                  }}
-                >
-                  New saves load here
-                </Button>
-              )}
-            </div>
-          ) : (
-            <p className="border-b border-teal-900/8 px-4 py-2 text-xs text-teal-900/55">
-              All lots together. Heads left is the whole account. Open a tab to top up or move a saved day.
-            </p>
-          )}
-          <DepositBookTable
-            lines={bookTab === 'book' || !selectedLotBook ? depositBook : selectedLotBook.lines}
-            moveTargets={
-              selectedLotBook && bookTab !== 'book'
-                ? lotBooks
-                    .filter((book) => book.lotId !== selectedLotBook.lotId)
-                    .map((book) => ({ id: book.lotId, label: `Lot ${book.index}` }))
-                : undefined
-            }
-            onMoveDay={bookTab === 'book' ? undefined : (day, allotmentId) => void moveSavedDay(day, allotmentId)}
-          />
           <form
-            className="grid gap-2 border-t border-teal-900/8 px-4 py-3 sm:grid-cols-2 lg:grid-cols-5"
-            onSubmit={handleTopUpCurrentLot}
+            className="flex flex-wrap items-end gap-2 border-b border-teal-900/8 px-3 py-3"
+            onSubmit={(event) => void handleSaveRate(event)}
           >
-            <div className="sm:col-span-2 lg:col-span-5">
-              <p className="text-xs font-medium text-teal-950">
-                {topUpDraft.heads.trim() === '' || Number(topUpDraft.heads) === 0
-                  ? 'Leave heads empty for other cash. A minus, such as -500, deducts it. Write what it paid for. Trip heads stay the same.'
-                  : selectedLotBook && selectedLotBook.remaining <= 0
-                    ? `Lot ${selectedLotBook.index} is used up. This transfer opens a new lot, and the next Daily checker save loads there.`
-                    : `Top up ${selectedLotBook ? `lot ${selectedLotBook.index}` : 'the open lot'}. Heads and money stay on this lot.`}
-              </p>
-            </div>
-            <Input
-              type="date"
-              required
-              value={topUpDraft.paidDate}
-              onChange={(event) =>
-                setTopUpDraft((current) => ({ ...current, paidDate: event.target.value }))
-              }
-              className="h-10"
-              aria-label="วันที่โอน"
-            />
-            <Input
-              type="number"
-              min={0}
-              step={1}
-              value={topUpDraft.heads}
-              onChange={(event) =>
-                setTopUpDraft((current) => ({ ...current, heads: event.target.value }))
-              }
-              placeholder="หัว (ว่าง = เฉพาะเงิน)"
-              className="h-10"
-              aria-label="หัวที่โอนเพิ่ม เว้นว่างถ้าเป็นเงินอย่างเดียว"
-            />
-            <Input
-              type="number"
-              step={1}
-              required
-              value={topUpDraft.amount}
-              onChange={(event) =>
-                setTopUpDraft((current) => ({ ...current, amount: event.target.value }))
-              }
-              placeholder="บาท"
-              className="h-10"
-              aria-label="จำนวนเงิน"
-            />
-            <Input
-              value={topUpDraft.note}
-              onChange={(event) =>
-                setTopUpDraft((current) => ({ ...current, note: event.target.value }))
-              }
-              placeholder={
-                (topUpDraft.heads.trim() === '' || Number(topUpDraft.heads) === 0) &&
-                parseMoney(topUpDraft.amount) < 0
-                  ? 'หักไปทำอะไร'
-                  : 'เลขอ้างอิง'
-              }
-              className="h-10"
-              aria-label="เลขอ้างอิง"
-            />
-            <Button type="submit" disabled={savingTopUp} className="h-10">
-              {savingTopUp
-                ? 'กำลังบันทึก…'
-                : (topUpDraft.heads.trim() === '' || Number(topUpDraft.heads) === 0) &&
-                    parseMoney(topUpDraft.amount) < 0
-                  ? 'Deduct'
-                  : topUpDraft.heads.trim() === '' || Number(topUpDraft.heads) === 0
-                    ? 'Add money'
-                  : selectedLotBook && selectedLotBook.remaining <= 0
-                    ? 'Open new lot'
-                    : 'Top up'}
-            </Button>
-            {topUpError ? (
-              <p className="text-sm text-red-600 sm:col-span-2 lg:col-span-5">{topUpError}</p>
-            ) : null}
-          </form>
-        </Surface>
-
-        {showLots || selectedAgentRows.length === 0 ? (
-        <>
-        <Surface className="mb-4 p-4 sm:p-5">
-          <div className="mb-3 flex items-center gap-2">
-            <Wallet className="size-4 text-teal-800" />
-            <h2 className="text-sm font-semibold text-teal-950">Open new lot</h2>
-          </div>
-          <form
-            className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8"
-            onSubmit={handleLedgerTopUp}
-          >
-            <div className="space-y-1.5">
-              <Label className="text-xs text-neutral-400">Lot date</Label>
-              <Input
-                type="date"
-                required
-                value={ledgerDraft.paidDate}
-                onChange={(event) =>
-                  setLedgerDraft((current) => ({ ...current, paidDate: event.target.value }))
-                }
-                className="h-10"
-              />
-            </div>
-            <div className="space-y-1.5 sm:col-span-2 xl:col-span-2">
-              <Label className="text-xs text-neutral-400">Note</Label>
-              <Input
-                value={ledgerDraft.note}
-                onChange={(event) =>
-                  setLedgerDraft((current) => ({ ...current, note: event.target.value }))
-                }
-                placeholder="e.g. March set ~100 heads"
-                className="h-10"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs text-neutral-400">Price AD</Label>
+            <div className="space-y-1">
+              <Label className="text-[11px] text-teal-900/45">Rate AD</Label>
               <Input
                 type="number"
                 min={0}
                 step={1}
-                required
                 value={ledgerDraft.adultPrice}
                 onChange={(event) =>
                   setLedgerDraft((current) => ({ ...current, adultPrice: event.target.value }))
                 }
-                className="h-10"
+                className="h-9 w-28"
+                aria-label="Adult rate"
               />
             </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs text-neutral-400">Price CH</Label>
+            <div className="space-y-1">
+              <Label className="text-[11px] text-teal-900/45">Rate CH</Label>
               <Input
                 type="number"
                 min={0}
                 step={1}
-                required
                 value={ledgerDraft.childPrice}
                 onChange={(event) =>
                   setLedgerDraft((current) => ({ ...current, childPrice: event.target.value }))
                 }
-                className="h-10"
+                className="h-9 w-28"
+                aria-label="Child rate"
               />
             </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs text-neutral-400">Park Fee</Label>
+            <div className="space-y-1">
+              <Label className="text-[11px] text-teal-900/45">Park</Label>
               <select
                 value={ledgerDraft.parkFee}
                 onChange={(event) =>
@@ -2850,259 +2651,42 @@ export function AdminAgentAllotment() {
                     parkFee: event.target.value as AgentAllotmentParkFee,
                   }))
                 }
-                className={selectClassName}
+                className="h-9 rounded-xl border border-teal-900/12 bg-white/80 px-2 text-sm"
+                aria-label="Park fee"
               >
                 <option value="inc">Inc</option>
                 <option value="exc">Exc</option>
               </select>
             </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs text-neutral-400">Heads</Label>
-              <Input
-                type="number"
-                min={1}
-                step={1}
-                required
-                value={ledgerDraft.heads}
-                onChange={(event) =>
-                  setLedgerDraft((current) => ({ ...current, heads: event.target.value }))
-                }
-                placeholder="0"
-                className="h-10"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs text-neutral-400">Paid now (THB)</Label>
-              <Input
-                type="number"
-                min={0}
-                step={1}
-                value={ledgerDraft.paidAmount}
-                onChange={(event) =>
-                  setLedgerDraft((current) => ({ ...current, paidAmount: event.target.value }))
-                }
-                placeholder="0"
-                className="h-10"
-              />
-            </div>
-            <div className="flex items-end sm:col-span-2 xl:col-span-8">
-              <div className="flex w-full flex-wrap items-center gap-3">
-                <Button type="submit" disabled={savingLedger} className="h-10">
-                  <Plus data-icon="inline-start" />
-                  {savingLedger ? 'Saving…' : 'Open lot'}
-                </Button>
-                <p className="text-xs text-teal-900/45">
-                  Lot total {formatMoney(ledgerTotals.totalAmount)} THB. Paid now can be partial —
-                  add more transfers inside the lot.
-                </p>
-              </div>
-            </div>
+            <Button
+              type="submit"
+              variant="outline"
+              size="sm"
+              disabled={savingRate || selectedAgentRows.length === 0}
+              className="h-9"
+            >
+              {savingRate ? 'Saving…' : 'Save rate'}
+            </Button>
+            <p className="pb-2 text-xs text-teal-900/45">
+              {selectedAgentRows.length === 0
+                ? 'This rate is used on the first row.'
+                : 'Account rate. Each day’s used heads are filled in automatically.'}
+            </p>
           </form>
-          {ledgerError ? <p className="mt-3 text-sm text-red-600">{ledgerError}</p> : null}
+          {ledgerError ? <p className="px-3 py-2 text-sm text-red-600">{ledgerError}</p> : null}
+          {sheetTotals.pendingHeads > 0 ? (
+            <p className="border-b border-teal-900/8 px-3 py-2 text-xs text-teal-900/55">
+              {sheetTotals.pendingHeads} heads from bookings are already on the sheet and are not saved in Daily checker yet.
+            </p>
+          ) : null}
+          <AllotmentSheet
+            lines={sheetLines}
+            today={today}
+            storageKey={`gday-allotment-sheet:${workProgram}:${selectedAgentSlug}`}
+            onAdd={handleSheetAdd}
+            onUpdate={handleSheetUpdate}
+          />
         </Surface>
-
-        {loadError ? (
-          <p className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-800">
-            {loadError}
-          </p>
-        ) : null}
-
-        {loading ? <p className="text-sm text-teal-900/50">Loading lots…</p> : null}
-
-        {!loading && selectedAgentRows.length === 0 ? (
-          <Surface className="p-6 text-sm text-teal-900/55">
-            No lots yet. Open the first lot above.
-          </Surface>
-        ) : null}
-
-        {lotsNewestFirst.length > 0 ? (
-          <>
-            <div className="mb-2">
-              <h2 className="text-sm font-semibold text-teal-950">Lots</h2>
-              <p className="text-xs text-teal-900/45">
-                Click a lot for transfers and head usage. Usage fills oldest lots first.
-              </p>
-            </div>
-
-            <div className="space-y-2 md:hidden">
-              {lotsNewestFirst.map((row) => {
-                const usage = selectedAgentUsageByLot.get(row.id)
-                const status = allotmentPayStatus(row)
-                const date = row.paidDate || row.createdAt.slice(0, 10)
-                return (
-                  <button
-                    key={row.id}
-                    type="button"
-                    onClick={() => openLot(row)}
-                    className="w-full rounded-[1.2rem] border border-teal-900/10 bg-white/80 p-4 text-left transition hover:border-teal-600/30 hover:bg-teal-50/40"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <p className="text-xs text-teal-900/45">{formatShortDate(date)}</p>
-                        <p className="mt-0.5 font-medium text-teal-950">
-                          {row.note.trim() || `${row.seats} Heads`}
-                        </p>
-                      </div>
-                      <span
-                        className={cn(
-                          'inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase ring-1 ring-inset',
-                          payStatusClass(status),
-                        )}
-                      >
-                        {payStatusLabel(status)}
-                      </span>
-                    </div>
-                    <div className="mt-3 grid grid-cols-4 gap-2 text-xs">
-                      <div>
-                        <p className="text-teal-900/40">Heads</p>
-                        <p className="font-semibold tabular-nums">{row.seats}</p>
-                      </div>
-                      <div>
-                        <p className="text-teal-900/40">Used</p>
-                        <p className="font-semibold tabular-nums">{usage?.used ?? 0}</p>
-                      </div>
-                      <div>
-                        <p className="text-teal-900/40">Left</p>
-                        <p
-                          className={cn(
-                            'font-semibold tabular-nums',
-                            (usage?.remaining ?? 0) < 0 ? 'text-rose-700' : 'text-teal-800',
-                          )}
-                        >
-                          {usage?.remaining ?? row.seats}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-teal-900/40">Due</p>
-                        <p className="font-semibold tabular-nums text-amber-800">
-                          {formatMoney(allotmentBalance(row))}
-                        </p>
-                      </div>
-                    </div>
-                    {allotmentOtherCash(row) !== 0 ? (
-                      <p
-                        className={cn(
-                          'mt-2 text-[11px]',
-                          allotmentOtherCash(row) < 0 ? 'text-rose-700' : 'text-teal-900/55',
-                        )}
-                      >
-                        Other cash {formatMoney(allotmentOtherCash(row))} THB — not trip heads
-                      </p>
-                    ) : null}
-                  </button>
-                )
-              })}
-            </div>
-
-            <Surface className="hidden overflow-x-auto md:block">
-              <Table>
-                <TableHeader>
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead className="px-4 text-teal-700/45">Opened</TableHead>
-                    <TableHead className="text-teal-700/45">Lot</TableHead>
-                    <TableHead className="text-right text-teal-700/45">Heads</TableHead>
-                    <TableHead className="text-right text-teal-700/45">Used</TableHead>
-                    <TableHead className="text-right text-teal-700/45">Left</TableHead>
-                    <TableHead className="text-right text-teal-700/45">Paid</TableHead>
-                    <TableHead className="text-right text-teal-700/45">Due</TableHead>
-                    <TableHead className="text-teal-700/45">Status</TableHead>
-                    <TableHead className="text-right text-teal-700/45" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {lotsNewestFirst.map((row) => {
-                    const usage = selectedAgentUsageByLot.get(row.id)
-                    const status = allotmentPayStatus(row)
-                    const date = row.paidDate || row.createdAt.slice(0, 10)
-                    return (
-                      <TableRow
-                        key={row.id}
-                        className="cursor-pointer"
-                        onClick={() => openLot(row)}
-                      >
-                        <TableCell className="px-4 whitespace-nowrap">
-                          {formatShortDate(date)}
-                        </TableCell>
-                        <TableCell>
-                          <p className="font-medium text-teal-950">
-                            {row.note.trim() || `${row.seats} Heads`}
-                          </p>
-                          <p className="text-[11px] text-teal-900/40">
-                            AD {formatMoney(row.adultPrice)} · CH {formatMoney(row.childPrice)} ·
-                            Park {formatAllotmentParkFee(row.parkFee)}
-                          </p>
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums font-medium">
-                          {row.seats}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {usage?.used ?? 0}
-                        </TableCell>
-                        <TableCell
-                          className={cn(
-                            'text-right tabular-nums font-semibold',
-                            (usage?.remaining ?? 0) < 0 ? 'text-rose-700' : 'text-teal-800',
-                          )}
-                        >
-                          {usage?.remaining ?? row.seats}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {formatMoney(allotmentPaidTotal(row))}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums text-amber-800">
-                          {formatMoney(allotmentBalance(row))}
-                        </TableCell>
-                        <TableCell>
-                          <span
-                            className={cn(
-                              'inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase ring-1 ring-inset',
-                              payStatusClass(status),
-                            )}
-                          >
-                            {payStatusLabel(status)}
-                          </span>
-                          {allotmentOtherCash(row) !== 0 ? (
-                            <p
-                              className={cn(
-                                'mt-1 text-[10px]',
-                                allotmentOtherCash(row) < 0 ? 'text-rose-700' : 'text-teal-900/50',
-                              )}
-                            >
-                              {allotmentOtherCash(row) > 0 ? '+' : ''}
-                              {formatMoney(allotmentOtherCash(row))} other
-                            </p>
-                          ) : null}
-                        </TableCell>
-                        <TableCell className="text-right" onClick={(event) => event.stopPropagation()}>
-                          <div className="flex justify-end gap-2">
-                            <Button variant="outline" size="sm" onClick={() => openLot(row)}>
-                              Open
-                            </Button>
-                            <Button variant="outline" size="sm" onClick={() => openEdit(row)}>
-                              <Pencil data-icon="inline-start" />
-                              Edit
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="icon-sm"
-                              className="text-neutral-400 hover:text-red-600"
-                              aria-label="Delete lot"
-                              onClick={() => void handleDelete(row)}
-                            >
-                              <Trash2 />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    )
-                  })}
-                </TableBody>
-              </Table>
-            </Surface>
-          </>
-        ) : null}
-        </>
-        ) : null}
 
         <Dialog
           open={editing !== null}
@@ -3227,8 +2811,8 @@ export function AdminAgentAllotment() {
   return (
     <div className="w-full">
       <PageHeader
-        title="Lots & payments"
-        description={`Open a ${workProgram === 'PP' ? 'Phi Phi' : 'James Bond'} lot, or click an agent to manage lots, transfers, and head usage.`}
+        title="Allotment sheet"
+        description={`Open a ${workProgram === 'PP' ? 'Phi Phi' : 'James Bond'} agent. The sheet runs down the page: adjust any row, and each day's heads are filled in.`}
         actions={
           <Button type="button" variant="outline" size="sm" onClick={() => setView('hub')}>
             <ArrowLeft className="size-3.5" />

@@ -7,7 +7,10 @@ export type AgentAllotmentPayment = {
   /** Transfer / paid calendar date YYYY-MM-DD */
   paidDate: string
   note: string
-  /** Heads this transfer adds to the lot. Several transfers accumulate on one lot. */
+  /**
+   * Heads this line adds, or removes when negative.
+   * Omitted on money-only lines.
+   */
   heads?: number
   /** When these heads join the lot, if that is earlier than the transfer date. */
   headsDate?: string
@@ -137,19 +140,24 @@ export function parseAllotmentPayments(value: unknown): AgentAllotmentPayment[] 
       if (!row || typeof row !== 'object') return null
       const item = row as Record<string, unknown>
       const moneyOnly = item.moneyOnly === true || item.money_only === true
-      const amount = moneyOnly ? signedMoney(num(item.amount)) : money(num(item.amount))
       const paidDate = String(item.paidDate ?? item.paid_date ?? '').slice(0, 10)
-      if (amount === 0 || (!moneyOnly && amount <= 0) || !/^\d{4}-\d{2}-\d{2}$/.test(paidDate)) {
-        return null
-      }
-      const heads = Math.floor(num(item.heads))
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(paidDate)) return null
+      const headsRaw = item.heads
+      const hasHeadsValue =
+        headsRaw !== undefined && headsRaw !== null && String(headsRaw).trim() !== ''
+      const heads = Math.trunc(num(headsRaw))
+      const keepHeads = !moneyOnly && hasHeadsValue && Number.isFinite(heads) && heads !== 0
+      const rawAmount = num(item.amount)
+      const amount = moneyOnly || rawAmount < 0 ? signedMoney(rawAmount) : money(rawAmount)
+      // Head purchases can be stored without a heads field. Do not treat those as money-only.
+      if (!keepHeads && (amount === 0 || (!moneyOnly && amount <= 0))) return null
       const headsDate = String(item.headsDate ?? item.heads_date ?? '').slice(0, 10)
       return {
         id: String(item.id || crypto.randomUUID()),
         amount,
         paidDate,
         note: String(item.note ?? '').trim(),
-        ...(heads > 0 ? { heads } : {}),
+        ...(keepHeads ? { heads } : {}),
         ...( /^\d{4}-\d{2}-\d{2}$/.test(headsDate) ? { headsDate } : {}),
         ...(moneyOnly ? { moneyOnly: true } : {}),
       }
@@ -208,17 +216,21 @@ export function allotmentPayStatus(
 }
 
 function paymentsToJson(payments: AgentAllotmentPayment[]) {
-  return payments.map((payment) => ({
-    id: payment.id,
-    amount: payment.moneyOnly ? signedMoney(payment.amount) : money(payment.amount),
-    paidDate: payment.paidDate,
-    note: payment.note.trim(),
-    ...(payment.heads && payment.heads > 0 ? { heads: Math.floor(payment.heads) } : {}),
-    ...(payment.headsDate && /^\d{4}-\d{2}-\d{2}$/.test(payment.headsDate)
-      ? { headsDate: payment.headsDate }
-      : {}),
-    ...(payment.moneyOnly ? { moneyOnly: true } : {}),
-  }))
+  return payments.map((payment) => {
+    const heads = Math.trunc(Number(payment.heads) || 0)
+    return {
+      id: payment.id,
+      amount:
+        payment.moneyOnly || payment.amount < 0 ? signedMoney(payment.amount) : money(payment.amount),
+      paidDate: payment.paidDate,
+      note: payment.note.trim(),
+      ...(heads !== 0 && !payment.moneyOnly ? { heads } : {}),
+      ...(payment.headsDate && /^\d{4}-\d{2}-\d{2}$/.test(payment.headsDate)
+        ? { headsDate: payment.headsDate }
+        : {}),
+      ...(payment.moneyOnly ? { moneyOnly: true } : {}),
+    }
+  })
 }
 
 function latestPaidDate(payments: AgentAllotmentPayment[]) {
@@ -453,56 +465,175 @@ export async function addAgentAllotmentPayment(
   return mapRow(data as AgentAllotmentRow)
 }
 
-/** Add heads and money onto an existing lot. Heads of 0 records cash only and does not grow the lot. */
-export async function topUpAgentAllotment(
-  id: string,
-  input: { heads: number; amount: number; paidDate: string; note?: string; headsDate?: string },
-): Promise<AgentAllotment> {
-  const heads = Math.floor(Number(input.heads) || 0)
+function lineAmount(moneyOnly: boolean, rawAmount: number) {
+  if (!Number.isFinite(rawAmount)) return NaN
+  return moneyOnly || rawAmount < 0 ? signedMoney(rawAmount) : money(rawAmount)
+}
+
+function requireAdjustment(input: { heads: number; amount: number; paidDate: string; note?: string }) {
+  const heads = Math.trunc(Number(input.heads) || 0)
   const paidDate = input.paidDate.trim()
-  const headsDate = input.headsDate?.trim() || paidDate
-  const moneyOnly = heads <= 0
-  const amount = moneyOnly ? signedMoney(input.amount) : money(input.amount)
-  if (moneyOnly && amount === 0) {
-    throw new Error('Enter an amount. Use a minus, such as -500, to deduct this cash.')
+  const note = input.note?.trim() || ''
+  const moneyOnly = heads === 0
+  const amount = lineAmount(moneyOnly, Number(input.amount))
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(paidDate)) throw new Error('Enter a valid date.')
+  if (!Number.isFinite(amount)) throw new Error('Enter an amount. Use 0 when this line changes heads only.')
+  if (heads === 0 && amount === 0) throw new Error('Enter heads or an amount.')
+  if ((heads < 0 || amount < 0) && !note) {
+    throw new Error('Enter a note for this reduction.')
   }
-  if (moneyOnly && amount < 0 && !input.note?.trim()) {
-    throw new Error('Enter what this cash was deducted for.')
-  }
-  if (!moneyOnly && heads <= 0) throw new Error('Enter heads greater than 0.')
-  if (!moneyOnly && Number(input.amount) < 0) throw new Error('Enter a valid amount.')
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(paidDate)) throw new Error('Enter a valid transfer date.')
-  if (!moneyOnly && !/^\d{4}-\d{2}-\d{2}$/.test(headsDate)) throw new Error('Enter a valid head date.')
+  return { heads, paidDate, note, moneyOnly, amount }
+}
 
-  const existing = await getAgentAllotment(id)
-  const nextPayments = [
-    ...writablePayments(existing),
-    {
-      id: crypto.randomUUID(),
-      amount,
-      paidDate,
-      note: input.note?.trim() || '',
-      ...(moneyOnly ? { moneyOnly: true } : { heads }),
-      ...(!moneyOnly && headsDate !== paidDate ? { headsDate } : {}),
-    },
-  ]
-  const adultSeats = existing.adultSeats + (moneyOnly ? 0 : heads)
-  const seats = adultSeats + existing.childSeats
-
+async function saveAllotmentAccount(
+  existing: AgentAllotment,
+  input: { adultSeats: number; totalAmount: number; payments: AgentAllotmentPayment[] },
+) {
+  const adultSeats = Math.max(0, Math.floor(input.adultSeats))
   const supabase = requireSupabase()
   const { data, error } = await supabase
     .from('agent_allotments')
     .update({
-      seats,
+      seats: adultSeats + existing.childSeats,
       adult_seats: adultSeats,
-      total_amount: money(existing.totalAmount + (moneyOnly ? 0 : amount)),
-      payments: paymentsToJson(nextPayments),
+      total_amount: money(input.totalAmount),
+      payments: paymentsToJson(input.payments),
     })
-    .eq('id', id)
+    .eq('id', existing.id)
     .select('*')
     .single()
   if (error) throw new Error(error.message)
   return mapRow(data as AgentAllotmentRow)
+}
+
+/** Add or reduce heads and money on the agent's account. Heads of 0 records cash only. */
+export async function topUpAgentAllotment(
+  id: string,
+  input: { heads: number; amount: number; paidDate: string; note?: string; headsDate?: string },
+): Promise<AgentAllotment> {
+  const { heads, paidDate, note, moneyOnly, amount } = requireAdjustment(input)
+  const headsDate = input.headsDate?.trim() || paidDate
+  if (!moneyOnly && !/^\d{4}-\d{2}-\d{2}$/.test(headsDate)) {
+    throw new Error('Enter a valid head date.')
+  }
+
+  const existing = await getAgentAllotment(id)
+  const nextAdult = existing.adultSeats + (moneyOnly ? 0 : heads)
+  if (nextAdult < 0) throw new Error('Cannot reduce heads below zero.')
+  const nextPayments = existing.payments.map((payment) => ({ ...payment }))
+  const hasHeadPayment = nextPayments.some((payment) => !payment.moneyOnly)
+  if (!moneyOnly && !hasHeadPayment && existing.seats > 0) {
+    nextPayments.push({
+      id: crypto.randomUUID(),
+      amount: 0,
+      paidDate: (existing.paidDate || existing.createdAt).slice(0, 10),
+      note: existing.note,
+      heads: existing.seats,
+    })
+  }
+  nextPayments.push({
+    id: crypto.randomUUID(),
+    amount,
+    paidDate,
+    note,
+    ...(moneyOnly ? { moneyOnly: true as const } : { heads }),
+    ...(!moneyOnly && headsDate !== paidDate ? { headsDate } : {}),
+  })
+  return saveAllotmentAccount(existing, {
+    adultSeats: nextAdult,
+    totalAmount: existing.totalAmount + (moneyOnly ? 0 : amount),
+    payments: nextPayments,
+  })
+}
+
+/**
+ * Rewrite one sheet line. `previousHeads` is the heads that line currently shows
+ * when the stored payment has no explicit head count.
+ */
+export async function updateAllotmentSheetLine(
+  id: string,
+  input: {
+    paymentId: string
+    heads: number
+    previousHeads: number
+    amount: number
+    paidDate: string
+    note?: string
+    /** Keep the lot contract total. Used when the opening row is priced from the rate. */
+    preserveTotal?: boolean
+  },
+): Promise<AgentAllotment> {
+  const { heads, paidDate, note, amount } = requireAdjustment({
+    heads: input.heads,
+    amount: input.amount,
+    paidDate: input.paidDate,
+    note: input.note,
+  })
+  const existing = await getAgentAllotment(id)
+  const isLump = input.paymentId === id || input.paymentId === 'legacy'
+
+  if (isLump) {
+    const stored = existing.payments
+    const moneyLines = stored.filter((payment) => payment.moneyOnly)
+    const headLines = stored.filter((payment) => !payment.moneyOnly)
+    if (headLines.some((payment) => (payment.heads ?? 0) !== 0)) {
+      throw new Error('Edit that transfer on its own row.')
+    }
+    const oldHeads = Math.trunc(Number(input.previousHeads) || 0)
+    const nextAdult = existing.adultSeats + (heads - oldHeads)
+    if (nextAdult < 0) throw new Error('Cannot reduce heads below zero.')
+    const oldCounted = headLines.reduce((sum, payment) => sum + payment.amount, 0)
+    const newCounted = heads === 0 ? 0 : amount
+    const opening =
+      heads !== 0 || amount !== 0
+        ? [
+            {
+              id:
+                headLines[0]?.id && headLines[0].id !== 'legacy'
+                  ? headLines[0].id
+                  : crypto.randomUUID(),
+              amount,
+              paidDate,
+              note,
+              ...(heads !== 0 ? { heads } : { moneyOnly: true as const }),
+            },
+          ]
+        : []
+    return saveAllotmentAccount(existing, {
+      adultSeats: nextAdult,
+      totalAmount: input.preserveTotal
+        ? existing.totalAmount
+        : existing.totalAmount + (newCounted - oldCounted),
+      payments: [...opening, ...moneyLines],
+    })
+  }
+
+  const payments = writablePayments(existing)
+  const index = payments.findIndex((payment) => payment.id === input.paymentId)
+  if (index < 0) throw new Error('This line was not found.')
+  const old = payments[index]!
+  const storedHeads = !old.moneyOnly && old.heads != null && old.heads !== 0 ? Math.trunc(old.heads) : null
+  const oldHeads = storedHeads ?? Math.trunc(Number(input.previousHeads) || 0)
+  const nextAdult = existing.adultSeats + (heads - oldHeads)
+  if (nextAdult < 0) throw new Error('Cannot reduce heads below zero.')
+  const oldCounted = old.moneyOnly ? 0 : old.amount
+  const newCounted = heads === 0 ? 0 : amount
+  const nextPayments = payments.map((payment, paymentIndex) =>
+    paymentIndex === index
+      ? {
+          id: payment.id,
+          amount,
+          paidDate,
+          note,
+          ...(heads !== 0 ? { heads } : { moneyOnly: true as const }),
+        }
+      : payment,
+  )
+  return saveAllotmentAccount(existing, {
+    adultSeats: nextAdult,
+    totalAmount: existing.totalAmount + (newCounted - oldCounted),
+    payments: nextPayments,
+  })
 }
 
 export async function removeLastAgentAllotmentPayment(id: string): Promise<AgentAllotment> {
