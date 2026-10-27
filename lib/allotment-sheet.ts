@@ -210,7 +210,8 @@ export function buildAllotmentSheet(input: {
     const booking = bookingByDay.get(day)
     if (saved && saved.totalDeduct <= 0) continue
     const pending = !saved
-    const heads = saved ? saved.totalDeduct : (booking?.totalDeduct ?? 0)
+    // A saved daily total can be only part of the day (one invoice). Every booking on the day is still used.
+    const heads = Math.max(saved?.totalDeduct ?? 0, booking?.totalDeduct ?? 0)
     if (heads <= 0) continue
     const counted = saved ? Boolean(saved.allotmentId) || day <= input.today : day <= input.today
     const mix =

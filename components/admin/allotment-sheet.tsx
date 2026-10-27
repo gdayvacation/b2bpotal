@@ -1,7 +1,7 @@
 'use client'
 
 import { Fragment, useEffect, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { ChevronDown, ChevronRight, Pencil } from 'lucide-react'
+import { ChevronDown, ChevronRight, Pencil, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { formatShortDate, todayISO } from '@/lib/format'
 import type { AllotmentSheetLine } from '@/lib/allotment-sheet'
@@ -113,12 +113,14 @@ export function AllotmentSheet({
   storageKey,
   onAdd,
   onUpdate,
+  onRemove,
 }: {
   lines: AllotmentSheetLine[]
   today: string
   storageKey: string
   onAdd: (draft: SheetLineDraft) => Promise<void>
   onUpdate: (line: AllotmentSheetLine, draft: SheetLineDraft) => Promise<void>
+  onRemove: (line: AllotmentSheetLine) => Promise<void>
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [openUsage, setOpenUsage] = useState<Set<string>>(new Set())
@@ -244,6 +246,21 @@ export function AllotmentSheet({
       amount: line.moneyDelta == null || line.moneyDelta === 0 ? '' : String(line.moneyDelta),
       note: line.note,
     })
+  }
+
+  async function removeLine(line: AllotmentSheetLine) {
+    const label = lineTitle(line)
+    if (!window.confirm(`Remove this line?\n${label}`)) return
+    setError('')
+    setSaving(true)
+    try {
+      await onRemove(line)
+      if (editingKey === line.key) setEditingKey(null)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not remove this line.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   function renderDayBar(group: DayGroup) {
@@ -439,10 +456,10 @@ export function AllotmentSheet({
               />
             </td>
             <td className={cn(cell, 'px-2 text-right text-teal-900/35')}>—</td>
-            <td className={cn(cell, 'px-1 text-center')}>
+            <td className={cn(cell, 'px-1 py-1 text-center')}>
               <form
                 id="allotment-sheet-edit"
-                className="flex items-center justify-center gap-1"
+                className="flex flex-col items-stretch gap-1"
                 onSubmit={(event) => void submitEdit(line, event)}
               >
                 <Button type="submit" size="sm" disabled={saving} className="h-7 px-2 text-[11px]">
@@ -504,14 +521,25 @@ export function AllotmentSheet({
             </td>
             <td className={cn(cell, 'px-1 text-center')}>
               {line.kind === 'manual' && line.paymentId ? (
-                <button
-                  type="button"
-                  aria-label={`Edit row ${index + 1}`}
-                  className="inline-flex size-7 items-center justify-center rounded-md text-teal-900/45 hover:bg-white hover:text-teal-900"
-                  onClick={() => startEdit(line)}
-                >
-                  <Pencil className="size-3.5" />
-                </button>
+                <div className="flex items-center justify-center">
+                  <button
+                    type="button"
+                    aria-label={`Edit row ${index + 1}`}
+                    className="inline-flex size-7 items-center justify-center rounded-md text-teal-900/45 hover:bg-white hover:text-teal-900"
+                    onClick={() => startEdit(line)}
+                  >
+                    <Pencil className="size-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Remove row ${index + 1}`}
+                    disabled={saving}
+                    className="inline-flex size-7 items-center justify-center rounded-md text-rose-700/70 hover:bg-white hover:text-rose-700"
+                    onClick={() => void removeLine(line)}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </div>
               ) : null}
             </td>
           </>
@@ -552,8 +580,8 @@ export function AllotmentSheet({
               <th className="w-[88px] border border-teal-900/10 px-2 py-2 text-right">Heads left</th>
               <th className="w-[120px] border border-teal-900/10 px-2 py-2 text-right">Money</th>
               <th className="w-[120px] border border-teal-900/10 px-2 py-2 text-right">Money left</th>
-              <th className="w-10 border border-teal-900/10 px-1 py-2 text-center">
-                <span className="sr-only">Edit</span>
+              <th className="w-24 border border-teal-900/10 px-1 py-2 text-center">
+                <span className="sr-only">Edit or remove</span>
               </th>
             </tr>
           </thead>

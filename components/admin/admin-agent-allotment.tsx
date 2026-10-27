@@ -66,6 +66,7 @@ import {
   setAgentAllotmentReceiving,
   topUpAgentAllotment,
   updateAgentAllotment,
+  removeAllotmentSheetLine,
   updateAllotmentSheetLine,
   type AgentAllotment,
   type AgentAllotmentParkFee,
@@ -1572,6 +1573,17 @@ export function AdminAgentAllotment() {
     await refresh()
   }
 
+  async function handleSheetRemove(line: AllotmentSheetLine) {
+    if (!line.lotId || !line.paymentId) {
+      throw new Error('This usage row comes from bookings. Add a new row to adjust it.')
+    }
+    await removeAllotmentSheetLine(line.lotId, {
+      paymentId: line.paymentId,
+      previousHeads: line.headsDelta,
+    })
+    await refresh()
+  }
+
   async function handleSaveRate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setLedgerError('')
@@ -2685,6 +2697,7 @@ export function AdminAgentAllotment() {
             storageKey={`gday-allotment-sheet:${workProgram}:${selectedAgentSlug}`}
             onAdd={handleSheetAdd}
             onUpdate={handleSheetUpdate}
+            onRemove={handleSheetRemove}
           />
         </Surface>
 

@@ -636,6 +636,44 @@ export async function updateAllotmentSheetLine(
   })
 }
 
+/** Drop one sheet line and reverse the heads and cash it added. */
+export async function removeAllotmentSheetLine(
+  id: string,
+  input: { paymentId: string; previousHeads: number },
+): Promise<AgentAllotment> {
+  const existing = await getAgentAllotment(id)
+  const isLump = input.paymentId === id || input.paymentId === 'legacy'
+  if (isLump) {
+    const moneyLines = existing.payments.filter((payment) => payment.moneyOnly)
+    const headLines = existing.payments.filter((payment) => !payment.moneyOnly)
+    if (headLines.some((payment) => (payment.heads ?? 0) !== 0)) {
+      throw new Error('Remove that transfer on its own row.')
+    }
+    const oldHeads = Math.trunc(Number(input.previousHeads) || 0)
+    const nextAdult = existing.adultSeats - oldHeads
+    if (nextAdult < 0) throw new Error('Cannot reduce heads below zero.')
+    const oldCounted = headLines.reduce((sum, payment) => sum + payment.amount, 0)
+    return saveAllotmentAccount(existing, {
+      adultSeats: nextAdult,
+      totalAmount: existing.totalAmount - oldCounted,
+      payments: moneyLines,
+    })
+  }
+
+  const index = existing.payments.findIndex((payment) => payment.id === input.paymentId)
+  if (index < 0) throw new Error('This line was not found.')
+  const old = existing.payments[index]!
+  const storedHeads = !old.moneyOnly && old.heads != null && old.heads !== 0 ? Math.trunc(old.heads) : null
+  const oldHeads = storedHeads ?? Math.trunc(Number(input.previousHeads) || 0)
+  const nextAdult = existing.adultSeats - (old.moneyOnly ? 0 : oldHeads)
+  if (nextAdult < 0) throw new Error('Cannot reduce heads below zero.')
+  return saveAllotmentAccount(existing, {
+    adultSeats: nextAdult,
+    totalAmount: existing.totalAmount - (old.moneyOnly ? 0 : old.amount),
+    payments: existing.payments.filter((payment) => payment.id !== input.paymentId),
+  })
+}
+
 export async function removeLastAgentAllotmentPayment(id: string): Promise<AgentAllotment> {
   const existing = await getAgentAllotment(id)
   const working = writablePayments(existing)
