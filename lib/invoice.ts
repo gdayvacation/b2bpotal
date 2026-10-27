@@ -1,6 +1,6 @@
 import { originalBookedPax, type BookedPaxSnapshot } from '@/lib/check-in-booked-pax'
 import { DEFAULT_BOOKING_CUTOFFS } from '@/lib/booking-cutoffs'
-import { formatShortDate, parkFeeRates, parkFeeTotalWithThai, parseCashOnTourAmount } from '@/lib/format'
+import { formatShortDate, parkFeeTotalWithThai, parseCashOnTourAmount } from '@/lib/format'
 import { THAI_PARK_FEE_THB } from '@/lib/nationalities'
 import {
   isNoTransfer,
@@ -224,6 +224,12 @@ export function normalizeInvoiceSettings(
 }
 
 export const DEFAULT_NATIONAL_PARK_FEE = 400
+
+/** Adult / child park prices when the agency rate excludes the park fee. Child is half the adult rate (400 → 200). */
+export function excludedParkFeeRates(nationalParkFee: number) {
+  const adult = nationalParkFee > 0 ? nationalParkFee : DEFAULT_NATIONAL_PARK_FEE
+  return { adult, child: Math.round(adult / 2) }
+}
 /** Invoice agents only — discount per AD+CH when pickup is No Transfer. Prebuy gets none. */
 export const NO_TRANSFER_DISCOUNT_PER_PERSON = 100
 
@@ -1827,15 +1833,16 @@ export function buildInvoiceItemsForBooking(
 
   const thaiGuests = Math.max(0, Math.floor(options?.thaiGuests ?? 0))
 
-  // Agent-billed park (PP + Included only). Sync Thai seats from check-in nationality.
-  // Foreigners → full park rate line. Thai → separate 40 THB/AD·CH line.
-  // Not Included: guest pays at marina — do not bill the agent.
+  // Agency Exc + booking Not Included: bill the park fee. Prebuy still deducts heads and
+  // adds this as a money extra. Agency INC, or a booking that already includes park: no line.
+  // Foreigners → setup fee (default 400 AD / 200 CH). Thai → separate 40 THB/AD·CH line.
+  const excludedPark = excludedParkFeeRates(rates.nationalParkFee)
   if (
+    !rates.nationalParkIncluded &&
     booking.status !== 'Cancelled' &&
     booking.program === 'PP' &&
-    booking.parkFee === 'Included'
+    booking.parkFee !== 'Included'
   ) {
-    const ratesPP = parkFeeRates('PP')
     const park = parkFeeTotalWithThai(
       'Not Included',
       'PP',
@@ -1849,17 +1856,17 @@ export function buildInvoiceItemsForBooking(
         bookingCode: booking.code,
         travelDate: movedOrigin ?? booking.date,
         voucherNo,
-        description: 'National Park Fee · Included',
+        description: 'National Park Fee',
         adults: park.foreignAdults,
         children: park.foreignChildren,
         infants: 0,
         tourLeaders: 0,
-        adultPrice: ratesPP.adult,
-        childPrice: ratesPP.child,
+        adultPrice: excludedPark.adult,
+        childPrice: excludedPark.child,
         infantPrice: 0,
         tourLeaderPrice: 0,
         cot: 0,
-        amount: park.foreignAdults * ratesPP.adult + park.foreignChildren * ratesPP.child,
+        amount: park.foreignAdults * excludedPark.adult + park.foreignChildren * excludedPark.child,
         lineKind: 'park_fee',
         sortOrder: items.length,
       })

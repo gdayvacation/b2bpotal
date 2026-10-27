@@ -1,9 +1,11 @@
 import { formatGuestPaxParts, type BookedPaxSnapshot } from '@/lib/check-in-booked-pax'
-import { parkFeeRates, parkFeeTotalWithThai } from '@/lib/format'
+import { parkFeeTotalWithThai } from '@/lib/format'
 import {
+  excludedParkFeeRates,
   invoicesForBookings,
   itemsAgentTotal,
   programPaxLineLabel,
+  ratesForAgent,
   type InvoiceDocument,
   type InvoiceItem,
 } from '@/lib/invoice'
@@ -77,6 +79,9 @@ function applyPaxToItem(
   booking: Booking,
   pax: BookedPaxSnapshot,
   thaiGuests: number,
+  billParkFee: boolean,
+  parkAdult: number,
+  parkChild: number,
 ): InvoiceItem | null {
   if (item.lineKind === 'no_show') return null
 
@@ -150,8 +155,8 @@ function applyPaxToItem(
     }
   }
 
-  if (item.lineKind === 'park_fee' && booking.program === 'PP' && booking.parkFee === 'Included') {
-    const rates = parkFeeRates('PP')
+  if (item.lineKind === 'park_fee' && booking.program === 'PP') {
+    if (!billParkFee || booking.parkFee === 'Included') return null
     const park = parkFeeTotalWithThai('Not Included', 'PP', pax.adults, pax.children, thaiGuests)
     const isThaiLine = /thai nationality/i.test(item.description)
     if (isThaiLine) {
@@ -175,9 +180,10 @@ function applyPaxToItem(
       children: park.foreignChildren,
       infants: 0,
       tourLeaders: 0,
-      adultPrice: rates.adult,
-      childPrice: rates.child,
-      amount: park.foreignAdults * rates.adult + park.foreignChildren * rates.child,
+      adultPrice: parkAdult,
+      childPrice: parkChild,
+      amount: park.foreignAdults * parkAdult + park.foreignChildren * parkChild,
+      description: 'National Park Fee',
     }
   }
 
@@ -198,11 +204,14 @@ export function applyPaxChangeToInvoice(
   pax: BookedPaxSnapshot,
   remark: string,
   thaiGuests = 0,
+  billParkFee = true,
+  parkAdult = 400,
+  parkChild = 200,
 ): InvoiceDocument {
   const items = doc.items
     .map((item) => {
       if (item.bookingCode !== booking.code) return item
-      return applyPaxToItem(item, booking, pax, thaiGuests)
+      return applyPaxToItem(item, booking, pax, thaiGuests, billParkFee, parkAdult, parkChild)
     })
     .filter((item): item is InvoiceItem => item != null)
 
@@ -288,9 +297,11 @@ export function applyPaxChangeToInvoice(
   }
 
   // If check-in found Thai seats after the bill was issued, add the 40 THB line.
+  // Only when this agent is Exc and the booking does not already include park.
   if (
+    billParkFee &&
     booking.program === 'PP' &&
-    booking.parkFee === 'Included' &&
+    booking.parkFee !== 'Included' &&
     booking.status !== 'Cancelled'
   ) {
     const park = parkFeeTotalWithThai('Not Included', 'PP', pax.adults, pax.children, thaiGuests)
@@ -348,7 +359,12 @@ export async function syncPaxChangeToInvoices(
   const store = await loadInvoiceStore()
   const linked = invoicesForBookings(store.invoices, [booking.code])
   if (linked.length === 0) return { updated: 0 }
-  const updated = linked.map((doc) => applyPaxChangeToInvoice(doc, booking, pax, remark, thaiGuests))
+  const agency = ratesForAgent(store.rates, booking.agentSlug)
+  const billParkFee = !agency.nationalParkIncluded
+  const park = excludedParkFeeRates(agency.nationalParkFee)
+  const updated = linked.map((doc) =>
+    applyPaxChangeToInvoice(doc, booking, pax, remark, thaiGuests, billParkFee, park.adult, park.child),
+  )
   const result = await saveInvoiceDocuments(updated)
   if (result.error) throw new Error(result.error)
   return { updated: updated.length }
