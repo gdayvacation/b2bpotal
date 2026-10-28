@@ -92,7 +92,7 @@ type LotCard = {
   /** 1 = oldest, N = newest for this agent. */
   lotIndex: number
   totalLots: number
-  /** First tour date included (null = from the very beginning). */
+  /** First tour date included. Bookings before the lot opens are not charged. */
   startDate: string | null
   /** Last tour date included (inclusive). */
   endDate: string
@@ -276,7 +276,7 @@ export function AdminAgentAllotmentHistory({
         const endDate = nextLot
           ? isoSubtractDay(nextLot.paidDate || nextLot.createdAt.slice(0, 10))
           : today
-        const startDate = i === 0 ? null : lotStart
+        const startDate = lotStart
 
         const usage = usageMap.get(lot.id) ?? { purchased: lot.seats, used: 0, remaining: lot.seats }
         const effectiveSeats = lot.seats  // FIFO: each lot has its own fixed capacity

@@ -116,11 +116,9 @@ export function allocateDailyHeadsFifo(
     let need = Math.max(0, Math.floor(Number(row.totalDeduct) || 0))
     if (need <= 0) continue
 
-    let eligible = ordered.filter((lot) => lotOpenDate(lot) <= row.day)
-    // Usage before any lot open date → apply to earliest lot (backfill-friendly).
-    if (eligible.length === 0 && ordered.length > 0) {
-      eligible = [ordered[0]!]
-    }
+    const eligible = ordered.filter((lot) => lotOpenDate(lot) <= row.day)
+    // Bookings before the first lot opens are not charged. A new allotment starts on its own date.
+    if (eligible.length === 0) continue
 
     for (let index = 0; index < eligible.length && need > 0; index += 1) {
       const lot = eligible[index]!
