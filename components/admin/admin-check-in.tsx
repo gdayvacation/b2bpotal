@@ -105,6 +105,7 @@ import {
   serviceLineTotal,
   servicePriceUnitLabel,
   servicePricedPerBoat,
+  serviceQtyLabel,
   summarizeCheckInServices,
   type CheckInServiceKind,
   type CheckInServiceKindSummary,
@@ -2678,18 +2679,11 @@ function DriverGroupCard({
                         Edit
                       </button>
                       {line.showBookingMoney ? (
-                      <button
-                        type="button"
-                        className="text-[12px] font-semibold text-teal-800 underline-offset-2 hover:underline"
+                      <ServicePurchasesButton
+                        guestName={line.leaderName || line.booking.code}
+                        services={services}
                         onClick={() => setServiceBooking(line.booking)}
-                      >
-                        Services
-                        {services.length > 0
-                          ? ` · ${services
-                              .reduce((sum, item) => sum + serviceLineTotal(item), 0)
-                              .toLocaleString('en-US')}`
-                          : ''}
-                      </button>
+                      />
                       ) : null}
                       <button
                         type="button"
@@ -3148,40 +3142,11 @@ function DriverGroupCard({
                   {!line.showBookingMoney ? (
                     <span className="text-teal-900/35">—</span>
                   ) : (
-                  <button
-                    type="button"
-                    aria-label={`Services for ${line.leaderName || line.booking.code}`}
-                    className="grid min-h-8 w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 rounded-lg border border-teal-900/12 bg-white px-1.5 py-1 text-left shadow-sm transition-colors hover:bg-teal-50"
+                  <ServicePurchasesButton
+                    guestName={line.leaderName || line.booking.code}
+                    services={services}
                     onClick={() => setServiceBooking(line.booking)}
-                  >
-                    <span className="flex min-w-0 items-center gap-0.5">
-                      {services.length === 0 ? (
-                        <Plus className="size-3.5 text-teal-900/45" />
-                      ) : (
-                        CHECK_IN_SERVICE_KINDS.filter((kind) =>
-                          services.some((item) => item.kind === kind),
-                        ).map((kind) => (
-                          <ServiceKindIcon key={kind} kind={kind} size="sm" />
-                        ))
-                      )}
-                    </span>
-                    <span
-                      className={cn(
-                        'shrink-0 text-[10px] font-semibold tabular-nums',
-                        services.length === 0
-                          ? 'text-teal-900/30'
-                          : services.every((item) => item.paid)
-                            ? 'text-teal-900/45 line-through decoration-teal-900/40'
-                            : 'text-orange-800',
-                      )}
-                    >
-                      {services.length === 0
-                        ? '—'
-                        : `${services
-                            .reduce((sum, item) => sum + serviceLineTotal(item), 0)
-                            .toLocaleString('en-US')}`}
-                    </span>
-                  </button>
+                  />
                   )}
                 </TableCell>
                 <TableCell
@@ -3357,51 +3322,128 @@ function DriverGroupCard({
   )
 }
 
+function servicePurchaseSummary(services: CheckInServiceLine[]) {
+  return services
+    .map(
+      (line) =>
+        `${checkInServiceLabel(line.kind)} ${serviceQtyLabel(line.kind, line.people)} ${serviceLineTotal(line).toLocaleString('en-US')} THB`,
+    )
+    .join(', ')
+}
+
+function ServicePurchasesButton({
+  guestName,
+  services,
+  onClick,
+  compact = false,
+}: {
+  guestName: string
+  services: CheckInServiceLine[]
+  onClick: () => void
+  compact?: boolean
+}) {
+  const total = services.reduce((sum, line) => sum + serviceLineTotal(line), 0)
+  const allPaid = services.length > 0 && services.every((line) => line.paid)
+  return (
+    <button
+      type="button"
+      aria-label={
+        services.length === 0
+          ? `Services for ${guestName}`
+          : `Services for ${guestName}: ${servicePurchaseSummary(services)}. Total ${total.toLocaleString('en-US')} THB`
+      }
+      className={cn(
+        'w-full rounded-lg border border-teal-900/12 bg-white text-left shadow-sm transition-colors hover:bg-teal-50',
+        compact ? 'px-2 py-1.5' : 'px-1.5 py-1',
+      )}
+      onClick={onClick}
+    >
+      {services.length === 0 ? (
+        <span className="flex min-h-8 items-center gap-1 text-[10px] font-semibold text-teal-900/30">
+          <Plus className="size-3.5 text-teal-900/45" />
+          —
+        </span>
+      ) : (
+        <span className="flex flex-col gap-0.5">
+          {services.map((line) => (
+            <span key={line.id} className="flex items-center justify-between gap-1.5 text-[10px]">
+              <span className="flex min-w-0 items-center gap-1">
+                <ServiceKindIcon kind={line.kind} size="sm" paid={line.paid} />
+                <span className="min-w-0 truncate font-semibold text-teal-950">
+                  {checkInServiceLabel(line.kind)}
+                  <span className="font-medium text-teal-900/50">
+                    {' '}
+                    {serviceQtyLabel(line.kind, line.people)}
+                  </span>
+                </span>
+              </span>
+              <span
+                className={cn(
+                  'shrink-0 font-semibold tabular-nums',
+                  line.paid
+                    ? 'text-teal-900/45 line-through decoration-teal-900/40'
+                    : 'text-orange-800',
+                )}
+              >
+                {serviceLineTotal(line).toLocaleString('en-US')}
+              </span>
+            </span>
+          ))}
+          {services.length > 1 ? (
+            <span
+              className={cn(
+                'flex items-center justify-between gap-1.5 border-t border-teal-900/10 pt-0.5 text-[10px] font-semibold tabular-nums',
+                allPaid ? 'text-teal-900/45' : 'text-teal-950',
+              )}
+            >
+              <span>Total</span>
+              <span>{total.toLocaleString('en-US')}</span>
+            </span>
+          ) : null}
+        </span>
+      )}
+    </button>
+  )
+}
+
 function ServiceKindIcon({
   kind,
   size = 'md',
+  paid = false,
 }: {
   kind: CheckInServiceKind
   size?: 'sm' | 'md'
+  paid?: boolean
 }) {
   const box = size === 'sm' ? 'size-6' : 'size-10'
   const icon = size === 'sm' ? 'size-3' : 'size-5'
-  if (kind === 'share-longtail') {
-    return (
-      <span
-        className={cn(
-          'inline-flex items-center justify-center rounded-full bg-sky-100 text-sky-800 ring-1 ring-sky-200/80',
-          box,
-        )}
-        title={checkInServiceLabel(kind)}
-      >
-        <Users className={icon} />
-      </span>
-    )
-  }
-  if (kind === 'private-longtail') {
-    return (
-      <span
-        className={cn(
-          'inline-flex items-center justify-center rounded-full bg-amber-100 text-amber-900 ring-1 ring-amber-200/80',
-          box,
-        )}
-        title={checkInServiceLabel(kind)}
-      >
-        <Ship className={icon} />
-      </span>
-    )
-  }
+  const Icon = kind === 'share-longtail' ? Users : kind === 'private-longtail' ? Ship : Waves
   return (
     <span
       className={cn(
-        'inline-flex items-center justify-center rounded-full bg-cyan-100 text-cyan-900 ring-1 ring-cyan-200/80',
+        'inline-flex items-center justify-center rounded-full ring-1',
         box,
+        paid
+          ? 'bg-neutral-100 text-neutral-400 ring-neutral-200'
+          : kind === 'share-longtail'
+            ? 'bg-sky-100 text-sky-800 ring-sky-200/80'
+            : kind === 'private-longtail'
+              ? 'bg-amber-100 text-amber-900 ring-amber-200/80'
+              : 'bg-cyan-100 text-cyan-900 ring-cyan-200/80',
       )}
       title={checkInServiceLabel(kind)}
     >
-      <Waves className={icon} />
+      <Icon className={icon} />
     </span>
+  )
+}
+
+function sameServiceLine(a: CheckInServiceLine, b: CheckInServiceLine) {
+  return (
+    a.kind === b.kind &&
+    a.people === b.people &&
+    a.pricePerPerson === b.pricePerPerson &&
+    a.paid === b.paid
   )
 }
 
@@ -3425,6 +3467,7 @@ function BookingServicesDialog({
   const [people, setPeople] = useState('1')
   const [price, setPrice] = useState('')
   const bookingCode = booking?.code ?? ''
+  const serverLinesRef = useRef<CheckInServiceLine[] | null>(null)
 
   // Snapshot services only when the dialog opens — avoid resetting while typing
   // (parent re-renders / poll give `services` a new array reference each time).
@@ -3434,8 +3477,47 @@ function BookingServicesDialog({
     setKind('share-longtail')
     setPeople('1')
     setPrice('')
+    serverLinesRef.current = services
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional open snapshot
   }, [open, bookingCode])
+
+  // Guest edits, removals, and new purchases land while this dialog is open.
+  // Apply them when the staff member has not changed that same line.
+  useEffect(() => {
+    if (!open) {
+      serverLinesRef.current = null
+      return
+    }
+    const previous = serverLinesRef.current
+    serverLinesRef.current = services
+    if (previous === null || previous === services) return
+    const previousById = new Map(previous.map((line) => [line.id, line]))
+    const nextIds = new Set(services.map((line) => line.id))
+    setDraft((current) => {
+      let next = current.filter((line) => {
+        if (nextIds.has(line.id)) return true
+        const before = previousById.get(line.id)
+        return !before || !sameServiceLine(line, before)
+      })
+      let changed = next.length !== current.length
+      for (const line of services) {
+        const before = previousById.get(line.id)
+        if (!before || sameServiceLine(before, line)) continue
+        const index = next.findIndex((item) => item.id === line.id)
+        if (index < 0) continue
+        if (!sameServiceLine(next[index], before)) continue
+        next = next.map((item, itemIndex) => (itemIndex === index ? line : item))
+        changed = true
+      }
+      const known = new Set(next.map((line) => line.id))
+      const fresh = services.filter((line) => !previousById.has(line.id) && !known.has(line.id))
+      if (fresh.length > 0) {
+        next = [...next, ...fresh]
+        changed = true
+      }
+      return changed ? next : current
+    })
+  }, [open, services])
 
   function addService() {
     const nextPeople = Math.max(1, Math.floor(Number(people) || 1))
@@ -3560,7 +3642,7 @@ function BookingServicesDialog({
                   key={line.id}
                   className="flex items-start gap-3 rounded-2xl border border-teal-900/10 bg-white px-3 py-2.5"
                 >
-                  <ServiceKindIcon kind={line.kind} size="sm" />
+                  <ServiceKindIcon kind={line.kind} size="sm" paid={line.paid} />
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold text-teal-950">
                       {checkInServiceLabel(line.kind)}

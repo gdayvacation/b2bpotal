@@ -20,6 +20,7 @@ import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { AddonReceiptToggle, AddonShop } from '@/components/check-in/addon-shop'
 import { CheckInI18nProvider, CheckInLanguageSwitch, useCheckInI18n } from '@/components/check-in/check-in-i18n'
 import { ensureGuestCheckInSession, reopenGuestCheckInSession } from '@/components/check-in/guest-access-gate'
 import { NationalityCombobox } from '@/components/check-in/nationality-combobox'
@@ -35,9 +36,7 @@ import {
   splitGuideDisplayName,
 } from '@/lib/check-in-group-guide'
 import {
-  CHECK_IN_SERVICE_KINDS,
-  checkInServiceLabel,
-  servicePricedPerBoat,
+  serviceLineTotal,
   type CheckInServiceKind,
   type CheckInServiceLine,
 } from '@/lib/check-in-services'
@@ -99,6 +98,7 @@ type Step =
   | 'details'
   | 'confirm'
   | 'done'
+  | 'addons'
   | 'edit-pick'
   | 'edit'
 
@@ -279,6 +279,9 @@ function GuestCheckInForm({
     setCheckInGuestEditOpen,
     getCheckInPayment,
     getCheckInServices,
+    addGuestCheckInService,
+    updateGuestCheckInService,
+    removeGuestCheckInService,
     ensureBookingByCode,
     hydrated,
     checkInReady,
@@ -322,7 +325,11 @@ function GuestCheckInForm({
   const [lockedReady, setLockedReady] = useState(!lockedCode || Boolean(initialBooking))
   const [editEnrollmentId, setEditEnrollmentId] = useState<string | null>(null)
   const [ticketSequence, setTicketSequence] = useState<GuestSequenceBlock | null>(null)
+  const [addonError, setAddonError] = useState('')
+  const [addonBusy, setAddonBusy] = useState<CheckInServiceKind | null>(null)
+  const [addonFocus, setAddonFocus] = useState<CheckInServiceKind | null>(null)
   const lockedBootstrappedRef = useRef(false)
+  const addonHistoryRef = useRef(false)
   const lockedFetchingRef = useRef(false)
   /** Prevents the DB-vs-localStorage retreat check from running more than once per session. */
   const retreatedAfterSyncRef = useRef(false)
@@ -494,6 +501,17 @@ function GuestCheckInForm({
     doneGuideOnly,
     setGuestBoatWatch,
   ])
+
+  useEffect(() => {
+    function onPopState() {
+      if (!addonHistoryRef.current) return
+      addonHistoryRef.current = false
+      setAddonError('')
+      setStep('done')
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
 
   // Resolve locked QR booking once portal data is ready.
   // Guests wait until this booking's check-in rows have been read, so a phone
@@ -714,8 +732,74 @@ function GuestCheckInForm({
     if (!isLocked) setBookingCode(null)
   }
 
+  function openAddons(kind: CheckInServiceKind) {
+    setError('')
+    setAddonError('')
+    setAddonFocus(kind)
+    setStep('addons')
+    if (addonHistoryRef.current) return
+    addonHistoryRef.current = true
+    window.history.pushState({ gdayStep: 'addons' }, '')
+  }
+
+  function closeAddons() {
+    setAddonError('')
+    setStep('done')
+    if (!addonHistoryRef.current) return
+    addonHistoryRef.current = false
+    window.history.back()
+  }
+
+  async function addAddon(kind: CheckInServiceKind, people: number) {
+    if (!selectedBooking || addonBusy) return
+    setAddonBusy(kind)
+    setAddonError('')
+    const result = await addGuestCheckInService(
+      selectedBooking.date,
+      selectedBooking.program,
+      selectedBooking.code,
+      kind,
+      people,
+    )
+    setAddonBusy(null)
+    if (!result.ok) {
+      setAddonError(result.error)
+    }
+  }
+
+  async function updateAddon(id: string, people: number) {
+    if (!selectedBooking) return { ok: false as const, error: '' }
+    setAddonError('')
+    const result = await updateGuestCheckInService(
+      selectedBooking.date,
+      selectedBooking.program,
+      selectedBooking.code,
+      id,
+      people,
+    )
+    if (!result.ok) setAddonError(result.error)
+    return result
+  }
+
+  async function removeAddon(id: string) {
+    if (!selectedBooking) return { ok: false as const, error: '' }
+    setAddonError('')
+    const result = await removeGuestCheckInService(
+      selectedBooking.date,
+      selectedBooking.program,
+      selectedBooking.code,
+      id,
+    )
+    if (!result.ok) setAddonError(result.error)
+    return result
+  }
+
   function goBack() {
     setError('')
+    if (step === 'addons') {
+      closeAddons()
+      return
+    }
     if (step === 'program') setStep('welcome')
     else if (step === 'find') {
       setProgram(null)
@@ -1838,6 +1922,22 @@ function GuestCheckInForm({
           </section>
         ) : null}
 
+        {step === 'addons' && selectedBooking ? (
+          <AddonShop
+            bookingPax={totalPassengers(selectedBooking)}
+            services={marinaServices}
+            busyKind={addonBusy}
+            error={addonError}
+            focusKind={addonFocus}
+            onDone={closeAddons}
+            onAdd={(kind, people) => {
+              void addAddon(kind, people)
+            }}
+            onUpdate={updateAddon}
+            onRemove={removeAddon}
+          />
+        ) : null}
+
         {step === 'done' ? (
           doneGuideOnly ? (
             <GuideDoneStep
@@ -1954,6 +2054,7 @@ function GuestCheckInForm({
                 : null
             }
             onAgain={startOver}
+            onAddService={openAddons}
             onEdit={
               selectedBooking &&
               getCheckInGuestEditIds(
@@ -2280,6 +2381,7 @@ function DoneStep({
   boat,
   boatPlan,
   onAgain,
+  onAddService,
   onEdit,
 }: {
   needsPayment: boolean
@@ -2293,6 +2395,7 @@ function DoneStep({
   boat: number | null
   boatPlan: ReturnType<ReturnType<typeof usePortal>['getDayBoatPlan']> | null
   onAgain: () => void
+  onAddService?: (kind: CheckInServiceKind) => void
   onEdit?: () => void
 }) {
   const { t } = useCheckInI18n()
@@ -2316,6 +2419,16 @@ function DoneStep({
         boat && boatPlan ? boatDisplayName(boatPlan, boat) : boat ? `Boat ${boat}` : null
       }
       services={services}
+      receiptDetails={
+        booking
+          ? [
+              { label: t('dateLabel'), value: formatLongDate(booking.date) },
+              { label: t('guest'), value: booking.leadGuest },
+              { label: t('bookingCode'), value: booking.code },
+            ]
+          : undefined
+      }
+      onAddService={onAddService}
     />
   )
 
@@ -2370,13 +2483,16 @@ function DoneStep({
         <h1 className="font-display text-xl font-semibold text-emerald-950">
           {paid ? t('successPaidTitle') : t('successTitle')}
         </h1>
-        <p className="mt-1 text-sm leading-snug text-emerald-950/70">
-          {paid ? t('successPaidBody') : t('successBody')}
+        <p className="mt-1.5 text-[15px] font-semibold leading-snug text-emerald-950">
+          {t('successCapture')}
         </p>
         {paid ? (
-          <p className="mt-2 inline-flex rounded-full bg-emerald-100 px-3 py-1 text-sm font-bold tracking-wide text-emerald-800">
-            {t('paidBadge')}
-          </p>
+          <>
+            <p className="mt-2 inline-flex rounded-full bg-emerald-100 px-3 py-1 text-sm font-bold tracking-wide text-emerald-800">
+              {t('paidBadge')}
+            </p>
+            <p className="mt-2 text-sm leading-snug text-emerald-950/70">{t('successPaidBody')}</p>
+          </>
         ) : null}
       </div>
       {thaiCount > 0 ? <ThaiParkFeeNote count={thaiCount} /> : null}
@@ -2401,6 +2517,8 @@ function BoardingSummary({
   boat,
   boatLabel,
   services,
+  receiptDetails,
+  onAddService,
 }: {
   names: string[]
   hotelName: string
@@ -2408,9 +2526,20 @@ function BoardingSummary({
   boat: number | null
   boatLabel: string | null
   services: CheckInServiceLine[]
+  receiptDetails?: Array<{ label: string; value: string }>
+  onAddService?: (kind: CheckInServiceKind) => void
 }) {
   const { t } = useCheckInI18n()
   const theme = boat && boat > 0 ? boatTheme(boat) : null
+  const addonToPay = services.reduce(
+    (sum, line) => sum + (line.paid ? 0 : serviceLineTotal(line)),
+    0,
+  )
+  const addonPaid = services.reduce(
+    (sum, line) => sum + (line.paid ? serviceLineTotal(line) : 0),
+    0,
+  )
+  const addonsSettled = services.length > 0 && services.every((line) => line.paid)
 
   return (
     <div className="space-y-2 text-left">
@@ -2468,7 +2597,6 @@ function BoardingSummary({
       <p className="text-center text-xs font-semibold text-teal-900/75">
         {t('sequenceShowStaff')}
       </p>
-      <p className="text-center text-xs font-semibold text-teal-900/75">{t('screenshotTip')}</p>
       <div className="rounded-2xl bg-white/80 px-4 py-2.5 ring-1 ring-teal-900/8">
         <p className="text-[11px] font-semibold tracking-wide text-teal-800/50 uppercase">
           {names.length === 1 ? t('guest') : t('guests')}
@@ -2502,37 +2630,136 @@ function BoardingSummary({
         </p>
       </div>
 
-      <div className="rounded-2xl bg-white/80 px-4 py-2.5 ring-1 ring-teal-900/8">
-        <p className="text-[11px] font-semibold tracking-wide text-teal-800/50 uppercase">
-          {t('addOnServiceToday')}
-        </p>
-        {services.length === 0 ? (
-          <p className="mt-0.5 text-sm font-medium text-teal-900/45">{t('noAddOnService')}</p>
-        ) : (
-          <ul className="mt-2 space-y-2">
-            {CHECK_IN_SERVICE_KINDS.filter((kind) =>
-              services.some((item) => item.kind === kind),
-            ).map((kind) => {
-              const people = services
-                .filter((item) => item.kind === kind)
-                .reduce((sum, item) => sum + item.people, 0)
-              return (
-                <li key={kind} className="flex items-center gap-2.5">
-                  <GuestServiceIcon kind={kind} />
-                  <span className="text-sm font-semibold text-teal-950">
-                    {checkInServiceLabel(kind)}
-                    {people > 1 ? (
-                      <span className="ml-1.5 font-medium text-teal-900/50">
-                        ×{people}
-                        {servicePricedPerBoat(kind) ? ' boats' : ''}
+      {services.length > 0 || onAddService ? (
+        <div className="rounded-[1.35rem] bg-gradient-to-r from-cyan-400 via-emerald-400 to-amber-300 p-[1.5px] shadow-[0_0_22px_rgba(45,212,191,0.55)]">
+          <div className="rounded-[1.25rem] bg-gradient-to-br from-white via-emerald-50 to-cyan-50 px-3 py-3">
+            {services.length > 0 ? (
+              <div className="mb-3">
+                <ul className="space-y-2">
+                  {services.map((line) => (
+                    <li key={line.id} className="flex items-center gap-2.5">
+                      <GuestServiceIcon kind={line.kind} />
+                      <span className="min-w-0 text-sm font-semibold text-teal-950">
+                        {line.kind === 'scuba'
+                          ? t('addonScubaName')
+                          : line.kind === 'share-longtail'
+                            ? t('addonSharedName')
+                            : t('addonPrivateName')}
+                        <span className="mt-0.5 block text-xs font-medium text-teal-900/50">
+                          {line.kind === 'private-longtail'
+                            ? line.people === 1
+                              ? t('addonOneBoat')
+                              : t('addonBoatCount', { count: line.people })
+                            : t('addonPaxCount', { count: line.people })}
+                          {' · '}
+                          {serviceLineTotal(line).toLocaleString('en-US')} THB
+                          {line.paid ? ` · ${t('paidBadge')}` : ''}
+                        </span>
                       </span>
-                    ) : null}
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-2.5 flex items-center justify-between gap-3 border-t border-teal-900/10 pt-2">
+                  <span className="text-sm font-semibold text-teal-950">
+                    {addonsSettled ? t('addonTotal') : t('addonToPay')}
                   </span>
-                </li>
-              )
-            })}
-          </ul>
-        )}
+                  {addonsSettled ? (
+                    <span className="text-base font-bold tracking-wide text-emerald-800">
+                      <span className="tabular-nums">
+                        {addonPaid.toLocaleString('en-US')} THB
+                      </span>{' '}
+                      {t('paidBadge')}
+                    </span>
+                  ) : (
+                    <span className="text-base font-semibold tabular-nums text-orange-800">
+                      {addonToPay.toLocaleString('en-US')} THB
+                    </span>
+                  )}
+                </div>
+                <AddonReceiptToggle services={services} details={receiptDetails} />
+              </div>
+            ) : null}
+            {onAddService ? <AddonTeasers onOpen={onAddService} /> : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+const ADDON_TEASERS: Array<{
+  kind: CheckInServiceKind
+  labelKey: 'addonIconScuba' | 'addonIconShared' | 'addonIconPrivate'
+  price: string
+  orb: string
+  tile: string
+  icon: typeof Waves
+}> = [
+  {
+    kind: 'scuba',
+    labelKey: 'addonIconScuba',
+    price: '2,000',
+    orb: 'bg-gradient-to-br from-cyan-300 via-teal-400 to-cyan-700 shadow-cyan-600/40',
+    tile: 'from-cyan-50 via-white to-teal-50 ring-cyan-200/90',
+    icon: Waves,
+  },
+  {
+    kind: 'share-longtail',
+    labelKey: 'addonIconShared',
+    price: '500',
+    orb: 'bg-gradient-to-br from-sky-300 via-blue-400 to-sky-700 shadow-sky-600/40',
+    tile: 'from-sky-50 via-white to-blue-50 ring-sky-200/90',
+    icon: Users,
+  },
+  {
+    kind: 'private-longtail',
+    labelKey: 'addonIconPrivate',
+    price: '2,500',
+    orb: 'bg-gradient-to-br from-amber-200 via-orange-400 to-amber-700 shadow-amber-600/40',
+    tile: 'from-amber-50 via-white to-orange-50 ring-amber-200/90',
+    icon: Ship,
+  },
+]
+
+function AddonTeasers({ onOpen }: { onOpen: (kind: CheckInServiceKind) => void }) {
+  const { t } = useCheckInI18n()
+  return (
+    <div>
+      <p className="mb-2.5 text-center font-display text-[15px] font-semibold tracking-tight text-teal-950">
+        {t('addonTeaserTitle')}
+      </p>
+      <div className="grid grid-cols-3 gap-2">
+      {ADDON_TEASERS.map((item) => {
+        const Icon = item.icon
+        return (
+          <button
+            key={item.kind}
+            type="button"
+            onClick={() => onOpen(item.kind)}
+            className={cn(
+              'flex flex-col items-center rounded-2xl bg-gradient-to-b px-1.5 py-3 text-center ring-1 transition active:scale-[0.97]',
+              item.tile,
+            )}
+          >
+            <span
+              className={cn(
+                'flex size-14 items-center justify-center rounded-full text-white shadow-lg',
+                item.orb,
+              )}
+            >
+              <Icon className="size-7" strokeWidth={1.75} />
+            </span>
+            <span className="mt-2 text-[12px] leading-tight font-semibold text-teal-950">
+              {t(item.labelKey)}
+            </span>
+            <span className="mt-1 text-[13px] font-semibold tabular-nums text-teal-800">
+              {item.price}
+              <span className="ml-0.5 text-[10px] font-medium text-teal-800/55">THB</span>
+            </span>
+            <span className="mt-0.5 text-[10px] font-medium text-teal-800/55">{t('addonTapToSee')}</span>
+          </button>
+        )
+      })}
       </div>
     </div>
   )

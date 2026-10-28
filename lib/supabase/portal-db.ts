@@ -40,6 +40,7 @@ import {
 } from '@/lib/check-in-ticket'
 import {
   isCheckInServiceKind,
+  type CheckInServiceKind,
   type CheckInServiceLine,
   type DayCheckInServiceMap,
 } from '@/lib/check-in-services'
@@ -1663,6 +1664,31 @@ export function subscribeBookings(onChange: () => void) {
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'bookings' },
+      () => {
+        onChange()
+      },
+    )
+    .subscribe()
+  return () => {
+    void supabase.removeChannel(channel)
+  }
+}
+
+/** One guest phone listens only for add-ons on its own booking. */
+export function subscribeGuestAddonChanges(bookingCode: string, onChange: () => void) {
+  const code = bookingCode.trim()
+  if (!/^[A-Za-z0-9-]+$/.test(code)) return () => {}
+  const supabase = getSupabaseBrowserClient()
+  const channel = supabase
+    .channel(`guest-addons-${code}-${Date.now()}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'check_in_services',
+        filter: `booking_code=eq.${code}`,
+      },
       () => {
         onChange()
       },
@@ -3416,6 +3442,150 @@ export async function replaceCheckInServicesForBooking(
     .from('check_in_services')
     .insert(services.map((item) => serviceToRow(date, program, bookingCode, item)))
   if (error) throw new Error(`replace check-in services insert: ${error.message}`)
+}
+
+const GUEST_ADDON_ERRORS = new Set([
+  'Not allowed to add a service on this booking.',
+  'Not allowed to change a service on this booking.',
+  'Not allowed to remove a service on this booking.',
+  'Invalid program.',
+  'Unknown service.',
+  'Choose how many people.',
+  'Booking not found for this date and program.',
+  'This booking is marked no-show.',
+  'That is more people than this booking.',
+  'A shared boat holds up to 10 people on this booking.',
+  'A private boat holds up to 10 people.',
+  'Too many add-on services on this booking.',
+  'That add-on was not found.',
+  'This add-on is already paid. Please ask marina staff.',
+])
+
+type GuestAddonRpcResult =
+  | { ok: true; line: CheckInServiceLine }
+  | { ok: true; removed: true }
+  | { ok: false; error: string }
+
+function parseGuestAddonRpc(
+  data: unknown,
+  error: { message: string } | null,
+  fallback: string,
+  expectLine: boolean,
+): GuestAddonRpcResult {
+  if (error) return { ok: false, error: fallback }
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | {
+        ok?: unknown
+        error?: unknown
+        id?: unknown
+        kind?: unknown
+        people?: unknown
+        price_per_person?: unknown
+        paid?: unknown
+      }
+    | null
+  if (!row || row.ok !== true) {
+    const message = String(row?.error ?? '')
+    return {
+      ok: false,
+      error: GUEST_ADDON_ERRORS.has(message) ? message : fallback,
+    }
+  }
+  if (!expectLine) return { ok: true, removed: true }
+  if (!isCheckInServiceKind(row.kind) || !String(row.id ?? '').trim()) {
+    return { ok: false, error: fallback }
+  }
+  return {
+    ok: true,
+    line: {
+      id: String(row.id),
+      kind: row.kind,
+      people: Math.max(1, Math.floor(Number(row.people) || 1)),
+      pricePerPerson: Math.max(0, Math.floor(Number(row.price_per_person) || 0)),
+      paid: row.paid === true,
+    },
+  }
+}
+
+/** Guest, helper, or staff adds one priced add-on. The database sets the price. */
+export async function addGuestCheckInServiceRow(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  kind: CheckInServiceKind,
+  people: number,
+): Promise<{ ok: true; line: CheckInServiceLine } | { ok: false; error: string }> {
+  const supabase = getSupabaseBrowserClient()
+  const { data, error } = await supabase.rpc('portal_guest_add_check_in_service', {
+    p_date: date,
+    p_program: program,
+    p_booking_code: bookingCode,
+    p_kind: kind,
+    p_people: people,
+  })
+  const parsed = parseGuestAddonRpc(
+    data,
+    error,
+    'Could not add this service. Please ask marina staff.',
+    true,
+  )
+  if (!parsed.ok || !('line' in parsed)) return { ok: false, error: parsed.ok ? 'Could not add this service. Please ask marina staff.' : parsed.error }
+  return { ok: true, line: parsed.line }
+}
+
+/** Guest, helper, or staff changes how many people are on one unpaid add-on. */
+export async function updateGuestCheckInServiceRow(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  serviceId: string,
+  people: number,
+): Promise<{ ok: true; line: CheckInServiceLine } | { ok: false; error: string }> {
+  const supabase = getSupabaseBrowserClient()
+  const { data, error } = await supabase.rpc('portal_guest_update_check_in_service', {
+    p_date: date,
+    p_program: program,
+    p_booking_code: bookingCode,
+    p_id: serviceId,
+    p_people: people,
+  })
+  const parsed = parseGuestAddonRpc(
+    data,
+    error,
+    'Could not update this service. Please ask marina staff.',
+    true,
+  )
+  if (!parsed.ok || !('line' in parsed)) {
+    return {
+      ok: false,
+      error: parsed.ok ? 'Could not update this service. Please ask marina staff.' : parsed.error,
+    }
+  }
+  return { ok: true, line: parsed.line }
+}
+
+/** Guest, helper, or staff removes one unpaid add-on. */
+export async function removeGuestCheckInServiceRow(
+  date: string,
+  program: Program,
+  bookingCode: string,
+  serviceId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = getSupabaseBrowserClient()
+  const { data, error } = await supabase.rpc('portal_guest_remove_check_in_service', {
+    p_date: date,
+    p_program: program,
+    p_booking_code: bookingCode,
+    p_id: serviceId,
+  })
+  const parsed = parseGuestAddonRpc(
+    data,
+    error,
+    'Could not remove this service. Please ask marina staff.',
+    false,
+  )
+  if (!parsed.ok) return parsed
+  return { ok: true }
 }
 
 /** One-shot upload used when migrating browser-local check-in data into Supabase. */

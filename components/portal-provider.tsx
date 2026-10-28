@@ -53,6 +53,7 @@ import {
   loadCheckInServiceMap,
   saveCheckInServiceMap,
   withCheckInServices,
+  type CheckInServiceKind,
   type CheckInServiceLine,
   type DayCheckInServiceMap,
 } from '@/lib/check-in-services'
@@ -233,11 +234,15 @@ import {
   pushCheckInMaps,
   recordCheckInEnrollmentsAtomic,
   replaceCheckInEnrollmentsForBooking,
+  addGuestCheckInServiceRow,
+  updateGuestCheckInServiceRow,
+  removeGuestCheckInServiceRow,
   replaceCheckInServicesForBooking,
   saveDayBoatPlan,
   saveDayVehiclePlan,
   subscribeBookings,
   subscribeCheckInChanges,
+  subscribeGuestAddonChanges,
   subscribeDayPlanChanges,
   subscribeGuestBoatChanges,
   subscribeSettingsChanges,
@@ -580,6 +585,26 @@ type PortalContextValue = {
     bookingCode: string,
     services: CheckInServiceLine[],
   ) => void
+  addGuestCheckInService: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    kind: CheckInServiceKind,
+    people: number,
+  ) => Promise<{ ok: true } | { ok: false; error: string }>
+  updateGuestCheckInService: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    serviceId: string,
+    people: number,
+  ) => Promise<{ ok: true } | { ok: false; error: string }>
+  removeGuestCheckInService: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+    serviceId: string,
+  ) => Promise<{ ok: true } | { ok: false; error: string }>
   getGuestSequences: (date: string, program: Program) => Record<string, GuestSequenceBlock>
   getGuestSequence: (
     date: string,
@@ -2079,10 +2104,14 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       helperDate: string | null
       /** For guest sessions: the booking's tour date (YYYY-MM-DD). */
       bookingDate: string | null
+      /** For guest sessions: the booking this phone is allowed to see. */
+      bookingCode: string | null
     }
 
     async function readSyncProfile(): Promise<SyncProfile> {
-      if (!hasSupabaseConfig()) return { role: '', helperDate: null, bookingDate: null }
+      if (!hasSupabaseConfig()) {
+        return { role: '', helperDate: null, bookingDate: null, bookingCode: null }
+      }
       try {
         const { data } = await getSupabaseBrowserClient().auth.getSession()
         const meta = data.session?.user.app_metadata ?? {}
@@ -2090,9 +2119,10 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           role: String(meta.role ?? ''),
           helperDate: String(meta.helper_date ?? '').trim().slice(0, 10) || null,
           bookingDate: String(meta.booking_date ?? '').trim().slice(0, 10) || null,
+          bookingCode: String(meta.booking_code ?? '').trim() || null,
         }
       } catch {
-        return { role: '', helperDate: null, bookingDate: null }
+        return { role: '', helperDate: null, bookingDate: null, bookingCode: null }
       }
     }
 
@@ -2451,6 +2481,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         void syncCheckInFromCloud(false, { profile }).finally(() => {
           if (!cancelled) setCheckInReady(true)
         })
+        // Only this booking's add-ons. A paid mark on the admin board comes back here.
+        if (profile.bookingCode) {
+          const unsub = subscribeGuestAddonChanges(profile.bookingCode, () => {
+            if (cancelled) return
+            checkInSyncEpochRef.current += 1
+            if (checkInWritePendingRef.current > 0 || checkInSyncInFlightRef.current) return
+            void syncCheckInFromCloud(false, { profile: cachedProfile ?? profile })
+          })
+          if (cancelled) unsub()
+          else unsubCheckIn = unsub
+        }
         return
       }
       if (!cancelled) setCheckInReady(true)
@@ -3576,6 +3617,89 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           'replaceCheckInServices',
           replaceCheckInServicesForBooking(date, program, bookingCode, services),
         )
+      },
+      addGuestCheckInService: async (date, program, bookingCode, kind, people) => {
+        checkInSyncEpochRef.current += 1
+        checkInWritePendingRef.current += 1
+        try {
+          const result = await addGuestCheckInServiceRow(
+            date,
+            program,
+            bookingCode,
+            kind,
+            people,
+          )
+          if (!result.ok) return result
+          if (!result.line.id) {
+            return { ok: false, error: 'Could not add this service. Please ask marina staff.' }
+          }
+          setCheckInServiceMap((current) => {
+            const existing = getCheckInServices(current, date, program, bookingCode)
+            const next = withCheckInServices(current, date, program, bookingCode, [
+              ...existing,
+              result.line,
+            ])
+            saveCheckInServiceMap(next)
+            return next
+          })
+          return { ok: true }
+        } finally {
+          checkInWritePendingRef.current = Math.max(0, checkInWritePendingRef.current - 1)
+        }
+      },
+      updateGuestCheckInService: async (date, program, bookingCode, serviceId, people) => {
+        checkInSyncEpochRef.current += 1
+        checkInWritePendingRef.current += 1
+        try {
+          const result = await updateGuestCheckInServiceRow(
+            date,
+            program,
+            bookingCode,
+            serviceId,
+            people,
+          )
+          if (!result.ok) return result
+          setCheckInServiceMap((current) => {
+            const existing = getCheckInServices(current, date, program, bookingCode)
+            const nextLines = existing.some((line) => line.id === result.line.id)
+              ? existing.map((line) => (line.id === result.line.id ? result.line : line))
+              : [...existing, result.line]
+            const next = withCheckInServices(current, date, program, bookingCode, nextLines)
+            saveCheckInServiceMap(next)
+            return next
+          })
+          return { ok: true }
+        } finally {
+          checkInWritePendingRef.current = Math.max(0, checkInWritePendingRef.current - 1)
+        }
+      },
+      removeGuestCheckInService: async (date, program, bookingCode, serviceId) => {
+        checkInSyncEpochRef.current += 1
+        checkInWritePendingRef.current += 1
+        try {
+          const result = await removeGuestCheckInServiceRow(
+            date,
+            program,
+            bookingCode,
+            serviceId,
+          )
+          if (!result.ok) return result
+          setCheckInServiceMap((current) => {
+            const existing = getCheckInServices(current, date, program, bookingCode)
+            const next = withCheckInServices(
+              current,
+              date,
+              program,
+              bookingCode,
+              existing.filter((line) => line.id !== serviceId),
+            )
+            saveCheckInServiceMap(next)
+            return next
+          })
+          return { ok: true }
+        } finally {
+          checkInWritePendingRef.current = Math.max(0, checkInWritePendingRef.current - 1)
+        }
       },
       getGuestSequences: (date, program) =>
         buildGuestSequenceMap({
