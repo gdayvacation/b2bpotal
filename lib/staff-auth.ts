@@ -1,4 +1,5 @@
 import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/client'
+import { GUEST_SIGNED_IN_EVENT } from '@/lib/check-in-access'
 
 export type StaffRole = 'admin' | 'accounting'
 
@@ -74,10 +75,15 @@ async function ensureStaffDatabaseSession(role: StaffRole) {
     const payload = (await response.json().catch(() => ({}))) as StaffLoginResponse
     await applySupabaseSession(payload.accessToken, payload.refreshToken)
     const reloadKey = `gday-staff-session-restored:${role}`
-    if (sessionStorage.getItem(reloadKey) !== '1') {
-      sessionStorage.setItem(reloadKey, '1')
-      window.location.reload()
+    if (sessionStorage.getItem(reloadKey) === '1') return
+    sessionStorage.setItem(reloadKey, '1')
+    // A full reload throws away the guest check-in screen the person just opened.
+    // Ask the portal to load again with the new session and stay on this page.
+    if (window.location.pathname.startsWith('/check-in')) {
+      window.dispatchEvent(new Event(GUEST_SIGNED_IN_EVENT))
+      return
     }
+    window.location.reload()
   } catch (error) {
     console.warn('[staff-auth] could not restore staff session', error)
   }

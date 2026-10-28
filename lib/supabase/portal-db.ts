@@ -109,7 +109,7 @@ const CHECK_IN_TABLE_COLS: Record<string, string> = {
     'id,date,program,booking_code,first_name,last_name,nationality,birthday,passport_number,scope,seats,checked_in_at',
   check_in_attendance: 'date,program,booking_code,status',
   check_in_payments: 'date,program,seat_key,status',
-  check_in_services: 'id,date,program,booking_code,kind,people,price_per_person,paid',
+  check_in_services: 'id,date,program,booking_code,kind,people,price_per_person,paid,confirmed',
   check_in_sequences: 'date,program,booking_code,start_number',
   check_in_guest_edits: 'date,program,booking_code,enrollment_id',
   check_in_notes: 'date,program,booking_code,note',
@@ -2650,6 +2650,7 @@ type CheckInServiceRow = {
   people: number
   price_per_person: number
   paid: boolean
+  confirmed: boolean
 }
 
 function mapServiceRow(row: CheckInServiceRow): CheckInServiceLine | null {
@@ -2661,6 +2662,7 @@ function mapServiceRow(row: CheckInServiceRow): CheckInServiceLine | null {
     people: Math.max(1, Math.floor(Number(row.people) || 1)),
     pricePerPerson: Math.max(0, Math.floor(Number(row.price_per_person) || 0)),
     paid: row.paid === true,
+    confirmed: row.confirmed === true,
   }
 }
 
@@ -2679,6 +2681,7 @@ function serviceToRow(
     people: service.people,
     price_per_person: service.pricePerPerson,
     paid: service.paid,
+    confirmed: service.confirmed,
   }
 }
 
@@ -3455,10 +3458,15 @@ const GUEST_ADDON_ERRORS = new Set([
   'This booking is marked no-show.',
   'That is more people than this booking.',
   'A shared boat holds up to 10 people on this booking.',
+  'That is more adults than this booking.',
+  'That is more children than this booking.',
+  'Add an adult on the shared boat before a child.',
+  'Keep at least one adult on the shared boat.',
   'A private boat holds up to 10 people.',
   'Too many add-on services on this booking.',
   'That add-on was not found.',
   'This add-on is already paid. Please ask marina staff.',
+  'This add-on is already confirmed. Please ask marina staff.',
 ])
 
 type GuestAddonRpcResult =
@@ -3482,6 +3490,7 @@ function parseGuestAddonRpc(
         people?: unknown
         price_per_person?: unknown
         paid?: unknown
+        confirmed?: unknown
       }
     | null
   if (!row || row.ok !== true) {
@@ -3503,6 +3512,7 @@ function parseGuestAddonRpc(
       people: Math.max(1, Math.floor(Number(row.people) || 1)),
       pricePerPerson: Math.max(0, Math.floor(Number(row.price_per_person) || 0)),
       paid: row.paid === true,
+      confirmed: row.confirmed === true,
     },
   }
 }
@@ -3514,6 +3524,7 @@ export async function addGuestCheckInServiceRow(
   bookingCode: string,
   kind: CheckInServiceKind,
   people: number,
+  band: 'adult' | 'child' = 'adult',
 ): Promise<{ ok: true; line: CheckInServiceLine } | { ok: false; error: string }> {
   const supabase = getSupabaseBrowserClient()
   const { data, error } = await supabase.rpc('portal_guest_add_check_in_service', {
@@ -3522,6 +3533,7 @@ export async function addGuestCheckInServiceRow(
     p_booking_code: bookingCode,
     p_kind: kind,
     p_people: people,
+    p_band: band,
   })
   const parsed = parseGuestAddonRpc(
     data,

@@ -330,6 +330,7 @@ export async function loadSheetsBackupSource(): Promise<SheetsBackupSource> {
       people: Math.max(1, Math.floor(Number(row.people) || 1)),
       pricePerPerson: Math.max(0, Math.floor(Number(row.price_per_person) || 0)),
       paid: row.paid === true,
+      confirmed: row.confirmed === true,
       date: asDateString(String(row.date ?? '')),
       program: row.program,
       bookingCode,

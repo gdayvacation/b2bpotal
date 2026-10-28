@@ -1,3 +1,4 @@
+import { sharedLongtailQtyLabel } from '@/lib/check-in-addon-catalog'
 import { dayBoatPlanKey, type Program } from '@/lib/types'
 
 export const CHECK_IN_SERVICE_STORAGE_KEY = 'gday-check-in-services'
@@ -13,6 +14,8 @@ export type CheckInServiceLine = {
   /** THB per person */
   pricePerPerson: number
   paid: boolean
+  /** Ticket given at the marina. Guest still pays the guide on the island. */
+  confirmed: boolean
 }
 
 /** date|program → booking code → service lines */
@@ -48,6 +51,9 @@ export function servicePriceUnitLabel(kind: CheckInServiceKind) {
 }
 
 export function formatServiceLineCharge(line: CheckInServiceLine) {
+  if (line.kind === 'share-longtail') {
+    return `${sharedLongtailQtyLabel(line.people, line.pricePerPerson)} · ${line.pricePerPerson.toLocaleString('en-US')} THB each`
+  }
   const unit = servicePricedPerBoat(line.kind) ? 'THB / boat' : 'THB each'
   return `${serviceQtyLabel(line.kind, line.people)} · ${line.pricePerPerson.toLocaleString('en-US')} ${unit}`
 }
@@ -71,6 +77,7 @@ function normalizeService(raw: unknown): CheckInServiceLine | null {
     people,
     pricePerPerson,
     paid: row.paid === true,
+    confirmed: row.confirmed === true,
   }
 }
 

@@ -1,10 +1,14 @@
 -- Guests can change or remove an add-on they added after check-in.
--- The database sets the price. Paid lines stay locked for marina staff.
+-- The database sets the price. Paid lines stay locked.
+-- Confirmed lines (ticket given, pay the guide later) stay locked for guests.
 -- Keep the amounts in sync with lib/check-in-addon-catalog.ts and
 -- portal_guest_add_check_in_service.
 -- Safe to re-run.
 
 alter table public.check_in_services replica identity full;
+
+alter table public.check_in_services
+  add column if not exists confirmed boolean not null default false;
 
 create or replace function public.portal_guest_update_check_in_service(
   p_date date,
@@ -28,6 +32,7 @@ declare
   v_cap int;
   v_people int;
   v_price int;
+  v_existing int;
 begin
   if not (
     public.jwt_is_staff()
@@ -96,6 +101,10 @@ begin
     return jsonb_build_object('ok', false, 'error', 'This add-on is already paid. Please ask marina staff.');
   end if;
 
+  if v_row.confirmed and not public.jwt_is_staff() then
+    return jsonb_build_object('ok', false, 'error', 'This add-on is already confirmed. Please ask marina staff.');
+  end if;
+
   if v_row.kind not in ('share-longtail', 'private-longtail', 'scuba') then
     return jsonb_build_object('ok', false, 'error', 'Unknown service.');
   end if;
@@ -116,15 +125,60 @@ begin
     v_people := p_people;
     v_price := 2000;
   elsif v_row.kind = 'share-longtail' then
-    v_cap := least(10, v_pax);
-    if p_people > v_cap then
+    if v_row.price_per_person = 300 then
+      v_cap := coalesce(v_booking.children, 0);
+      select coalesce(sum(s.people), 0) into v_existing
+      from public.check_in_services s
+      where s.date = p_date
+        and s.program = p_program
+        and s.booking_code = v_code
+        and s.kind = 'share-longtail'
+        and s.price_per_person = 300
+        and s.id <> v_id;
+      if p_people + v_existing > v_cap then
+        return jsonb_build_object('ok', false, 'error', 'That is more children than this booking.');
+      end if;
+      if not exists (
+        select 1
+        from public.check_in_services s
+        where s.date = p_date
+          and s.program = p_program
+          and s.booking_code = v_code
+          and s.kind = 'share-longtail'
+          and s.price_per_person = 500
+          and s.people >= 1
+      ) then
+        return jsonb_build_object('ok', false, 'error', 'Add an adult on the shared boat before a child.');
+      end if;
+      v_price := 300;
+    else
+      v_cap := coalesce(v_booking.adults, 0);
+      select coalesce(sum(s.people), 0) into v_existing
+      from public.check_in_services s
+      where s.date = p_date
+        and s.program = p_program
+        and s.booking_code = v_code
+        and s.kind = 'share-longtail'
+        and s.price_per_person <> 300
+        and s.id <> v_id;
+      if p_people + v_existing > v_cap then
+        return jsonb_build_object('ok', false, 'error', 'That is more adults than this booking.');
+      end if;
+      v_price := 500;
+    end if;
+    select coalesce(sum(s.people), 0) into v_existing
+    from public.check_in_services s
+    where s.date = p_date
+      and s.program = p_program
+      and s.booking_code = v_code
+      and s.kind = 'share-longtail'
+      and s.id <> v_id;
+    if p_people + v_existing > 10 then
       return jsonb_build_object('ok', false, 'error', 'A shared boat holds up to 10 people on this booking.');
     end if;
     v_people := p_people;
-    v_price := 500;
   else
-    v_cap := least(10, v_pax);
-    if p_people > v_cap then
+    if p_people > 10 then
       return jsonb_build_object('ok', false, 'error', 'A private boat holds up to 10 people.');
     end if;
     v_people := 1;
@@ -146,7 +200,8 @@ begin
     'kind', v_row.kind,
     'people', v_people,
     'price_per_person', v_price,
-    'paid', false
+    'paid', v_row.paid,
+    'confirmed', v_row.confirmed
   );
 end;
 $function$;
@@ -205,6 +260,33 @@ begin
 
   if v_row.paid then
     return jsonb_build_object('ok', false, 'error', 'This add-on is already paid. Please ask marina staff.');
+  end if;
+
+  if v_row.confirmed and not public.jwt_is_staff() then
+    return jsonb_build_object('ok', false, 'error', 'This add-on is already confirmed. Please ask marina staff.');
+  end if;
+
+  if v_row.kind = 'share-longtail' and v_row.price_per_person <> 300 then
+    if exists (
+      select 1
+      from public.check_in_services s
+      where s.date = v_row.date
+        and s.program = v_row.program
+        and s.booking_code = v_row.booking_code
+        and s.kind = 'share-longtail'
+        and s.price_per_person = 300
+    ) and not exists (
+      select 1
+      from public.check_in_services s
+      where s.date = v_row.date
+        and s.program = v_row.program
+        and s.booking_code = v_row.booking_code
+        and s.kind = 'share-longtail'
+        and s.price_per_person = 500
+        and s.id <> v_id
+    ) then
+      return jsonb_build_object('ok', false, 'error', 'Keep at least one adult on the shared boat.');
+    end if;
   end if;
 
   delete from public.check_in_services where id = v_id;

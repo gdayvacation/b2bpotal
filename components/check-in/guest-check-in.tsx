@@ -35,6 +35,7 @@ import {
   parseGroupGuideNames,
   splitGuideDisplayName,
 } from '@/lib/check-in-group-guide'
+import { sharePartyCopyKey } from '@/lib/check-in-addon-catalog'
 import {
   serviceLineTotal,
   type CheckInServiceKind,
@@ -330,6 +331,8 @@ function GuestCheckInForm({
   const [addonFocus, setAddonFocus] = useState<CheckInServiceKind | null>(null)
   const lockedBootstrappedRef = useRef(false)
   const addonHistoryRef = useRef(false)
+  const stepRef = useRef(step)
+  stepRef.current = step
   const lockedFetchingRef = useRef(false)
   /** Prevents the DB-vs-localStorage retreat check from running more than once per session. */
   const retreatedAfterSyncRef = useRef(false)
@@ -503,8 +506,10 @@ function GuestCheckInForm({
   ])
 
   useEffect(() => {
-    function onPopState() {
+    function onPopState(event: PopStateEvent) {
       if (!addonHistoryRef.current) return
+      const state = event.state as { gdayStep?: string } | null
+      if (state?.gdayStep === 'addons') return
       addonHistoryRef.current = false
       setAddonError('')
       setStep('done')
@@ -517,6 +522,12 @@ function GuestCheckInForm({
   // Guests wait until this booking's check-in rows have been read, so a phone
   // does not offer a second check-in before the morning result arrives.
   useEffect(() => {
+    const settleStep = (next: Step) => {
+      // The success screen can show before this cloud sync finishes. A tap into
+      // add-ons must stay there when the sync arrives a moment later.
+      if (stepRef.current === 'addons') return
+      setStep(next)
+    }
     const guestCloudReady = sessionRole === 'guest' ? checkInReady : sessionRole !== ''
     if (!hydrated || !guestCloudReady || !lockedCode || lockedBootstrappedRef.current) return
 
@@ -544,7 +555,7 @@ function GuestCheckInForm({
           lockedBootstrappedRef.current = true
           setLockedReady(true)
           setError(t('invalidQr'))
-          setStep('welcome')
+          settleStep('welcome')
         }
       })()
       return
@@ -554,13 +565,13 @@ function GuestCheckInForm({
     if (!isActiveBooking(booking)) {
       setLockedReady(true)
       setError(t('cancelledBooking'))
-      setStep('welcome')
+      settleStep('welcome')
       return
     }
     if (getCheckInAttendance(booking.date, booking.program, booking.code) === 'no-show') {
       setLockedReady(true)
       setError(t('noShowBooking'))
-      setStep('welcome')
+      settleStep('welcome')
       return
     }
     const boatPlan = getDayBoatPlan(booking.date, booking.program)
@@ -571,7 +582,7 @@ function GuestCheckInForm({
     ) {
       setLockedReady(true)
       setError(t('partnerSent'))
-      setStep('welcome')
+      settleStep('welcome')
       return
     }
 
@@ -606,7 +617,7 @@ function GuestCheckInForm({
             .map((item) => item.nationality),
         ).needsStaff,
       )
-      setStep('done')
+      settleStep('done')
       return
     }
 
@@ -634,13 +645,13 @@ function GuestCheckInForm({
           setPartySize(next.length)
           setGuests(next)
           setDraftRestored(nextScope !== 'guide')
-          setStep(nextScope === 'guide' ? 'details' : 'confirm')
+          settleStep(nextScope === 'guide' ? 'details' : 'confirm')
           restored = true
         }
       } catch {
         restored = false
       }
-      if (!restored) setStep('scope')
+      if (!restored) settleStep('scope')
       setLockedReady(true)
     })()
   }, [
@@ -732,14 +743,21 @@ function GuestCheckInForm({
     if (!isLocked) setBookingCode(null)
   }
 
-  function openAddons(kind: CheckInServiceKind) {
+  function openAddons() {
     setError('')
     setAddonError('')
-    setAddonFocus(kind)
+    setAddonFocus(null)
     setStep('addons')
     if (addonHistoryRef.current) return
     addonHistoryRef.current = true
-    window.history.pushState({ gdayStep: 'addons' }, '')
+    const previous = window.history.state
+    window.history.pushState(
+      {
+        ...(previous && typeof previous === 'object' ? previous : {}),
+        gdayStep: 'addons',
+      },
+      '',
+    )
   }
 
   function closeAddons() {
@@ -750,8 +768,12 @@ function GuestCheckInForm({
     window.history.back()
   }
 
-  async function addAddon(kind: CheckInServiceKind, people: number) {
-    if (!selectedBooking || addonBusy) return
+  async function addAddon(
+    kind: CheckInServiceKind,
+    people: number,
+    band: 'adult' | 'child' = 'adult',
+  ) {
+    if (!selectedBooking || addonBusy) return { ok: false as const, error: '' }
     setAddonBusy(kind)
     setAddonError('')
     const result = await addGuestCheckInService(
@@ -760,11 +782,11 @@ function GuestCheckInForm({
       selectedBooking.code,
       kind,
       people,
+      band,
     )
     setAddonBusy(null)
-    if (!result.ok) {
-      setAddonError(result.error)
-    }
+    if (!result.ok) setAddonError(result.error)
+    return result
   }
 
   async function updateAddon(id: string, people: number) {
@@ -1925,14 +1947,14 @@ function GuestCheckInForm({
         {step === 'addons' && selectedBooking ? (
           <AddonShop
             bookingPax={totalPassengers(selectedBooking)}
+            bookingAdults={selectedBooking.adults}
+            bookingChildren={selectedBooking.children}
             services={marinaServices}
             busyKind={addonBusy}
             error={addonError}
             focusKind={addonFocus}
             onDone={closeAddons}
-            onAdd={(kind, people) => {
-              void addAddon(kind, people)
-            }}
+            onAdd={addAddon}
             onUpdate={updateAddon}
             onRemove={removeAddon}
           />
@@ -2395,7 +2417,7 @@ function DoneStep({
   boat: number | null
   boatPlan: ReturnType<ReturnType<typeof usePortal>['getDayBoatPlan']> | null
   onAgain: () => void
-  onAddService?: (kind: CheckInServiceKind) => void
+  onAddService?: () => void
   onEdit?: () => void
 }) {
   const { t } = useCheckInI18n()
@@ -2527,7 +2549,7 @@ function BoardingSummary({
   boatLabel: string | null
   services: CheckInServiceLine[]
   receiptDetails?: Array<{ label: string; value: string }>
-  onAddService?: (kind: CheckInServiceKind) => void
+  onAddService?: () => void
 }) {
   const { t } = useCheckInI18n()
   const theme = boat && boat > 0 ? boatTheme(boat) : null
@@ -2539,7 +2561,13 @@ function BoardingSummary({
     (sum, line) => sum + (line.paid ? serviceLineTotal(line) : 0),
     0,
   )
+  const addonWaiting = services.reduce(
+    (sum, line) => sum + (line.confirmed && !line.paid ? serviceLineTotal(line) : 0),
+    0,
+  )
   const addonsSettled = services.length > 0 && services.every((line) => line.paid)
+  const addonsWaiting = services.some((line) => line.confirmed && !line.paid) &&
+    services.every((line) => line.paid || line.confirmed)
 
   return (
     <div className="space-y-2 text-left">
@@ -2632,9 +2660,30 @@ function BoardingSummary({
 
       {services.length > 0 || onAddService ? (
         <div className="rounded-[1.35rem] bg-gradient-to-r from-cyan-400 via-emerald-400 to-amber-300 p-[1.5px] shadow-[0_0_22px_rgba(45,212,191,0.55)]">
-          <div className="rounded-[1.25rem] bg-gradient-to-br from-white via-emerald-50 to-cyan-50 px-3 py-3">
+          <div
+            className={cn(
+              'overflow-hidden rounded-[1.25rem] bg-gradient-to-br from-white via-emerald-50 to-cyan-50',
+              onAddService && 'cursor-pointer',
+            )}
+            role={onAddService ? 'button' : undefined}
+            tabIndex={onAddService ? 0 : undefined}
+            onClick={onAddService}
+            onKeyDown={
+              onAddService
+                ? (event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      onAddService()
+                    }
+                  }
+                : undefined
+            }
+          >
             {services.length > 0 ? (
-              <div className="mb-3">
+              <div className="bg-white/80 px-3 py-3">
+                <p className="mb-2 text-center font-display text-[15px] font-semibold tracking-tight text-emerald-800">
+                  {t('addonAddedHeader')}
+                </p>
                 <ul className="space-y-2">
                   {services.map((line) => (
                     <li key={line.id} className="flex items-center gap-2.5">
@@ -2650,18 +2699,26 @@ function BoardingSummary({
                             ? line.people === 1
                               ? t('addonOneBoat')
                               : t('addonBoatCount', { count: line.people })
-                            : t('addonPaxCount', { count: line.people })}
+                            : line.kind === 'share-longtail'
+                              ? t(sharePartyCopyKey(line.people, line.pricePerPerson), {
+                                  count: line.people,
+                                })
+                              : t('addonPaxCount', { count: line.people })}
                           {' · '}
                           {serviceLineTotal(line).toLocaleString('en-US')} THB
-                          {line.paid ? ` · ${t('paidBadge')}` : ''}
+                          {line.paid
+                            ? ` · ${t('paidBadge')}`
+                            : line.confirmed
+                              ? ` · ${t('addonConfirmedWait')}`
+                              : ''}
                         </span>
                       </span>
                     </li>
                   ))}
                 </ul>
-                <div className="mt-2.5 flex items-center justify-between gap-3 border-t border-teal-900/10 pt-2">
+                <div className="mt-2.5 flex items-center justify-between gap-3 border-t border-emerald-900/10 pt-2">
                   <span className="text-sm font-semibold text-teal-950">
-                    {addonsSettled ? t('addonTotal') : t('addonToPay')}
+                    {addonsSettled || addonsWaiting ? t('addonTotal') : t('addonToPay')}
                   </span>
                   {addonsSettled ? (
                     <span className="text-base font-bold tracking-wide text-emerald-800">
@@ -2669,6 +2726,13 @@ function BoardingSummary({
                         {addonPaid.toLocaleString('en-US')} THB
                       </span>{' '}
                       {t('paidBadge')}
+                    </span>
+                  ) : addonsWaiting ? (
+                    <span className="text-right text-sm font-bold leading-tight text-sky-800">
+                      <span className="block tabular-nums">
+                        {addonWaiting.toLocaleString('en-US')} THB
+                      </span>
+                      {t('addonConfirmedWait')}
                     </span>
                   ) : (
                     <span className="text-base font-semibold tabular-nums text-orange-800">
@@ -2679,7 +2743,11 @@ function BoardingSummary({
                 <AddonReceiptToggle services={services} details={receiptDetails} />
               </div>
             ) : null}
-            {onAddService ? <AddonTeasers onOpen={onAddService} /> : null}
+            {onAddService ? (
+              <div className={cn('px-3 py-3', services.length > 0 && 'border-t border-teal-900/10')}>
+                <AddonTeasers />
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -2721,23 +2789,22 @@ const ADDON_TEASERS: Array<{
   },
 ]
 
-function AddonTeasers({ onOpen }: { onOpen: (kind: CheckInServiceKind) => void }) {
+function AddonTeasers() {
   const { t } = useCheckInI18n()
   return (
     <div>
       <p className="mb-2.5 text-center font-display text-[15px] font-semibold tracking-tight text-teal-950">
         {t('addonTeaserTitle')}
       </p>
+      <p className="mb-2.5 text-center text-[11px] font-medium text-teal-800/55">{t('addonTapToSee')}</p>
       <div className="grid grid-cols-3 gap-2">
       {ADDON_TEASERS.map((item) => {
         const Icon = item.icon
         return (
-          <button
+          <div
             key={item.kind}
-            type="button"
-            onClick={() => onOpen(item.kind)}
             className={cn(
-              'flex flex-col items-center rounded-2xl bg-gradient-to-b px-1.5 py-3 text-center ring-1 transition active:scale-[0.97]',
+              'flex flex-col items-center rounded-2xl bg-gradient-to-b px-1.5 py-3 text-center ring-1',
               item.tile,
             )}
           >
@@ -2752,12 +2819,18 @@ function AddonTeasers({ onOpen }: { onOpen: (kind: CheckInServiceKind) => void }
             <span className="mt-2 text-[12px] leading-tight font-semibold text-teal-950">
               {t(item.labelKey)}
             </span>
-            <span className="mt-1 text-[13px] font-semibold tabular-nums text-teal-800">
-              {item.price}
-              <span className="ml-0.5 text-[10px] font-medium text-teal-800/55">THB</span>
-            </span>
-            <span className="mt-0.5 text-[10px] font-medium text-teal-800/55">{t('addonTapToSee')}</span>
-          </button>
+            {item.kind === 'share-longtail' ? (
+              <span className="mt-1 text-[11px] font-semibold leading-tight tabular-nums text-teal-800">
+                <span className="block">{t('addonShareAdultRate')}</span>
+                <span className="block">{t('addonShareChildRate')}</span>
+              </span>
+            ) : (
+              <span className="mt-1 text-[13px] font-semibold tabular-nums text-teal-800">
+                {item.price}
+                <span className="ml-0.5 text-[10px] font-medium text-teal-800/55">THB</span>
+              </span>
+            )}
+          </div>
         )
       })}
       </div>

@@ -2,7 +2,10 @@ import type { CheckInServiceKind } from '@/lib/check-in-services'
 
 /** Fixed marina prices. The database function uses the same numbers. */
 export const SCUBA_PRICE_PER_PERSON = 2000
-export const SHARED_LONGTAIL_PRICE_PER_PERSON = 500
+export const SHARED_LONGTAIL_ADULT_PRICE = 500
+export const SHARED_LONGTAIL_CHILD_PRICE = 300
+/** Adult rate. Kept so older labels still compile. */
+export const SHARED_LONGTAIL_PRICE_PER_PERSON = SHARED_LONGTAIL_ADULT_PRICE
 export const SHARED_LONGTAIL_BOAT_CAP = 10
 export const PRIVATE_LONGTAIL_MAX_PAX = 10
 export const SCUBA_MAX_PEOPLE = 40
@@ -16,8 +19,28 @@ export const PRIVATE_LONGTAIL_TIERS = [
 export function addonPeopleCap(kind: CheckInServiceKind, bookingPax: number) {
   const pax = Math.max(1, Math.floor(bookingPax) || 1)
   if (kind === 'share-longtail') return Math.min(SHARED_LONGTAIL_BOAT_CAP, pax)
-  if (kind === 'private-longtail') return Math.min(PRIVATE_LONGTAIL_MAX_PAX, pax)
+  // A private boat can be filled with guests from other bookings.
+  if (kind === 'private-longtail') return PRIVATE_LONGTAIL_MAX_PAX
   return Math.min(SCUBA_MAX_PEOPLE, pax)
+}
+
+export function isSharedChildPrice(pricePerPerson: number) {
+  return pricePerPerson === SHARED_LONGTAIL_CHILD_PRICE
+}
+
+export function sharedLongtailQtyLabel(people: number, pricePerPerson: number) {
+  const count = Math.max(1, Math.floor(people) || 1)
+  const child = isSharedChildPrice(pricePerPerson)
+  if (count === 1) return child ? '1 child' : '1 adult'
+  return `${count} ${child ? 'children' : 'adults'}`
+}
+
+export function sharePartyCopyKey(people: number, pricePerPerson: number) {
+  const child = isSharedChildPrice(pricePerPerson)
+  if (Math.max(1, Math.floor(people) || 1) === 1) {
+    return child ? ('addonOneChild' as const) : ('addonOneAdult' as const)
+  }
+  return child ? ('addonChildCount' as const) : ('addonAdultCount' as const)
 }
 
 /** Lowest party size that produces this stored boat price. */
@@ -45,7 +68,7 @@ export function quoteGuestAddon(kind: CheckInServiceKind, people: number, bookin
     return { kind, people: 1, pricePerPerson: price, total: price, party }
   }
   const pricePerPerson =
-    kind === 'scuba' ? SCUBA_PRICE_PER_PERSON : SHARED_LONGTAIL_PRICE_PER_PERSON
+    kind === 'scuba' ? SCUBA_PRICE_PER_PERSON : SHARED_LONGTAIL_ADULT_PRICE
   return {
     kind,
     people: party,

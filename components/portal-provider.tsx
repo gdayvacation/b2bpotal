@@ -591,6 +591,7 @@ type PortalContextValue = {
     bookingCode: string,
     kind: CheckInServiceKind,
     people: number,
+    band?: 'adult' | 'child',
   ) => Promise<{ ok: true } | { ok: false; error: string }>
   updateGuestCheckInService: (
     date: string,
@@ -3618,7 +3619,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           replaceCheckInServicesForBooking(date, program, bookingCode, services),
         )
       },
-      addGuestCheckInService: async (date, program, bookingCode, kind, people) => {
+      addGuestCheckInService: async (date, program, bookingCode, kind, people, band = 'adult') => {
         checkInSyncEpochRef.current += 1
         checkInWritePendingRef.current += 1
         try {
@@ -3628,6 +3629,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             bookingCode,
             kind,
             people,
+            band,
           )
           if (!result.ok) return result
           if (!result.line.id) {

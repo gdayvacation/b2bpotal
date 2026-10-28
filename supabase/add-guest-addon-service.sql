@@ -3,12 +3,15 @@
 -- Keep the amounts in sync with lib/check-in-addon-catalog.ts.
 -- Safe to re-run.
 
+drop function if exists public.portal_guest_add_check_in_service(date, text, text, text, integer);
+
 create or replace function public.portal_guest_add_check_in_service(
   p_date date,
   p_program text,
   p_booking_code text,
   p_kind text,
-  p_people integer
+  p_people integer,
+  p_band text default 'adult'
 )
 returns jsonb
 language plpgsql
@@ -25,6 +28,7 @@ declare
   v_people int;
   v_price int;
   v_count int;
+  v_existing int;
   v_id text;
 begin
   if not (
@@ -93,15 +97,58 @@ begin
     v_people := p_people;
     v_price := 2000;
   elsif v_kind = 'share-longtail' then
-    v_cap := least(10, v_pax);
-    if p_people > v_cap then
+    if p_band = 'child' then
+      v_cap := coalesce(v_booking.children, 0);
+      select coalesce(sum(s.people), 0) into v_existing
+      from public.check_in_services s
+      where s.date = p_date
+        and s.program = p_program
+        and s.booking_code = v_code
+        and s.kind = 'share-longtail'
+        and s.price_per_person = 300;
+      if p_people + v_existing > v_cap then
+        return jsonb_build_object('ok', false, 'error', 'That is more children than this booking.');
+      end if;
+      if not exists (
+        select 1
+        from public.check_in_services s
+        where s.date = p_date
+          and s.program = p_program
+          and s.booking_code = v_code
+          and s.kind = 'share-longtail'
+          and s.price_per_person = 500
+          and s.people >= 1
+      ) then
+        return jsonb_build_object('ok', false, 'error', 'Add an adult on the shared boat before a child.');
+      end if;
+      v_price := 300;
+    else
+      v_cap := coalesce(v_booking.adults, 0);
+      select coalesce(sum(s.people), 0) into v_existing
+      from public.check_in_services s
+      where s.date = p_date
+        and s.program = p_program
+        and s.booking_code = v_code
+        and s.kind = 'share-longtail'
+        and s.price_per_person <> 300;
+      if p_people + v_existing > v_cap then
+        return jsonb_build_object('ok', false, 'error', 'That is more adults than this booking.');
+      end if;
+      v_price := 500;
+    end if;
+    select coalesce(sum(s.people), 0) into v_existing
+    from public.check_in_services s
+    where s.date = p_date
+      and s.program = p_program
+      and s.booking_code = v_code
+      and s.kind = 'share-longtail';
+    if p_people + v_existing > 10 then
       return jsonb_build_object('ok', false, 'error', 'A shared boat holds up to 10 people on this booking.');
     end if;
     v_people := p_people;
-    v_price := 500;
   else
-    v_cap := least(10, v_pax);
-    if p_people > v_cap then
+    -- Private boats may include guests from other bookings, up to 10.
+    if p_people > 10 then
       return jsonb_build_object('ok', false, 'error', 'A private boat holds up to 10 people.');
     end if;
     v_people := 1;
@@ -141,5 +188,5 @@ begin
 end;
 $function$;
 
-revoke all on function public.portal_guest_add_check_in_service(date, text, text, text, integer) from public, anon;
-grant execute on function public.portal_guest_add_check_in_service(date, text, text, text, integer) to authenticated, service_role;
+revoke all on function public.portal_guest_add_check_in_service(date, text, text, text, integer, text) from public, anon;
+grant execute on function public.portal_guest_add_check_in_service(date, text, text, text, integer, text) to authenticated, service_role;

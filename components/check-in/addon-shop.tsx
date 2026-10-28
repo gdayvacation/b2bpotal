@@ -1,16 +1,20 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, Minus, Plus, X } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Minus, Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useCheckInI18n } from '@/components/check-in/check-in-i18n'
 import {
   addonPeopleCap,
   PRIVATE_LONGTAIL_TIERS,
   privatePartyFromBoatPrice,
+  isSharedChildPrice,
   quoteGuestAddon,
   SCUBA_PRICE_PER_PERSON,
-  SHARED_LONGTAIL_PRICE_PER_PERSON,
+  SHARED_LONGTAIL_ADULT_PRICE,
+  SHARED_LONGTAIL_BOAT_CAP,
+  SHARED_LONGTAIL_CHILD_PRICE,
+  sharePartyCopyKey,
 } from '@/lib/check-in-addon-catalog'
 import {
   serviceLineTotal,
@@ -22,106 +26,72 @@ import type { CheckInCopyKey } from '@/lib/check-in-i18n'
 
 const OFFER_ORDER: CheckInServiceKind[] = ['scuba', 'share-longtail', 'private-longtail']
 
-const POSTERS: Record<CheckInServiceKind, { src: string; width: number; height: number }> = {
-  scuba: { src: '/addons/scuba.png', width: 1024, height: 1024 },
-  'share-longtail': { src: '/addons/shared-longtail.jpg', width: 1024, height: 682 },
-  'private-longtail': { src: '/addons/private-longtail.jpg', width: 1024, height: 682 },
-}
-
-const OFFER_SLIDES: Record<CheckInServiceKind, Array<{ src: string; alt: string; contain?: boolean }>> = {
-  scuba: [
-    {
-      src: '/addons/scuba.png',
-      alt: 'Scuba diving, 30 minutes, 2,000 THB per person. Equipment included.',
-      contain: true,
-    },
-    {
-      src: '/addons/scuba-reef.jpg',
-      alt: 'Two divers over a shallow reef in clear turquoise water.',
-    },
-    {
-      src: '/addons/scuba-gear-boat.jpg',
-      alt: 'A dive master helps a guest with mask and tank on the boat.',
-    },
-  ],
+const OFFER_PHOTOS: Record<CheckInServiceKind, string[]> = {
+  scuba: ['/addons/scuba-reef.jpg', '/addons/scuba-gear-boat.jpg', '/addons/scuba.png'],
   'share-longtail': [
-    {
-      src: '/addons/shared-longtail.jpg',
-      alt: 'Shared long tail boat, 30 minutes, 500 THB per person. One boat holds 10 people.',
-    },
-    {
-      src: '/addons/shared-swim.jpg',
-      alt: 'Guests swimming beside a shared longtail in a turquoise bay.',
-    },
-    {
-      src: '/addons/shared-guests.jpg',
-      alt: 'Guests seated together on a shared longtail between limestone cliffs.',
-    },
+    '/addons/shared-guests.jpg',
+    '/addons/shared-swim.jpg',
+    '/addons/shared-longtail.jpg',
   ],
   'private-longtail': [
-    {
-      src: '/addons/private-longtail.jpg',
-      alt: 'Private long tail boat, 30 minutes. 1 to 4 people 2,500 THB, 5 to 7 people 3,000 THB, 8 to 10 people 4,000 THB.',
-    },
-    {
-      src: '/addons/private-canyon.jpg',
-      alt: 'A private longtail alone in a narrow bay of green cliffs.',
-    },
-    {
-      src: '/addons/private-family.jpg',
-      alt: 'A family on their own longtail in calm turquoise water.',
-    },
+    '/addons/private-family.jpg',
+    '/addons/private-canyon.jpg',
+    '/addons/private-longtail.jpg',
   ],
 }
 
-const SLIDE_MS: Record<CheckInServiceKind, number> = {
-  scuba: 3400,
-  'share-longtail': 4000,
-  'private-longtail': 4600,
-}
+function OfferPhotos({ kind }: { kind: CheckInServiceKind }) {
+  const { t } = useCheckInI18n()
+  const photos = OFFER_PHOTOS[kind]
+  const [index, setIndex] = useState(0)
+  const src = photos[index] ?? photos[0]
 
-function OfferSlides({ kind }: { kind: CheckInServiceKind }) {
-  const slides = OFFER_SLIDES[kind]
-  const [index, setIndex] = useState(() => Math.floor(Math.random() * slides.length))
-
-  useEffect(() => {
-    const reduce =
-      typeof window !== 'undefined' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (reduce || slides.length < 2) return
-    const timer = window.setInterval(() => {
-      setIndex((current) => (current + 1) % slides.length)
-    }, SLIDE_MS[kind])
-    return () => window.clearInterval(timer)
-  }, [kind, slides.length])
+  function step(delta: number) {
+    setIndex((current) => (current + delta + photos.length) % photos.length)
+  }
 
   return (
-    <div className="relative aspect-[16/10] overflow-hidden bg-white">
-      {slides.map((slide, slideIndex) => (
-        <img
-          key={slide.src}
-          src={slide.src}
-          alt={slideIndex === index ? slide.alt : ''}
-          className={cn(
-            'absolute inset-0 h-full w-full transition-opacity duration-700',
-            slide.contain ? 'object-contain' : 'object-cover',
-            slideIndex === index ? 'opacity-100' : 'opacity-0',
-          )}
-        />
-      ))}
+    <div className="relative h-44 bg-white">
+      <img
+        src={src}
+        alt=""
+        className={cn('h-full w-full', src.endsWith('.png') ? 'object-contain' : 'object-cover')}
+      />
+      <button
+        type="button"
+        aria-label={t('addonPrevPhoto')}
+        onClick={() => step(-1)}
+        className="absolute top-1/2 left-2 flex size-9 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-teal-950 shadow ring-1 ring-teal-900/10"
+      >
+        <ChevronLeft className="size-5" />
+      </button>
+      <button
+        type="button"
+        aria-label={t('addonNextPhoto')}
+        onClick={() => step(1)}
+        className="absolute top-1/2 right-2 flex size-9 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-teal-950 shadow ring-1 ring-teal-900/10"
+      >
+        <ChevronRight className="size-5" />
+      </button>
       <div className="absolute inset-x-0 bottom-2 flex justify-center gap-1.5">
-        {slides.map((slide, slideIndex) => (
+        {photos.map((photo, photoIndex) => (
           <span
-            key={slide.src}
+            key={photo}
             className={cn(
               'size-1.5 rounded-full ring-1 ring-teal-950/25',
-              slideIndex === index ? 'bg-teal-800' : 'bg-white/80',
+              photoIndex === index ? 'bg-teal-800' : 'bg-white/80',
             )}
           />
         ))}
       </div>
     </div>
   )
+}
+
+const POSTERS: Record<CheckInServiceKind, { src: string; width: number; height: number }> = {
+  scuba: { src: '/addons/scuba.png', width: 1024, height: 1024 },
+  'share-longtail': { src: '/addons/shared-longtail.jpg', width: 1024, height: 682 },
+  'private-longtail': { src: '/addons/private-longtail.jpg', width: 1024, height: 682 },
 }
 
 const OFFER_FAQ: Record<CheckInServiceKind, Array<readonly [CheckInCopyKey, CheckInCopyKey]>> = {
@@ -234,7 +204,10 @@ export function AddonReceiptToggle({
       <button
         type="button"
         className="text-xs font-semibold text-teal-800 underline decoration-teal-800/30 underline-offset-2"
-        onClick={() => setOpen((current) => !current)}
+        onClick={(event) => {
+          event.stopPropagation()
+          setOpen((current) => !current)
+        }}
       >
         {open ? t('hideReceipt') : t('seeReceipt')}
       </button>
@@ -286,6 +259,8 @@ type AddonWriteResult = { ok: true } | { ok: false; error: string }
 
 export function AddonShop({
   bookingPax,
+  bookingAdults,
+  bookingChildren,
   services,
   busyKind,
   error,
@@ -296,11 +271,17 @@ export function AddonShop({
   onDone,
 }: {
   bookingPax: number
+  bookingAdults: number
+  bookingChildren: number
   services: CheckInServiceLine[]
   busyKind: CheckInServiceKind | null
   error: string
   focusKind?: CheckInServiceKind | null
-  onAdd: (kind: CheckInServiceKind, people: number) => void
+  onAdd: (
+    kind: CheckInServiceKind,
+    people: number,
+    band?: 'adult' | 'child',
+  ) => Promise<AddonWriteResult>
   onUpdate: (id: string, people: number) => Promise<AddonWriteResult>
   onRemove: (id: string) => Promise<AddonWriteResult>
   onDone: () => void
@@ -311,17 +292,21 @@ export function AddonShop({
     'share-longtail': 1,
     'private-longtail': 1,
   })
-  const [reopen, setReopen] = useState<CheckInServiceKind | null>(focusKind ?? null)
+  const [shareAdults, setShareAdults] = useState(1)
+  const [shareChildren, setShareChildren] = useState(0)
+  const [openKind, setOpenKind] = useState<CheckInServiceKind | null>(null)
+  const [notedKind, setNotedKind] = useState<CheckInServiceKind | null>(null)
+  const [savingKind, setSavingKind] = useState<CheckInServiceKind | null>(null)
   const [draftParty, setDraftParty] = useState<Record<string, number>>({})
   const [pendingIds, setPendingIds] = useState<Record<string, true>>({})
   const [confirmId, setConfirmId] = useState<string | null>(null)
-  const serviceCount = useRef(services.length)
   const pendingRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
-    if (services.length > serviceCount.current) setReopen(null)
-    serviceCount.current = services.length
-  }, [services.length])
+    if (!notedKind) return
+    const timer = window.setTimeout(() => setNotedKind(null), 2500)
+    return () => window.clearTimeout(timer)
+  }, [notedKind])
 
   function partyOf(line: CheckInServiceLine) {
     const draft = draftParty[line.id]
@@ -338,14 +323,45 @@ export function AddonShop({
 
   const addedTotal = services.reduce((sum, line) => sum + amountOf(line), 0)
   const addonsSettled = services.length > 0 && services.every((line) => line.paid)
+  const needsMarina = services.some((line) => !line.paid && !line.confirmed)
+  const waitingPay = services.some((line) => line.confirmed && !line.paid)
 
   useEffect(() => {
-    if (!focusKind) return
-    document.getElementById(`addon-offer-${focusKind}`)?.scrollIntoView({
+    if (!openKind) return
+    document.getElementById(`addon-offer-${openKind}`)?.scrollIntoView({
       behavior: 'smooth',
-      block: 'start',
+      block: 'nearest',
     })
-  }, [focusKind])
+  }, [openKind])
+
+  function savedShare(band: 'adult' | 'child', exceptId?: string) {
+    return services
+      .filter(
+        (line) =>
+          line.kind === 'share-longtail' &&
+          line.id !== exceptId &&
+          isSharedChildPrice(line.pricePerPerson) === (band === 'child'),
+      )
+      .reduce((sum, line) => sum + line.people, 0)
+  }
+
+  function shareAdultRoom(exceptId?: string) {
+    const savedAdults = savedShare('adult', exceptId)
+    const savedChildren = savedShare('child', exceptId)
+    const byBooking = Math.max(0, bookingAdults - savedAdults)
+    const byBoat = Math.max(0, SHARED_LONGTAIL_BOAT_CAP - savedAdults - savedChildren)
+    return Math.min(byBooking, byBoat)
+  }
+
+  function shareChildRoom(exceptId?: string) {
+    const savedAdults = savedShare('adult', exceptId)
+    const savedChildren = savedShare('child', exceptId)
+    const byBooking = Math.max(0, bookingChildren - savedChildren)
+    const byBoat = Math.max(0, SHARED_LONGTAIL_BOAT_CAP - savedAdults - savedChildren)
+    return Math.min(byBooking, byBoat)
+  }
+
+  const savedAdultOnBoat = savedShare('adult') > 0
 
   function setCount(kind: CheckInServiceKind, next: number) {
     const cap = addonPeopleCap(kind, bookingPax)
@@ -355,9 +371,75 @@ export function AddonShop({
     }))
   }
 
+  function formAdultMax() {
+    const savedTotal = savedShare('adult') + savedShare('child')
+    return Math.min(
+      Math.max(0, bookingAdults - savedShare('adult')),
+      Math.max(0, SHARED_LONGTAIL_BOAT_CAP - savedTotal - shareChildren),
+    )
+  }
+
+  function formChildMax() {
+    const savedTotal = savedShare('adult') + savedShare('child')
+    return Math.min(
+      Math.max(0, bookingChildren - savedShare('child')),
+      Math.max(0, SHARED_LONGTAIL_BOAT_CAP - savedTotal - shareAdults),
+    )
+  }
+
+  function editableLine(kind: CheckInServiceKind, band: 'adult' | 'child' = 'adult') {
+    return services.find((line) => {
+      if (line.kind !== kind || line.paid || line.confirmed) return false
+      if (kind !== 'share-longtail') return true
+      return isSharedChildPrice(line.pricePerPerson) === (band === 'child')
+    })
+  }
+
+  async function addOrMerge(
+    kind: CheckInServiceKind,
+    count: number,
+    band: 'adult' | 'child' = 'adult',
+  ) {
+    if (count < 1 || savingKind !== null || busyKind !== null) {
+      return { ok: false as const, error: '' }
+    }
+    const line = editableLine(kind, band)
+    setSavingKind(kind)
+    try {
+      const result = line
+        ? await onUpdate(line.id, kind === 'private-longtail' ? count : line.people + count)
+        : await onAdd(kind, count, band)
+      if (result.ok) setNotedKind(kind)
+      return result
+    } finally {
+      setSavingKind(null)
+    }
+  }
+
+  function setShareCount(band: 'adult' | 'child', next: number) {
+    if (band === 'adult') {
+      const room = formAdultMax()
+      let clamped = Math.max(0, Math.min(next, room))
+      if (shareChildren > 0 && !savedAdultOnBoat && room > 0) clamped = Math.max(1, clamped)
+      setShareAdults(clamped)
+      if (clamped < 1 && !savedAdultOnBoat) setShareChildren(0)
+      return
+    }
+    if (shareAdults < 1 && !savedAdultOnBoat) {
+      setShareChildren(0)
+      return
+    }
+    setShareChildren(Math.max(0, Math.min(next, formChildMax())))
+  }
+
   async function changeParty(line: CheckInServiceLine, next: number) {
-    if (line.paid || pendingRef.current.has(line.id)) return
-    const cap = addonPeopleCap(line.kind, bookingPax)
+    if (line.paid || line.confirmed || pendingRef.current.has(line.id)) return
+    const cap =
+      line.kind === 'share-longtail'
+        ? isSharedChildPrice(line.pricePerPerson)
+          ? shareChildRoom(line.id)
+          : shareAdultRoom(line.id)
+        : addonPeopleCap(line.kind, bookingPax)
     const party = Math.min(cap, Math.max(1, next))
     if (party === partyOf(line)) return
     pendingRef.current.add(line.id)
@@ -383,7 +465,7 @@ export function AddonShop({
   }
 
   async function removeLine(line: CheckInServiceLine) {
-    if (line.paid || pendingRef.current.has(line.id)) return
+    if (line.paid || line.confirmed || pendingRef.current.has(line.id)) return
     if (confirmId !== line.id) {
       setConfirmId(line.id)
       return
@@ -409,8 +491,14 @@ export function AddonShop({
     }
   }
 
+  const paused = busyKind !== null || savingKind !== null
+
   return (
-    <section className="space-y-4">
+    <section
+      className={cn(
+        openKind ? 'space-y-4' : 'flex min-h-[calc(100dvh-6.5rem)] flex-col gap-4',
+      )}
+    >
       <div>
         <h1 className="font-display text-2xl font-semibold tracking-tight text-teal-950">
           {t('addonTitle')}
@@ -430,7 +518,12 @@ export function AddonShop({
           <ul className="mt-2 space-y-2">
             {services.map((line) => {
               const party = partyOf(line)
-              const cap = addonPeopleCap(line.kind, bookingPax)
+              const cap =
+                line.kind === 'share-longtail'
+                  ? isSharedChildPrice(line.pricePerPerson)
+                    ? shareChildRoom(line.id)
+                    : shareAdultRoom(line.id)
+                  : addonPeopleCap(line.kind, bookingPax)
               const pending = Boolean(pendingIds[line.id])
               const tier = PRIVATE_LONGTAIL_TIERS.find(
                 (row) => party >= row.min && party <= row.max,
@@ -442,7 +535,10 @@ export function AddonShop({
                   ? draftParty[line.id] != null
                     ? `${t('addonPaxCount', { count: party })} · ${boatText}`
                     : `${tier ? `${tier.min}–${tier.max}` : party} ${t('addonPeopleWord')} · ${boatText}`
-                  : t('addonPaxCount', { count: party })
+                  : line.kind === 'share-longtail'
+                    ? t(sharePartyCopyKey(line.people, line.pricePerPerson), { count: line.people })
+                    : t('addonPaxCount', { count: party })
+              const locked = line.paid || line.confirmed
               return (
                 <li key={line.id} className={cn('text-sm', pending && 'opacity-60')}>
                   <div className="relative">
@@ -457,12 +553,12 @@ export function AddonShop({
                     <span className="min-w-0 truncate font-medium text-teal-950">
                       {offerName(line.kind, t)}
                     </span>
-                    {!line.paid && line.kind !== 'private-longtail' ? (
+                    {!locked && line.kind !== 'private-longtail' ? (
                       <span className="flex w-full items-center justify-center gap-1">
                         <button
                           type="button"
                           aria-label={t('addonFewer')}
-                          disabled={party <= 1 || pending || busyKind !== null}
+                          disabled={party <= 1 || pending || paused}
                           onClick={() => void changeParty(line, party - 1)}
                           className="flex size-8 items-center justify-center rounded-full bg-teal-950/[0.05] text-teal-900 ring-1 ring-teal-900/10 disabled:opacity-40"
                         >
@@ -474,7 +570,7 @@ export function AddonShop({
                         <button
                           type="button"
                           aria-label={t('addonMore')}
-                          disabled={party >= cap || pending || busyKind !== null}
+                          disabled={party >= cap || pending || paused}
                           onClick={() => void changeParty(line, party + 1)}
                           className="flex size-8 items-center justify-center rounded-full bg-teal-950/[0.05] text-teal-900 ring-1 ring-teal-900/10 disabled:opacity-40"
                         >
@@ -490,7 +586,7 @@ export function AddonShop({
                       {money(amountOf(line))}
                     </span>
                   </div>
-                  {!line.paid ? (
+                  {!locked ? (
                     confirmId === line.id ? (
                       <span className="absolute inset-y-0 right-0 z-10 flex items-center gap-1 rounded-full bg-white pl-2 pr-0.5 shadow-sm ring-1 ring-rose-200">
                         <span className="text-[11px] font-semibold text-rose-800">
@@ -498,7 +594,7 @@ export function AddonShop({
                         </span>
                         <button
                           type="button"
-                          disabled={pending || busyKind !== null}
+                          disabled={pending || paused}
                           onClick={() => void removeLine(line)}
                           className="rounded-full bg-rose-700 px-2 py-0.5 text-[11px] font-semibold text-white"
                         >
@@ -516,7 +612,7 @@ export function AddonShop({
                       <button
                         type="button"
                         aria-label={t('addonRemove')}
-                        disabled={pending || busyKind !== null}
+                        disabled={pending || paused}
                         onClick={() => void removeLine(line)}
                         className="absolute right-0 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-rose-700"
                       >
@@ -527,6 +623,8 @@ export function AddonShop({
                   </div>
                   {line.paid ? (
                     <p className="mt-1.5 text-xs font-semibold text-emerald-800">{t('addonPaid')}</p>
+                  ) : line.confirmed ? (
+                    <p className="mt-1.5 text-xs font-semibold text-sky-800">{t('addonConfirmedWait')}</p>
                   ) : line.kind === 'private-longtail' ? (
                     <div className="mt-2 flex items-center gap-1.5">
                       <div className="grid min-w-0 flex-1 grid-cols-3 gap-1">
@@ -537,7 +635,7 @@ export function AddonShop({
                             <button
                               key={tier.min}
                               type="button"
-                              disabled={!reachable || pending || busyKind !== null}
+                              disabled={!reachable || pending || paused}
                               onClick={() => void changeParty(line, tier.min)}
                               className={cn(
                                 'rounded-lg px-1 py-1.5 text-center ring-1',
@@ -576,11 +674,15 @@ export function AddonShop({
             )}
           </div>
           <AddonReceiptToggle services={services} />
-          {addonsSettled ? null : (
+          {needsMarina ? (
             <p className="mt-2 text-[12px] font-semibold leading-snug text-red-700">
               {t('addonPayStaff')}
             </p>
-          )}
+          ) : waitingPay ? (
+            <p className="mt-2 text-[12px] font-semibold leading-snug text-sky-800">
+              {t('addonConfirmedWait')}
+            </p>
+          ) : null}
           <Button type="button" className="mt-3 h-11 w-full" onClick={onDone}>
             {t('addonDone')}
           </Button>
@@ -588,10 +690,31 @@ export function AddonShop({
       ) : null}
 
       {OFFER_ORDER.map((kind) => {
-        const count = people[kind]
-        const cap = addonPeopleCap(kind, bookingPax)
-        const quote = quoteGuestAddon(kind, count, bookingPax)
-        const busy = busyKind === kind
+        const savedScuba =
+          kind === 'scuba'
+            ? services
+                .filter((line) => line.kind === 'scuba')
+                .reduce((sum, line) => sum + line.people, 0)
+            : 0
+        const cap =
+          kind === 'scuba'
+            ? Math.max(0, addonPeopleCap(kind, bookingPax) - savedScuba)
+            : addonPeopleCap(kind, bookingPax)
+        const count = cap > 0 ? Math.min(Math.max(people[kind], 1), cap) : 0
+        const quote =
+          kind === 'share-longtail' || count < 1 ? null : quoteGuestAddon(kind, count, bookingPax)
+        const adultRoomLeft = kind === 'share-longtail' ? formAdultMax() : 0
+        const childRoomLeft = kind === 'share-longtail' ? formChildMax() : 0
+        const adultCovered = shareAdults >= 1 || savedAdultOnBoat
+        const shareTotal =
+          shareAdults * SHARED_LONGTAIL_ADULT_PRICE + shareChildren * SHARED_LONGTAIL_CHILD_PRICE
+        const shareReady =
+          kind === 'share-longtail' &&
+          shareAdults + shareChildren >= 1 &&
+          shareAdults <= adultRoomLeft &&
+          shareChildren <= childRoomLeft &&
+          (shareChildren === 0 || adultCovered)
+        const busy = busyKind === kind || savingKind === kind
         const title =
           kind === 'scuba'
             ? t('addonScubaName')
@@ -605,47 +728,92 @@ export function AddonShop({
               ? t('addonAddShared')
               : t('addonAddPrivate')
         const alreadyAdded = services.some((line) => line.kind === kind)
-        if (alreadyAdded && reopen !== kind) {
-          return (
-            <button
-              key={kind}
-              type="button"
-              onClick={() => setReopen(kind)}
-              className="w-full rounded-2xl bg-white/80 px-4 py-3 text-left text-sm font-semibold text-teal-800 ring-1 ring-teal-900/10"
-            >
-              {t('addonAddAnother')} · {title}
-            </button>
-          )
-        }
-
+        const menuPrice =
+          kind === 'scuba'
+            ? money(SCUBA_PRICE_PER_PERSON)
+            : kind === 'share-longtail'
+              ? `${t('addonShareAdultRate')} · ${t('addonShareChildRate')}`
+              : `${money(PRIVATE_LONGTAIL_TIERS[0].price)}–${money(PRIVATE_LONGTAIL_TIERS[2].price)}`
+        const menuPhoto =
+          kind === 'scuba'
+            ? '/addons/scuba-reef.jpg'
+            : kind === 'share-longtail'
+              ? '/addons/shared-guests.jpg'
+              : '/addons/private-family.jpg'
+        const open = openKind === kind
         return (
           <article
             key={kind}
             id={`addon-offer-${kind}`}
             className={cn(
-              'scroll-mt-4 overflow-hidden rounded-[1.5rem] bg-white shadow-lg shadow-teal-950/8 ring-1',
-              focusKind === kind ? 'ring-2 ring-teal-600' : 'ring-teal-900/10',
+              'scroll-mt-4 overflow-hidden rounded-2xl bg-white shadow-md shadow-teal-950/8 ring-1',
+              !openKind && 'flex min-h-40 flex-1 flex-col',
+              open || focusKind === kind ? 'ring-2 ring-teal-600' : 'ring-teal-900/10',
             )}
           >
-            <OfferSlides kind={kind} />
-            <div className="space-y-3 px-4 py-4">
+            {open ? <OfferPhotos kind={kind} /> : null}
+            <button
+              type="button"
+              aria-expanded={open}
+              onClick={() => setOpenKind(open ? null : kind)}
+              className={cn(
+                'flex w-full flex-col text-left',
+                !openKind && 'min-h-0 flex-1',
+              )}
+            >
+              {open ? null : (
+                <span className="relative min-h-28 flex-1">
+                  <img src={menuPhoto} alt="" className="absolute inset-0 h-full w-full object-cover" />
+                </span>
+              )}
+              <span className="flex items-start justify-between gap-3 px-4 py-3">
+                <span className="min-w-0">
+                  <span className="block font-display text-lg font-semibold leading-tight text-teal-950">
+                    {title}
+                  </span>
+                  <span className="mt-1 block text-sm font-semibold leading-tight text-teal-800">
+                    {menuPrice}
+                  </span>
+                  <span className="mt-0.5 block text-xs font-medium text-teal-800/50">
+                    {alreadyAdded ? t('addonSummary') : t('addonTapToSee')}
+                  </span>
+                </span>
+                <ChevronDown
+                  className={cn(
+                    'mt-1 size-5 shrink-0 text-teal-800 transition-transform',
+                    open && 'rotate-180',
+                  )}
+                />
+              </span>
+            </button>
+            {open ? (
+            <div className="space-y-3 border-t border-teal-900/10 px-4 py-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h2 className="font-display text-lg font-semibold text-teal-950">{title}</h2>
-                  <p className="mt-0.5 text-xs font-medium text-teal-800/55">{t('addonDuration')}</p>
+                  <p className="text-xs font-medium text-teal-800/55">{t('addonDuration')}</p>
                 </div>
-                <p className="text-right text-sm font-semibold text-teal-900">
-                  {kind === 'scuba'
-                    ? money(SCUBA_PRICE_PER_PERSON)
-                    : kind === 'share-longtail'
-                      ? money(SHARED_LONGTAIL_PRICE_PER_PERSON)
-                      : quote
-                        ? money(quote.total)
-                        : ''}
-                  <span className="mt-0.5 block text-[11px] font-medium text-teal-800/50">
-                    {kind === 'private-longtail' ? t('addonPerBoat') : t('addonPerPerson')}
-                  </span>
-                </p>
+                {kind === 'share-longtail' ? (
+                  <div className="text-right text-sm font-semibold leading-tight text-teal-900">
+                    <p>
+                      {t('addonAdult')} {money(SHARED_LONGTAIL_ADULT_PRICE)}
+                    </p>
+                    <p className="text-[11px] font-medium text-teal-800/50">{t('addonPerPerson')}</p>
+                    <p className="mt-1.5">
+                      {t('addonChild')} {money(SHARED_LONGTAIL_CHILD_PRICE)}
+                    </p>
+                    <p className="text-[11px] font-medium whitespace-nowrap text-teal-800/55">
+                      {t('addonChildAge')}
+                      <span className="text-teal-800/50"> · {t('addonPerPerson')}</span>
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-right text-sm font-semibold text-teal-900">
+                    {kind === 'scuba' ? money(SCUBA_PRICE_PER_PERSON) : quote ? money(quote.total) : ''}
+                    <span className="mt-0.5 block text-[11px] font-medium text-teal-800/50">
+                      {kind === 'private-longtail' ? t('addonPerBoat') : t('addonPerPerson')}
+                    </span>
+                  </p>
+                )}
               </div>
 
               {kind === 'scuba' ? (
@@ -668,7 +836,7 @@ export function AddonShop({
                       <button
                         key={tier.min}
                         type="button"
-                        disabled={!reachable || busyKind !== null}
+                        disabled={!reachable || paused}
                         onClick={() => setCount(kind, tier.min)}
                         className={cn(
                           'rounded-xl px-1.5 py-2 text-center ring-1 transition-colors',
@@ -691,51 +859,129 @@ export function AddonShop({
               ) : null}
               <OfferFaq kind={kind} />
 
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm font-medium text-teal-900/70">
-                  {kind === 'private-longtail' ? t('addonBoatPeople') : t('addonPeople')}
-                </p>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    aria-label={t('addonFewer')}
-                    disabled={count <= 1 || busyKind !== null}
-                    onClick={() => setCount(kind, count - 1)}
-                    className="flex size-11 items-center justify-center rounded-full bg-teal-950/[0.05] text-teal-900 ring-1 ring-teal-900/10 disabled:opacity-40"
-                  >
-                    <Minus className="size-4" />
-                  </button>
-                  <span className="w-8 text-center font-display text-2xl font-semibold tabular-nums text-teal-950">
-                    {count}
-                  </span>
-                  <button
-                    type="button"
-                    aria-label={t('addonMore')}
-                    disabled={count >= cap || busyKind !== null}
-                    onClick={() => setCount(kind, count + 1)}
-                    className="flex size-11 items-center justify-center rounded-full bg-teal-950/[0.05] text-teal-900 ring-1 ring-teal-900/10 disabled:opacity-40"
-                  >
-                    <Plus className="size-4" />
-                  </button>
+              {kind === 'share-longtail' ? (
+                <div className="space-y-2">
+                  {(
+                    [
+                      ['adult', t('addonAdult'), shareAdults],
+                      ['child', t('addonChild'), shareChildren],
+                    ] as const
+                  ).map(([band, label, value]) => (
+                    <div key={band} className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-medium text-teal-900/70">
+                        {label}
+                        {band === 'child' ? (
+                          <span className="ml-1.5 text-xs font-normal text-teal-800/55">
+                            {t('addonChildAge')}
+                          </span>
+                        ) : null}
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          aria-label={t('addonFewer')}
+                          disabled={
+                            paused ||
+                            value <= (band === 'adult' && shareChildren > 0 && !savedAdultOnBoat ? 1 : 0)
+                          }
+                          onClick={() => setShareCount(band, value - 1)}
+                          className="flex size-11 items-center justify-center rounded-full bg-teal-950/[0.05] text-teal-900 ring-1 ring-teal-900/10 disabled:opacity-40"
+                        >
+                          <Minus className="size-4" />
+                        </button>
+                        <span className="w-8 text-center font-display text-2xl font-semibold tabular-nums text-teal-950">
+                          {value}
+                        </span>
+                        <button
+                          type="button"
+                          aria-label={t('addonMore')}
+                          disabled={
+                            paused ||
+                            value >= (band === 'adult' ? adultRoomLeft : childRoomLeft) ||
+                            (band === 'child' && !adultCovered)
+                          }
+                          onClick={() => setShareCount(band, value + 1)}
+                          className="flex size-11 items-center justify-center rounded-full bg-teal-950/[0.05] text-teal-900 ring-1 ring-teal-900/10 disabled:opacity-40"
+                        >
+                          <Plus className="size-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  <p className="text-xs leading-snug text-teal-800/60">
+                    {t('addonShareBookingCap', { adults: bookingAdults, children: bookingChildren })}
+                  </p>
                 </div>
-              </div>
+              ) : (
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium text-teal-900/70">
+                    {kind === 'private-longtail' ? t('addonBoatPeople') : t('addonPeople')}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      aria-label={t('addonFewer')}
+                      disabled={count <= 1 || paused}
+                      onClick={() => setCount(kind, count - 1)}
+                      className="flex size-11 items-center justify-center rounded-full bg-teal-950/[0.05] text-teal-900 ring-1 ring-teal-900/10 disabled:opacity-40"
+                    >
+                      <Minus className="size-4" />
+                    </button>
+                    <span className="w-8 text-center font-display text-2xl font-semibold tabular-nums text-teal-950">
+                      {count}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={t('addonMore')}
+                      disabled={count >= cap || paused}
+                      onClick={() => setCount(kind, count + 1)}
+                      className="flex size-11 items-center justify-center rounded-full bg-teal-950/[0.05] text-teal-900 ring-1 ring-teal-900/10 disabled:opacity-40"
+                    >
+                      <Plus className="size-4" />
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="flex items-center justify-between rounded-xl bg-teal-950/[0.04] px-3.5 py-2.5">
                 <span className="text-sm text-teal-900/60">{t('addonTotal')}</span>
                 <span className="font-display text-lg font-semibold tabular-nums text-teal-950">
-                  {quote ? money(quote.total) : '—'}
+                  {kind === 'share-longtail'
+                    ? shareReady
+                      ? money(shareTotal)
+                      : '—'
+                    : quote
+                      ? money(quote.total)
+                      : '—'}
                 </span>
               </div>
+
+              {notedKind === kind ? (
+                <p className="text-sm font-semibold text-emerald-800">{t('addonJustAdded')}</p>
+              ) : null}
 
               <Button
                 type="button"
                 className="h-12 w-full bg-gradient-to-r from-teal-700 via-emerald-600 to-cyan-600 text-base shadow-md shadow-teal-700/25 hover:from-teal-800 hover:to-cyan-700"
-                disabled={!quote || busyKind !== null}
-                onClick={() => onAdd(kind, count)}
+                disabled={(kind === 'share-longtail' ? !shareReady : !quote) || paused}
+                onClick={() => {
+                  if (kind !== 'share-longtail') {
+                    void addOrMerge(kind, count)
+                    return
+                  }
+                  void (async () => {
+                    if (shareAdults > 0) {
+                      const adult = await addOrMerge(kind, shareAdults, 'adult')
+                      if (!adult.ok) return
+                    }
+                    if (shareChildren > 0) await addOrMerge(kind, shareChildren, 'child')
+                  })()
+                }}
               >
                 {busy ? t('addonAdding') : addLabel}
               </Button>
             </div>
+            ) : null}
           </article>
         )
       })}

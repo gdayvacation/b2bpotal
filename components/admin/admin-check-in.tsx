@@ -95,6 +95,7 @@ import {
   saveHelperBoardHours,
   type HelperBoardHours,
 } from '@/lib/check-in-helper'
+import { sharedLongtailQtyLabel } from '@/lib/check-in-addon-catalog'
 import { guestCheckInUrl } from '@/lib/check-in-qr'
 import { useQrDataUrl } from '@/lib/use-qr-data-url'
 import {
@@ -1669,6 +1670,7 @@ function TodayBoardTab({
           people: row.people,
           pricePerPerson: row.people > 0 ? Math.round(row.total / row.people) : 0,
           paid: row.paid,
+          confirmed: false,
         })),
       ),
     [dayServiceDetails],
@@ -3326,7 +3328,7 @@ function servicePurchaseSummary(services: CheckInServiceLine[]) {
   return services
     .map(
       (line) =>
-        `${checkInServiceLabel(line.kind)} ${serviceQtyLabel(line.kind, line.people)} ${serviceLineTotal(line).toLocaleString('en-US')} THB`,
+        `${checkInServiceLabel(line.kind)} ${line.kind === 'share-longtail' ? sharedLongtailQtyLabel(line.people, line.pricePerPerson) : serviceQtyLabel(line.kind, line.people)} ${serviceLineTotal(line).toLocaleString('en-US')} THB`,
     )
     .join(', ')
 }
@@ -3369,12 +3371,21 @@ function ServicePurchasesButton({
             <span key={line.id} className="flex items-center justify-between gap-1.5 text-[10px]">
               <span className="flex min-w-0 items-center gap-1">
                 <ServiceKindIcon kind={line.kind} size="sm" paid={line.paid} />
-                <span className="min-w-0 truncate font-semibold text-teal-950">
-                  {checkInServiceLabel(line.kind)}
-                  <span className="font-medium text-teal-900/50">
-                    {' '}
-                    {serviceQtyLabel(line.kind, line.people)}
+                <span className="min-w-0">
+                  <span className="block truncate font-semibold text-teal-950">
+                    {checkInServiceLabel(line.kind)}
+                    <span className="font-medium text-teal-900/50">
+                      {' '}
+                      {line.kind === 'share-longtail'
+                        ? sharedLongtailQtyLabel(line.people, line.pricePerPerson)
+                        : serviceQtyLabel(line.kind, line.people)}
+                    </span>
                   </span>
+                  {line.confirmed && !line.paid ? (
+                    <span className="block text-[9px] font-bold tracking-wide text-sky-800 uppercase">
+                      Wait pay
+                    </span>
+                  ) : null}
                 </span>
               </span>
               <span
@@ -3382,7 +3393,9 @@ function ServicePurchasesButton({
                   'shrink-0 font-semibold tabular-nums',
                   line.paid
                     ? 'text-teal-900/45 line-through decoration-teal-900/40'
-                    : 'text-orange-800',
+                    : line.confirmed
+                      ? 'text-sky-800'
+                      : 'text-orange-800',
                 )}
               >
                 {serviceLineTotal(line).toLocaleString('en-US')}
@@ -3443,7 +3456,8 @@ function sameServiceLine(a: CheckInServiceLine, b: CheckInServiceLine) {
     a.kind === b.kind &&
     a.people === b.people &&
     a.pricePerPerson === b.pricePerPerson &&
-    a.paid === b.paid
+    a.paid === b.paid &&
+    a.confirmed === b.confirmed
   )
 }
 
@@ -3530,6 +3544,7 @@ function BookingServicesDialog({
         people: nextPeople,
         pricePerPerson: nextPrice,
         paid: false,
+        confirmed: false,
       },
     ])
     setPeople('1')
@@ -3656,8 +3671,28 @@ function BookingServicesDialog({
                         onToggle={() => updateLine(line.id, { paid: !line.paid })}
                       />
                     </p>
+                    {!line.paid ? (
+                      <button
+                        type="button"
+                        onClick={() => updateLine(line.id, { confirmed: !line.confirmed })}
+                        className={cn(
+                          'mt-1.5 rounded-lg px-2 py-1 text-[11px] font-semibold ring-1',
+                          line.confirmed
+                            ? 'bg-sky-100 text-sky-900 ring-sky-200'
+                            : 'bg-white text-teal-900 ring-teal-900/15',
+                        )}
+                      >
+                        {line.confirmed
+                          ? 'Confirmed, waiting to pay — undo'
+                          : 'Confirm & give ticket'}
+                      </button>
+                    ) : null}
                     <p className="mt-1 text-[11px] font-medium text-teal-900/55">
-                      {line.paid ? 'Paid — click the amount to undo' : 'Click the amount to mark paid'}
+                      {line.paid
+                        ? 'Paid — click the amount to undo'
+                        : line.confirmed
+                          ? 'Ticket given. Click the amount when the guide is paid on the island.'
+                          : 'No cash at the marina? Confirm and give the ticket. Click the amount only when it is paid.'}
                     </p>
                   </div>
                   <button
