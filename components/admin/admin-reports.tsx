@@ -330,7 +330,7 @@ function BookingReport({ onBack }: { onBack: () => void }) {
   const [calendarOpen, setCalendarOpen] = useState(false)
   const [program, setProgram] = useState<ProgramFilter>('all')
   const [agentSlug, setAgentSlug] = useState('all')
-  const [includeCancelled, setIncludeCancelled] = useState(false)
+  const [includeCancelled, setIncludeCancelled] = useState(true)
   const [sortKey, setSortKey] = useState<SortKey>('pickup')
   const [exporting, setExporting] = useState<'csv' | 'xlsx' | null>(null)
 
@@ -464,7 +464,7 @@ function BookingReport({ onBack }: { onBack: () => void }) {
         </div>
         <PageHeader
           title="OP and Booking Report"
-          description="Filter bookings by date, program, and agent — then print or download CSV / Excel."
+          description="Filter bookings by date, program, agent, and cancelled — then print or download CSV / Excel."
           actions={
             <div className="flex flex-wrap items-center gap-2">
               <Button
@@ -559,6 +559,18 @@ function BookingReport({ onBack }: { onBack: () => void }) {
             </div>
 
             <div className="space-y-2">
+              <SoftLabel>Cancelled</SoftLabel>
+              <SegmentedControl>
+                <Segment active={includeCancelled} onClick={() => setIncludeCancelled(true)}>
+                  Include cancelled
+                </Segment>
+                <Segment active={!includeCancelled} onClick={() => setIncludeCancelled(false)}>
+                  Not include cancelled
+                </Segment>
+              </SegmentedControl>
+            </div>
+
+            <div className="space-y-2">
               <SoftLabel htmlFor="report-sort">Sort by</SoftLabel>
               <select
                 id="report-sort"
@@ -574,17 +586,6 @@ function BookingReport({ onBack }: { onBack: () => void }) {
               </select>
             </div>
 
-            <div className="space-y-2">
-              <SoftLabel>Status</SoftLabel>
-              <SegmentedControl>
-                <Segment active={!includeCancelled} onClick={() => setIncludeCancelled(false)}>
-                  Active only
-                </Segment>
-                <Segment active={includeCancelled} onClick={() => setIncludeCancelled(true)}>
-                  Include cancelled
-                </Segment>
-              </SegmentedControl>
-            </div>
           </div>
         </Surface>
 
@@ -605,7 +606,7 @@ function BookingReport({ onBack }: { onBack: () => void }) {
               <p className="text-sm font-semibold text-teal-950">Preview</p>
               <p className="text-xs text-teal-900/45">
                 {rows.length} row{rows.length === 1 ? '' : 's'} · sorted by {sortLabel.toLowerCase()}
-                {includeCancelled ? ' · includes cancelled' : ''}
+                {includeCancelled ? ' · includes cancelled' : ' · cancelled not included'}
                 {program === 'all' ? ' · Phi Phi then James Bond' : ''}
               </p>
             </div>
@@ -785,7 +786,8 @@ function ReportPrintSheet({
           <p className="mt-0.5 text-sm font-semibold text-teal-900">{programLabel}</p>
           <p className="mt-0.5 text-xs text-teal-900/60">
             {agentLabel}
-            {includeCancelled ? ' · includes cancelled' : ''} · sorted by {sortLabel.toLowerCase()}
+            {includeCancelled ? ' · includes cancelled' : ' · cancelled not included'} · sorted by{' '}
+            {sortLabel.toLowerCase()}
             {program === 'all' ? ' · Phi Phi then James Bond' : ''}
           </p>
         </div>
@@ -922,6 +924,11 @@ function BookingReportSection({
                   <div className="break-words leading-snug font-medium text-teal-950">
                     {booking.leadGuest}
                   </div>
+                  {!isActiveBooking(booking) ? (
+                    <div className="text-[10px] font-semibold tracking-wide text-rose-700 uppercase">
+                      Cancelled
+                    </div>
+                  ) : null}
                   {bookingMoveNote(booking, formatShortDate) ? (
                     <div className="text-[10px] font-semibold text-amber-800">
                       {bookingMoveNote(booking, formatShortDate)}
@@ -1109,6 +1116,11 @@ function BookingPrintSection({
               </td>
               <td className="border border-teal-900/10 px-1.5 py-1 whitespace-normal break-words font-medium text-teal-950">
                 {booking.leadGuest}
+                {!isActiveBooking(booking) ? (
+                  <div className="text-[9px] font-bold tracking-wide text-rose-700 uppercase">
+                    Cancelled
+                  </div>
+                ) : null}
                 {bookingMoveNote(booking, formatShortDate) ? (
                   <div className="text-[10px] font-semibold text-amber-800">
                     {bookingMoveNote(booking, formatShortDate)}

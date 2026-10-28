@@ -9,6 +9,7 @@ export type ReportExportRow = {
   Date: string
   Program: string
   Guest: string
+  Status: string
   Adults: number
   Children: number
   Infants: number
@@ -32,6 +33,7 @@ const HEADERS = [
   'Date',
   'Program',
   'Guest',
+  'Status',
   'Adults',
   'Children',
   'Infants',
@@ -56,6 +58,7 @@ export function bookingsToReportRows(bookings: Booking[]): ReportExportRow[] {
     Date: booking.date,
     Program: booking.program === 'PP' ? 'Phi Phi' : 'James Bond',
     Guest: booking.leadGuest,
+    Status: booking.status === 'Cancelled' ? 'Cancelled' : 'Active',
     Adults: booking.adults,
     Children: booking.children,
     Infants: booking.infants,
