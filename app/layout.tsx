@@ -42,12 +42,22 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  const supabaseHost = process.env.NEXT_PUBLIC_SUPABASE_URL
+    ? new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).host
+    : 'svqvdctbiieigzoaadwf.supabase.co'
+
   return (
     <html
       lang="en"
       data-scroll-behavior="smooth"
       className={`light ${jakarta.variable} ${sora.variable}`}
     >
+      <head>
+        {/* Pre-establish connections to Supabase so the first DB/auth request
+            skips DNS lookup + TLS handshake (~50-100 ms savings per new tab). */}
+        <link rel="preconnect" href={`https://${supabaseHost}`} />
+        <link rel="dns-prefetch" href={`https://${supabaseHost}`} />
+      </head>
       <body className={`${jakarta.className} min-h-dvh text-teal-950 antialiased`}>
         <Providers>{children}</Providers>
         {process.env.NODE_ENV === 'production' && <Analytics />}

@@ -2965,8 +2965,9 @@ export async function fetchCheckInMaps(
     : sinceDate || untilDate
       ? { sinceDate, untilDate }
       : undefined
-  // PERF sprint-5: cap concurrency at 4 instead of firing all 8 table queries at once.
-  // See runWithConcurrencyLimit for why — avoids starving the 10-connection PostgREST pool.
+  // Pro plan: raised concurrency cap from 4 → 8 (pool is 200 connections; 8 simultaneous
+  // table queries per sync is safe even with 10+ staff tabs open during rush hour).
+  // Free-plan comment: was capped at 4 to avoid starving the 10-connection PostgREST pool.
   const [
     enrollmentsRes,
     attendanceRes,
@@ -2987,7 +2988,7 @@ export async function fetchCheckInMaps(
       () => fetchAllCheckInRows<CheckInNoteRow>('check_in_notes', range),
       () => fetchAllCheckInRows<CheckInGroupGuideRow>('check_in_group_guides', range),
     ],
-    4,
+    8, // Pro plan: raised from 4 → 8 (200-connection pool, safe for 10+ concurrent staff tabs)
   )
 
   if (enrollmentsRes.error || attendanceRes.error || paymentsRes.error) {
