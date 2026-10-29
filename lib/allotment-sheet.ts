@@ -89,6 +89,10 @@ export type AllotmentSheetBooking = {
   hotel: string
   adults: number
   children: number
+  chargedCancel?: boolean
+  dateChanged?: boolean
+  /** Arrived, Cancelled, or Change Date. Empty when none of those apply. */
+  status?: string
 }
 
 export type AllotmentSheetLine = {
@@ -208,10 +212,13 @@ export function buildAllotmentSheet(input: {
     if (day < earliest) continue
     const saved = savedByDay.get(day)
     const booking = bookingByDay.get(day)
-    if (saved && saved.totalDeduct <= 0) continue
+    const savedHeads = Math.max(0, saved?.totalDeduct ?? 0)
+    const bookingHeads = Math.max(0, booking?.totalDeduct ?? 0)
+    // A saved 0 must not hide live bookings. Charged cancels are already inside bookingHeads.
+    if (savedHeads <= 0 && bookingHeads <= 0) continue
     const pending = !saved
     // A saved daily total can be only part of the day (one invoice). Every booking on the day is still used.
-    const heads = Math.max(saved?.totalDeduct ?? 0, booking?.totalDeduct ?? 0)
+    const heads = Math.max(savedHeads, bookingHeads)
     if (heads <= 0) continue
     const counted = saved ? Boolean(saved.allotmentId) || day <= input.today : day <= input.today
     const mix =
@@ -234,6 +241,8 @@ export function buildAllotmentSheet(input: {
         hotel: item.hotel,
         adults: item.adults,
         children: item.children,
+        chargedCancel: item.chargedCancel,
+        dateChanged: item.dateChanged,
       })),
       headsDelta: -heads,
       moneyDelta: value === 0 ? null : -value,

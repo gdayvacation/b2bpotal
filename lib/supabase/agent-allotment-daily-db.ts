@@ -1,5 +1,11 @@
 import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/client'
-import type { Program } from '@/lib/types'
+import {
+  bookedPaxOf,
+  chargedCancelDeductsAllotment,
+  countsTowardAllotment,
+  type Booking,
+  type Program,
+} from '@/lib/types'
 
 export type AgentAllotmentDaily = {
   id: string
@@ -144,6 +150,10 @@ export type AgentBookingLine = {
   hotel: string
   adults: number
   children: number
+  /** Cancelled with a charge. Still uses prebuy heads. */
+  chargedCancel?: boolean
+  /** This booking was moved onto this tour date. */
+  dateChanged?: boolean
 }
 
 export type AgentBookingDayPax = {
@@ -155,9 +165,9 @@ export type AgentBookingDayPax = {
 }
 
 /**
- * Active booking AD+CH heads by tour date for one agent.
- * Paginates past the API 1000-row cap so allotment FIFO can backfill days
- * before Daily checker rows exist.
+ * Chargeable AD+CH heads by tour date for one agent.
+ * Includes confirmed bookings and cancelled-with-charge bookings.
+ * Complimentary cancels stay out. Paginates past the API 1000-row cap.
  */
 export async function fetchAgentBookingDayPax(
   agentSlug: string,
@@ -174,10 +184,11 @@ export async function fetchAgentBookingDayPax(
   while (true) {
     const { data, error } = await supabase
       .from('bookings')
-      .select('code,agent_ref,lead_guest,pickup_hotel,date,adults,children,status')
+      .select(
+        'code,agent_ref,lead_guest,pickup_hotel,date,adults,children,status,late_cancel,cancel_fee,original_adults,original_children,late_date_change,no_show_date_move,moved_from_code',
+      )
       .eq('agent_slug', slug)
       .eq('program', program)
-      .neq('status', 'Cancelled')
       .order('date', { ascending: true })
       .order('code', { ascending: true })
       .range(from, from + pageSize - 1)
@@ -193,6 +204,13 @@ export async function fetchAgentBookingDayPax(
       adults: number | string | null
       children: number | string | null
       status: string
+      late_cancel: boolean | null
+      cancel_fee: number | string | null
+      original_adults: number | string | null
+      original_children: number | string | null
+      late_date_change: boolean | null
+      no_show_date_move: boolean | null
+      moved_from_code: string | null
     }[]
 
     for (const row of rows) {
@@ -200,9 +218,47 @@ export async function fetchAgentBookingDayPax(
       if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue
       const adults = Math.max(0, Math.floor(Number(row.adults) || 0))
       const children = Math.max(0, Math.floor(Number(row.children) || 0))
+      const originalAdults =
+        row.original_adults == null ? null : Math.max(0, Math.floor(Number(row.original_adults) || 0))
+      const originalChildren =
+        row.original_children == null
+          ? null
+          : Math.max(0, Math.floor(Number(row.original_children) || 0))
+      const shaped: Pick<
+        Booking,
+        'status' | 'lateCancel' | 'cancelFee' | 'adults' | 'children' | 'infants' | 'tourLeaders'
+      > & { originalPax?: Booking['originalPax'] } = {
+        status: row.status === 'Cancelled' ? 'Cancelled' : 'Confirmed',
+        lateCancel: row.late_cancel === true,
+        cancelFee:
+          row.cancel_fee == null ? undefined : Math.max(0, Math.floor(Number(row.cancel_fee) || 0)),
+        adults,
+        children,
+        infants: 0,
+        tourLeaders: 0,
+        originalPax:
+          originalAdults == null && originalChildren == null
+            ? null
+            : {
+                adults: originalAdults ?? adults,
+                children: originalChildren ?? children,
+                infants: 0,
+                tourLeaders: 0,
+              },
+      }
+      if (!countsTowardAllotment(shaped)) continue
+      const chargedCancel = chargedCancelDeductsAllotment(shaped)
+      const dateChanged =
+        row.late_date_change === true ||
+        row.no_show_date_move === true ||
+        Boolean(String(row.moved_from_code ?? '').trim())
+      const pax = chargedCancel ? bookedPaxOf(shaped) : shaped
+      const useAdults = Math.max(0, pax.adults)
+      const useChildren = Math.max(0, pax.children)
+      if (useAdults + useChildren <= 0) continue
       const current = byDay.get(day) ?? { adults: 0, children: 0, bookings: [] }
-      current.adults += adults
-      current.children += children
+      current.adults += useAdults
+      current.children += useChildren
       const code = String(row.code ?? '').trim()
       if (code) {
         current.bookings.push({
@@ -210,8 +266,10 @@ export async function fetchAgentBookingDayPax(
           agentRef: String(row.agent_ref ?? '').trim(),
           guestName: String(row.lead_guest ?? '').trim(),
           hotel: String(row.pickup_hotel ?? '').trim(),
-          adults,
-          children,
+          adults: useAdults,
+          children: useChildren,
+          chargedCancel,
+          dateChanged,
         })
       }
       byDay.set(day, current)

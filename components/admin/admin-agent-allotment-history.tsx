@@ -250,7 +250,11 @@ export function AdminAgentAllotmentHistory({
 
       // Build daily totals for FIFO allocation
       const agentBookings = bookings.filter(
-        (b) => b.agentSlug === agentSlug && countsTowardAllotment(b) && b.date <= today,
+        (b) =>
+          b.agentSlug === agentSlug &&
+          b.program === program &&
+          countsTowardAllotment(b) &&
+          b.date <= today,
       )
       const dailyTotals = new Map<string, number>()
       for (const bk of agentBookings) {
@@ -394,7 +398,7 @@ export function AdminAgentAllotmentHistory({
     for (const lc of selectedLotCards) {
       const effectiveStart = lc.startDate ?? '0000-00-00'
       for (const bk of bookings) {
-        if (bk.agentSlug !== lc.lot.agentSlug || !countsTowardAllotment(bk)) continue
+        if (bk.agentSlug !== lc.lot.agentSlug || bk.program !== program || !countsTowardAllotment(bk)) continue
         if (bk.date > today || bk.date > lc.endDate || bk.date < effectiveStart) continue
         rawHeadsByDay.set(bk.date, (rawHeadsByDay.get(bk.date) ?? 0) + allotmentHeadUse(bk))
       }
@@ -473,7 +477,7 @@ export function AdminAgentAllotmentHistory({
     for (const lc of selectedLotCards) {
       const effectiveStart = lc.startDate ?? '0000-00-00'
       for (const bk of bookings) {
-        if (bk.agentSlug !== lc.lot.agentSlug || !countsTowardAllotment(bk)) continue
+        if (bk.agentSlug !== lc.lot.agentSlug || bk.program !== program || !countsTowardAllotment(bk)) continue
         if (bk.date > today || bk.date > lc.endDate || bk.date < effectiveStart) continue
         if (filterProgram && bk.program !== filterProgram) continue
         if (guestQ && !bk.leadGuest.toLowerCase().includes(guestQ)) continue
@@ -600,6 +604,7 @@ export function AdminAgentAllotmentHistory({
     filterVc,
     purchasedByAgent,
     ratesByAgent,
+    program,
     selectedLotCards,
   ])
 
@@ -632,7 +637,13 @@ export function AdminAgentAllotmentHistory({
 
     // All agent bookings sorted chronologically
     const agentBookings = bookings
-      .filter((bk) => bk.agentSlug === expandedAgentSlug && countsTowardAllotment(bk) && bk.date <= todayCap)
+      .filter(
+        (bk) =>
+          bk.agentSlug === expandedAgentSlug &&
+          bk.program === program &&
+          countsTowardAllotment(bk) &&
+          bk.date <= todayCap,
+      )
       .sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code))
 
     // Daily totals for FIFO
@@ -711,7 +722,7 @@ export function AdminAgentAllotmentHistory({
 
       return { lotCard: fifoLotCard, days }
     })
-  }, [expandedAgentSlug, agentGroups, bookings])
+  }, [expandedAgentSlug, agentGroups, bookings, program])
 
   const bookingTotals = useMemo(() => {
     return lines.reduce(

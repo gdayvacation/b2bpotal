@@ -79,8 +79,18 @@ import {
   type AgentAllotmentDaily,
   type AgentBookingDayPax,
 } from '@/lib/supabase/agent-allotment-daily-db'
-import type { Program } from '@/lib/types'
+import type { CheckInAttendance, Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
+
+function allotmentGuestStatus(
+  booking: { chargedCancel?: boolean; dateChanged?: boolean },
+  attendance: CheckInAttendance | null,
+) {
+  if (booking.chargedCancel) return 'Canceled'
+  if (booking.dateChanged) return 'Change Date'
+  if (attendance === 'checked') return 'Arrived'
+  return ''
+}
 
 type View = 'hub' | 'add' | 'history' | 'agent' | 'lot'
 
@@ -807,7 +817,7 @@ function LotCardStats({
 }
 
 export function AdminAgentAllotment() {
-  const { agents, addAgent } = usePortal()
+  const { agents, addAgent, getCheckInAttendance } = usePortal()
   const today = usePortalTodayISO()
   const [view, setView] = useState<View>('hub')
   const [showLots, setShowLots] = useState(false)
@@ -823,6 +833,7 @@ export function AdminAgentAllotment() {
   const [advanceExpanded, setAdvanceExpanded] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
+  const [bookingPaxError, setBookingPaxError] = useState('')
   const [draft, setDraft] = useState<Draft>(emptyDraft)
   const [addError, setAddError] = useState('')
   const [adding, setAdding] = useState(false)
@@ -1145,8 +1156,17 @@ export function AdminAgentAllotment() {
         daily: selectedAgentDaily,
         bookings: bookingDayPax,
         today,
-      }),
-    [selectedAgentRows, selectedAgentDaily, bookingDayPax, today],
+      }).map((line) => ({
+        ...line,
+        bookings: line.bookings.map((booking) => ({
+          ...booking,
+          status: allotmentGuestStatus(
+            booking,
+            getCheckInAttendance(line.date, workProgram, booking.code),
+          ),
+        })),
+      })),
+    [selectedAgentRows, selectedAgentDaily, bookingDayPax, today, getCheckInAttendance, workProgram],
   )
   const sheetTotals = useMemo(() => allotmentSheetTotals(sheetLines), [sheetLines])
   const lotBooks = useMemo(
@@ -1283,16 +1303,27 @@ export function AdminAgentAllotment() {
     let cancelled = false
     if (!selectedAgentSlug) {
       setBookingDayPax([])
+      setBookingPaxError('')
       return
     }
     setAdvanceExpanded(false)
     void fetchAgentBookingDayPax(selectedAgentSlug, workProgram)
       .then((rows) => {
-        if (!cancelled) setBookingDayPax(rows)
+        if (!cancelled) {
+          setBookingDayPax(rows)
+          setBookingPaxError('')
+        }
       })
       .catch((caught) => {
         console.error('[allotment] booking day pax failed', caught)
-        if (!cancelled) setBookingDayPax([])
+        if (!cancelled) {
+          setBookingDayPax([])
+          setBookingPaxError(
+            caught instanceof Error
+              ? caught.message
+              : 'Could not load booking heads for this allotment.',
+          )
+        }
       })
     return () => {
       cancelled = true
@@ -2577,6 +2608,11 @@ export function AdminAgentAllotment() {
           }
         />
         {programBar}
+        {bookingPaxError ? (
+          <p className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-800">
+            {bookingPaxError}
+          </p>
+        ) : null}
 
         <div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           <Surface className="px-4 py-3">

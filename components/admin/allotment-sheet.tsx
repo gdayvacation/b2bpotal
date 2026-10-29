@@ -346,24 +346,47 @@ export function AllotmentSheet({
               {usageParts(line.note).map((part) => part.label).join(' · ') || 'No bookings for this day.'}
             </p>
           ) : (
-            <table className="w-auto text-[12px]">
+            <table className="w-full table-fixed text-[12px]">
+              <colgroup>
+                <col className="w-[18%]" />
+                <col className="w-[24%]" />
+                <col className="w-[32%]" />
+                <col className="w-[8%]" />
+                <col className="w-[8%]" />
+                <col className="w-[10%]" />
+              </colgroup>
               <thead>
                 <tr className="text-left text-[11px] font-semibold tracking-wide text-teal-900/45">
-                  <th className="py-1 pr-6 font-semibold whitespace-nowrap">Agent reference</th>
+                  <th className="py-1 pr-3 font-semibold whitespace-nowrap">Agent reference</th>
                   <th className="py-1 pr-6 font-semibold whitespace-nowrap">Guest name</th>
                   <th className="py-1 pr-6 font-semibold whitespace-nowrap">Hotel</th>
                   <th className="py-1 pr-6 text-right font-semibold whitespace-nowrap">Adults</th>
-                  <th className="py-1 text-right font-semibold whitespace-nowrap">Children</th>
+                  <th className="py-1 pr-6 text-right font-semibold whitespace-nowrap">Children</th>
+                  <th className="py-1 font-semibold whitespace-nowrap">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {line.bookings.map((booking) => (
                   <tr key={booking.code}>
-                    <td className="py-0.5 pr-6 whitespace-nowrap">{booking.agentRef || '—'}</td>
-                    <td className="py-0.5 pr-6 whitespace-nowrap">{booking.guestName || '—'}</td>
-                    <td className="py-0.5 pr-6 whitespace-nowrap">{booking.hotel || '—'}</td>
+                    <td className="truncate py-0.5 pr-3 whitespace-nowrap" title={booking.agentRef || undefined}>
+                      {booking.agentRef || '—'}
+                    </td>
+                    <td className="truncate py-0.5 pr-6 whitespace-nowrap" title={booking.guestName || undefined}>
+                      {booking.guestName || '—'}
+                    </td>
+                    <td className="truncate py-0.5 pr-6 whitespace-nowrap" title={booking.hotel || undefined}>
+                      {booking.hotel || '—'}
+                    </td>
                     <td className="py-0.5 pr-6 text-right tabular-nums">{booking.adults}</td>
-                    <td className="py-0.5 text-right tabular-nums">{booking.children}</td>
+                    <td className="py-0.5 pr-6 text-right tabular-nums">{booking.children}</td>
+                    <td
+                      className={cn(
+                        'py-0.5 whitespace-nowrap',
+                        booking.status === 'Canceled' && 'font-medium text-red-600',
+                      )}
+                    >
+                      {booking.status || '—'}
+                    </td>
                   </tr>
                 ))}
               </tbody>

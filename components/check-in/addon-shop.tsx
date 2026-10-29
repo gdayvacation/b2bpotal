@@ -27,7 +27,7 @@ import type { CheckInCopyKey } from '@/lib/check-in-i18n'
 const OFFER_ORDER: CheckInServiceKind[] = ['scuba', 'share-longtail', 'private-longtail']
 
 const OFFER_PHOTOS: Record<CheckInServiceKind, string[]> = {
-  scuba: ['/addons/scuba-reef.jpg', '/addons/scuba-gear-boat.jpg', '/addons/scuba.png'],
+  scuba: ['/addons/scuba-diver.jpg', '/addons/scuba-reef.jpg', '/addons/scuba.png'],
   'share-longtail': [
     '/addons/shared-guests.jpg',
     '/addons/shared-swim.jpg',
@@ -151,8 +151,14 @@ function OfferFaq({ kind }: { kind: CheckInServiceKind }) {
               />
             </span>
             {shown ? (
-              <span className="mt-1.5 block text-[13px] leading-snug text-teal-900/70">
-                {t(answer)}
+              <span className="mt-1.5 block space-y-1 text-[13px] leading-snug text-teal-900/70">
+                {t(answer)
+                  .split('\n')
+                  .map((line) => (
+                    <span key={line} className="block">
+                      {line}
+                    </span>
+                  ))}
               </span>
             ) : null}
           </button>
@@ -646,7 +652,7 @@ export function AddonShop({
                               )}
                             >
                               <span className="block text-[10px] font-semibold">
-                                {tier.min}–{tier.max}
+                                {tier.min}–{tier.max} {t('addonPerson')}
                               </span>
                               <span className="block text-[10px] font-semibold tabular-nums">
                                 {money(tier.price)}
@@ -847,7 +853,7 @@ export function AddonShop({
                         )}
                       >
                         <span className="block text-[10px] font-semibold tracking-wide uppercase">
-                          {tier.min}–{tier.max}
+                          {tier.min}–{tier.max} {t('addonPerson')}
                         </span>
                         <span className="mt-0.5 block text-xs font-semibold tabular-nums">
                           {money(tier.price)}
