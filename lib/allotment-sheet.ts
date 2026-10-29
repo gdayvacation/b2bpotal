@@ -93,7 +93,7 @@ export type AllotmentSheetBooking = {
   chargedCancel?: boolean
   dateChanged?: boolean
   noTransfer?: boolean
-  /** Arrived, Cancelled, or Change Date. Empty when none of those apply. */
+  /** Canceled when the booking was cancelled with a charge. Empty otherwise. */
   status?: string
 }
 

@@ -382,11 +382,11 @@ export function AllotmentSheet({
                     <td className="max-w-[14rem] truncate py-px pr-3 whitespace-nowrap" title={booking.hotel || undefined}>
                       {booking.hotel || '—'}
                     </td>
-                    <td className="py-px pr-3 whitespace-nowrap">{booking.noTransfer ? 'NoTF' : '—'}</td>
+                    <td className="py-px pr-3 whitespace-nowrap">{booking.noTransfer ? 'NoTF' : ''}</td>
                     <td className="py-px pr-3 text-right tabular-nums">{booking.adults}</td>
                     <td className="py-px pr-3 text-right tabular-nums">{booking.children}</td>
                     <td className="py-px pr-3 text-right whitespace-nowrap tabular-nums text-rose-700">
-                      {refund === 0 ? '—' : `-${formatMoney(refund)}`}
+                      {refund === 0 ? '' : `-${formatMoney(refund)}`}
                     </td>
                     <td
                       className={cn(
@@ -394,7 +394,7 @@ export function AllotmentSheet({
                         booking.status === 'Canceled' && 'font-medium text-red-600',
                       )}
                     >
-                      {booking.status || '—'}
+                      {booking.status === 'Canceled' ? 'Canceled' : ''}
                     </td>
                   </tr>
                   )

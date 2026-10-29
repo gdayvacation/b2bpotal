@@ -90,17 +90,11 @@ import {
   type AgentAllotmentDaily,
   type AgentBookingDayPax,
 } from '@/lib/supabase/agent-allotment-daily-db'
-import type { CheckInAttendance, Program } from '@/lib/types'
+import type { Program } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
-function allotmentGuestStatus(
-  booking: { chargedCancel?: boolean; dateChanged?: boolean },
-  attendance: CheckInAttendance | null,
-) {
-  if (booking.chargedCancel) return 'Canceled'
-  if (booking.dateChanged) return 'Change Date'
-  if (attendance === 'checked') return 'Arrived'
-  return ''
+function allotmentGuestStatus(booking: { chargedCancel?: boolean }) {
+  return booking.chargedCancel ? 'Canceled' : ''
 }
 
 type View = 'hub' | 'add' | 'history' | 'agent' | 'lot'
@@ -828,7 +822,7 @@ function LotCardStats({
 }
 
 export function AdminAgentAllotment() {
-  const { agents, addAgent, getCheckInAttendance } = usePortal()
+  const { agents, addAgent } = usePortal()
   const today = usePortalTodayISO()
   const [view, setView] = useState<View>('hub')
   const [showLots, setShowLots] = useState(false)
@@ -1175,13 +1169,10 @@ export function AdminAgentAllotment() {
         ...line,
         bookings: line.bookings.map((booking) => ({
           ...booking,
-          status: allotmentGuestStatus(
-            booking,
-            getCheckInAttendance(line.date, workProgram, booking.code),
-          ),
+          status: allotmentGuestStatus(booking),
         })),
       })),
-    [selectedAgentRows, selectedAgentDaily, bookingDayPax, today, getCheckInAttendance, workProgram],
+    [selectedAgentRows, selectedAgentDaily, bookingDayPax, today],
   )
   const exportMonths = useMemo(() => {
     const months = [...new Set(sheetLines.map((line) => line.date.slice(0, 7)))]

@@ -155,7 +155,7 @@ export async function downloadAllotmentExcel(input: {
         booking.noTransfer
           ? -(booking.adults + booking.children) * 100
           : '',
-        booking.status || '',
+        booking.status === 'Canceled' ? 'Canceled' : '',
       ]),
     ),
   ]
@@ -207,8 +207,9 @@ export function printAllotmentPdf(input: {
           : `<tr><td></td><td colspan="6"><table class="guests"><thead><tr><th>Reference</th><th>Guest</th><th>Hotel</th><th>Transfers</th><th>AD</th><th>CH</th><th>Refund</th><th>Status</th></tr></thead><tbody>${line.bookings
               .map((booking) => {
                 const people = Math.max(0, booking.adults) + Math.max(0, booking.children)
-                const refund = booking.noTransfer && people > 0 ? `-${(people * 100).toLocaleString('en-US')}` : '—'
-                return `<tr><td>${escapeHtml(booking.agentRef || '—')}</td><td>${escapeHtml(booking.guestName || '—')}</td><td>${escapeHtml(booking.hotel || '—')}</td><td>${booking.noTransfer ? 'NoTF' : '—'}</td><td class="num">${booking.adults}</td><td class="num">${booking.children}</td><td class="num refund">${refund}</td><td class="${booking.status === 'Canceled' ? 'cancel' : ''}">${escapeHtml(booking.status || '—')}</td></tr>`
+                const refund = booking.noTransfer && people > 0 ? `-${(people * 100).toLocaleString('en-US')}` : ''
+                const status = booking.status === 'Canceled' ? 'Canceled' : ''
+                return `<tr><td>${escapeHtml(booking.agentRef || '—')}</td><td>${escapeHtml(booking.guestName || '—')}</td><td>${escapeHtml(booking.hotel || '—')}</td><td>${booking.noTransfer ? 'NoTF' : ''}</td><td class="num">${booking.adults}</td><td class="num">${booking.children}</td><td class="num refund">${refund}</td><td class="${status ? 'cancel' : ''}">${escapeHtml(status)}</td></tr>`
               })
               .join('')}</tbody></table></td></tr>`
       return `<tr><td>${escapeHtml(formatShortDate(line.date))}</td><td>${escapeHtml(lineType(line))}</td><td>${escapeHtml(lineDetail(line))}</td><td class="num">${line.headsDelta > 0 ? '+' : ''}${line.headsDelta}</td><td class="num">${line.headsLeft}</td><td class="num">${line.moneyDelta == null ? '—' : money(line.moneyDelta)}</td><td class="num">${money(line.moneyLeft)}</td></tr>${bookingRows}`
