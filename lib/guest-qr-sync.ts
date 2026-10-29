@@ -1,7 +1,15 @@
 import { todayISO } from '@/lib/format'
 
-/** Guest QR repeat fetch / Realtime cutoff: 12:00 Asia/Bangkok on the tour date. */
-const GUEST_QR_FETCH_CUTOFF_HOUR_BKK = 12
+/**
+ * Guest QR repeat fetch / Realtime cutoff: 19:00 Asia/Bangkok on the tour date.
+ *
+ * Previously 12:00 (noon) to save Supabase load on the Free plan.
+ * On Pro plan the connection pool (200) and Realtime quota (5 M msg/month,
+ * currently at 6%) are large enough to keep guests live all day until check-in
+ * officially closes at 19:00.  This matches the GuestAccessGate close time so
+ * guests who open their QR late in the afternoon still see live boat updates.
+ */
+const GUEST_QR_FETCH_CUTOFF_HOUR_BKK = 19
 
 /**
  * Whether a guest QR tab may keep polling or Realtime for boat updates.
@@ -11,7 +19,7 @@ export function guestQrRepeatFetchOpen(tourDate: string, now = new Date()): bool
   return msUntilGuestQrRepeatFetchCutoff(tourDate, now) > 0
 }
 
-/** Milliseconds until noon Bangkok on the tour date; 0 if already past cutoff or invalid. */
+/** Milliseconds until 19:00 Bangkok on the tour date; 0 if already past cutoff or invalid. */
 export function msUntilGuestQrRepeatFetchCutoff(tourDate: string, now = new Date()): number {
   const day = tourDate.slice(0, 10)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return 0
