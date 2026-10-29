@@ -24,9 +24,10 @@ import {
 import { formatMonthLabel, formatShortDate, todayISO } from '@/lib/format'
 import { listAgentAllotments, type AgentAllotment } from '@/lib/supabase/agent-allotment-db'
 import {
-  chargeablePax,
+  allotmentHeadUse,
+  chargedCancelDeductsAllotment,
+  countsTowardAllotment,
   formatPaxBreakdown,
-  isActiveBooking,
   type Booking,
   type Program,
 } from '@/lib/types'
@@ -249,11 +250,11 @@ export function AdminAgentAllotmentHistory({
 
       // Build daily totals for FIFO allocation
       const agentBookings = bookings.filter(
-        (b) => b.agentSlug === agentSlug && isActiveBooking(b) && b.date <= today,
+        (b) => b.agentSlug === agentSlug && countsTowardAllotment(b) && b.date <= today,
       )
       const dailyTotals = new Map<string, number>()
       for (const bk of agentBookings) {
-        dailyTotals.set(bk.date, (dailyTotals.get(bk.date) ?? 0) + chargeablePax(bk))
+        dailyTotals.set(bk.date, (dailyTotals.get(bk.date) ?? 0) + allotmentHeadUse(bk))
       }
       const daily = [...dailyTotals.entries()].map(([day, totalDeduct]) => ({ day, totalDeduct }))
 
@@ -393,9 +394,9 @@ export function AdminAgentAllotmentHistory({
     for (const lc of selectedLotCards) {
       const effectiveStart = lc.startDate ?? '0000-00-00'
       for (const bk of bookings) {
-        if (bk.agentSlug !== lc.lot.agentSlug || !isActiveBooking(bk)) continue
+        if (bk.agentSlug !== lc.lot.agentSlug || !countsTowardAllotment(bk)) continue
         if (bk.date > today || bk.date > lc.endDate || bk.date < effectiveStart) continue
-        rawHeadsByDay.set(bk.date, (rawHeadsByDay.get(bk.date) ?? 0) + chargeablePax(bk))
+        rawHeadsByDay.set(bk.date, (rawHeadsByDay.get(bk.date) ?? 0) + allotmentHeadUse(bk))
       }
     }
 
@@ -472,7 +473,7 @@ export function AdminAgentAllotmentHistory({
     for (const lc of selectedLotCards) {
       const effectiveStart = lc.startDate ?? '0000-00-00'
       for (const bk of bookings) {
-        if (bk.agentSlug !== lc.lot.agentSlug || !isActiveBooking(bk)) continue
+        if (bk.agentSlug !== lc.lot.agentSlug || !countsTowardAllotment(bk)) continue
         if (bk.date > today || bk.date > lc.endDate || bk.date < effectiveStart) continue
         if (filterProgram && bk.program !== filterProgram) continue
         if (guestQ && !bk.leadGuest.toLowerCase().includes(guestQ)) continue
@@ -510,7 +511,9 @@ export function AdminAgentAllotmentHistory({
           agentSlug,
           agentName,
           guestName: booking.leadGuest,
-          bookingLabel: `${programLabel(booking.program)} · ${booking.status}`,
+          bookingLabel: chargedCancelDeductsAllotment(booking)
+            ? `${programLabel(booking.program)} · Cancelled · charge`
+            : `${programLabel(booking.program)} · ${booking.status}`,
           paxLabel: formatPaxBreakdown(booking),
           program: booking.program,
           adults,
@@ -519,7 +522,7 @@ export function AdminAgentAllotmentHistory({
           childPrice: rates.childPrice,
           amountAd: rates.adultPrice > 0 ? adults * rates.adultPrice : null,
           amountCh: rates.childPrice > 0 ? children * rates.childPrice : null,
-          totalHeadUse: chargeablePax(booking),
+          totalHeadUse: allotmentHeadUse(booking),
           balance: isLast ? balanceAfterDay : null,
           isDayEnd: isLast,
           dayTotalHeads: isLast ? dayHeads : null,
@@ -629,13 +632,13 @@ export function AdminAgentAllotmentHistory({
 
     // All agent bookings sorted chronologically
     const agentBookings = bookings
-      .filter((bk) => bk.agentSlug === expandedAgentSlug && isActiveBooking(bk) && bk.date <= todayCap)
+      .filter((bk) => bk.agentSlug === expandedAgentSlug && countsTowardAllotment(bk) && bk.date <= todayCap)
       .sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code))
 
     // Daily totals for FIFO
     const dailyTotals = new Map<string, number>()
     for (const bk of agentBookings) {
-      dailyTotals.set(bk.date, (dailyTotals.get(bk.date) ?? 0) + chargeablePax(bk))
+      dailyTotals.set(bk.date, (dailyTotals.get(bk.date) ?? 0) + allotmentHeadUse(bk))
     }
     const daily = [...dailyTotals.entries()].map(([day, totalDeduct]) => ({ day, totalDeduct }))
 
@@ -679,7 +682,7 @@ export function AdminAgentAllotmentHistory({
         const lotDayBookings: Booking[] = []
         const leftover: Booking[] = []
         for (const bk of pool) {
-          const h = chargeablePax(bk)
+          const h = allotmentHeadUse(bk)
           if (headsLeft >= h) {
             lotDayBookings.push(bk)
             headsLeft -= h
@@ -1258,12 +1261,13 @@ export function AdminAgentAllotmentHistory({
                                     </td>
                                     <td className="px-2 py-1.5 max-w-[9rem] truncate" title={bk.leadGuest}>
                                       {bk.leadGuest}
+                                      {chargedCancelDeductsAllotment(bk) ? ' · charge' : ''}
                                     </td>
                                     <td className="px-2 py-1.5 tabular-nums text-teal-900/70">
                                       {formatPaxBreakdown(bk)}
                                     </td>
                                     <td className="px-2 py-1.5 text-right font-semibold tabular-nums text-teal-950">
-                                      {chargeablePax(bk)}
+                                      {allotmentHeadUse(bk)}
                                     </td>
                                     <td className="px-4 py-1.5 text-right tabular-nums text-teal-900/30">
                                       —

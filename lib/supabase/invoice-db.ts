@@ -8,6 +8,7 @@ import {
   migrateInvoiceDocumentNumbers,
   nextDocumentNumber,
   normalizeInvoiceSettings,
+  dropNationalParkFeeForBookings,
   parseAgentBillingType,
   parseInvoiceKind,
   parseInvoiceStatus,
@@ -674,6 +675,23 @@ export async function deleteInvoiceDocument(id: string): Promise<{ error?: strin
     console.warn('[supabase] invoice delete failed', msg)
     return { error: msg }
   }
+}
+
+/** After cancel: take National Park fee off any invoice for these bookings. Charge lines stay. */
+export async function removeNationalParkFeeFromInvoices(bookingCodes: string[]) {
+  const codes = [...new Set(bookingCodes.map((code) => code.trim()).filter(Boolean))]
+  if (codes.length === 0) return { updated: 0 }
+  const store = await loadInvoiceStore()
+  const codeSet = new Set(codes)
+  const updated: InvoiceDocument[] = []
+  for (const doc of store.invoices) {
+    const next = dropNationalParkFeeForBookings(doc, codeSet)
+    if (next !== doc) updated.push(next)
+  }
+  if (updated.length === 0) return { updated: 0 }
+  const result = await saveInvoiceDocuments(updated)
+  if (result.error) return { updated: 0, error: result.error }
+  return { updated: updated.length }
 }
 
 export function persistInvoiceSnapshot(snapshot: Omit<InvoiceStoreSnapshot, 'cloud'>) {

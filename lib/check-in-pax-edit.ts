@@ -9,6 +9,7 @@ import {
   type InvoiceDocument,
   type InvoiceItem,
 } from '@/lib/invoice'
+import { isNationalParkInvoiceLine } from '@/lib/invoice-park'
 import { THAI_PARK_FEE_THB } from '@/lib/nationalities'
 import { loadInvoiceStore, saveInvoiceDocuments } from '@/lib/supabase/invoice-db'
 import type { Booking } from '@/lib/types'
@@ -154,6 +155,8 @@ function applyPaxToItem(
       amount: hasUnitPrices ? computed : item.amount,
     }
   }
+
+  if (booking.status === 'Cancelled' && isNationalParkInvoiceLine(item)) return null
 
   if (item.lineKind === 'park_fee' && booking.program === 'PP') {
     if (!billParkFee || booking.parkFee === 'Included') return null

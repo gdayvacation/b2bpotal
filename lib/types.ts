@@ -1113,6 +1113,37 @@ export function isActiveBooking(booking: Pick<Booking, 'status'>) {
   return booking.status !== 'Cancelled'
 }
 
+/**
+ * Prebuy allotment still uses this booking after cancel when the cancel is charged.
+ * Admin charge above 0, or an agent cancel after the cutoff (no fee typed). A fee of 0 is free.
+ */
+export function chargedCancelDeductsAllotment(
+  booking: Pick<Booking, 'status' | 'lateCancel' | 'cancelFee'>,
+) {
+  if (booking.status !== 'Cancelled') return false
+  const fee = booking.cancelFee
+  if (typeof fee === 'number' && Number.isFinite(fee)) return fee > 0
+  return booking.lateCancel === true
+}
+
+/** Active bookings, plus cancelled bookings that still consume prebuy heads. */
+export function countsTowardAllotment(
+  booking: Pick<Booking, 'status' | 'lateCancel' | 'cancelFee'>,
+) {
+  return isActiveBooking(booking) || chargedCancelDeductsAllotment(booking)
+}
+
+/** AD+CH this booking takes from allotment. Charged cancels use the originally booked party. */
+export function allotmentHeadUse(
+  booking: Pick<
+    Booking,
+    'status' | 'lateCancel' | 'cancelFee' | 'adults' | 'children' | 'infants' | 'tourLeaders'
+  > & { originalPax?: BookingPax | null },
+) {
+  if (chargedCancelDeductsAllotment(booking)) return chargeablePax(bookedPaxOf(booking))
+  return chargeablePax(booking)
+}
+
 /** Compact pax readout: adults+children+infants+tourLeadersT → e.g. 3+2+1+1T */
 export function formatPaxBreakdown(
   booking: Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'>,

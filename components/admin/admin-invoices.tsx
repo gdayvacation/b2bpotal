@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { cn } from 'cn'
@@ -47,6 +47,7 @@ import {
   formatAgentBillingType,
   buildInvoiceItemsForBooking,
   documentProgram,
+  dropNationalParkFeeForBookings,
   formatInvoiceDate,
   formatInvoiceMoney,
   formatInvoicePayStatus,
@@ -93,6 +94,7 @@ import {
   type Program,
 } from '@/lib/types'
 import { bookingNotesForInvoice } from '@/lib/check-in-pax-edit'
+import { isNationalParkInvoiceLine } from '@/lib/invoice-park'
 import { isGuideEnrollment } from '@/lib/check-in-enrollment'
 import { addDaysISO, dateFromISO, formatShortDate, thaiParkSeatsFromGuests, todayISO, toISODate } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
@@ -543,6 +545,35 @@ export function AdminInvoices() {
     if (!hydrated) return
     void ensureBookingsForRange(fromDate, toDate)
   }, [fromDate, toDate, hydrated, ensureBookingsForRange])
+
+  const parkFeeStripRef = useRef(new Set<string>())
+  useEffect(() => {
+    if (store.loading || !hydrated) return
+    const cancelled = bookings
+      .filter((booking) => booking.status === 'Cancelled')
+      .map((booking) => booking.code)
+    if (cancelled.length === 0) return
+    const cancelledSet = new Set(cancelled)
+    const pending = store.invoices.filter((doc) => {
+      if (parkFeeStripRef.current.has(doc.id)) return false
+      return doc.items.some(
+        (item) =>
+          Boolean(item.bookingCode) &&
+          cancelledSet.has(item.bookingCode) &&
+          isNationalParkInvoiceLine(item),
+      )
+    })
+    if (pending.length === 0) return
+    for (const doc of pending) parkFeeStripRef.current.add(doc.id)
+    void (async () => {
+      for (const doc of pending) {
+        const next = dropNationalParkFeeForBookings(doc, cancelledSet)
+        if (next === doc) continue
+        const saved = await store.replaceDocument(next)
+        if (!saved) parkFeeStripRef.current.delete(doc.id)
+      }
+    })()
+  }, [bookings, hydrated, store.invoices, store.loading, store.replaceDocument])
   const [agentSlug, setAgentSlug] = useState('all')
   const [search, setSearch] = useState('')
   const [billProgram, setBillProgram] = useState<BillProgram>('PP')
@@ -723,16 +754,25 @@ export function AdminInvoices() {
             doc.items.some((item) => item.bookingCode === booking.code),
         )
         const priced = invoice ?? draft
+        const pricedForCharge =
+          booking.status === 'Cancelled' && priced
+            ? dropNationalParkFeeForBookings(priced, [booking.code])
+            : priced
         const liveTotal = itemsAgentTotal(items)
-        const storedTotal = priced ? savedChargeForBooking(priced, booking.code) : liveTotal
+        const storedTotal = pricedForCharge
+          ? savedChargeForBooking(pricedForCharge, booking.code)
+          : liveTotal
         const liveAuto = itemsAgentTotal(items.filter((item) => item.lineKind !== 'other'))
-        const billedItems = (priced?.items ?? items).filter(
-          (item) => !priced || item.bookingCode === booking.code,
+        const billedItems = (pricedForCharge?.items ?? items).filter(
+          (item) => !pricedForCharge || item.bookingCode === booking.code,
         )
         const extraItems = billedItems.filter(
           (item) => EXTRA_CHARGE_KINDS.has(item.lineKind) || isChangeDateFeeLine(item),
         )
-        const parkItems = billedItems.filter((item) => item.lineKind === 'park_fee')
+        const parkItems =
+          booking.status === 'Cancelled'
+            ? []
+            : billedItems.filter((item) => isNationalParkInvoiceLine(item))
         const noTransfer = isNoTransfer(booking.pickupZone)
         const noTfHeads =
           Math.max(0, booking.adults) + Math.max(0, booking.children)
@@ -746,7 +786,7 @@ export function AdminInvoices() {
         return {
           booking,
           billingType,
-          billTotal: priced ? storedTotal : liveTotal,
+          billTotal: pricedForCharge ? storedTotal : liveTotal,
           deductHeads: billingType === 'prebuy' ? prebuyDeductHeads(items) : 0,
           liveTotal,
           guestCollect: priced
@@ -1200,9 +1240,12 @@ export function AdminInvoices() {
   }
 
   function openPreview(doc: InvoiceDocument, mode?: PrintMode, paymentId?: string | null) {
+    const cancelled = bookings
+      .filter((booking) => booking.status === 'Cancelled')
+      .map((booking) => booking.code)
     setPreviewMode(mode ?? sheetMode(doc, tab))
     setPreviewPaymentId(paymentId ?? null)
-    setPreview(doc)
+    setPreview(dropNationalParkFeeForBookings(doc, cancelled))
   }
 
   function closePreview() {
@@ -1248,7 +1291,7 @@ export function AdminInvoices() {
   function openBill(row: BillRow) {
     if (row.invoice) {
       setEditInvoiceIsNew(false)
-      setEditInvoice(row.invoice)
+      setEditInvoice(dropNationalParkFeeForBookings(row.invoice, [row.booking.code]))
       return
     }
     const draft = store.invoices.find(
@@ -1271,7 +1314,7 @@ export function AdminInvoices() {
         return
       }
       setEditInvoiceIsNew(false)
-      setEditInvoice(draft)
+      setEditInvoice(dropNationalParkFeeForBookings(draft, [row.booking.code]))
       return
     }
     if (!row.hasRates) {
@@ -1999,16 +2042,20 @@ export function AdminInvoices() {
                           <TableCell
                             className="w-[4.25rem] px-1 text-[11px] tabular-nums"
                             title={
-                              booking.parkFee === 'Included' ||
-                              ratesForAgent(store.rates, booking.agentSlug).nationalParkIncluded
-                                ? 'Included — no Exc park fee'
-                                : `Not included — Exc price ${ratesForAgent(store.rates, booking.agentSlug).nationalParkFee || DEFAULT_NATIONAL_PARK_FEE} THB (set in Setup)`
+                              booking.status === 'Cancelled'
+                                ? 'Cancelled — National Park Fee is not charged'
+                                : booking.parkFee === 'Included' ||
+                                    ratesForAgent(store.rates, booking.agentSlug).nationalParkIncluded
+                                  ? 'Included — no Exc park fee'
+                                  : `Not included — Exc price ${ratesForAgent(store.rates, booking.agentSlug).nationalParkFee || DEFAULT_NATIONAL_PARK_FEE} THB (set in Setup)`
                             }
                           >
-                            {booking.parkFee === 'Included' ||
-                            ratesForAgent(store.rates, booking.agentSlug).nationalParkIncluded
-                              ? 'INC'
-                              : `Exc: ${ratesForAgent(store.rates, booking.agentSlug).nationalParkFee || DEFAULT_NATIONAL_PARK_FEE}`}
+                            {booking.status === 'Cancelled'
+                              ? '—'
+                              : booking.parkFee === 'Included' ||
+                                  ratesForAgent(store.rates, booking.agentSlug).nationalParkIncluded
+                                ? 'INC'
+                                : `Exc: ${ratesForAgent(store.rates, booking.agentSlug).nationalParkFee || DEFAULT_NATIONAL_PARK_FEE}`}
                           </TableCell>
                           <TableCell
                             className={cn(

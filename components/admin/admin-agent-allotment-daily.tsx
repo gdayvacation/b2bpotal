@@ -24,7 +24,14 @@ import {
   upsertAgentAllotmentDaily,
   type AgentAllotmentDaily,
 } from '@/lib/supabase/agent-allotment-daily-db'
-import { chargeablePax, isActiveBooking, type Booking, type Program } from '@/lib/types'
+import {
+  allotmentHeadUse,
+  chargedCancelDeductsAllotment,
+  chargeablePax,
+  countsTowardAllotment,
+  type Booking,
+  type Program,
+} from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 type CheckerRow = {
@@ -90,7 +97,7 @@ function lotSaveLabel(lot: AgentAllotment) {
 }
 
 function bookingHeads(booking: Booking) {
-  return headsFromPax(booking)
+  return allotmentHeadUse(booking)
 }
 
 function checkInHeadsForBooking(
@@ -217,7 +224,7 @@ export function AdminAgentAllotmentDailyChecker({
         (booking) =>
           booking.date === day &&
           booking.program === program &&
-          isActiveBooking(booking) &&
+          countsTowardAllotment(booking) &&
           prebuyAgentSlugs.has(booking.agentSlug),
       )
       const byAgent = new Map<
@@ -241,10 +248,14 @@ export function AdminAgentAllotmentDailyChecker({
         }
         const heads = bookingHeads(booking)
         current.bookingHead += heads
-        const attendance = getCheckInAttendance(booking.date, booking.program, booking.code)
-        const mix = checkInHeadsForBooking(booking, attendance)
-        current.checkInHead += mix.checkIn
-        current.noShowHead += mix.noShow
+        if (chargedCancelDeductsAllotment(booking)) {
+          current.noShowHead += heads
+        } else {
+          const attendance = getCheckInAttendance(booking.date, booking.program, booking.code)
+          const mix = checkInHeadsForBooking(booking, attendance)
+          current.checkInHead += mix.checkIn
+          current.noShowHead += mix.noShow
+        }
         if (invoicedCodes.has(booking.code)) current.invoiceHead += heads
         byAgent.set(booking.agentSlug, current)
       }

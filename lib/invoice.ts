@@ -1,4 +1,5 @@
 import { originalBookedPax, type BookedPaxSnapshot } from '@/lib/check-in-booked-pax'
+import { isNationalParkInvoiceLine } from '@/lib/invoice-park'
 import { DEFAULT_BOOKING_CUTOFFS } from '@/lib/booking-cutoffs'
 import { formatShortDate, parkFeeTotalWithThai, parseCashOnTourAmount } from '@/lib/format'
 import { THAI_PARK_FEE_THB } from '@/lib/nationalities'
@@ -9,6 +10,8 @@ import {
   type CheckInAttendance,
   type Program,
 } from '@/lib/types'
+
+export { isNationalParkInvoiceLine }
 
 export type InvoiceKind = 'invoice' | 'billing_note' | 'credit_note'
 export type InvoiceStatus = 'unpaid' | 'partial' | 'paid'
@@ -229,6 +232,30 @@ export const DEFAULT_NATIONAL_PARK_FEE = 400
 export function excludedParkFeeRates(nationalParkFee: number) {
   const adult = nationalParkFee > 0 ? nationalParkFee : DEFAULT_NATIONAL_PARK_FEE
   return { adult, child: Math.round(adult / 2) }
+}
+
+/**
+ * Remove National Park fee lines for these bookings.
+ * Tour, cancel charge, and prebuy head-deduct lines stay as they are.
+ */
+export function dropNationalParkFeeForBookings<T extends InvoiceDocument>(
+  doc: T,
+  bookingCodes: Iterable<string>,
+): T {
+  const codes = bookingCodes instanceof Set ? bookingCodes : new Set(bookingCodes)
+  if (doc.kind !== 'invoice' || codes.size === 0) return doc
+  let removed = false
+  const items = doc.items.filter((item) => {
+    const drop =
+      Boolean(item.bookingCode) &&
+      codes.has(item.bookingCode) &&
+      isNationalParkInvoiceLine(item)
+    if (drop) removed = true
+    return !drop
+  })
+  if (!removed) return doc
+  const ordered = items.map((item, index) => ({ ...item, sortOrder: index }))
+  return { ...doc, items: ordered, grandTotal: itemsAgentTotal(ordered) }
 }
 /** Invoice agents only — discount per AD+CH when pickup is No Transfer. Prebuy gets none. */
 export const NO_TRANSFER_DISCOUNT_PER_PERSON = 100
@@ -1835,11 +1862,12 @@ export function buildInvoiceItemsForBooking(
 
   // Agency Exc + booking Not Included: bill the park fee. Prebuy still deducts heads and
   // adds this as a money extra. Agency INC, or a booking that already includes park: no line.
+  // A cancel never bills it — free, late full price, admin charge, or prebuy head deduct.
   // Foreigners → setup fee (default 400 AD / 200 CH). Thai → separate 40 THB/AD·CH line.
   const excludedPark = excludedParkFeeRates(rates.nationalParkFee)
   if (
-    !rates.nationalParkIncluded &&
     booking.status !== 'Cancelled' &&
+    !rates.nationalParkIncluded &&
     booking.program === 'PP' &&
     booking.parkFee !== 'Included'
   ) {
@@ -1916,7 +1944,11 @@ export function buildInvoiceItemsForBooking(
     })
   }
 
-  return splitMixedRateInvoiceItems(items.map((item) => ({ ...item, unit: chargeUnit(item) })))
+  const lines = splitMixedRateInvoiceItems(
+    items.map((item) => ({ ...item, unit: chargeUnit(item) })),
+  )
+  if (booking.status !== 'Cancelled') return lines
+  return lines.filter((item) => !isNationalParkInvoiceLine(item))
 }
 
 export function itemsGrandTotal(items: Pick<InvoiceItem, 'amount'>[]) {
