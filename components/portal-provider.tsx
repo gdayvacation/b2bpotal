@@ -274,6 +274,7 @@ import {
   upsertHotel,
   upsertZone,
 } from '@/lib/supabase/portal-db'
+import { removeNationalParkFeeFromInvoices } from '@/lib/supabase/invoice-db'
 import { getSupabaseBrowserClient, hasSupabaseConfig } from '@/lib/supabase/client'
 import {
   clearDriverRemoval,
@@ -878,9 +879,9 @@ const PortalContext = createContext<PortalContextValue | null>(null)
 const StaffDataLiveContext = createContext(true)
 
 /** Partner booking tabs poll this often while someone is using the page.
- *  PERF sprint-4: increased from 2 min → 10 min. Partners use Realtime for live updates;
- *  this poll is only a safety net for dropped WebSocket connections. */
-const PARTNER_POLL_MS = 10 * 60_000
+ *  Pro plan: restored from 10 min → 5 min. Partners use Realtime for live updates;
+ *  this poll is a safety net for dropped WebSocket connections. */
+const PARTNER_POLL_MS = 5 * 60_000
 /** After this long with no tap or keypress, partner tabs stop every Supabase poll. */
 const PARTNER_IDLE_MS = 15 * 60_000
 /** After this long with no interaction, staff check-in sync pauses (revives on any touch). */
@@ -902,18 +903,18 @@ function isBangkokRushHour(): boolean {
  * Staff safety nets only. Live updates still come from Realtime.
  * These intervals exist so a dropped websocket still catches up.
  *
- * PERF sprint-1a: increased intervals — Realtime is the primary live-update path;
- * polls are safety nets only and do not need to be as frequent as the Realtime cadence.
- *   bookings:  2 min  → 5 min  (incremental cursor poll; Realtime covers instant edits)
- *   day plans: 3 min  → 5 min  (boat + van boards; Realtime covers live board edits)
- *   settings:  5 min  → 15 min (availability/cutoffs change rarely)
- *   check-in:  3 min  → 15 min (Realtime covers the rush; 15-min net is ample)
+ * Pro plan: restored to faster intervals — large connection pool (200) and
+ * Realtime quota (5 M msg/month, currently 6%) have ample headroom.
+ *   bookings:  5 min  → 3 min  (incremental cursor poll)
+ *   day plans: 5 min  → 3 min  (boat + van boards)
+ *   settings:  15 min → 5 min  (availability/cutoffs)
+ *   check-in:  adaptive (2 min rush / 15 min off-peak) — unchanged
  */
-const STAFF_BOOKINGS_POLL_MS = 5 * 60_000
+const STAFF_BOOKINGS_POLL_MS = 3 * 60_000
 /** Full booking reload. Incremental polls cover edits; this only catches deletes and drift. */
 const STAFF_BOOKINGS_FULL_REFRESH_MS = 45 * 60_000
-const STAFF_DAY_PLAN_POLL_MS = 5 * 60_000
-const STAFF_SETTINGS_POLL_MS = 15 * 60_000
+const STAFF_DAY_PLAN_POLL_MS = 3 * 60_000
+const STAFF_SETTINGS_POLL_MS = 5 * 60_000
 const STAFF_CHECK_IN_POLL_MS = 15 * 60_000
 /** Delay before re-fetching after a Realtime event (booking / day-plan / settings). */
 const REALTIME_REFRESH_MS = 500
@@ -931,11 +932,12 @@ const REALTIME_REFRESH_MS = 500
 const CHECK_IN_REALTIME_DEBOUNCE_MS = 3_000
 /**
  * Guest success screen fallback only (realtime is the fast path).
- * PERF sprint-8: 60 s → 180 s. During morning rush 100-150 guests can have this screen open
- * simultaneously waiting for their boat — Realtime already pushes updates instantly; this poll
- * is purely a dropped-connection safety net and doesn't need to be as tight as 1/min.
+ * Pro plan: restored from 180 s → 60 s. Supabase Pro pool (200 connections)
+ * and Realtime quota easily handle 150-200 guests polling once/minute.
+ * Realtime still pushes boat updates instantly; this poll only catches
+ * dropped WebSocket connections.
  */
-const GUEST_BOAT_POLL_MS = 180_000
+const GUEST_BOAT_POLL_MS = 60_000
 
 export type GuestBoatWatch = {
   bookingCode: string
@@ -4274,6 +4276,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             logBookingEvent(code, 'cancelled', cancelledSummary, options?.actor)
           }),
         )
+        void removeNationalParkFeeFromInvoices([code]).catch((error) => {
+          console.warn('[invoice] national park fee was not removed after cancel', error)
+        })
 
         upsertPlan(existing.date, existing.program, (plan) => {
           if (!(code in plan.assignments)) return plan

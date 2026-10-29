@@ -1745,15 +1745,19 @@ export function subscribeCheckInChanges(
     )
   // Tables below need supabase/add-realtime-more-tables.sql; without it they just never fire
   // and the slow fallback poll still covers them.
-  // PERF sprint-4: check_in_notes, check_in_sequences, check_in_group_guides removed from
-  // Realtime — these change only via deliberate staff action (not during guest rush) and the
-  // 15-min poll provides adequate freshness. Reduces WebSocket message volume per session.
+  // Pro plan: restored check_in_notes, check_in_sequences, check_in_group_guides to Realtime.
+  // These were removed in sprint-4 to reduce WebSocket load on the Free plan (10-connection pool).
+  // Pro plan pool (200 connections) + Realtime quota (5M msg/month, currently 6%) easily handles
+  // the additional listeners. Staff now see notes, sequences, and guides update instantly.
   for (const table of [
     'check_in_payments',
     'check_in_services',
     'check_in_guest_edits',
     'own_arrivals',
     'job_order_actions',
+    'check_in_notes',
+    'check_in_sequences',
+    'check_in_group_guides',
   ]) {
     channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => {
       onChange()
