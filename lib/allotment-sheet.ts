@@ -3,6 +3,7 @@ import {
   allotmentPayments,
   type AgentAllotment,
 } from '@/lib/supabase/agent-allotment-db'
+import { NO_TRANSFER_DISCOUNT_PER_PERSON } from '@/lib/invoice'
 import type { AgentAllotmentDaily, AgentBookingDayPax } from '@/lib/supabase/agent-allotment-daily-db'
 
 export type LotTransfer = {
@@ -91,6 +92,7 @@ export type AllotmentSheetBooking = {
   children: number
   chargedCancel?: boolean
   dateChanged?: boolean
+  noTransfer?: boolean
   /** Arrived, Cancelled, or Change Date. Empty when none of those apply. */
   status?: string
 }
@@ -98,12 +100,12 @@ export type AllotmentSheetBooking = {
 export type AllotmentSheetLine = {
   key: string
   date: string
-  kind: 'manual' | 'usage'
+  kind: 'manual' | 'usage' | 'refund'
   note: string
   /** Bookings on a usage day. Empty on manual rows. */
   bookings: AllotmentSheetBooking[]
   headsDelta: number
-  /** Cash on this row. Usage rows are a negative charge for the heads used that day. */
+  /** Cash on this row. Usage rows charge the day's heads. Refund rows add the No Transfer credit back. */
   moneyDelta: number | null
   /** Positive head value at that day's adult and child rates. Usage rows deduct this from money left. */
   value: number | null
@@ -146,6 +148,15 @@ function usageCharge(
     childHeads = used - adultHeads
   }
   return Math.round(adultHeads * adultPrice + childHeads * childPrice)
+}
+
+/** 100 THB back to the agent account for each adult and child with no transfer. */
+function noTransferCredit(bookings: { noTransfer?: boolean; adults: number; children: number }[]) {
+  return bookings.reduce((sum, booking) => {
+    if (!booking.noTransfer) return sum
+    const people = Math.max(0, booking.adults) + Math.max(0, booking.children)
+    return sum + people * NO_TRANSFER_DISCOUNT_PER_PERSON
+  }, 0)
 }
 
 function cleanNote(value: string) {
@@ -228,22 +239,24 @@ export function buildAllotmentSheet(input: {
     const note = [mix, saved ? cleanNote(saved.note) : ''].filter(Boolean).join(' · ')
     const rates = ratesOn(day)
     const value = usageCharge(heads, booking?.adults ?? 0, booking?.children ?? 0, rates.adult, rates.child)
+    const bookings = (booking?.bookings ?? []).map((item) => ({
+      code: item.code,
+      agentRef: item.agentRef,
+      guestName: item.guestName,
+      hotel: item.hotel,
+      adults: item.adults,
+      children: item.children,
+      chargedCancel: item.chargedCancel,
+      dateChanged: item.dateChanged,
+      noTransfer: item.noTransfer,
+    }))
     events.push({
       key: `usage-${day}`,
       date: day,
-      sort: `1-${day}`,
+      sort: `2-${day}`,
       kind: 'usage',
       note,
-      bookings: (booking?.bookings ?? []).map((item) => ({
-        code: item.code,
-        agentRef: item.agentRef,
-        guestName: item.guestName,
-        hotel: item.hotel,
-        adults: item.adults,
-        children: item.children,
-        chargedCancel: item.chargedCancel,
-        dateChanged: item.dateChanged,
-      })),
+      bookings,
       headsDelta: -heads,
       moneyDelta: value === 0 ? null : -value,
       value: value === 0 ? null : value,
@@ -252,6 +265,24 @@ export function buildAllotmentSheet(input: {
       lotId: null,
       paymentId: null,
     })
+    const credit = noTransferCredit(bookings)
+    if (credit > 0) {
+      events.push({
+        key: `notf-${day}`,
+        date: day,
+        sort: `1-${day}`,
+        kind: 'refund',
+        note: 'No transfer refund',
+        bookings: [],
+        headsDelta: 0,
+        moneyDelta: credit,
+        value: null,
+        counted,
+        pending: false,
+        lotId: null,
+        paymentId: null,
+      })
+    }
   }
 
   events.sort((a, b) => a.date.localeCompare(b.date) || a.sort.localeCompare(b.sort))

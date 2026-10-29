@@ -4,7 +4,8 @@ import { Fragment, useEffect, useState, type FormEvent, type KeyboardEvent } fro
 import { ChevronDown, ChevronRight, Pencil, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { formatShortDate, todayISO } from '@/lib/format'
-import type { AllotmentSheetLine } from '@/lib/allotment-sheet'
+import { NO_TRANSFER_DISCOUNT_PER_PERSON } from '@/lib/invoice'
+import type { AllotmentSheetBooking, AllotmentSheetLine } from '@/lib/allotment-sheet'
 import { cn } from '@/lib/utils'
 
 export type SheetLineDraft = {
@@ -30,6 +31,12 @@ const emptyFields = (date = todayISO()): DraftFields => ({
 
 function formatMoney(value: number) {
   return value.toLocaleString('en-US', { maximumFractionDigits: 0 })
+}
+
+/** -100 THB for each adult and child on a No Transfer booking. */
+function noTransferRefund(booking: Pick<AllotmentSheetBooking, 'noTransfer' | 'adults' | 'children'>) {
+  if (!booking.noTransfer) return 0
+  return NO_TRANSFER_DISCOUNT_PER_PERSON * (Math.max(0, booking.adults) + Math.max(0, booking.children))
 }
 
 function parseMoney(value: string) {
@@ -68,6 +75,7 @@ function usageParts(note: string) {
 }
 
 function lineTitle(line: AllotmentSheetLine, hideNote = false) {
+  if (line.kind === 'refund') return 'No transfer refund'
   if (line.kind === 'usage') {
     return [line.counted ? 'Heads used' : 'Future booking', line.pending ? 'From bookings' : '', hideNote ? '' : line.note]
       .filter(Boolean)
@@ -337,59 +345,75 @@ export function AllotmentSheet({
   }
 
   function renderUsageDetails(line: AllotmentSheetLine, columns: number) {
+    const refundTotal = line.bookings.reduce((sum, booking) => sum + noTransferRefund(booking), 0)
     return (
       <tr key={`${line.key}-bookings`} className="bg-[#f4faf7] text-teal-950">
         <td className="border border-teal-900/10" />
-        <td className="border border-teal-900/10 px-2 py-2" colSpan={columns - 1}>
+        <td className="border border-teal-900/10 px-2 py-1" colSpan={columns - 1}>
           {line.bookings.length === 0 ? (
             <p className="text-teal-900/55">
               {usageParts(line.note).map((part) => part.label).join(' · ') || 'No bookings for this day.'}
             </p>
           ) : (
-            <table className="w-full table-fixed text-[12px]">
-              <colgroup>
-                <col className="w-[18%]" />
-                <col className="w-[24%]" />
-                <col className="w-[32%]" />
-                <col className="w-[8%]" />
-                <col className="w-[8%]" />
-                <col className="w-[10%]" />
-              </colgroup>
+            <table className="w-max max-w-full border-separate border-spacing-0 text-[11px] leading-none">
               <thead>
-                <tr className="text-left text-[11px] font-semibold tracking-wide text-teal-900/45">
-                  <th className="py-1 pr-3 font-semibold whitespace-nowrap">Agent reference</th>
-                  <th className="py-1 pr-6 font-semibold whitespace-nowrap">Guest name</th>
-                  <th className="py-1 pr-6 font-semibold whitespace-nowrap">Hotel</th>
-                  <th className="py-1 pr-6 text-right font-semibold whitespace-nowrap">Adults</th>
-                  <th className="py-1 pr-6 text-right font-semibold whitespace-nowrap">Children</th>
-                  <th className="py-1 font-semibold whitespace-nowrap">Status</th>
+                <tr className="text-left text-[10px] font-semibold tracking-wide text-teal-900/45">
+                  <th className="pb-1 pr-3 font-semibold whitespace-nowrap">Agent reference</th>
+                  <th className="pb-1 pr-3 font-semibold whitespace-nowrap">Guest name</th>
+                  <th className="pb-1 pr-3 font-semibold whitespace-nowrap">Hotel</th>
+                  <th className="pb-1 pr-3 font-semibold whitespace-nowrap">Transfers</th>
+                  <th className="pb-1 pr-3 text-right font-semibold whitespace-nowrap">Adults</th>
+                  <th className="pb-1 pr-3 text-right font-semibold whitespace-nowrap">Children</th>
+                  <th className="pb-1 pr-3 text-right font-semibold whitespace-nowrap">Refund</th>
+                  <th className="pb-1 font-semibold whitespace-nowrap">Status</th>
                 </tr>
               </thead>
               <tbody>
-                {line.bookings.map((booking) => (
-                  <tr key={booking.code}>
-                    <td className="truncate py-0.5 pr-3 whitespace-nowrap" title={booking.agentRef || undefined}>
+                {line.bookings.map((booking) => {
+                  const refund = noTransferRefund(booking)
+                  return (
+                  <tr key={booking.code} className="odd:bg-white/70">
+                    <td className="max-w-[9rem] truncate py-px pr-3 whitespace-nowrap" title={booking.agentRef || undefined}>
                       {booking.agentRef || '—'}
                     </td>
-                    <td className="truncate py-0.5 pr-6 whitespace-nowrap" title={booking.guestName || undefined}>
+                    <td className="max-w-[12rem] truncate py-px pr-3 whitespace-nowrap" title={booking.guestName || undefined}>
                       {booking.guestName || '—'}
                     </td>
-                    <td className="truncate py-0.5 pr-6 whitespace-nowrap" title={booking.hotel || undefined}>
+                    <td className="max-w-[14rem] truncate py-px pr-3 whitespace-nowrap" title={booking.hotel || undefined}>
                       {booking.hotel || '—'}
                     </td>
-                    <td className="py-0.5 pr-6 text-right tabular-nums">{booking.adults}</td>
-                    <td className="py-0.5 pr-6 text-right tabular-nums">{booking.children}</td>
+                    <td className="py-px pr-3 whitespace-nowrap">{booking.noTransfer ? 'NoTF' : '—'}</td>
+                    <td className="py-px pr-3 text-right tabular-nums">{booking.adults}</td>
+                    <td className="py-px pr-3 text-right tabular-nums">{booking.children}</td>
+                    <td className="py-px pr-3 text-right whitespace-nowrap tabular-nums text-rose-700">
+                      {refund === 0 ? '—' : `-${formatMoney(refund)}`}
+                    </td>
                     <td
                       className={cn(
-                        'py-0.5 whitespace-nowrap',
+                        'py-px whitespace-nowrap',
                         booking.status === 'Canceled' && 'font-medium text-red-600',
                       )}
                     >
                       {booking.status || '—'}
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
+              <tfoot>
+                <tr className="font-semibold text-teal-950">
+                  <td className="border-t border-teal-900/15 pt-1 pr-3 whitespace-nowrap">Total</td>
+                  <td className="border-t border-teal-900/15" />
+                  <td className="border-t border-teal-900/15" />
+                  <td className="border-t border-teal-900/15" />
+                  <td className="border-t border-teal-900/15" />
+                  <td className="border-t border-teal-900/15" />
+                  <td className="border-t border-teal-900/15 pt-1 pr-3 text-right whitespace-nowrap tabular-nums text-rose-700">
+                    {refundTotal === 0 ? '—' : `-${formatMoney(refundTotal)}`}
+                  </td>
+                  <td className="border-t border-teal-900/15" />
+                </tr>
+              </tfoot>
             </table>
           )}
         </td>
@@ -412,6 +436,7 @@ export function AllotmentSheet({
         className={cn(
           line.kind === 'manual' && (line.moneyDelta ?? 0) < 0 && 'bg-rose-50',
           line.kind === 'manual' && (line.moneyDelta ?? 0) >= 0 && 'bg-[#fff8e6]',
+          line.kind === 'refund' && 'bg-emerald-50',
           line.kind === 'usage' && 'bg-white',
           canOpen && 'cursor-pointer hover:bg-teal-50/70',
         )}
@@ -777,7 +802,9 @@ export function AllotmentSheet({
                         </td>
                       </tr>
                       {open
-                        ? group.lines.map(({ line }) => {
+                        ? group.lines
+                            .filter(({ line }) => line.kind !== 'refund')
+                            .map(({ line }) => {
                             const canOpen = line.bookings.length > 0 || usageParts(line.note).length > 0
                             const detailOpen = canOpen && openUsage.has(line.key)
                             return (

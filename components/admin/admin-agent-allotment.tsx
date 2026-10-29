@@ -7,9 +7,11 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  FileSpreadsheet,
   History,
   Pencil,
   Plus,
+  Printer,
   Trash2,
   Wallet,
 } from 'lucide-react'
@@ -49,7 +51,16 @@ import {
   lotTransfers,
   type AllotmentSheetLine,
 } from '@/lib/allotment-sheet'
-import { formatShortDate, todayISO, uniqueAgentSlug } from '@/lib/format'
+import {
+  allotmentExportFilename,
+  allotmentExportPeriodLabel,
+  allotmentLotRange,
+  downloadAllotmentExcel,
+  filterAllotmentSheetLines,
+  printAllotmentPdf,
+  sortAllotmentLots,
+} from '@/lib/allotment-sheet-export'
+import { formatMonthLabel, formatShortDate, todayISO, uniqueAgentSlug } from '@/lib/format'
 import {
   addAgentAllotmentPayment,
   allotmentBalance,
@@ -834,6 +845,10 @@ export function AdminAgentAllotment() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [bookingPaxError, setBookingPaxError] = useState('')
+  const [exportMonth, setExportMonth] = useState('')
+  const [exportLotId, setExportLotId] = useState('')
+  const [exportIncludeFuture, setExportIncludeFuture] = useState(true)
+  const [exportingSheet, setExportingSheet] = useState<'excel' | 'pdf' | null>(null)
   const [draft, setDraft] = useState<Draft>(emptyDraft)
   const [addError, setAddError] = useState('')
   const [adding, setAdding] = useState(false)
@@ -1168,6 +1183,12 @@ export function AdminAgentAllotment() {
       })),
     [selectedAgentRows, selectedAgentDaily, bookingDayPax, today, getCheckInAttendance, workProgram],
   )
+  const exportMonths = useMemo(() => {
+    const months = [...new Set(sheetLines.map((line) => line.date.slice(0, 7)))]
+    months.sort((a, b) => b.localeCompare(a))
+    return months
+  }, [sheetLines])
+  const exportLots = useMemo(() => sortAllotmentLots(selectedAgentRows), [selectedAgentRows])
   const sheetTotals = useMemo(() => allotmentSheetTotals(sheetLines), [sheetLines])
   const lotBooks = useMemo(
     () =>
@@ -1328,6 +1349,12 @@ export function AdminAgentAllotment() {
     return () => {
       cancelled = true
     }
+  }, [selectedAgentSlug, workProgram])
+
+  useEffect(() => {
+    setExportMonth('')
+    setExportLotId('')
+    setExportIncludeFuture(true)
   }, [selectedAgentSlug, workProgram])
 
   function resolveExistingAgent(slug: string) {
@@ -2595,6 +2622,54 @@ export function AdminAgentAllotment() {
       selectedAgentRows[0]?.agentName ||
       agents.find((agent) => agent.slug === selectedAgentSlug)?.name ||
       selectedAgentSlug
+    const programLabel = workProgram === 'PP' ? 'Phi Phi' : 'James Bond'
+    const exportRange = exportLotId ? allotmentLotRange(exportLots, exportLotId) : null
+    const exportSheetLines = filterAllotmentSheetLines(sheetLines, {
+      month: exportMonth,
+      range: exportRange,
+      today,
+      includeFuture: exportIncludeFuture,
+    })
+    const exportLot = exportLots.find((lot) => lot.id === exportLotId)
+    const exportLotLabel = exportLot
+      ? `${exportLot.note.trim() || 'Lot'} · ${formatShortDate(exportLot.paidDate || exportLot.createdAt.slice(0, 10))}`
+      : ''
+    const exportPeriodLabel = allotmentExportPeriodLabel({
+      month: exportMonth,
+      lotLabel: exportLotLabel,
+      includeFuture: exportIncludeFuture,
+      lines: exportSheetLines,
+    })
+    async function downloadSheetExcel() {
+      if (exportSheetLines.length === 0 || exportingSheet) return
+      setExportingSheet('excel')
+      try {
+        await downloadAllotmentExcel({
+          agentName: agentName || 'Agent',
+          programLabel,
+          periodLabel: exportPeriodLabel,
+          lines: exportSheetLines,
+          filename: allotmentExportFilename(agentName || 'agent', programLabel, exportPeriodLabel),
+        })
+      } catch (caught) {
+        window.alert(caught instanceof Error ? caught.message : 'Could not download Excel.')
+      } finally {
+        setExportingSheet(null)
+      }
+    }
+    function downloadSheetPdf() {
+      if (exportSheetLines.length === 0) return
+      try {
+        printAllotmentPdf({
+          agentName: agentName || 'Agent',
+          programLabel,
+          periodLabel: exportPeriodLabel,
+          lines: exportSheetLines,
+        })
+      } catch (caught) {
+        window.alert(caught instanceof Error ? caught.message : 'Could not open the PDF preview.')
+      }
+    }
     return (
       <div className="w-full">
         <PageHeader
@@ -2657,6 +2732,81 @@ export function AdminAgentAllotment() {
         </div>
 
         <Surface className="mb-4 overflow-hidden p-0">
+          <div className="flex flex-wrap items-end gap-2 border-b border-teal-900/8 px-3 py-3">
+            <div className="space-y-1">
+              <Label className="text-[11px] text-teal-900/45">Month</Label>
+              <select
+                value={exportMonth}
+                onChange={(event) => setExportMonth(event.target.value)}
+                className="h-9 rounded-xl border border-teal-900/12 bg-white/80 px-2 text-sm"
+                aria-label="Export month"
+              >
+                <option value="">All months</option>
+                {exportMonths.map((month) => (
+                  <option key={month} value={month}>
+                    {formatMonthLabel(`${month}-01`)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[11px] text-teal-900/45">Lot</Label>
+              <select
+                value={exportLotId}
+                onChange={(event) => setExportLotId(event.target.value)}
+                className="h-9 max-w-[16rem] rounded-xl border border-teal-900/12 bg-white/80 px-2 text-sm"
+                aria-label="Export lot"
+              >
+                <option value="">All lots</option>
+                {exportLots.map((lot, index) => (
+                  <option key={lot.id} value={lot.id}>
+                    {(lot.note.trim() || `Lot ${index + 1}`) +
+                      ' · ' +
+                      formatShortDate(lot.paidDate || lot.createdAt.slice(0, 10))}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[11px] text-teal-900/45">Future</Label>
+              <select
+                value={exportIncludeFuture ? 'with' : 'without'}
+                onChange={(event) => setExportIncludeFuture(event.target.value === 'with')}
+                className="h-9 rounded-xl border border-teal-900/12 bg-white/80 px-2 text-sm"
+                aria-label="Include future bookings"
+              >
+                <option value="with">With future bookings</option>
+                <option value="without">Up to today</option>
+              </select>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-9"
+              disabled={exportingSheet !== null || exportSheetLines.length === 0}
+              onClick={() => void downloadSheetExcel()}
+            >
+              <FileSpreadsheet className="size-3.5" />
+              {exportingSheet === 'excel' ? 'Excel…' : 'Excel'}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-9"
+              disabled={exportingSheet !== null || exportSheetLines.length === 0}
+              onClick={downloadSheetPdf}
+            >
+              <Printer className="size-3.5" />
+              PDF
+            </Button>
+            <p className="pb-2 text-xs text-teal-900/45">
+              {exportSheetLines.length === 0
+                ? 'Nothing in this month and lot.'
+                : `${exportPeriodLabel}. Save as Excel, or PDF from the print dialog.`}
+            </p>
+          </div>
           <form
             className="flex flex-wrap items-end gap-2 border-b border-teal-900/8 px-3 py-3"
             onSubmit={(event) => void handleSaveRate(event)}

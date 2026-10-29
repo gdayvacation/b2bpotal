@@ -3,6 +3,7 @@ import {
   bookedPaxOf,
   chargedCancelDeductsAllotment,
   countsTowardAllotment,
+  isNoTransfer,
   type Booking,
   type Program,
 } from '@/lib/types'
@@ -154,6 +155,8 @@ export type AgentBookingLine = {
   chargedCancel?: boolean
   /** This booking was moved onto this tour date. */
   dateChanged?: boolean
+  /** Pickup zone is No Transfer. */
+  noTransfer?: boolean
 }
 
 export type AgentBookingDayPax = {
@@ -185,7 +188,7 @@ export async function fetchAgentBookingDayPax(
     const { data, error } = await supabase
       .from('bookings')
       .select(
-        'code,agent_ref,lead_guest,pickup_hotel,date,adults,children,status,late_cancel,cancel_fee,original_adults,original_children,late_date_change,no_show_date_move,moved_from_code',
+        'code,agent_ref,lead_guest,pickup_hotel,pickup_zone,date,adults,children,status,late_cancel,cancel_fee,original_adults,original_children,late_date_change,no_show_date_move,moved_from_code',
       )
       .eq('agent_slug', slug)
       .eq('program', program)
@@ -200,6 +203,7 @@ export async function fetchAgentBookingDayPax(
       agent_ref: string | null
       lead_guest: string | null
       pickup_hotel: string | null
+      pickup_zone: string | null
       date: string
       adults: number | string | null
       children: number | string | null
@@ -270,6 +274,8 @@ export async function fetchAgentBookingDayPax(
           children: useChildren,
           chargedCancel,
           dateChanged,
+          noTransfer:
+            isNoTransfer(row.pickup_zone) || isNoTransfer(String(row.pickup_hotel ?? '')),
         })
       }
       byDay.set(day, current)
