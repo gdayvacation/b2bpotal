@@ -39,6 +39,7 @@ import {
 import { formatIncludeLabel, formatShortDate, startOfToday, toISODate } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import {
+  formatPickupZoneLabel,
   totalPassengers,
   type Booking,
   type BookingActor,
@@ -554,7 +555,7 @@ export function BookingsTable({
                   <div className="col-span-2">
                     <p className="gday-soft-label">Pickup</p>
                     <p className="mt-0.5 font-semibold text-teal-950">
-                      {booking.pickupZone}
+                      {formatPickupZoneLabel(booking.pickupZone)}
                       {booking.pickupTime ? ` · ${booking.pickupTime}` : ''}
                     </p>
                   </div>
@@ -760,7 +761,7 @@ export function BookingsTable({
                   </TableCell>
                   <TableCell>{booking.pickupHotel.trim() || '—'}</TableCell>
                   <TableCell className="w-px whitespace-nowrap">
-                    {booking.pickupZone}
+                    {formatPickupZoneLabel(booking.pickupZone)}
                     {booking.pickupTime ? ` · ${booking.pickupTime}` : ''}
                   </TableCell>
                   <TableCell>{formatIncludeLabel(booking.parkFee)}</TableCell>

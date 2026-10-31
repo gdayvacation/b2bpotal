@@ -144,6 +144,20 @@ import {
   type JobOrderAction,
 } from '@/lib/job-order-action'
 import {
+  ARRANGEMENT_GROUP_STORAGE_KEY,
+  fetchArrangementGroupMap,
+  getArrangementGroup,
+  loadArrangementGroupMap,
+  mergeArrangementGroups,
+  moveArrangementGroup,
+  saveArrangementGroupMap,
+  withArrangementGroup,
+  writeArrangementGroupChanges,
+  type ArrangementGroupChange,
+  type ArrangementGroupKind,
+  type DayArrangementGroupMap,
+} from '@/lib/arrangement-groups'
+import {
   OWN_ARRIVAL_STORAGE_KEY,
   PICKUP_NS_STORAGE_KEY,
   clampPax,
@@ -338,6 +352,8 @@ import {
   emptyDayVehiclePlan,
   hydrateDayBoatPlan,
   emptyPrivateTransferFields,
+  formatPrivateTransferZone,
+  privateTransferAreaName,
   emptyVanMeta,
   hiddenVanMeta,
   dummyVanMeta,
@@ -461,6 +477,8 @@ type PortalContextValue = {
     > & {
       pickupTime?: string
       transferExtraCharge?: string
+      /** Agent private-transfer request. Price is taken from the vehicle list. */
+      privateTransferVehicle?: Booking['privateTransferVehicle']
     },
     options?: BookingActionOptions,
   ) => Promise<{ ok: true; booking: Booking } | { ok: false; error: string }>
@@ -698,6 +716,12 @@ type PortalContextValue = {
     bookingCode: string,
     status: JobOrderAction | null,
   ) => void
+  getArrangementGroup: (
+    date: string,
+    program: Program,
+    bookingCode: string,
+  ) => ArrangementGroupKind | null
+  setArrangementGroups: (changes: ArrangementGroupChange[]) => void
   removeCheckInEnrollment: (
     date: string,
     program: Program,
@@ -1050,6 +1074,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [pickupNoShowMap, setPickupNoShowMap] = useState<BookedPaxMap>({})
   const [ownArrivalMap, setOwnArrivalMap] = useState<BookedPaxMap>({})
   const [jobOrderActionMap, setJobOrderActionMap] = useState<DayJobOrderActionMap>({})
+  const [arrangementGroupMap, setArrangementGroupMap] = useState<DayArrangementGroupMap>({})
   const [fleetVans, setFleetVans] = useState<FleetVan[]>([])
   const [drivers, setDrivers] = useState<DriverRosterEntry[]>(() => {
     const saved = mergeDriverRoster(loadLocalDrivers())
@@ -1098,6 +1123,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const settingsWritePendingRef = useRef(0)
   const dayOpsCloudEnabledRef = useRef(false)
   const dayOpsWritePendingRef = useRef(0)
+  const arrangementWritePendingRef = useRef(0)
   /** Keys with unsaved boat-board drafts — refresh must not overwrite these. */
   const boatPlanDirtyKeysRef = useRef(new Set<string>())
 
@@ -1400,6 +1426,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     setPickupNoShowMap(loadPickupNoShowMap())
     setOwnArrivalMap(loadOwnArrivalMap())
     setJobOrderActionMap(loadJobOrderActionMap())
+    setArrangementGroupMap(loadArrangementGroupMap())
   }, [])
 
   useEffect(() => {
@@ -2077,6 +2104,23 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     }
   }, [hydrated, partnerLive, sessionRole])
 
+  const refreshArrangementGroups = useCallback(async (range?: { from: string; to: string }) => {
+    if (arrangementWritePendingRef.current > 0) return
+    try {
+      const remote = await fetchArrangementGroupMap(range)
+      if (!remote || arrangementWritePendingRef.current > 0) return
+      setArrangementGroupMap(() => {
+        const next = range
+          ? mergeArrangementGroups(loadArrangementGroupMap(), remote, range.from, range.to)
+          : remote
+        saveArrangementGroupMap(next)
+        return next
+      })
+    } catch (error) {
+      console.error('[supabase] arrangement groups', error)
+    }
+  }, [])
+
   /** Keep marina check-in board in sync across devices (Supabase) and same-browser tabs. */
   useEffect(() => {
     if (!hydrated) return
@@ -2100,6 +2144,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       setPickupNoShowMap(loadPickupNoShowMap())
       setOwnArrivalMap(loadOwnArrivalMap())
       setJobOrderActionMap(loadJobOrderActionMap())
+      setArrangementGroupMap(loadArrangementGroupMap())
     }
 
     type SyncProfile = {
@@ -2365,6 +2410,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             setJobOrderActionMap(remoteOps.jobOrderActions)
           }
         }
+        if (!cancelled && arrangementWritePendingRef.current === 0) {
+          await refreshArrangementGroups(sideRange)
+        }
         syncFailures = 0
       } catch (error) {
         syncFailures += 1
@@ -2393,7 +2441,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         event.key === CHECK_IN_ARRIVED_PAX_STORAGE_KEY ||
         event.key === PICKUP_NS_STORAGE_KEY ||
         event.key === OWN_ARRIVAL_STORAGE_KEY ||
-        event.key === JOB_ORDER_ACTION_STORAGE_KEY
+        event.key === JOB_ORDER_ACTION_STORAGE_KEY ||
+        event.key === ARRANGEMENT_GROUP_STORAGE_KEY
       ) {
         reloadCheckInMapsFromStorage()
       }
@@ -2538,7 +2587,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       if (poll != null) window.clearTimeout(poll) // adaptive poll uses setTimeout
       unsubCheckIn?.()
     }
-  }, [hydrated, sessionRole])
+  }, [hydrated, sessionRole, refreshArrangementGroups])
 
   const ensureBookingsForRange = useCallback(async (fromDate: string, toDate?: string) => {
     const from = fromDate.slice(0, 10)
@@ -2647,6 +2696,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       setPickupNoShowMap(pickupNoShows)
       setOwnArrivalMap(ownArrivals)
       setJobOrderActionMap(jobOrderActions)
+    }
+    if (arrangementWritePendingRef.current === 0) {
+      await refreshArrangementGroups({ from, to })
     }
   }
 
@@ -2957,6 +3009,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
         return moveJobOrderAction(current, oldDate, newDate, program, bookingCode)
       })
+      setArrangementGroupMap((current) =>
+        moveArrangementGroup(current, oldDate, newDate, program, bookingCode),
+      )
     }
 
     const trimEnrollmentsNow = (
@@ -3923,6 +3978,33 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         })
         persistJobOrderAction(date, program, bookingCode, status)
       },
+      getArrangementGroup: (date, program, bookingCode) =>
+        getArrangementGroup(arrangementGroupMap, date, program, bookingCode),
+      setArrangementGroups: (changes) => {
+        if (changes.length === 0) return
+        arrangementWritePendingRef.current += 1
+        setArrangementGroupMap((current) => {
+          let next = current
+          for (const change of changes) {
+            next = withArrangementGroup(
+              next,
+              change.date,
+              change.program,
+              change.bookingCode,
+              change.group,
+            )
+          }
+          saveArrangementGroupMap(next)
+          return next
+        })
+        void writeArrangementGroupChanges(changes)
+          .catch((error) => {
+            console.error('[supabase] save arrangement groups', error)
+          })
+          .finally(() => {
+            arrangementWritePendingRef.current = Math.max(0, arrangementWritePendingRef.current - 1)
+          })
+      },
       removeCheckInEnrollment: (date, program, bookingCode, enrollmentId) => {
         setCheckInEnrollmentMap((current) => {
           const next = withoutCheckInEnrollment(
@@ -4149,17 +4231,24 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           return { ok: false, error: message }
         }
         const noTransfer = isNoTransfer(input.pickupZone)
+        const privateZone = isPrivateTransferZone(input.pickupZone)
         const zone = zones.find((item) => item.name === input.pickupZone)
-        const pending = !noTransfer && (zone?.pending ?? input.pickupZone === 'Other')
+        const pending =
+          privateZone || (!noTransfer && (zone?.pending ?? input.pickupZone === 'Other'))
         const pickupTime = noTransfer
           ? NO_TRANSFER_TIME
-          : (input.pickupTime ?? (pending ? 'Awaiting pickup time' : getZoneTime(input.pickupZone)))
+          : privateZone
+            ? 'Awaiting pickup time'
+            : (input.pickupTime ?? (pending ? 'Awaiting pickup time' : getZoneTime(input.pickupZone)))
         const matchedHotel = hotels.find(
           (hotel) =>
             hotel.name.toLowerCase() === (input.pickupHotel ?? '').trim().toLowerCase(),
         )
-        const transferExtraCharge =
-          input.transferExtraCharge?.trim() || matchedHotel?.extraChargeTransfer?.trim() || ''
+        const transferExtraCharge = privateZone
+          ? ''
+          : input.transferExtraCharge?.trim() ||
+            matchedHotel?.extraChargeTransfer?.trim() ||
+            ''
         const originDate = options?.movedFrom?.date
         const staffMove = Boolean(originDate) && options?.actor?.role !== 'agent'
         const policyFee = prebuyNoShowMoveFee(input, bookingCutoffs.dateChangeFeePerPerson)
@@ -4168,6 +4257,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const originLate = originDate
           ? isLateFeeTimeForDate(bookingCutoffs, originDate)
           : false
+        const requestedVehicle =
+          privateZone &&
+          (input.privateTransferVehicle === 'Car' || input.privateTransferVehicle === 'Van')
+            ? input.privateTransferVehicle
+            : ''
         const booking: Booking = {
           ...input,
           agentRef: input.agentRef?.trim() ?? '',
@@ -4176,6 +4270,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           cashOnTour: input.cashOnTour?.trim() ?? '',
           transferExtraCharge,
           ...emptyPrivateTransferFields(),
+          ...(requestedVehicle
+            ? {
+                privateTransferVehicle: requestedVehicle,
+                privateTransferPrice: privateTransferPriceFor(requestedVehicle),
+              }
+            : {}),
           code,
           pickupTime,
           status: pending ? 'Pending Pickup Time' : 'Confirmed',
@@ -4480,6 +4580,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
 
         const noTransfer = isNoTransfer(existing.pickupZone)
+        const privateZone = isPrivateTransferZone(existing.pickupZone)
         const zone = zones.find((item) => item.name === existing.pickupZone)
         const awaiting =
           !existing.pickupTime ||
@@ -4487,7 +4588,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const pending =
           !noTransfer &&
           awaiting &&
-          (zone?.pending ?? existing.pickupZone === 'Other')
+          (privateZone || (zone?.pending ?? existing.pickupZone === 'Other'))
         const nextStatus = pending ? ('Pending Pickup Time' as const) : ('Confirmed' as const)
 
         setBookings((current) =>
@@ -4570,24 +4671,40 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           Object.assign(next, emptyPrivateTransferFields())
           next.status = 'Confirmed'
         } else if (privateTransfer) {
-          next.pickupZone = PRIVATE_TRANSFER_ZONE
+          const area =
+            privateTransferAreaName(next.pickupZone) ||
+            privateTransferAreaName(existing.pickupZone)
+          next.pickupZone = area ? formatPrivateTransferZone(area) : PRIVATE_TRANSFER_ZONE
+          next.transferExtraCharge = ''
           const vehicle =
             next.privateTransferVehicle === 'Car' || next.privateTransferVehicle === 'Van'
               ? next.privateTransferVehicle
               : null
           if (!vehicle) {
-            return { ok: false, error: 'Choose Car (1,400 THB) or Van (1,600 THB).' }
+            // Agent request: zone is set, admin confirms the pickup time later.
+            Object.assign(next, emptyPrivateTransferFields())
+            const pickupOverride =
+              patch.pickupTime !== undefined ? patch.pickupTime.trim() : next.pickupTime.trim()
+            if (!pickupOverride || pickupOverride.toLowerCase().includes('awaiting')) {
+              next.pickupTime = 'Awaiting pickup time'
+              next.status = 'Pending Pickup Time'
+            } else {
+              next.pickupTime = pickupOverride
+              next.status = 'Confirmed'
+            }
+          } else {
+            next.privateTransferVehicle = vehicle
+            next.privateTransferPrice = privateTransferPriceFor(vehicle)
+            const pickupOverride =
+              patch.pickupTime !== undefined ? patch.pickupTime.trim() : next.pickupTime.trim()
+            if (!pickupOverride || pickupOverride.toLowerCase().includes('awaiting')) {
+              next.pickupTime = 'Awaiting pickup time'
+              next.status = 'Pending Pickup Time'
+            } else {
+              next.pickupTime = pickupOverride
+              next.status = 'Confirmed'
+            }
           }
-          next.privateTransferVehicle = vehicle
-          next.privateTransferPrice = privateTransferPriceFor(vehicle)
-          const pickupOverride =
-            patch.pickupTime !== undefined ? patch.pickupTime.trim() : next.pickupTime.trim()
-          if (!pickupOverride || pickupOverride.toLowerCase().includes('awaiting')) {
-            return { ok: false, error: 'Set the private transfer pickup time.' }
-          }
-          next.pickupTime = pickupOverride
-          next.transferExtraCharge = ''
-          next.status = 'Confirmed'
         } else {
           Object.assign(next, emptyPrivateTransferFields())
           if (!zones.some((zone) => zone.name === next.pickupZone)) {
@@ -4806,9 +4923,6 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
         if (isNoTransfer(existing.pickupZone)) {
           return { ok: false, error: 'No Transfer bookings do not need a pickup time.' }
-        }
-        if (isPrivateTransferZone(existing.pickupZone) || isPrivateTransfer(existing)) {
-          // private pickup time is edited via booking details (with vehicle/driver)
         }
         const trimmed = pickupTime.trim()
         if (!trimmed) return { ok: false, error: 'Enter a pickup time.' }
@@ -6040,7 +6154,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
       },
     }
-  }, [agents, bookings, ensureBookingsForRange, ensureBookingByCode, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, checkInGroupGuides, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, checkInReady, sessionRole, setGuestBoatWatchStable, loadError])
+  }, [agents, bookings, ensureBookingsForRange, ensureBookingByCode, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, checkInGroupGuides, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, arrangementGroupMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, checkInReady, sessionRole, setGuestBoatWatchStable, loadError])
 
   const partnerDataLive = sessionRole !== 'partner' || partnerLive
   const staffDataLive =

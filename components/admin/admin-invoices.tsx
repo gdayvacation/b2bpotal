@@ -210,6 +210,23 @@ function isChangeDateFeeLine(item: { lineKind?: string; description?: string }) 
   return item.lineKind === 'other' && /^Change date Fee\b/i.test(item.description ?? '')
 }
 
+/** Cash on the bill. A prebuy allotment line keeps its price on the row and 0 in the total. */
+function billExtraAmount(item: {
+  amount?: number
+  description?: string
+  adultPrice?: number
+  childPrice?: number
+  adults?: number
+  children?: number
+}) {
+  const amount = Number(item.amount) || 0
+  if (amount !== 0) return amount
+  if (!/· allotment/i.test(item.description ?? '')) return 0
+  const adults = Math.max(0, Math.floor(item.adults ?? 0))
+  const children = Math.max(0, Math.floor(item.children ?? 0))
+  return adults * (Number(item.adultPrice) || 0) + children * (Number(item.childPrice) || 0)
+}
+
 /** Saved invoice/draft total for this booking, including lines added without a booking code. */
 function savedChargeForBooking(doc: InvoiceDocument, bookingCode: string) {
   const matched = doc.items.filter((item) => item.bookingCode === bookingCode)
@@ -767,7 +784,10 @@ export function AdminInvoices() {
           (item) => !pricedForCharge || item.bookingCode === booking.code,
         )
         const extraItems = billedItems.filter(
-          (item) => EXTRA_CHARGE_KINDS.has(item.lineKind) || isChangeDateFeeLine(item),
+          (item) =>
+            EXTRA_CHARGE_KINDS.has(item.lineKind) ||
+            isChangeDateFeeLine(item) ||
+            /· allotment/i.test(item.description ?? ''),
         )
         const parkItems =
           booking.status === 'Cancelled'
@@ -793,7 +813,7 @@ export function AdminInvoices() {
             ? invoiceGuestAmountForBooking(priced, booking.code)
             : itemsGuestTotal(items),
           parkCharge: parkItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
-          extraCharge: extraItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
+          extraCharge: extraItems.reduce((sum, item) => sum + billExtraAmount(item), 0),
           noTransferDiscount,
           noTransfer,
           amountStale: Boolean(

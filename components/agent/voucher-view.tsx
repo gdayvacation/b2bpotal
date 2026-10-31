@@ -17,7 +17,9 @@ import { formatIncludeLabel, formatLongDate, formatShortDate } from '@/lib/forma
 import { cn } from '@/lib/utils'
 import {
   bookingMoveNote,
+  formatPickupZoneLabel,
   isNoTransfer,
+  isPrivateTransferZone,
   totalPassengers,
   type Booking,
 } from '@/lib/types'
@@ -245,8 +247,17 @@ export function VoucherPreview({
             ) : (
               <>
                 <dl className="grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-4">
-                  <DetailCell label="Zone" value={live.pickupZone} />
-                  <DetailCell label="Time" value={live.pickupTime || '—'} emphasize />
+                  <DetailCell label="Zone" value={formatPickupZoneLabel(live.pickupZone)} />
+                  <DetailCell
+                    label="Time"
+                    value={
+                      isPrivateTransferZone(live.pickupZone) &&
+                      live.pickupTime.toLowerCase().includes('awaiting')
+                        ? 'Admin will confirm ASAP'
+                        : live.pickupTime || '—'
+                    }
+                    emphasize
+                  />
                   <DetailCell label="Hotel" value={pickupLine || '—'} className="col-span-2" />
                 </dl>
                 {live.transferExtraCharge?.trim() ? (

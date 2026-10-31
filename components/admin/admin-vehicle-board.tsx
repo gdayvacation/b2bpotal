@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState, type HTMLAttributes } from 'react'
+import { useEffect, useMemo, useRef, useState, type DragEvent, type HTMLAttributes, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import {
   ArrowLeft,
   Bus,
@@ -107,6 +108,7 @@ import {
   takePaxBreakdown,
   type PaxBreakdown,
 } from '@/lib/vehicle-assign'
+import type { ArrangementGroupKind } from '@/lib/arrangement-groups'
 import { bookingPaxOnVanAndBoat } from '@/lib/boat-load'
 import { originalBookedPax } from '@/lib/check-in-booked-pax'
 import { paxTotal } from '@/lib/pickup-marina-sync'
@@ -253,10 +255,15 @@ function confirmRemoveBoat({
 
 function LongPressCard({
   onLongPress,
+  nativeTitle = true,
   children,
   className,
   ...rest
-}: HTMLAttributes<HTMLDivElement> & { onLongPress: () => void }) {
+}: HTMLAttributes<HTMLDivElement> & {
+  onLongPress: () => void
+  /** Browser tooltip. Off when a custom hover tip already shows the guest. */
+  nativeTitle?: boolean
+}) {
   const timerRef = useRef<number | null>(null)
   const armedRef = useRef(false)
   const ignoreClickRef = useRef(false)
@@ -278,9 +285,11 @@ function LongPressCard({
     <div
       {...rest}
       title={
-        rest.title
-          ? `${rest.title} · Long-press to separate van or boat`
-          : 'Long-press to separate van or boat'
+        nativeTitle
+          ? rest.title
+            ? `${rest.title} · Long-press to separate van or boat`
+            : 'Long-press to separate van or boat'
+          : undefined
       }
       className={cn(className, holding && 'ring-2 ring-teal-600/40')}
       onPointerDown={(event) => {
@@ -327,6 +336,89 @@ function LongPressCard({
       }}
     >
       {children}
+    </div>
+  )
+}
+
+function GuestHoverTip({
+  name,
+  detail,
+  children,
+}: {
+  name: string
+  detail?: string
+  children: ReactNode
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const [box, setBox] = useState<{
+    left: number
+    top: number
+    place: 'above' | 'below'
+  } | null>(null)
+
+  function show() {
+    const el = ref.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const place = rect.top < 72 ? 'below' : 'above'
+    const margin = Math.min(132, window.innerWidth / 2)
+    const center = rect.left + rect.width / 2
+    setBox({
+      left: Math.min(window.innerWidth - margin, Math.max(margin, center)),
+      top: place === 'above' ? rect.top : rect.bottom,
+      place,
+    })
+    setOpen(true)
+  }
+
+  useEffect(() => {
+    if (!open) return
+    function hide() {
+      setOpen(false)
+    }
+    window.addEventListener('scroll', hide, true)
+    window.addEventListener('resize', hide)
+    return () => {
+      window.removeEventListener('scroll', hide, true)
+      window.removeEventListener('resize', hide)
+    }
+  }, [open])
+
+  const guest = name.trim() || 'No guest name'
+
+  return (
+    <div
+      ref={ref}
+      className="min-w-0"
+      onMouseEnter={show}
+      onMouseLeave={() => setOpen(false)}
+      onDragStart={() => setOpen(false)}
+    >
+      {children}
+      {open && box
+        ? createPortal(
+            <div
+              role="tooltip"
+              className="pointer-events-none fixed z-[80] max-w-[16rem] rounded-lg bg-teal-950 px-2.5 py-1.5 text-left shadow-lg ring-1 ring-white/10"
+              style={{
+                left: box.left,
+                top: box.place === 'above' ? box.top - 6 : box.top + 6,
+                transform:
+                  box.place === 'above' ? 'translate(-50%, -100%)' : 'translate(-50%, 0)',
+              }}
+            >
+              <p className="text-[10px] font-medium tracking-[0.12em] text-white/55 uppercase">
+                Guest
+              </p>
+              <p className="text-[13px] leading-snug font-semibold break-words text-white">{guest}</p>
+              {detail ? (
+                <p className="mt-0.5 text-[11px] leading-tight text-white/70">{detail}</p>
+              ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   )
 }
@@ -1132,6 +1224,77 @@ function TransferKindBadge({ kind }: { kind: BookingTransferKind }) {
   )
 }
 
+function ArrangementLane({
+  kind,
+  bookings,
+  selectedCodes,
+  onToggleAll,
+  onDragStart,
+  onDragEnd,
+  children,
+}: {
+  kind: ArrangementGroupKind
+  bookings: Booking[]
+  selectedCodes: Set<string>
+  onToggleAll: (on: boolean) => void
+  onDragStart: (event: DragEvent<HTMLButtonElement>) => void
+  onDragEnd: () => void
+  children: ReactNode
+}) {
+  const codes = bookings.map((booking) => booking.code)
+  const selected = codes.filter((code) => selectedCodes.has(code)).length
+  const allSelected = codes.length > 0 && selected === codes.length
+  const pax = bookings.reduce((sum, booking) => sum + totalPassengers(booking), 0)
+  const privateGroup = kind === 'private'
+  return (
+    <section
+      className={cn(
+        'rounded-xl border p-2',
+        privateGroup ? 'border-sky-200 bg-sky-50/80' : 'border-violet-200 bg-violet-50/80',
+      )}
+    >
+      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2 px-0.5">
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            className={cn(
+              'size-3.5 rounded border-teal-900/25',
+              privateGroup ? 'accent-sky-700' : 'accent-violet-700',
+            )}
+            checked={allSelected}
+            ref={(element) => {
+              if (element) element.indeterminate = selected > 0 && !allSelected
+            }}
+            onChange={() => onToggleAll(!allSelected)}
+            aria-label={`Select all ${privateGroup ? 'Private' : 'Partner'} bookings`}
+          />
+          <span
+            className={cn('text-xs font-semibold', privateGroup ? 'text-sky-950' : 'text-violet-950')}
+          >
+            {privateGroup ? 'Private' : 'Partner'}
+          </span>
+          <span className="text-[11px] text-teal-900/55">
+            {bookings.length} booking{bookings.length === 1 ? '' : 's'} · {pax} pax
+          </span>
+        </label>
+        <button
+          type="button"
+          draggable
+          onDragStart={onDragStart}
+          onDragEnd={onDragEnd}
+          className={cn(
+            'cursor-grab rounded-md px-2 py-1 text-[11px] font-semibold active:cursor-grabbing',
+            privateGroup ? 'bg-sky-200/80 text-sky-950' : 'bg-violet-200/80 text-violet-950',
+          )}
+        >
+          Drag group
+        </button>
+      </div>
+      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">{children}</div>
+    </section>
+  )
+}
+
 function VehicleBoard({
   date,
   program,
@@ -1197,6 +1360,7 @@ function VehicleBoard({
     getCheckInServices,
     getCheckInAttendance,
     getPickupNoShow,
+    getArrangementGroup,
   } = usePortal()
   const [openVan, setOpenVan] = useState<number | null>(null)
   const [splitCode, setSplitCode] = useState<string | null>(null)
@@ -1394,6 +1558,18 @@ function VehicleBoard({
       return haystack.includes(q)
     })
   }, [listBookings, sheetQuery, kindFilter, plan, boatPlan])
+
+  const arrangedWaiting = useMemo(() => {
+    const grouped = { private: [] as Booking[], partner: [] as Booking[], rest: [] as Booking[] }
+    for (const booking of sheetRows) {
+      const group =
+        kindFilter === 'all' ? getArrangementGroup(date, program, booking.code) : null
+      if (group === 'private') grouped.private.push(booking)
+      else if (group === 'partner') grouped.partner.push(booking)
+      else grouped.rest.push(booking)
+    }
+    return grouped
+  }, [sheetRows, kindFilter, date, program, getArrangementGroup])
 
   const selectableSheetRows = sheetRows
 
@@ -1747,6 +1923,122 @@ function VehicleBoard({
     return sum + (booking ? totalPassengers(booking) : 0)
   }, 0)
 
+  function renderWaitingCard(booking: Booking) {
+    const pax = totalPassengers(booking)
+    const largeGroup = pax > capacity
+    const checked = selectedCodes.has(booking.code)
+    const isDragging = dragCodes?.includes(booking.code)
+    const hotel = booking.pickupHotel.trim() || 'Hotel TBA'
+    const arrangement = getArrangementGroup(date, program, booking.code)
+
+    return (
+      <GuestHoverTip
+        key={booking.code}
+        name={booking.leadGuest}
+        detail={[
+          booking.pickupTime,
+          booking.roomNumber ? `Rm ${booking.roomNumber}` : '',
+          `${pax} pax`,
+          arrangement === 'private' ? 'Private group' : arrangement === 'partner' ? 'Partner group' : '',
+        ]
+          .filter(Boolean)
+          .join(' · ')}
+      >
+        <LongPressCard
+          draggable
+          nativeTitle={false}
+          onLongPress={() => setSplitCode(booking.code)}
+          onDragStart={(event) => {
+            beginDrag(event, codesForDrag(booking.code))
+          }}
+          onDragEnd={() => {
+            setDragCodes(null)
+            setDropTarget(null)
+          }}
+          onClick={() => {
+            toggleCode(booking.code)
+          }}
+          className={cn(
+            'cursor-grab rounded-lg border px-2 py-1.5 transition-all select-none active:cursor-grabbing',
+            largeGroup ? 'border-amber-300 bg-amber-50' : 'border-teal-900/8 bg-white',
+            arrangement === 'private' && 'border-l-[3px] border-l-sky-500',
+            arrangement === 'partner' && 'border-l-[3px] border-l-violet-500',
+            checked && 'border-teal-600/40 bg-teal-50 shadow-sm',
+            isDragging && 'opacity-40',
+            !checked &&
+              (largeGroup
+                ? 'hover:border-amber-400 hover:bg-amber-50/80'
+                : 'hover:border-teal-700/25 hover:bg-teal-50/40'),
+          )}
+        >
+          <div className="flex items-start gap-1.5">
+            <input
+              type="checkbox"
+              className="mt-0.5 size-3.5 shrink-0 rounded border-teal-900/25 accent-teal-700"
+              checked={checked}
+              onClick={(event) => event.stopPropagation()}
+              onChange={() => toggleCode(booking.code)}
+              aria-label={`Select ${booking.leadGuest}`}
+            />
+            <p className="min-w-0 flex-1 text-[13px] leading-snug font-semibold break-words text-teal-950">
+              {hotel}
+              {booking.roomNumber ? (
+                <span className="font-medium text-teal-900/45"> · {booking.roomNumber}</span>
+              ) : null}
+            </p>
+            {arrangement ? (
+              <span
+                className={cn(
+                  'shrink-0 rounded px-1 py-0.5 text-[9px] font-bold tracking-wide uppercase',
+                  arrangement === 'private' ? 'bg-sky-100 text-sky-950' : 'bg-violet-100 text-violet-950',
+                )}
+              >
+                {arrangement === 'private' ? 'Private' : 'Partner'}
+              </span>
+            ) : null}
+            <span className="shrink-0 pt-0.5 text-sm leading-none font-bold tabular-nums text-emerald-600">
+              <PaxShortWithNoShow
+                current={booking}
+                noShowCount={bookingNoShowCount(
+                  date,
+                  program,
+                  booking,
+                  getPickupNoShow(date, program, booking.code),
+                  getCheckInAttendance(date, program, booking.code) === 'no-show',
+                )}
+                wholeNoShow={getCheckInAttendance(date, program, booking.code) === 'no-show'}
+              />
+            </span>
+            {largeGroup ? (
+              <button
+                type="button"
+                className="shrink-0 rounded border border-amber-400 bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-950 hover:bg-amber-200"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setSplitCode(booking.code)
+                }}
+              >
+                Split
+              </button>
+            ) : null}
+            <GripVertical className="mt-0.5 size-3.5 shrink-0 text-teal-800/25" />
+          </div>
+        </LongPressCard>
+      </GuestHoverTip>
+    )
+  }
+
+  function selectArrangementLane(codes: string[], on: boolean) {
+    setSelectedCodes((current) => {
+      const next = new Set(current)
+      for (const code of codes) {
+        if (on) next.add(code)
+        else next.delete(code)
+      }
+      return next
+    })
+  }
+
   return (
     <div>
       <Surface className="mb-5 p-5 print:hidden">
@@ -2016,6 +2308,10 @@ function VehicleBoard({
                         : kindFilter === 'no_transfer'
                           ? `${sheetRows.length} no transfer guest${sheetRows.length === 1 ? '' : 's'}`
                           : `${sheetRows.length} ${TRANSFER_KIND_LABELS[kindFilter].toLowerCase()} waiting`}
+                      {kindFilter === 'all' &&
+                      arrangedWaiting.private.length + arrangedWaiting.partner.length > 0
+                        ? ` · ${arrangedWaiting.private.length} Private · ${arrangedWaiting.partner.length} Partner grouped`
+                        : ''}
                     </p>
                   </div>
                   <label className="flex items-center gap-1.5 text-xs text-teal-900/60">
@@ -2148,95 +2444,45 @@ function VehicleBoard({
                           : 'Everyone is on a van. Waiting is empty.'}
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
-                    {sheetRows.map((booking) => {
-                      const pax = totalPassengers(booking)
-                      const largeGroup = pax > capacity
-                      const checked = selectedCodes.has(booking.code)
-                      const isDragging = dragCodes?.includes(booking.code)
-                      const hotel = booking.pickupHotel.trim() || 'Hotel TBA'
-
-                      return (
-                        <LongPressCard
-                          key={booking.code}
-                          draggable
-                          title={`${hotel}${booking.roomNumber ? ` · Rm ${booking.roomNumber}` : ''} · ${booking.pickupTime} · ${pax} pax`}
-                          onLongPress={() => setSplitCode(booking.code)}
-                          onDragStart={(event) => {
-                            beginDrag(event, codesForDrag(booking.code))
-                          }}
+                  <div className="space-y-2">
+                    {(
+                      [
+                        ['private', arrangedWaiting.private],
+                        ['partner', arrangedWaiting.partner],
+                      ] as const
+                    ).map(([kind, laneBookings]) =>
+                      laneBookings.length === 0 ? null : (
+                        <ArrangementLane
+                          key={kind}
+                          kind={kind}
+                          bookings={laneBookings}
+                          selectedCodes={selectedCodes}
+                          onToggleAll={(on) =>
+                            selectArrangementLane(
+                              laneBookings.map((booking) => booking.code),
+                              on,
+                            )
+                          }
+                          onDragStart={(event) =>
+                            beginDrag(
+                              event,
+                              laneBookings.map((booking) => booking.code),
+                            )
+                          }
                           onDragEnd={() => {
                             setDragCodes(null)
                             setDropTarget(null)
                           }}
-                          onClick={() => {
-                            toggleCode(booking.code)
-                          }}
-                          className={cn(
-                            'cursor-grab rounded-lg border px-2 py-1.5 transition-all select-none active:cursor-grabbing',
-                            largeGroup
-                              ? 'border-amber-300 bg-amber-50'
-                              : 'border-teal-900/8 bg-white',
-                            checked && 'border-teal-600/40 bg-teal-50 shadow-sm',
-                            isDragging && 'opacity-40',
-                            !checked &&
-                              (largeGroup
-                                ? 'hover:border-amber-400 hover:bg-amber-50/80'
-                                : 'hover:border-teal-700/25 hover:bg-teal-50/40'),
-                          )}
                         >
-                          <div className="flex items-start gap-1.5">
-                            <input
-                              type="checkbox"
-                              className="mt-0.5 size-3.5 shrink-0 rounded border-teal-900/25 accent-teal-700"
-                              checked={checked}
-                              onClick={(event) => event.stopPropagation()}
-                              onChange={() => toggleCode(booking.code)}
-                              aria-label={`Select ${booking.leadGuest}`}
-                            />
-                            <p className="min-w-0 flex-1 text-[13px] leading-snug font-semibold break-words text-teal-950">
-                              {hotel}
-                              {booking.roomNumber ? (
-                                <span className="font-medium text-teal-900/45">
-                                  {' '}
-                                  · {booking.roomNumber}
-                                </span>
-                              ) : null}
-                            </p>
-                            <span className="shrink-0 pt-0.5 text-sm leading-none font-bold tabular-nums text-emerald-600">
-                              <PaxShortWithNoShow
-                                current={booking}
-                                noShowCount={bookingNoShowCount(
-                                  date,
-                                  program,
-                                  booking,
-                                  getPickupNoShow(date, program, booking.code),
-                                  getCheckInAttendance(date, program, booking.code) ===
-                                    'no-show',
-                                )}
-                                wholeNoShow={
-                                  getCheckInAttendance(date, program, booking.code) ===
-                                  'no-show'
-                                }
-                              />
-                            </span>
-                            {largeGroup ? (
-                              <button
-                                type="button"
-                                className="shrink-0 rounded border border-amber-400 bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-950 hover:bg-amber-200"
-                                onClick={(event) => {
-                                  event.stopPropagation()
-                                  setSplitCode(booking.code)
-                                }}
-                              >
-                                Split
-                              </button>
-                            ) : null}
-                            <GripVertical className="mt-0.5 size-3.5 shrink-0 text-teal-800/25" />
-                          </div>
-                        </LongPressCard>
-                      )
-                    })}
+                          {laneBookings.map((booking) => renderWaitingCard(booking))}
+                        </ArrangementLane>
+                      ),
+                    )}
+                    {arrangedWaiting.rest.length > 0 ? (
+                      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
+                        {arrangedWaiting.rest.map((booking) => renderWaitingCard(booking))}
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>

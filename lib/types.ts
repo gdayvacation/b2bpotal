@@ -89,10 +89,11 @@ export type PrivateTransferVehicle = 'Car' | 'Van'
 export const PRIVATE_TRANSFER_OPTIONS: ReadonlyArray<{
   vehicle: PrivateTransferVehicle
   priceThb: number
+  maxPax: number
   label: string
 }> = [
-  { vehicle: 'Car', priceThb: 1400, label: 'Car · 1,400 THB' },
-  { vehicle: 'Van', priceThb: 1600, label: 'Van · 1,600 THB' },
+  { vehicle: 'Car', priceThb: 1400, maxPax: 4, label: 'Car / SUV (1-4 Pax)' },
+  { vehicle: 'Van', priceThb: 1800, maxPax: 12, label: 'VAN (max 12 Pax)' },
 ]
 
 export function formatPrivateTransferPrice(priceThb: number) {
@@ -113,7 +114,39 @@ export function isNoTransfer(zone: string | null | undefined) {
 }
 
 export function isPrivateTransferZone(zone: string | null | undefined) {
-  return (zone ?? '').trim().toLowerCase() === PRIVATE_TRANSFER_ZONE.toLowerCase()
+  const value = (zone ?? '').trim()
+  if (!value) return false
+  if (value.toLowerCase() === PRIVATE_TRANSFER_ZONE.toLowerCase()) return true
+  // Agent request: "Private · Patong" keeps the area and waits for a pickup time.
+  return /^private\s*·\s+\S/i.test(value)
+}
+
+/** Area on an agent private-transfer request (`Private · Patong` → `Patong`). */
+export function privateTransferAreaName(zone: string | null | undefined) {
+  const match = (zone ?? '').trim().match(/^private\s*·\s+(.+)$/i)
+  return match?.[1]?.trim() ?? ''
+}
+
+/** Store a private transfer with its pickup area. Blank area stays `Private`. */
+export function formatPrivateTransferZone(area: string) {
+  const trimmed = area.trim().replace(/\s+/g, ' ')
+  const name = privateTransferAreaName(trimmed) || trimmed
+  if (!name || name.toLowerCase() === PRIVATE_TRANSFER_ZONE.toLowerCase()) {
+    return PRIVATE_TRANSFER_ZONE
+  }
+  return `Private · ${name}`
+}
+
+/** Agent-facing zone label. Join zones stay as stored. */
+export function formatPickupZoneLabel(zone: string | null | undefined) {
+  const value = (zone ?? '').trim()
+  if (!value) return '—'
+  if (isNoTransfer(value)) return NO_TRANSFER_ZONE
+  if (isPrivateTransferZone(value)) {
+    const area = privateTransferAreaName(value)
+    return area ? `Private transfer · ${area}` : 'Private transfer'
+  }
+  return value
 }
 
 export type Agent = {

@@ -1755,6 +1755,7 @@ export function subscribeCheckInChanges(
     'check_in_guest_edits',
     'own_arrivals',
     'job_order_actions',
+    'booking_arrangement_groups',
     'check_in_notes',
     'check_in_sequences',
     'check_in_group_guides',

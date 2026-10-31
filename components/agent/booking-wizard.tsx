@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   CalendarIcon,
+  Car,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -40,13 +41,19 @@ import type { BookingImageDraft } from '@/lib/booking-from-image'
 import { matchAgentFromSeed, matchZoneFromSeed } from '@/lib/booking-import-resolve'
 import {
   formatPaxBreakdown,
+  formatPrivateTransferPrice,
+  formatPrivateTransferZone,
   isNoTransfer,
+  isPrivateTransferZone,
   NO_TRANSFER_ZONE,
+  PRIVATE_TRANSFER_OPTIONS,
+  privateTransferAreaName,
   type Agent,
   type Booking,
   type Hotel,
   type IncludeOption,
   type PickupZoneName,
+  type PrivateTransferVehicle,
   type Program,
 } from '@/lib/types'
 
@@ -192,12 +199,18 @@ export function BookingWizard({
   const [leadGuest, setLeadGuest] = useState(() => seed?.leadGuest ?? '')
   const [cashOnTour, setCashOnTour] = useState(() => seed?.cashOnTour ?? '')
   const [pickupZone, setPickupZone] = useState<PickupZoneName | null>(() => {
-    if (!seed) return null
-    if (seed.pickupZone) {
-      return matchZoneFromSeed(zones, seed.pickupZone) ?? seed.pickupZone
-    }
-    return null
+    if (!seed?.pickupZone || isPrivateTransferZone(seed.pickupZone)) return null
+    return matchZoneFromSeed(zones, seed.pickupZone) ?? seed.pickupZone
   })
+  const [privatePickup, setPrivatePickup] = useState(
+    () => Boolean(seed?.pickupZone && isPrivateTransferZone(seed.pickupZone)),
+  )
+  const [privateArea, setPrivateArea] = useState<string | null>(() => {
+    const area = privateTransferAreaName(seed?.pickupZone ?? '')
+    return area || null
+  })
+  const [privateAreaOther, setPrivateAreaOther] = useState('')
+  const [privateVehicle, setPrivateVehicle] = useState<'' | PrivateTransferVehicle>('')
   const [pickupHotel, setPickupHotel] = useState(() => seed?.pickupHotel ?? '')
   const [roomNumber, setRoomNumber] = useState(() => seed?.roomNumber ?? '')
   const [note, setNote] = useState(() => {
@@ -230,12 +243,27 @@ export function BookingWizard({
 
   // If hotel is known but zone empty, reuse catalog zone when hotels load.
   useEffect(() => {
-    if (!seed?.pickupHotel || pickupZone) return
+    if (!seed?.pickupHotel || pickupZone || privatePickup) return
     const hotel = hotels.find(
       (item) => item.name.toLowerCase() === seed.pickupHotel.trim().toLowerCase(),
     )
     if (hotel?.zoneName) setPickupZone(hotel.zoneName)
-  }, [hotels, seed?.pickupHotel, pickupZone])
+  }, [hotels, seed?.pickupHotel, pickupZone, privatePickup])
+
+  // Match a seeded private area to a live zone name, or keep it as Other.
+  useEffect(() => {
+    if (!privatePickup || !privateArea || zones.length === 0) return
+    if (privateArea.trim().toLowerCase() === 'other') return
+    const match = zones.find(
+      (zone) => zone.name.toLowerCase() === privateArea.trim().toLowerCase(),
+    )
+    if (match) {
+      if (match.name !== privateArea) setPrivateArea(match.name)
+      return
+    }
+    setPrivateAreaOther((current) => current || privateArea.trim())
+    setPrivateArea('Other')
+  }, [zones, privatePickup, privateArea])
 
   function openProgramOptions(next: Program) {
     setPendingProgram(next)
@@ -299,10 +327,33 @@ export function BookingWizard({
   const dateSelectable = selectAgent
     ? Boolean(date) && hasSeats
     : Boolean(date) && bookingOpen && !programClosed && hasSeats
-  const pickupTime = pickupZone && !isNoTransfer(pickupZone) ? getZoneTime(pickupZone) : ''
+  const pickupTime =
+    !privatePickup && pickupZone && !isNoTransfer(pickupZone) ? getZoneTime(pickupZone) : ''
   const selectedZone = zones.find((zone) => zone.name === pickupZone)
-  const pendingPickup = !isNoTransfer(pickupZone) && (selectedZone?.pending ?? false)
   const noTransfer = isNoTransfer(pickupZone)
+  const pendingPickup = !privatePickup && !noTransfer && (selectedZone?.pending ?? false)
+  const privateZoneChoices = useMemo(() => {
+    const names = zones
+      .map((zone) => zone.name)
+      .filter((name) => !isNoTransfer(name) && !isPrivateTransferZone(name))
+    if (!names.some((name) => name.toLowerCase() === 'other')) names.push('Other')
+    return names
+  }, [zones])
+  const privateAreaName = useMemo(() => {
+    if (!privatePickup || !privateArea) return ''
+    if (privateArea.trim().toLowerCase() === 'other') return privateAreaOther.trim() || 'Other'
+    return privateArea.trim()
+  }, [privatePickup, privateArea, privateAreaOther])
+  const resolvedPickupZone = noTransfer
+    ? NO_TRANSFER_ZONE
+    : privatePickup
+      ? privateAreaName
+        ? formatPrivateTransferZone(privateAreaName)
+        : null
+      : pickupZone
+  const privateVehicleOption =
+    PRIVATE_TRANSFER_OPTIONS.find((option) => option.vehicle === privateVehicle) ?? null
+  const privateVehicleFits = !privateVehicleOption || total <= privateVehicleOption.maxPax
   const matchedHotel = useMemo(() => {
     const name = pickupHotel.trim().toLowerCase()
     if (!name) return null
@@ -310,13 +361,26 @@ export function BookingWizard({
   }, [hotels, pickupHotel])
   const transferExtraChargePreview = matchedHotel?.extraChargeTransfer.trim() ?? ''
 
+  function zoneNameForHotel(hotel: Hotel) {
+    if (hotel.zoneName && zones.some((zone) => zone.name === hotel.zoneName)) {
+      return hotel.zoneName
+    }
+    if (zones.some((zone) => zone.name === 'Other') || privatePickup) return 'Other'
+    return null
+  }
+
   function applyHotelSelection(hotel: Hotel) {
     setPickupHotel(hotel.name)
-    if (hotel.zoneName && zones.some((zone) => zone.name === hotel.zoneName)) {
-      setPickupZone(hotel.zoneName)
-    } else if (zones.some((zone) => zone.name === 'Other')) {
-      setPickupZone('Other')
+    const zoneName = zoneNameForHotel(hotel)
+    if (privatePickup) {
+      if (zoneName) {
+        setPrivateArea(zoneName)
+        if (zoneName.toLowerCase() !== 'other') setPrivateAreaOther('')
+      }
+      setError('')
+      return
     }
+    if (zoneName) setPickupZone(zoneName)
     setError('')
   }
 
@@ -332,6 +396,7 @@ export function BookingWizard({
       )
     if (step === pickupStep) {
       if (noTransfer) return true
+      if (privatePickup) return Boolean(privateAreaName && privateVehicleOption && privateVehicleFits)
       return pickupZone !== null && zones.some((zone) => zone.name === pickupZone)
     }
     if (step === reviewStep) return !overCapacity
@@ -356,6 +421,10 @@ export function BookingWizard({
     pickupZone,
     zones,
     noTransfer,
+    privatePickup,
+    privateAreaName,
+    privateVehicleOption,
+    privateVehicleFits,
     reviewStep,
   ])
 
@@ -386,7 +455,15 @@ export function BookingWizard({
                   : overCapacity
                     ? `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left on this date.`
                     : 'Enter the guest name.'
-                : 'Select a pickup zone, or choose No Transfer.',
+                : privatePickup && !privateVehicleOption
+                  ? 'Choose Car / SUV or VAN.'
+                  : privatePickup && !privateVehicleFits
+                    ? privateVehicleOption?.vehicle === 'Car'
+                      ? 'Car / SUV is for 1–4 guests. Choose VAN for a larger group.'
+                      : 'VAN takes up to 12 guests.'
+                    : privatePickup
+                      ? 'Select a zone for the private transfer, or choose Other.'
+                      : 'Select a pickup zone, or choose No Transfer.',
       )
       return
     }
@@ -421,7 +498,7 @@ export function BookingWizard({
   }
 
   function confirm() {
-    if (!program || !date || !pickupZone || !resolvedAgent) return
+    if (!program || !date || !resolvedPickupZone || !resolvedAgent) return
     if (!selectAgent && agent?.status === 'Inactive') {
       setError('This agent is inactive and cannot create bookings.')
       return
@@ -444,7 +521,7 @@ export function BookingWizard({
   }
 
   async function saveBooking() {
-    if (!program || !date || !pickupZone || !resolvedAgent || savingRef.current) return
+    if (!program || !date || !resolvedPickupZone || !resolvedAgent || savingRef.current) return
     savingRef.current = true
     setSaving(true)
     setError('')
@@ -464,11 +541,14 @@ export function BookingWizard({
           infants,
           tourLeaders,
           leadGuest: leadGuest.trim(),
-          pickupZone,
+          pickupZone: resolvedPickupZone,
           pickupHotel: pickupHotel.trim(),
           roomNumber: roomNumber.trim(),
           note: note.trim(),
           cashOnTour: cashOnTour.trim(),
+          ...(privatePickup && privateVehicle
+            ? { privateTransferVehicle: privateVehicle }
+            : {}),
         },
         { bypassCutoff: selectAgent },
       )
@@ -583,6 +663,7 @@ export function BookingWizard({
                   setPickupZone(null)
                 } else {
                   setPickupZone(NO_TRANSFER_ZONE)
+                  setPrivatePickup(false)
                 }
                 setError('')
               }}
@@ -991,6 +1072,11 @@ export function BookingWizard({
                       }}
                       onSelectHotel={applyHotelSelection}
                       onSelectOther={() => {
+                        if (privatePickup) {
+                          setPrivateArea('Other')
+                          setError('')
+                          return
+                        }
                         if (zones.some((zone) => zone.name === 'Other')) {
                           setPickupZone('Other')
                         }
@@ -1015,16 +1101,56 @@ export function BookingWizard({
                 <div>
                   <Label className="mb-3">Pickup Zone</Label>
                   <div className="grid gap-2 sm:grid-cols-2">
-                    {zones.map((zone) => {
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (privatePickup) {
+                          setPrivatePickup(false)
+                          setPrivateArea(null)
+                          setPrivateAreaOther('')
+                          setPrivateVehicle('')
+                        } else {
+                          setPrivatePickup(true)
+                          setPickupZone(null)
+                        }
+                        setError('')
+                      }}
+                      className={cn(
+                        'flex items-center gap-3 rounded-2xl border-2 px-3.5 py-3 text-left transition-all sm:col-span-2',
+                        privatePickup
+                          ? 'border-sky-700 bg-sky-100 ring-1 ring-sky-700 shadow-sm shadow-sky-700/15'
+                          : 'border-sky-400/80 bg-sky-50 hover:border-sky-600 hover:bg-sky-100/80',
+                      )}
+                    >
+                      <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-sky-700 text-white">
+                        <Car className="size-4" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block font-semibold text-sky-950">Private Transfers</span>
+                        <span className="mt-0.5 block text-xs text-sky-900/70">
+                          Admin will confirm the pickup time
+                        </span>
+                      </span>
+                      {privatePickup ? <Check className="size-4 shrink-0 text-sky-800" /> : null}
+                    </button>
+                    {privatePickup
+                      ? null
+                      : zones
+                      .filter((zone) => !isPrivateTransferZone(zone.name))
+                      .map((zone) => {
                       const time = getZoneTime(zone.name)
                       return (
                         <button
                           key={zone.name}
                           type="button"
-                          onClick={() => setPickupZone(zone.name)}
+                          onClick={() => {
+                            setPrivatePickup(false)
+                            setPickupZone(zone.name)
+                            setError('')
+                          }}
                           className={cn(
                             'flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-left transition-all',
-                            pickupZone === zone.name
+                            !privatePickup && pickupZone === zone.name
                               ? 'border-teal-700 bg-teal-50/90 ring-1 ring-teal-700 shadow-sm shadow-teal-700/10'
                               : 'border-teal-900/10 bg-white/70 hover:border-teal-700/30',
                           )}
@@ -1035,7 +1161,7 @@ export function BookingWizard({
                           <span className="flex shrink-0 items-center gap-1.5 text-sm text-teal-900/50">
                             <Clock3 className="size-3.5" />
                             {zone.pending ? 'Awaiting time' : time}
-                            {pickupZone === zone.name ? (
+                            {!privatePickup && pickupZone === zone.name ? (
                               <Check className="size-3.5 text-teal-800" />
                             ) : null}
                           </span>
@@ -1044,6 +1170,100 @@ export function BookingWizard({
                     })}
                   </div>
                 </div>
+                {privatePickup ? (
+                  <div className="space-y-5">
+                    <div>
+                      <Label className="mb-2">Vehicle</Label>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {PRIVATE_TRANSFER_OPTIONS.map((option, index) => {
+                          const tooMany = total > option.maxPax
+                          const selected = privateVehicle === option.vehicle
+                          return (
+                            <button
+                              key={option.vehicle}
+                              type="button"
+                              disabled={tooMany}
+                              onClick={() => {
+                                setPrivateVehicle(option.vehicle)
+                                setError('')
+                              }}
+                              className={cn(
+                                'rounded-xl border px-3.5 py-3 text-left transition-all',
+                                tooMany && 'cursor-not-allowed opacity-45',
+                                selected
+                                  ? 'border-sky-700 bg-sky-50 ring-1 ring-sky-700'
+                                  : 'border-sky-900/10 bg-white/80 hover:border-sky-600/40',
+                              )}
+                            >
+                              <span className="block text-sm font-semibold text-sky-950">
+                                {index + 1}. {option.label}
+                              </span>
+                              <span className="mt-0.5 block text-sm text-sky-900/70">
+                                {formatPrivateTransferPrice(option.priceThb)}
+                              </span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                      {total > 4 ? (
+                        <p className="mt-2 text-xs text-sky-900/60">
+                          Car / SUV is for up to 4 guests. Larger groups use VAN.
+                        </p>
+                      ) : null}
+                    </div>
+                    <div>
+                    <Label className="mb-1">Zone</Label>
+                    <p className="mb-3 text-xs text-neutral-500">
+                      Select the pickup zone, or Other if it is not listed.
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {privateZoneChoices.map((name) => {
+                        const zone = zones.find(
+                          (item) => item.name.toLowerCase() === name.toLowerCase(),
+                        )
+                        const selected = privateArea?.toLowerCase() === name.toLowerCase()
+                        const time = zone ? getZoneTime(zone.name) : ''
+                        return (
+                          <button
+                            key={name}
+                            type="button"
+                            onClick={() => {
+                              setPrivateArea(name)
+                              if (name.toLowerCase() !== 'other') setPrivateAreaOther('')
+                              setError('')
+                            }}
+                            className={cn(
+                              'flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-left transition-all',
+                              selected
+                                ? 'border-teal-700 bg-teal-50/90 ring-1 ring-teal-700 shadow-sm shadow-teal-700/10'
+                                : 'border-teal-900/10 bg-white/70 hover:border-teal-700/30',
+                            )}
+                          >
+                            <span className="min-w-0 truncate font-semibold text-teal-950">{name}</span>
+                            <span className="flex shrink-0 items-center gap-1.5 text-sm text-teal-900/50">
+                              <Clock3 className="size-3.5" />
+                              {zone?.pending || !time ? 'Awaiting time' : time}
+                              {selected ? <Check className="size-3.5 text-teal-800" /> : null}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                    {privateArea?.toLowerCase() === 'other' ? (
+                      <div className="mt-3 max-w-md space-y-2">
+                        <Label htmlFor="private-zone-other">Other zone</Label>
+                        <Input
+                          id="private-zone-other"
+                          value={privateAreaOther}
+                          onChange={(event) => setPrivateAreaOther(event.target.value)}
+                          className="h-11"
+                          placeholder="Area not on the list"
+                        />
+                      </div>
+                    ) : null}
+                    </div>
+                  </div>
+                ) : null}
               </>
             )}
             <div className="max-w-md space-y-2">
@@ -1053,9 +1273,16 @@ export function BookingWizard({
                 value={note}
                 onChange={(event) => setNote(event.target.value)}
                 className="min-h-24"
+                placeholder={
+                  privatePickup ? 'Landmark, hotel wing, or anything admin should know' : undefined
+                }
               />
             </div>
-            {noTransfer ? null : pendingPickup ? (
+            {noTransfer ? null : privatePickup ? (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                Admin will confirm the pickup time for you ASAP.
+              </div>
+            ) : pendingPickup ? (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                 Pickup time: awaiting admin to set
               </div>
@@ -1065,7 +1292,7 @@ export function BookingWizard({
                 <span className="font-semibold text-neutral-900">{pickupTime}</span>
               </div>
             ) : null}
-            {transferExtraChargePreview ? (
+            {!privatePickup && transferExtraChargePreview ? (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
                 <p className="text-[10px] font-semibold tracking-wide text-amber-800/70 uppercase">
                   Extra Charge Transfer
@@ -1132,6 +1359,31 @@ export function BookingWizard({
                     </span>
                   ) : null}
                 </p>
+              ) : privatePickup ? (
+                <>
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
+                    <DetailCell label="Transfer" value="Private transfer" />
+                    <DetailCell
+                      label="Vehicle"
+                      value={
+                        privateVehicleOption
+                          ? `${privateVehicleOption.label} · ${formatPrivateTransferPrice(privateVehicleOption.priceThb)}`
+                          : '—'
+                      }
+                      className="sm:col-span-2"
+                    />
+                    <DetailCell label="Zone" value={privateAreaName || '—'} />
+                    <DetailCell label="Time" value="Admin confirms ASAP" emphasize />
+                    <DetailCell label="Hotel" value={pickupHotel || '—'} className="sm:col-span-2" />
+                    <DetailCell label="Room" value={roomNumber.trim() || '—'} />
+                    <DetailCell
+                      label="Note"
+                      value={note.trim() || '—'}
+                      className="col-span-2 sm:col-span-3"
+                      wrap
+                    />
+                  </dl>
+                </>
               ) : (
                 <>
                   <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">

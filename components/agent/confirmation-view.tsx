@@ -10,13 +10,24 @@ import { VoucherShareActions } from '@/components/voucher-share-actions'
 import { formatThbAmount } from '@/lib/booking-cutoffs'
 import { formatIncludeLabel, formatLongDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { formatPaxBreakdown, isNoTransfer, totalPassengers } from '@/lib/types'
+import {
+  formatPaxBreakdown,
+  formatPickupZoneLabel,
+  formatPrivateTransferPrice,
+  isNoTransfer,
+  isPrivateTransferZone,
+  PRIVATE_TRANSFER_OPTIONS,
+  totalPassengers,
+} from '@/lib/types'
 import type { Booking } from '@/lib/types'
 
 export function ConfirmationView({ booking, slug }: { booking: Booking; slug: string }) {
   const { bookingCutoffs, agents } = usePortal()
   const canBook = agents.find((item) => item.slug === slug)?.status !== 'Inactive'
   const total = totalPassengers(booking)
+  const privateVehicle = PRIVATE_TRANSFER_OPTIONS.find(
+    (option) => option.vehicle === booking.privateTransferVehicle,
+  )
 
   return (
     <div className="gday-fade-up mx-auto max-w-2xl py-4 text-center sm:py-8">
@@ -56,7 +67,16 @@ export function ConfirmationView({ booking, slug }: { booking: Booking; slug: st
             value={
               isNoTransfer(booking.pickupZone)
                 ? 'No Transfer — guest arranges own transport'
-                : `${booking.pickupZone}\n${booking.pickupHotel}${booking.roomNumber ? ` · Room ${booking.roomNumber}` : ''}\n${booking.pickupTime}`
+                : `${formatPickupZoneLabel(booking.pickupZone)}\n${booking.pickupHotel}${booking.roomNumber ? ` · Room ${booking.roomNumber}` : ''}${
+                    privateVehicle
+                      ? `\n${privateVehicle.label} · ${formatPrivateTransferPrice(privateVehicle.priceThb)}`
+                      : ''
+                  }\n${
+                    isPrivateTransferZone(booking.pickupZone) &&
+                    booking.pickupTime.toLowerCase().includes('awaiting')
+                      ? 'Admin will confirm the pickup time ASAP'
+                      : booking.pickupTime
+                  }`
             }
           />
           {booking.transferExtraCharge?.trim() ? (

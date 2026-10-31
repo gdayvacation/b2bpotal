@@ -41,7 +41,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { dateFromISO, formatIncludeLabel, formatLongDate, formatCollectTotal, collectTotal, formatShortDate, startOfToday, toISODate } from '@/lib/format'
+import { dateFromISO, formatIncludeLabel, formatLongDate, formatCollectTotal, collectTotal, formatShortDate, parseCashOnTourAmount, startOfToday, toISODate } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import {
   bookingsToReportRows,
@@ -58,6 +58,7 @@ import {
   type Booking,
   type Program,
 } from '@/lib/types'
+import type { ArrangementGroupKind } from '@/lib/arrangement-groups'
 import { cn } from '@/lib/utils'
 
 type ReportMode =
@@ -69,7 +70,26 @@ type ReportMode =
   | 'agent-statement'
   | 'sheets-backup'
 type ProgramFilter = 'all' | Program
-type SortKey = 'pickup' | 'zone' | 'agent' | 'code' | 'guest'
+type SortKey =
+  | 'pickup'
+  | 'zone'
+  | 'agent'
+  | 'vc'
+  | 'guest'
+  | 'hotel'
+  | 'adults'
+  | 'children'
+  | 'infants'
+  | 'tourLeaders'
+  | 'pax'
+  | 'cot'
+  | 'park'
+  | 'collect'
+  | 'canoe'
+  | 'transfers'
+  | 'note'
+  | 'code'
+type SortDir = 'asc' | 'desc'
 
 type ReportTone = 'teal' | 'amber' | 'sky' | 'slate' | 'violet' | 'emerald' | 'rose'
 
@@ -154,8 +174,21 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: 'pickup', label: 'Pickup time' },
   { value: 'zone', label: 'Pickup zone' },
   { value: 'agent', label: 'Agent' },
+  { value: 'vc', label: 'VC No.' },
+  { value: 'guest', label: 'Guest' },
+  { value: 'hotel', label: 'Hotel' },
+  { value: 'adults', label: 'AD' },
+  { value: 'children', label: 'CH' },
+  { value: 'infants', label: 'IF' },
+  { value: 'tourLeaders', label: 'TL' },
+  { value: 'pax', label: 'Total pax' },
+  { value: 'cot', label: 'COT' },
+  { value: 'park', label: 'Park' },
+  { value: 'collect', label: 'Collect total' },
+  { value: 'canoe', label: 'Canoe' },
+  { value: 'transfers', label: 'Transfers' },
+  { value: 'note', label: 'Note' },
   { value: 'code', label: 'Booking code' },
-  { value: 'guest', label: 'Guest name' },
 ]
 
 export function AdminReports() {
@@ -323,7 +356,8 @@ function ReportModeCard({
 }
 
 function BookingReport({ onBack }: { onBack: () => void }) {
-  const { bookings, agents, ensureBookingsForRange, hydrated } = usePortal()
+  const { bookings, agents, ensureBookingsForRange, hydrated, getArrangementGroup, setArrangementGroups } =
+    usePortal()
   const portalToday = usePortalTodayISO()
   const prevTodayRef = useRef(portalToday)
   const [selectedDate, setSelectedDate] = useState<Date>(() => startOfToday())
@@ -332,7 +366,12 @@ function BookingReport({ onBack }: { onBack: () => void }) {
   const [agentSlug, setAgentSlug] = useState('all')
   const [includeCancelled, setIncludeCancelled] = useState(true)
   const [sortKey, setSortKey] = useState<SortKey>('pickup')
+  const [sortDir, setSortDir] = useState<SortDir>('asc')
   const [exporting, setExporting] = useState<'csv' | 'xlsx' | null>(null)
+  const [arrangeKind, setArrangeKind] = useState<ArrangementGroupKind | null>(null)
+  const [arrangeCodes, setArrangeCodes] = useState<Set<string>>(() => new Set())
+  const [arrangeNote, setArrangeNote] = useState('')
+  const arrangeDirtyRef = useRef(false)
 
   useEffect(() => {
     if (portalToday === prevTodayRef.current) return
@@ -370,8 +409,36 @@ function BookingReport({ onBack }: { onBack: () => void }) {
       if (!includeCancelled && !isActiveBooking(booking)) return false
       return true
     })
-    return [...filtered].sort((a, b) => compareBookings(a, b, sortKey))
-  }, [bookings, dateIso, program, agentSlug, includeCancelled, sortKey])
+    return [...filtered].sort((a, b) => compareBookings(a, b, sortKey, sortDir))
+  }, [bookings, dateIso, program, agentSlug, includeCancelled, sortKey, sortDir])
+
+  const groupCounts = useMemo(() => {
+    let privateCount = 0
+    let partnerCount = 0
+    for (const booking of rows) {
+      if (!isActiveBooking(booking)) continue
+      const group = getArrangementGroup(booking.date, booking.program, booking.code)
+      if (group === 'private') privateCount += 1
+      else if (group === 'partner') partnerCount += 1
+    }
+    return { private: privateCount, partner: partnerCount }
+  }, [rows, getArrangementGroup])
+
+  useEffect(() => {
+    arrangeDirtyRef.current = false
+  }, [dateIso, program, agentSlug, includeCancelled])
+
+  useEffect(() => {
+    if (!arrangeKind || arrangeDirtyRef.current) return
+    const next = new Set<string>()
+    for (const booking of rows) {
+      if (!isActiveBooking(booking)) continue
+      if (getArrangementGroup(booking.date, booking.program, booking.code) === arrangeKind) {
+        next.add(booking.code)
+      }
+    }
+    setArrangeCodes(next)
+  }, [arrangeKind, rows, getArrangementGroup])
 
   const activeRows = rows.filter(isActiveBooking)
   const totalPax = sumPax(activeRows)
@@ -419,7 +486,17 @@ function BookingReport({ onBack }: { onBack: () => void }) {
     agentSlug === 'all'
       ? 'All agents'
       : (agentOptions.find(([slug]) => slug === agentSlug)?.[1] ?? agentSlug)
-  const sortLabel = SORT_OPTIONS.find((o) => o.value === sortKey)?.label ?? sortKey
+  const sortColumnLabel = SORT_OPTIONS.find((o) => o.value === sortKey)?.label ?? sortKey
+  const sortLabel = `${sortColumnLabel} (${sortDir === 'asc' ? 'ascending' : 'descending'})`
+
+  function chooseSort(column: SortKey) {
+    if (sortKey === column) {
+      setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'))
+      return
+    }
+    setSortKey(column)
+    setSortDir('asc')
+  }
 
   function setToday() {
     setSelectedDate(dateFromISO(portalToday))
@@ -452,6 +529,87 @@ function BookingReport({ onBack }: { onBack: () => void }) {
   }
 
   const canExport = rows.length > 0 && exporting === null
+  const arrangeSelectedCount = arrangeKind
+    ? rows.filter((booking) => isActiveBooking(booking) && arrangeCodes.has(booking.code)).length
+    : 0
+
+  function codesAlreadyGrouped(kind: ArrangementGroupKind) {
+    const next = new Set<string>()
+    for (const booking of rows) {
+      if (!isActiveBooking(booking)) continue
+      if (getArrangementGroup(booking.date, booking.program, booking.code) === kind) {
+        next.add(booking.code)
+      }
+    }
+    return next
+  }
+
+  function startArrange(kind: ArrangementGroupKind) {
+    if (arrangeKind === kind) {
+      setArrangeKind(null)
+      setArrangeCodes(new Set())
+      arrangeDirtyRef.current = false
+      return
+    }
+    arrangeDirtyRef.current = false
+    setArrangeNote('')
+    setArrangeKind(kind)
+    setArrangeCodes(codesAlreadyGrouped(kind))
+  }
+
+  function toggleArrangeCode(code: string) {
+    arrangeDirtyRef.current = true
+    setArrangeCodes((current) => {
+      const next = new Set(current)
+      if (next.has(code)) next.delete(code)
+      else next.add(code)
+      return next
+    })
+  }
+
+  function saveArrange() {
+    if (!arrangeKind) return
+    const changes: {
+      date: string
+      program: Program
+      bookingCode: string
+      group: ArrangementGroupKind | null
+    }[] = []
+    let kept = 0
+    for (const booking of rows) {
+      if (!isActiveBooking(booking)) continue
+      const current = getArrangementGroup(booking.date, booking.program, booking.code)
+      const selected = arrangeCodes.has(booking.code)
+      if (selected) kept += 1
+      if (selected && current !== arrangeKind) {
+        changes.push({
+          date: booking.date,
+          program: booking.program,
+          bookingCode: booking.code,
+          group: arrangeKind,
+        })
+      } else if (!selected && current === arrangeKind) {
+        changes.push({
+          date: booking.date,
+          program: booking.program,
+          bookingCode: booking.code,
+          group: null,
+        })
+      }
+    }
+    setArrangementGroups(changes)
+    const label = arrangeKind === 'private' ? 'Private' : 'Partner'
+    setArrangeNote(
+      changes.length === 0
+        ? 'No changes to save.'
+        : kept === 0
+          ? `Cleared ${label} on this list.`
+          : `Saved ${kept} booking${kept === 1 ? '' : 's'} as ${label}. They are grouped on จัดการรถ / เรือ / ไกด์.`,
+    )
+    arrangeDirtyRef.current = false
+    setArrangeKind(null)
+    setArrangeCodes(new Set())
+  }
 
   return (
     <div className="w-full">
@@ -575,7 +733,10 @@ function BookingReport({ onBack }: { onBack: () => void }) {
               <select
                 id="report-sort"
                 value={sortKey}
-                onChange={(event) => setSortKey(event.target.value as SortKey)}
+                onChange={(event) => {
+                  setSortKey(event.target.value as SortKey)
+                  setSortDir('asc')
+                }}
                 className="h-10 w-full rounded-xl border border-teal-900/12 bg-white/80 px-3 text-sm text-teal-950 outline-none focus-visible:border-teal-700/40 focus-visible:ring-3 focus-visible:ring-teal-700/15"
               >
                 {SORT_OPTIONS.map((option) => (
@@ -586,8 +747,76 @@ function BookingReport({ onBack }: { onBack: () => void }) {
               </select>
             </div>
 
+            <div className="space-y-2 lg:col-span-2 xl:col-span-3">
+              <SoftLabel>Arrange type</SoftLabel>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  aria-pressed={arrangeKind === 'private'}
+                  onClick={() => startArrange('private')}
+                  className={cn(
+                    'inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-semibold transition-colors',
+                    arrangeKind === 'private'
+                      ? 'bg-sky-700 text-white'
+                      : 'bg-sky-100 text-sky-950 hover:bg-sky-200',
+                  )}
+                >
+                  Private
+                  <span className={cn('tabular-nums', arrangeKind === 'private' ? 'text-white/75' : 'text-sky-800/60')}>
+                    {groupCounts.private}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={arrangeKind === 'partner'}
+                  onClick={() => startArrange('partner')}
+                  className={cn(
+                    'inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-semibold transition-colors',
+                    arrangeKind === 'partner'
+                      ? 'bg-violet-700 text-white'
+                      : 'bg-violet-100 text-violet-950 hover:bg-violet-200',
+                  )}
+                >
+                  Partner
+                  <span
+                    className={cn(
+                      'tabular-nums',
+                      arrangeKind === 'partner' ? 'text-white/75' : 'text-violet-800/60',
+                    )}
+                  >
+                    {groupCounts.partner}
+                  </span>
+                </button>
+              </div>
+              <p className="text-xs text-teal-900/50">
+                Choose Private or Partner, tick the bookings, then save. Those bookings stay together
+                on จัดการรถ / เรือ / ไกด์.
+              </p>
+              {arrangeNote ? <p className="text-xs font-medium text-teal-800">{arrangeNote}</p> : null}
+            </div>
+
           </div>
         </Surface>
+
+        {arrangeKind ? (
+          <div className="sticky top-2 z-20 mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-teal-900/10 bg-white/95 px-3 py-2.5 shadow-sm backdrop-blur-sm">
+            <p className="text-sm font-medium text-teal-950">
+              Tick bookings for{' '}
+              <span className={arrangeKind === 'private' ? 'text-sky-800' : 'text-violet-800'}>
+                {arrangeKind === 'private' ? 'Private' : 'Partner'}
+              </span>
+              . {arrangeSelectedCount} selected.
+            </p>
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="ghost" size="sm" onClick={() => startArrange(arrangeKind)}>
+                Cancel
+              </Button>
+              <Button type="button" size="sm" onClick={saveArrange}>
+                Save {arrangeKind === 'private' ? 'Private' : 'Partner'}
+              </Button>
+            </div>
+          </div>
+        ) : null}
 
         <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <SummaryCard label="Bookings" value={String(activeRows.length)} detail={dateLabel} />
@@ -626,17 +855,44 @@ function BookingReport({ onBack }: { onBack: () => void }) {
                 title="PP · Phi Phi Islands"
                 rows={rows.filter((b) => b.program === 'PP')}
                 showCanoe={false}
+                arrangeKind={arrangeKind}
+                selectedCodes={arrangeCodes}
+                onToggleCode={toggleArrangeCode}
+                groupFor={(booking) =>
+                  getArrangementGroup(booking.date, booking.program, booking.code)
+                }
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onSort={chooseSort}
               />
               <BookingReportSection
                 title="James Bond · Phang Nga Bay"
                 rows={rows.filter((b) => b.program === 'James Bond')}
                 showCanoe
+                arrangeKind={arrangeKind}
+                selectedCodes={arrangeCodes}
+                onToggleCode={toggleArrangeCode}
+                groupFor={(booking) =>
+                  getArrangementGroup(booking.date, booking.program, booking.code)
+                }
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onSort={chooseSort}
               />
             </div>
           ) : (
             <BookingReportSection
               rows={rows}
               showCanoe={program === 'James Bond'}
+              arrangeKind={arrangeKind}
+              selectedCodes={arrangeCodes}
+              onToggleCode={toggleArrangeCode}
+              groupFor={(booking) =>
+                getArrangementGroup(booking.date, booking.program, booking.code)
+              }
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={chooseSort}
             />
           )}
         </Surface>
@@ -859,10 +1115,24 @@ function BookingReportSection({
   title,
   rows,
   showCanoe,
+  arrangeKind,
+  selectedCodes,
+  onToggleCode,
+  groupFor,
+  sortKey,
+  sortDir,
+  onSort,
 }: {
   title?: string
   rows: Booking[]
   showCanoe: boolean
+  arrangeKind: ArrangementGroupKind | null
+  selectedCodes: ReadonlySet<string>
+  onToggleCode: (code: string) => void
+  groupFor: (booking: Booking) => ArrangementGroupKind | null
+  sortKey: SortKey
+  sortDir: SortDir
+  onSort: (column: SortKey) => void
 }) {
   const { active, paxTotals, totalPax, collectSum } = sectionStats(rows)
 
@@ -889,29 +1159,68 @@ function BookingReportSection({
         <Table className="table-fixed">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="w-[8rem]">Agent</TableHead>
-              <TableHead className="w-[6.25rem]">VC No.</TableHead>
-              <TableHead className="w-[11rem]">Guest</TableHead>
-              <TableHead className="w-[11rem]">Hotel</TableHead>
-              <TableHead className="w-8 px-0.5 text-center">AD</TableHead>
-              <TableHead className="w-8 px-0.5 text-center">CH</TableHead>
-              <TableHead className="w-7 px-0.5 text-center">IF</TableHead>
-              <TableHead className="w-7 px-0.5 text-center">TL</TableHead>
-              <TableHead className="w-9 px-0.5 text-center">Total</TableHead>
-              <TableHead className="w-[4.5rem]">COT</TableHead>
-              <TableHead className="w-[3.75rem]">Park</TableHead>
-              <TableHead className="w-[4rem] text-right">Total</TableHead>
-              {showCanoe ? <TableHead className="w-[4rem]">Canoe</TableHead> : null}
-              <TableHead className="w-[4.5rem] text-center">Transfers</TableHead>
-              <TableHead className="w-[12.6rem]">Note</TableHead>
+              {arrangeKind ? <TableHead className="w-8" /> : null}
+              <SortableHead label="Agent" column="agent" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="w-[8rem]" />
+              <SortableHead label="VC No." column="vc" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="w-[6.25rem]" />
+              <SortableHead label="Guest" column="guest" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="w-[11rem]" />
+              <SortableHead label="Hotel" column="hotel" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="w-[11rem]" />
+              <SortableHead label="AD" column="adults" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="w-8 px-0.5" align="center" />
+              <SortableHead label="CH" column="children" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="w-8 px-0.5" align="center" />
+              <SortableHead label="IF" column="infants" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="w-7 px-0.5" align="center" />
+              <SortableHead label="TL" column="tourLeaders" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="w-7 px-0.5" align="center" />
+              <SortableHead label="Total" column="pax" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="w-9 px-0.5" align="center" />
+              <SortableHead label="COT" column="cot" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="w-[4.5rem]" />
+              <SortableHead label="Park" column="park" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="w-[3.75rem]" />
+              <SortableHead label="Total" column="collect" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="w-[4rem]" align="end" />
+              {showCanoe ? (
+                <SortableHead label="Canoe" column="canoe" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="w-[4rem]" />
+              ) : null}
+              <SortableHead label="Transfers" column="transfers" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="w-[4.5rem]" align="center" />
+              <SortableHead label="Note" column="note" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="w-[12.6rem]" />
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.map((booking) => (
+            {rows.map((booking) => {
+              const active = isActiveBooking(booking)
+              const grouped = groupFor(booking)
+              const checked = active && selectedCodes.has(booking.code)
+              return (
               <TableRow
                 key={booking.code}
-                className={cn(!isActiveBooking(booking) && 'opacity-55')}
+                className={cn(
+                  !active && 'opacity-55',
+                  arrangeKind && active && 'cursor-pointer',
+                  checked &&
+                    (arrangeKind === 'private'
+                      ? 'bg-sky-50/80 hover:bg-sky-50'
+                      : arrangeKind === 'partner'
+                        ? 'bg-violet-50/80 hover:bg-violet-50'
+                        : ''),
+                )}
+                onClick={
+                  arrangeKind && active
+                    ? () => onToggleCode(booking.code)
+                    : undefined
+                }
               >
+                {arrangeKind ? (
+                  <TableCell className="w-8 pr-0">
+                    <input
+                      type="checkbox"
+                      className={cn(
+                        'size-3.5 rounded border-teal-900/25',
+                        arrangeKind === 'partner' ? 'accent-violet-700' : 'accent-sky-700',
+                      )}
+                      checked={checked}
+                      disabled={!active}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={() => {
+                        if (active) onToggleCode(booking.code)
+                      }}
+                      aria-label={`Group ${booking.leadGuest} as ${arrangeKind === 'private' ? 'Private' : 'Partner'}`}
+                    />
+                  </TableCell>
+                ) : null}
                 <TableCell className="whitespace-normal">
                   <div className="break-words leading-snug" title={booking.agentName}>
                     {booking.agentName}
@@ -924,10 +1233,22 @@ function BookingReportSection({
                   <div className="break-words leading-snug font-medium text-teal-950">
                     {booking.leadGuest}
                   </div>
-                  {!isActiveBooking(booking) ? (
+                  {!active ? (
                     <div className="text-[10px] font-semibold tracking-wide text-rose-700 uppercase">
                       Cancelled
                     </div>
+                  ) : null}
+                  {grouped ? (
+                    <span
+                      className={cn(
+                        'mt-0.5 inline-flex rounded-md px-1.5 py-0.5 text-[10px] font-semibold',
+                        grouped === 'private'
+                          ? 'bg-sky-100 text-sky-950'
+                          : 'bg-violet-100 text-violet-950',
+                      )}
+                    >
+                      {grouped === 'private' ? 'Private' : 'Partner'}
+                    </span>
                   ) : null}
                   {bookingMoveNote(booking, formatShortDate) ? (
                     <div className="text-[10px] font-semibold text-amber-800">
@@ -983,9 +1304,10 @@ function BookingReportSection({
                   </div>
                 </TableCell>
               </TableRow>
-            ))}
+              )
+            })}
             <TableRow className="bg-teal-50/50 hover:bg-teal-50/50">
-              <TableCell colSpan={4} className="text-xs font-semibold text-teal-900/70">
+              <TableCell colSpan={arrangeKind ? 5 : 4} className="text-xs font-semibold text-teal-900/70">
                 Total · {active.length} booking{active.length === 1 ? '' : 's'}
               </TableCell>
               <TableCell className="px-0.5 text-center text-xs font-semibold tabular-nums">
@@ -1230,35 +1552,126 @@ function sumPax(list: Booking[]) {
   return list.reduce((sum, booking) => sum + totalPassengers(booking), 0)
 }
 
-function compareBookings(a: Booking, b: Booking, sortKey: SortKey) {
-  const byDate = a.date.localeCompare(b.date)
-  if (byDate !== 0) return byDate
+function SortableHead({
+  label,
+  column,
+  sortKey,
+  sortDir,
+  onSort,
+  className,
+  align = 'start',
+}: {
+  label: string
+  column: SortKey
+  sortKey: SortKey
+  sortDir: SortDir
+  onSort: (column: SortKey) => void
+  className?: string
+  align?: 'start' | 'center' | 'end'
+}) {
+  const active = sortKey === column
+  return (
+    <TableHead
+      className={className}
+      aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(column)}
+        title={`Sort by ${label}`}
+        className={cn(
+          'inline-flex max-w-full items-center gap-0.5 rounded-sm font-medium text-inherit hover:text-teal-800 focus-visible:ring-2 focus-visible:ring-teal-700/30 focus-visible:outline-none',
+          align === 'center' && 'w-full justify-center',
+          align === 'end' && 'w-full justify-end',
+        )}
+      >
+        <span className="truncate">{label}</span>
+        <span
+          aria-hidden
+          className={cn(
+            'shrink-0 text-[10px] leading-none',
+            active ? 'text-teal-800' : 'text-teal-900/35',
+          )}
+        >
+          {active ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
+        </span>
+      </button>
+    </TableHead>
+  )
+}
 
-  let primary = 0
+function compareBookings(a: Booking, b: Booking, sortKey: SortKey, sortDir: SortDir) {
+  const byDate = a.date.localeCompare(b.date)
+  if (byDate !== 0) return sortDir === 'desc' ? -byDate : byDate
+
+  let primary = compareSortValues(bookingSortValue(a, sortKey), bookingSortValue(b, sortKey))
+  if (primary === 0 && sortKey === 'pickup') {
+    primary = textCompare(a.pickupZone ?? '', b.pickupZone ?? '')
+  }
+  if (primary === 0 && sortKey === 'zone') {
+    primary = textCompare(pickupSortValue(a.pickupTime), pickupSortValue(b.pickupTime))
+  }
+  if (primary === 0 && sortKey === 'cot') {
+    primary = textCompare(a.cashOnTour ?? '', b.cashOnTour ?? '')
+  }
+  if (primary === 0) primary = textCompare(a.code ?? '', b.code ?? '')
+  return sortDir === 'desc' ? -primary : primary
+}
+
+function bookingSortValue(booking: Booking, sortKey: SortKey): string | number {
   switch (sortKey) {
     case 'pickup':
-      primary = pickupSortValue(a.pickupTime).localeCompare(pickupSortValue(b.pickupTime))
-      if (primary === 0) primary = a.pickupZone.localeCompare(b.pickupZone)
-      break
+      return pickupSortValue(booking.pickupTime)
     case 'zone':
-      primary = (a.pickupZone ?? '').localeCompare(b.pickupZone ?? '')
-      if (primary === 0) {
-        primary = pickupSortValue(a.pickupTime).localeCompare(pickupSortValue(b.pickupTime))
-      }
-      break
+      return booking.pickupZone ?? ''
     case 'agent':
-      primary = (a.agentName ?? '').localeCompare(b.agentName ?? '')
-      break
+      return booking.agentName ?? ''
+    case 'vc':
+      return booking.agentRef ?? ''
     case 'guest':
-      primary = (a.leadGuest ?? '').localeCompare(b.leadGuest ?? '')
-      break
+      return booking.leadGuest ?? ''
+    case 'hotel':
+      return booking.pickupHotel ?? ''
+    case 'adults':
+      return booking.adults
+    case 'children':
+      return booking.children
+    case 'infants':
+      return booking.infants
+    case 'tourLeaders':
+      return booking.tourLeaders
+    case 'pax':
+      return totalPassengers(booking)
+    case 'cot':
+      return parseCashOnTourAmount(booking.cashOnTour)
+    case 'park':
+      return formatIncludeLabel(booking.parkFee)
+    case 'collect':
+      return collectTotal(
+        booking.parkFee,
+        booking.program,
+        booking.adults,
+        booking.children,
+        booking.cashOnTour,
+      )
+    case 'canoe':
+      return formatIncludeLabel(booking.canoe)
+    case 'transfers':
+      return isNoTransfer(booking.pickupZone) ? 'EXC' : 'INC'
+    case 'note':
+      return booking.note ?? ''
     case 'code':
-    default:
-      primary = (a.code ?? '').localeCompare(b.code ?? '')
-      break
+      return booking.code ?? ''
   }
-  if (primary !== 0) return primary
-  return (a.code ?? '').localeCompare(b.code ?? '')
+}
+
+function compareSortValues(a: string | number, b: string | number) {
+  if (typeof a === 'number' && typeof b === 'number') return a - b
+  return textCompare(String(a), String(b))
+}
+
+function textCompare(a: string, b: string) {
+  return a.localeCompare(b, 'en', { numeric: true, sensitivity: 'base' })
 }
 
 /** Normalize times like "07:30" / "Awaiting pickup time" for stable sort. */

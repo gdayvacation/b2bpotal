@@ -1179,6 +1179,12 @@ export function AdminAgentAllotment() {
     months.sort((a, b) => b.localeCompare(a))
     return months
   }, [sheetLines])
+  const exportDays = useMemo(() => {
+    const days = [...new Set(sheetLines.filter((line) => line.kind === 'usage').map((line) => line.date))]
+    days.sort((a, b) => b.localeCompare(a))
+    if (!days.includes(today)) return days
+    return [today, ...days.filter((day) => day !== today)]
+  }, [sheetLines, today])
   const exportLots = useMemo(() => sortAllotmentLots(selectedAgentRows), [selectedAgentRows])
   const sheetTotals = useMemo(() => allotmentSheetTotals(sheetLines), [sheetLines])
   const lotBooks = useMemo(
@@ -2614,9 +2620,12 @@ export function AdminAgentAllotment() {
       agents.find((agent) => agent.slug === selectedAgentSlug)?.name ||
       selectedAgentSlug
     const programLabel = workProgram === 'PP' ? 'Phi Phi' : 'James Bond'
+    const exportDay = /^\d{4}-\d{2}-\d{2}$/.test(exportMonth) ? exportMonth : ''
+    const exportMonthOnly = exportDay ? '' : exportMonth
     const exportRange = exportLotId ? allotmentLotRange(exportLots, exportLotId) : null
     const exportSheetLines = filterAllotmentSheetLines(sheetLines, {
-      month: exportMonth,
+      month: exportMonthOnly,
+      day: exportDay,
       range: exportRange,
       today,
       includeFuture: exportIncludeFuture,
@@ -2626,7 +2635,8 @@ export function AdminAgentAllotment() {
       ? `${exportLot.note.trim() || 'Lot'} · ${formatShortDate(exportLot.paidDate || exportLot.createdAt.slice(0, 10))}`
       : ''
     const exportPeriodLabel = allotmentExportPeriodLabel({
-      month: exportMonth,
+      month: exportMonthOnly,
+      day: exportDay,
       lotLabel: exportLotLabel,
       includeFuture: exportIncludeFuture,
       lines: exportSheetLines,
@@ -2725,19 +2735,31 @@ export function AdminAgentAllotment() {
         <Surface className="mb-4 overflow-hidden p-0">
           <div className="flex flex-wrap items-end gap-2 border-b border-teal-900/8 px-3 py-3">
             <div className="space-y-1">
-              <Label className="text-[11px] text-teal-900/45">Month</Label>
+              <Label className="text-[11px] text-teal-900/45">Period</Label>
               <select
                 value={exportMonth}
                 onChange={(event) => setExportMonth(event.target.value)}
-                className="h-9 rounded-xl border border-teal-900/12 bg-white/80 px-2 text-sm"
-                aria-label="Export month"
+                className="h-9 max-w-[16rem] rounded-xl border border-teal-900/12 bg-white/80 px-2 text-sm"
+                aria-label="Export month or date"
               >
                 <option value="">All months</option>
-                {exportMonths.map((month) => (
-                  <option key={month} value={month}>
-                    {formatMonthLabel(`${month}-01`)}
-                  </option>
-                ))}
+                <optgroup label="Month">
+                  {exportMonths.map((month) => (
+                    <option key={month} value={month}>
+                      {formatMonthLabel(`${month}-01`)}
+                    </option>
+                  ))}
+                </optgroup>
+                {exportDays.length > 0 ? (
+                  <optgroup label="Date">
+                    {exportDays.map((day) => (
+                      <option key={day} value={day}>
+                        {formatShortDate(day)}
+                        {day === today ? ' · Today' : ''}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
               </select>
             </div>
             <div className="space-y-1">

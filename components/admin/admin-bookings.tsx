@@ -18,14 +18,12 @@ import {
   Pencil,
   Plus,
   Search,
-  Sparkles,
   Ticket,
   X,
 } from 'lucide-react'
 import { VoucherPreview } from '@/components/agent/voucher-view'
 import { CancelConditionNotice } from '@/components/amendment-policy-notice'
 import { BookingHistoryDialog } from '@/components/booking-history-dialog'
-import { BookingFromChatDialog } from '@/components/admin/booking-from-chat-dialog'
 import { useInvoiceStore } from '@/components/admin/use-invoice-store'
 import { ChangeBookingDateDialog } from '@/components/change-booking-date-dialog'
 import { EditBookingDialog } from '@/components/edit-booking-dialog'
@@ -59,8 +57,10 @@ import { bookingTourAmount, parseAgentBillingType, ratesForAgent } from '@/lib/i
 import { formatThbAmount, isLateFeeTimeForDate } from '@/lib/booking-cutoffs'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import {
+  formatPickupZoneLabel,
   isNoTransfer,
   isPrivateTransfer,
+  privateTransferAreaName,
   totalBookedPassengers,
   totalMovedOut,
   totalPassengers,
@@ -230,8 +230,26 @@ function BookingPickupCell({
   }
 
   if (privateTransfer) {
-    const vehicle = booking.privateTransferVehicle || 'Private'
-    const line = [booking.pickupTime, vehicle].filter(Boolean).join(' ')
+    const area = privateTransferAreaName(booking.pickupZone)
+    const waitingOnTime =
+      awaiting || booking.pickupTime.toLowerCase().includes('awaiting')
+    if (waitingOnTime) {
+      const line = ['Private', area, 'set time'].filter(Boolean).join(' · ')
+      return (
+        <button
+          type="button"
+          className="block w-full truncate rounded-md text-left text-amber-800 transition-colors hover:bg-amber-50 focus-visible:ring-2 focus-visible:ring-teal-700/25"
+          onClick={() => onSetPickup(booking)}
+          aria-label={`Confirm pickup time for ${booking.code}`}
+          title={line}
+        >
+          {line}
+        </button>
+      )
+    }
+    const line = [booking.pickupTime, booking.privateTransferVehicle, area]
+      .filter(Boolean)
+      .join(' ')
     return (
       <button
         type="button"
@@ -420,7 +438,6 @@ export function AdminBookings() {
   const [cancelTarget, setCancelTarget] = useState<Booking | null>(null)
   const [cancelCharge, setCancelCharge] = useState('0')
   const [cancelError, setCancelError] = useState('')
-  const [chatOpen, setChatOpen] = useState(false)
 
   const adminActor = { role: 'admin' as const, name: 'Admin' }
 
@@ -624,15 +641,6 @@ export function AdminBookings() {
         description="Partner reservations — default view shows the latest 200. Search covers the last 30 days and every future trip."
         actions={
           <div className="flex shrink-0 flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              className="h-10 gap-1.5"
-              onClick={() => setChatOpen(true)}
-            >
-              <Sparkles data-icon="inline-start" />
-              From chat photo
-            </Button>
             <Link href="/admin/bookings/new" className={cn(buttonVariants(), 'h-10 gap-1.5')}>
               <Plus data-icon="inline-start" />
               Add booking
@@ -1005,7 +1013,7 @@ export function AdminBookings() {
             <DialogTitle>Set pickup time</DialogTitle>
             <DialogDescription>
               {pickupTarget
-                ? `${pickupTarget.code} · ${pickupTarget.pickupZone} · ${pickupTarget.leadGuest}`
+                ? `${pickupTarget.code} · ${formatPickupZoneLabel(pickupTarget.pickupZone)} · ${pickupTarget.leadGuest}`
                 : null}
             </DialogDescription>
           </DialogHeader>
@@ -1168,7 +1176,6 @@ export function AdminBookings() {
         }}
       />
 
-      <BookingFromChatDialog open={chatOpen} onOpenChange={setChatOpen} />
     </div>
   )
 }

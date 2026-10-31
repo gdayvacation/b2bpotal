@@ -3,7 +3,11 @@ import {
   allotmentPayments,
   type AgentAllotment,
 } from '@/lib/supabase/agent-allotment-db'
-import { NO_TRANSFER_DISCOUNT_PER_PERSON } from '@/lib/invoice'
+import {
+  changeDateFeeForAllotment,
+  extraZoneChargeFromNote,
+  NO_TRANSFER_DISCOUNT_PER_PERSON,
+} from '@/lib/invoice'
 import type { AgentAllotmentDaily, AgentBookingDayPax } from '@/lib/supabase/agent-allotment-daily-db'
 
 export type LotTransfer = {
@@ -100,12 +104,12 @@ export type AllotmentSheetBooking = {
 export type AllotmentSheetLine = {
   key: string
   date: string
-  kind: 'manual' | 'usage' | 'refund'
+  kind: 'manual' | 'usage' | 'refund' | 'charge'
   note: string
   /** Bookings on a usage day. Empty on manual rows. */
   bookings: AllotmentSheetBooking[]
   headsDelta: number
-  /** Cash on this row. Usage rows charge the day's heads. Refund rows add the No Transfer credit back. */
+  /** Cash on this row. Usage rows charge the day's heads. Refund rows add the No Transfer credit. Charge rows take zone and change-date fees. */
   moneyDelta: number | null
   /** Positive head value at that day's adult and child rates. Usage rows deduct this from money left. */
   value: number | null
@@ -250,10 +254,60 @@ export function buildAllotmentSheet(input: {
       dateChanged: item.dateChanged,
       noTransfer: item.noTransfer,
     }))
+    const zoneCharge = (booking?.bookings ?? []).reduce((sum, item) => {
+      if (item.chargedCancel) return sum
+      return sum + extraZoneChargeFromNote(item.transferExtra ?? '', item.adults, item.children).amount
+    }, 0)
+    const changeDateFee = (booking?.bookings ?? []).reduce(
+      (sum, item) =>
+        sum +
+        changeDateFeeForAllotment({
+          adults: item.adults,
+          children: item.children,
+          storedFee: item.changeDateFee,
+          moved: item.moved,
+          chargedCancel: item.chargedCancel,
+        }),
+      0,
+    )
+    if (zoneCharge > 0) {
+      events.push({
+        key: `zone-${day}`,
+        date: day,
+        sort: `2-${day}`,
+        kind: 'charge',
+        note: 'Extra zone charge',
+        bookings: [],
+        headsDelta: 0,
+        moneyDelta: -zoneCharge,
+        value: null,
+        counted,
+        pending: false,
+        lotId: null,
+        paymentId: null,
+      })
+    }
+    if (changeDateFee > 0) {
+      events.push({
+        key: `change-${day}`,
+        date: day,
+        sort: `3-${day}`,
+        kind: 'charge',
+        note: 'Change date fee',
+        bookings: [],
+        headsDelta: 0,
+        moneyDelta: -changeDateFee,
+        value: null,
+        counted,
+        pending: false,
+        lotId: null,
+        paymentId: null,
+      })
+    }
     events.push({
       key: `usage-${day}`,
       date: day,
-      sort: `2-${day}`,
+      sort: `4-${day}`,
       kind: 'usage',
       note,
       bookings,

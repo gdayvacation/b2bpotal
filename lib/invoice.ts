@@ -260,6 +260,44 @@ export function dropNationalParkFeeForBookings<T extends InvoiceDocument>(
 /** Invoice agents only — discount per AD+CH when pickup is No Transfer. Prebuy gets none. */
 export const NO_TRANSFER_DISCOUNT_PER_PERSON = 100
 
+/** Per-person change-date fee. A saved agent rate wins; otherwise the portal default (300). */
+export function changeDateFeeRate(rate?: number) {
+  const set = Math.floor(Number(rate) || 0)
+  if (set > 0) return set
+  return Math.max(0, DEFAULT_BOOKING_CUTOFFS.dateChangeFeePerPerson)
+}
+
+/**
+ * Pickup-zone extra from the hotel note, such as "200/pax" or "Extra Charge 200/pax".
+ * Private-car notes are a different charge and stay out of this.
+ */
+export function extraZoneChargeFromNote(note: string, adults: number, children: number) {
+  const text = note.trim()
+  const heads = Math.max(0, Math.floor(adults)) + Math.max(0, Math.floor(children))
+  if (!text || /private/i.test(text) || heads <= 0) return { amount: 0, perPerson: 0, heads: 0 }
+  const match = text.replace(/,/g, '').match(/(\d+(?:\.\d+)?)\s*\/\s*(?:pax|person|people|guest)s?/i)
+  if (!match) return { amount: 0, perPerson: 0, heads }
+  const perPerson = Math.round(Number(match[1]))
+  if (!Number.isFinite(perPerson) || perPerson <= 0) return { amount: 0, perPerson: 0, heads }
+  return { amount: perPerson * heads, perPerson, heads }
+}
+
+/** Change-date fee already set on a moved booking. Guest-reduction fees are not included. */
+export function changeDateFeeForAllotment(input: {
+  adults: number
+  children: number
+  storedFee?: number
+  moved?: boolean
+  chargedCancel?: boolean
+  perPerson?: number
+}) {
+  if (input.chargedCancel || !input.moved) return 0
+  const stored = Math.max(0, Math.floor(Number(input.storedFee) || 0))
+  if (stored > 0) return stored
+  const heads = Math.max(0, Math.floor(input.adults)) + Math.max(0, Math.floor(input.children))
+  return heads * changeDateFeeRate(input.perPerson)
+}
+
 export const COMPANY_LOGO_SRC = '/goodday-logo.png'
 
 export function emptyAgencyRates(agentSlug: string): AgencyInvoiceRates {
@@ -1553,7 +1591,7 @@ export function buildInvoiceItemsForBooking(
     const checkedInHeads = arrivedChangeDateHeads(booking, options?.checkedInSeats ?? 0)
     const movedHeads = wholeNoShow ? 0 : checkedInHeads > 0 ? checkedInHeads : chargeableMoved
     if (movedHeads > 0) {
-      const perPerson = Math.max(0, DEFAULT_BOOKING_CUTOFFS.dateChangeFeePerPerson)
+      const perPerson = changeDateFeeRate(rates.changeDatePrice)
       const amount = movedHeads * perPerson
       items.push({
         id: moneyId(),
@@ -1581,7 +1619,9 @@ export function buildInvoiceItemsForBooking(
           bookingCode: booking.code,
           travelDate: booking.date,
           voucherNo,
-          description: changeDateFeeLineDescription(movedHeads, perPerson),
+          description: prebuy
+            ? `${changeDateFeeLineDescription(movedHeads, perPerson)} · allotment`
+            : changeDateFeeLineDescription(movedHeads, perPerson),
           adults: movedHeads,
           children: 0,
           infants: 0,
@@ -1591,7 +1631,7 @@ export function buildInvoiceItemsForBooking(
           infantPrice: 0,
           tourLeaderPrice: 0,
           cot: 0,
-          amount,
+          amount: prebuy ? 0 : amount,
           lineKind: 'other',
           unit: 'Person',
           sortOrder: items.length,
@@ -1690,7 +1730,7 @@ export function buildInvoiceItemsForBooking(
         bookingCode: booking.code,
         travelDate: booking.date,
         voucherNo,
-        description: prebuyNoShowMoveFeeDescription(move),
+        description: `${prebuyNoShowMoveFeeDescription(move)} · allotment`,
         adults: move.heads,
         children: 0,
         infants: 0,
@@ -1700,7 +1740,7 @@ export function buildInvoiceItemsForBooking(
         infantPrice: 0,
         tourLeaderPrice: 0,
         cot: 0,
-        amount: move.amount,
+        amount: 0,
         lineKind: 'other',
         unit: 'Person',
         sortOrder: items.length,
@@ -1742,22 +1782,25 @@ export function buildInvoiceItemsForBooking(
   // Late reduce AD/CH after lateFeeFromTime (not late cancel, not late date change).
   // Prebuy no-show moves already added their own per-person line above.
   if (!movedOrigin && !prebuyNoShowMove && reduceFee > 0 && booking.lateDateChange != null) {
-    const perPerson = Math.max(0, DEFAULT_BOOKING_CUTOFFS.dateChangeFeePerPerson)
+    const perPerson = changeDateFeeRate(rates.changeDatePrice)
     const heads =
       perPerson > 0 && reduceFee % perPerson === 0 ? Math.floor(reduceFee / perPerson) : 0
+    const onAllotment = prebuy && Boolean(booking.movedFrom || booking.noShowDateMove)
     items.push({
       id: moneyId(),
       bookingCode: booking.code,
       travelDate: booking.date,
       voucherNo,
-      description: booking.movedFrom
-        ? // Guests moved here from another date at marina check-in (extra charge per person).
-          `Moved to this date · extra charge${heads > 0 ? `, ${heads}Pax` : ''} (from ${booking.movedFrom.code} · ${booking.movedFrom.date})`
-        : lateReduceFeeDescription({
-            amount: reduceFee,
-            adults: heads,
-            adultPrice: perPerson,
-          }),
+      description: `${
+        booking.movedFrom
+          ? // Guests moved here from another date at marina check-in (extra charge per person).
+            `Moved to this date · extra charge${heads > 0 ? `, ${heads}Pax` : ''} (from ${booking.movedFrom.code} · ${booking.movedFrom.date})`
+          : lateReduceFeeDescription({
+              amount: reduceFee,
+              adults: heads,
+              adultPrice: perPerson,
+            })
+      }${onAllotment ? ' · allotment' : ''}`,
       adults: heads,
       children: 0,
       infants: 0,
@@ -1767,7 +1810,7 @@ export function buildInvoiceItemsForBooking(
       infantPrice: 0,
       tourLeaderPrice: 0,
       cot: 0,
-      amount: reduceFee,
+      amount: onAllotment ? 0 : reduceFee,
       lineKind: 'other',
       unit: heads > 0 ? 'Person' : 'Fee',
       sortOrder: items.length,
@@ -1803,26 +1846,40 @@ export function buildInvoiceItemsForBooking(
     }
   }
 
-  if (booking.transferExtraCharge.trim() && rates.extraZoneCharge > 0) {
-    items.push({
-      id: moneyId(),
-      bookingCode: booking.code,
-      travelDate: booking.date,
-      voucherNo,
-      description: `Extra Zone Charge · ${booking.transferExtraCharge}`,
-      adults: 0,
-      children: 0,
-      infants: 0,
-      tourLeaders: 0,
-      adultPrice: 0,
-      childPrice: 0,
-      infantPrice: 0,
-      tourLeaderPrice: 0,
-      cot: 0,
-      amount: rates.extraZoneCharge,
-      lineKind: 'extra_zone',
-      sortOrder: items.length,
-    })
+  if (booking.status !== 'Cancelled' && booking.transferExtraCharge.trim()) {
+    const parsed = extraZoneChargeFromNote(
+      booking.transferExtraCharge,
+      booking.adults,
+      booking.children,
+    )
+    const perPerson = parsed.perPerson
+    const privateNote = /private/i.test(booking.transferExtraCharge)
+    const amount =
+      parsed.amount > 0 ? parsed.amount : !privateNote && rates.extraZoneCharge > 0 ? rates.extraZoneCharge : 0
+    if (amount > 0) {
+      items.push({
+        id: moneyId(),
+        bookingCode: booking.code,
+        travelDate: booking.date,
+        voucherNo,
+        description:
+          perPerson > 0
+            ? `Extra Zone Charge · ${perPerson.toLocaleString('en-US')} THB / person${prebuy ? ' · allotment' : ''}`
+            : `Extra Zone Charge · ${booking.transferExtraCharge}${prebuy ? ' · allotment' : ''}`,
+        adults: perPerson > 0 ? booking.adults : 0,
+        children: perPerson > 0 ? booking.children : 0,
+        infants: 0,
+        tourLeaders: 0,
+        adultPrice: perPerson > 0 ? perPerson : 0,
+        childPrice: perPerson > 0 ? perPerson : 0,
+        infantPrice: 0,
+        tourLeaderPrice: 0,
+        cot: 0,
+        amount: prebuy ? 0 : amount,
+        lineKind: 'extra_zone',
+        sortOrder: items.length,
+      })
+    }
   }
 
   // Invoice agents only: No Transfer pickup → -100 THB per AD+CH. Prebuy: no discount.

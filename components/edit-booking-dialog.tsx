@@ -29,6 +29,7 @@ import {
   NO_TRANSFER_ZONE,
   PRIVATE_TRANSFER_OPTIONS,
   PRIVATE_TRANSFER_ZONE,
+  privateTransferAreaName,
   privateTransferPriceFor,
   totalPassengers,
   type Booking,
@@ -247,15 +248,10 @@ export function EditBookingDialog({
 
   function handleSave() {
     if (!booking) return
-    if (transferKind === 'private') {
-      if (!privateVehicle) {
-        setError('Choose Car (1,400 THB) or Van (1,600 THB).')
-        return
-      }
-      if (!privatePickupTime.trim()) {
-        setError('Set the private transfer pickup time.')
-        return
-      }
+    const agentKeepsPrivate = transferKind === 'private' && !canUsePrivate
+    if (transferKind === 'private' && canUsePrivate && !privateVehicle && privatePickupTime.trim()) {
+      setError('Choose Car / SUV or VAN.')
+      return
     }
 
     if (seatsHint && pax > seatsHint.seatsLeft) {
@@ -292,22 +288,39 @@ export function EditBookingDialog({
         children,
         infants,
         tourLeaders,
-        pickupZone:
-          transferKind === 'none'
+        pickupZone: agentKeepsPrivate
+          ? booking.pickupZone
+          : transferKind === 'none'
             ? NO_TRANSFER_ZONE
             : transferKind === 'private'
               ? PRIVATE_TRANSFER_ZONE
               : pickupZone,
         pickupHotel: pickupHotel,
         roomNumber: roomNumber,
-        pickupTime: transferKind === 'private' ? privatePickupTime : undefined,
-        privateTransferVehicle: transferKind === 'private' ? privateVehicle : '',
-        privateTransferPrice:
-          transferKind === 'private' && privateVehicle
+        pickupTime:
+          transferKind === 'private' && canUsePrivate
+            ? privatePickupTime.trim() || 'Awaiting pickup time'
+            : undefined,
+        privateTransferVehicle: agentKeepsPrivate
+          ? booking.privateTransferVehicle
+          : transferKind === 'private'
+            ? privateVehicle
+            : '',
+        privateTransferPrice: agentKeepsPrivate
+          ? booking.privateTransferPrice
+          : transferKind === 'private' && privateVehicle
             ? privateTransferPriceFor(privateVehicle)
             : '',
-        privateDriverName: transferKind === 'private' ? privateDriverName : '',
-        privateDriverPhone: transferKind === 'private' ? privateDriverPhone : '',
+        privateDriverName: agentKeepsPrivate
+          ? booking.privateDriverName
+          : transferKind === 'private'
+            ? privateDriverName
+            : '',
+        privateDriverPhone: agentKeepsPrivate
+          ? booking.privateDriverPhone
+          : transferKind === 'private'
+            ? privateDriverPhone
+            : '',
         note,
         cashOnTour,
         agentRef,
@@ -467,8 +480,34 @@ export function EditBookingDialog({
                 </p>
               </div>
 
-              {isPrivate ? (
+              {isPrivate && transferLockedPrivate ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                  <p className="font-medium">
+                    Private transfer
+                    {booking?.privateTransferVehicle
+                      ? ` · ${
+                          PRIVATE_TRANSFER_OPTIONS.find(
+                            (option) => option.vehicle === booking.privateTransferVehicle,
+                          )?.label ?? booking.privateTransferVehicle
+                        }`
+                      : ''}
+                    {privateTransferAreaName(booking?.pickupZone ?? '')
+                      ? ` · ${privateTransferAreaName(booking?.pickupZone ?? '')}`
+                      : ''}
+                  </p>
+                  <p className="mt-1 text-amber-900/80">
+                    {booking && booking.pickupTime.toLowerCase().includes('awaiting')
+                      ? 'Admin will confirm the pickup time for you ASAP.'
+                      : `Pickup time: ${booking?.pickupTime || '—'}`}
+                  </p>
+                </div>
+              ) : isPrivate ? (
                 <>
+                  {privateTransferAreaName(booking?.pickupZone ?? '') ? (
+                    <p className="text-sm text-teal-950">
+                      Zone: {privateTransferAreaName(booking?.pickupZone ?? '')}
+                    </p>
+                  ) : null}
                   <div>
                     <Label className="mb-2">Vehicle &amp; price (bill agent)</Label>
                     <div className="grid grid-cols-2 gap-3">
@@ -484,7 +523,7 @@ export function EditBookingDialog({
                               : 'border-teal-900/10 hover:border-teal-700/30',
                           )}
                         >
-                          <span className="block text-teal-950">{option.vehicle}</span>
+                          <span className="block text-teal-950">{option.label}</span>
                           <span className="mt-0.5 block text-xs text-teal-900/55">
                             {option.priceThb.toLocaleString('en-US')} THB
                           </span>

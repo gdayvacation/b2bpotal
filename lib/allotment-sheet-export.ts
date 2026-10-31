@@ -38,28 +38,34 @@ export function allotmentLotRange(lots: AgentAllotment[], lotId: string): Allotm
 
 export function filterAllotmentSheetLines(
   lines: AllotmentSheetLine[],
-  input: { month: string; range: AllotmentExportRange | null; today: string; includeFuture: boolean },
+  input: { month: string; day: string; range: AllotmentExportRange | null; today: string; includeFuture: boolean },
 ) {
   return lines.filter((line) => {
-    if (input.month && line.date.slice(0, 7) !== input.month) return false
+    if (input.day && line.date !== input.day) return false
+    if (!input.day && input.month && line.date.slice(0, 7) !== input.month) return false
     if (input.range && (line.date < input.range.from || line.date > input.range.to)) return false
-    if (!input.includeFuture && line.date > input.today) return false
+    if (!input.day && !input.includeFuture && line.date > input.today) return false
     return true
   })
 }
 
 export function allotmentExportPeriodLabel(input: {
   month: string
+  day: string
   lotLabel: string
   includeFuture: boolean
   lines: AllotmentSheetLine[]
 }) {
   const parts = [
-    input.month ? formatMonthLabel(`${input.month}-01`) : 'All months',
+    input.day
+      ? formatShortDate(input.day)
+      : input.month
+        ? formatMonthLabel(`${input.month}-01`)
+        : 'All months',
     input.lotLabel || 'All lots',
-    input.includeFuture ? 'With future bookings' : 'Up to today',
-  ]
-  if (!input.month && input.lines.length > 0) {
+    input.day ? '' : input.includeFuture ? 'With future bookings' : 'Up to today',
+  ].filter(Boolean)
+  if (!input.month && !input.day && input.lines.length > 0) {
     const first = input.lines[0]!.date
     const last = input.lines[input.lines.length - 1]!.date
     parts[0] = first === last ? formatShortDate(first) : `${formatShortDate(first)} – ${formatShortDate(last)}`
@@ -70,15 +76,23 @@ export function allotmentExportPeriodLabel(input: {
 function lineType(line: AllotmentSheetLine) {
   if (line.kind === 'manual') return 'Top up'
   if (line.kind === 'refund') return 'No transfer refund'
+  if (line.kind === 'charge') return line.note || 'Extra charge'
   return 'Usage'
 }
 
-function lineDetail(line: AllotmentSheetLine) {
-  if (line.kind === 'refund') return 'No transfer refund'
+function lineDetail(line: AllotmentSheetLine, options?: { hideInvoices?: boolean }) {
+  if (line.kind === 'refund' || line.kind === 'charge') return line.note || lineType(line)
   if (line.kind === 'manual') return line.note.trim() || 'Top up'
   const guests = line.bookings.length
   const guestNote = guests > 0 ? `${guests} booking${guests === 1 ? '' : 's'}` : 'Used heads'
-  return [guestNote, line.note.trim()].filter(Boolean).join(' · ')
+  const note = options?.hideInvoices
+    ? line.note
+        .split(' · ')
+        .map((part) => part.trim())
+        .filter((part) => part && !/\bINV\b/i.test(part))
+        .join(' · ')
+    : line.note.trim()
+  return [guestNote, note].filter(Boolean).join(' · ')
 }
 
 function triggerDownload(blob: Blob, filename: string) {
@@ -212,7 +226,7 @@ export function printAllotmentPdf(input: {
                 return `<tr><td>${escapeHtml(booking.agentRef || '—')}</td><td>${escapeHtml(booking.guestName || '—')}</td><td>${escapeHtml(booking.hotel || '—')}</td><td>${booking.noTransfer ? 'NoTF' : ''}</td><td class="num">${booking.adults}</td><td class="num">${booking.children}</td><td class="num refund">${refund}</td><td class="${status ? 'cancel' : ''}">${escapeHtml(status)}</td></tr>`
               })
               .join('')}</tbody></table></td></tr>`
-      return `<tr><td>${escapeHtml(formatShortDate(line.date))}</td><td>${escapeHtml(lineType(line))}</td><td>${escapeHtml(lineDetail(line))}</td><td class="num">${line.headsDelta > 0 ? '+' : ''}${line.headsDelta}</td><td class="num">${line.headsLeft}</td><td class="num">${line.moneyDelta == null ? '—' : money(line.moneyDelta)}</td><td class="num">${money(line.moneyLeft)}</td></tr>${bookingRows}`
+      return `<tr><td>${escapeHtml(formatShortDate(line.date))}</td><td>${escapeHtml(lineType(line))}</td><td>${escapeHtml(lineDetail(line, { hideInvoices: true }))}</td><td class="num">${line.headsDelta > 0 ? '+' : ''}${line.headsDelta}</td><td class="num">${line.headsLeft}</td><td class="num">${line.moneyDelta == null ? '—' : money(line.moneyDelta)}</td><td class="num">${money(line.moneyLeft)}</td></tr>${bookingRows}`
     })
     .join('')
 

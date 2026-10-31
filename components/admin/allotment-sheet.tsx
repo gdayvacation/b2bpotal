@@ -76,6 +76,7 @@ function usageParts(note: string) {
 
 function lineTitle(line: AllotmentSheetLine, hideNote = false) {
   if (line.kind === 'refund') return 'No transfer refund'
+  if (line.kind === 'charge') return line.note || 'Extra charge'
   if (line.kind === 'usage') {
     return [line.counted ? 'Heads used' : 'Future booking', line.pending ? 'From bookings' : '', hideNote ? '' : line.note]
       .filter(Boolean)
@@ -437,6 +438,7 @@ export function AllotmentSheet({
           line.kind === 'manual' && (line.moneyDelta ?? 0) < 0 && 'bg-rose-50',
           line.kind === 'manual' && (line.moneyDelta ?? 0) >= 0 && 'bg-[#fff8e6]',
           line.kind === 'refund' && 'bg-emerald-50',
+          line.kind === 'charge' && 'bg-rose-50',
           line.kind === 'usage' && 'bg-white',
           canOpen && 'cursor-pointer hover:bg-teal-50/70',
         )}
@@ -803,7 +805,7 @@ export function AllotmentSheet({
                       </tr>
                       {open
                         ? group.lines
-                            .filter(({ line }) => line.kind !== 'refund')
+                            .filter(({ line }) => line.kind !== 'refund' && line.kind !== 'charge')
                             .map(({ line }) => {
                             const canOpen = line.bookings.length > 0 || usageParts(line.note).length > 0
                             const detailOpen = canOpen && openUsage.has(line.key)

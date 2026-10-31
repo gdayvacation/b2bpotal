@@ -157,6 +157,12 @@ export type AgentBookingLine = {
   dateChanged?: boolean
   /** Pickup zone is No Transfer. */
   noTransfer?: boolean
+  /** Hotel extra-charge note, such as "200/pax". */
+  transferExtra?: string
+  /** Stored change-date or reduce-guest fee, THB. */
+  changeDateFee?: number
+  /** Guests were moved onto this date. */
+  moved?: boolean
 }
 
 export type AgentBookingDayPax = {
@@ -188,7 +194,7 @@ export async function fetchAgentBookingDayPax(
     const { data, error } = await supabase
       .from('bookings')
       .select(
-        'code,agent_ref,lead_guest,pickup_hotel,pickup_zone,date,adults,children,status,late_cancel,cancel_fee,original_adults,original_children,late_date_change,no_show_date_move,moved_from_code',
+        'code,agent_ref,lead_guest,pickup_hotel,pickup_zone,transfer_extra_charge,date,adults,children,status,late_cancel,cancel_fee,original_adults,original_children,late_date_change,no_show_date_move,moved_from_code,late_change_fee',
       )
       .eq('agent_slug', slug)
       .eq('program', program)
@@ -204,6 +210,7 @@ export async function fetchAgentBookingDayPax(
       lead_guest: string | null
       pickup_hotel: string | null
       pickup_zone: string | null
+      transfer_extra_charge: string | null
       date: string
       adults: number | string | null
       children: number | string | null
@@ -215,6 +222,7 @@ export async function fetchAgentBookingDayPax(
       late_date_change: boolean | null
       no_show_date_move: boolean | null
       moved_from_code: string | null
+      late_change_fee: number | string | null
     }[]
 
     for (const row of rows) {
@@ -276,6 +284,10 @@ export async function fetchAgentBookingDayPax(
           dateChanged,
           noTransfer:
             isNoTransfer(row.pickup_zone) || isNoTransfer(String(row.pickup_hotel ?? '')),
+          transferExtra: String(row.transfer_extra_charge ?? '').trim(),
+          changeDateFee: Math.max(0, Math.floor(Number(row.late_change_fee) || 0)),
+          moved:
+            row.no_show_date_move === true || Boolean(String(row.moved_from_code ?? '').trim()),
         })
       }
       byDay.set(day, current)
