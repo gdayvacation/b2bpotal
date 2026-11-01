@@ -3,18 +3,18 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import {
+  Ban,
+  Bus,
   CalendarIcon,
   Car,
   Check,
   ChevronLeft,
   ChevronRight,
   Clock3,
-  MapPin,
   Minus,
   Mountain,
   Plus,
   Ship,
-  Users,
 } from 'lucide-react'
 import { AmendmentPolicyNotice } from '@/components/amendment-policy-notice'
 import { usePortal } from '@/components/portal-provider'
@@ -33,7 +33,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
-import { dateFromISO, formatIncludeLabel, formatLongDate, startOfToday, toISODate, todayISO, uniqueAgentSlug } from '@/lib/format'
+import { dateFromISO, formatIncludeLabel, formatLongDate, nextBookingCode, startOfToday, toISODate, todayISO, uniqueAgentSlug } from '@/lib/format'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import { cn } from '@/lib/utils'
 import { duplicateBookingMessage, findDuplicateBookings } from '@/lib/booking-duplicates'
@@ -72,6 +72,92 @@ function defaultTourDate(earliestBookableDate: () => string): Date {
 
 type ResolvedAgent = { slug: string; name: string }
 
+function PickupTypeButton({
+  selected,
+  embedded = false,
+  tone,
+  index,
+  title,
+  subtitle,
+  icon,
+  onClick,
+}: {
+  selected: boolean
+  embedded?: boolean
+  tone: 'teal' | 'sky' | 'amber'
+  index: number
+  title: string
+  subtitle: string
+  icon: ReactNode
+  onClick: () => void
+}) {
+  const toneClass = {
+    teal: selected
+      ? 'border-teal-700 bg-teal-50 ring-2 ring-teal-700'
+      : 'border-teal-300 bg-teal-50/80 hover:border-teal-500',
+    sky: selected
+      ? 'border-sky-700 bg-sky-50 ring-2 ring-sky-700'
+      : 'border-sky-300 bg-sky-50/80 hover:border-sky-500',
+    amber: selected
+      ? 'border-amber-700 bg-amber-50 ring-2 ring-amber-700'
+      : 'border-amber-300 bg-amber-50/80 hover:border-amber-500',
+  }[tone]
+  const markClass = {
+    teal: selected ? 'border-teal-700 bg-teal-700 text-white' : 'border-teal-400 bg-white',
+    sky: selected ? 'border-sky-700 bg-sky-700 text-white' : 'border-sky-400 bg-white',
+    amber: selected ? 'border-amber-700 bg-amber-700 text-white' : 'border-amber-400 bg-white',
+  }[tone]
+  const iconClass = {
+    teal: 'bg-teal-700 text-white',
+    sky: 'bg-sky-700 text-white',
+    amber: 'bg-amber-700 text-white',
+  }[tone]
+  const textClass = {
+    teal: 'text-teal-950',
+    sky: 'text-sky-950',
+    amber: 'text-amber-950',
+  }[tone]
+  const subClass = {
+    teal: 'text-teal-900/65',
+    sky: 'text-sky-900/65',
+    amber: 'text-amber-900/70',
+  }[tone]
+
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      onClick={onClick}
+      className={cn(
+        'flex w-full items-center gap-3 px-4 py-3.5 text-left transition-all',
+        embedded ? 'bg-transparent' : cn('rounded-2xl border-2', toneClass),
+      )}
+    >
+      <span
+        className={cn(
+          'flex size-5 shrink-0 items-center justify-center rounded-full border-2',
+          markClass,
+        )}
+      >
+        {selected ? <Check className="size-3" strokeWidth={3} /> : null}
+      </span>
+      <span className={cn('flex size-9 shrink-0 items-center justify-center rounded-xl', iconClass)}>
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className={cn('block font-semibold', textClass)}>
+          {index}. {title}
+        </span>
+        <span className={cn('mt-0.5 block text-xs', subClass)}>{subtitle}</span>
+      </span>
+      <span className={cn('shrink-0 text-xs font-semibold', selected ? textClass : 'opacity-50')}>
+        {selected ? 'Selected' : 'Choose'}
+      </span>
+    </button>
+  )
+}
+
 export function BookingWizard({
   agent,
   selectAgent = false,
@@ -96,6 +182,7 @@ export function BookingWizard({
   const {
     addAgent,
     addBooking,
+    addHotel,
     agents,
     bookings,
     bookedPaxFor,
@@ -202,6 +289,14 @@ export function BookingWizard({
     if (!seed?.pickupZone || isPrivateTransferZone(seed.pickupZone)) return null
     return matchZoneFromSeed(zones, seed.pickupZone) ?? seed.pickupZone
   })
+  const [joinPickup, setJoinPickup] = useState(
+    () =>
+      Boolean(
+        seed?.pickupZone &&
+          !isPrivateTransferZone(seed.pickupZone) &&
+          !isNoTransfer(seed.pickupZone),
+      ),
+  )
   const [privatePickup, setPrivatePickup] = useState(
     () => Boolean(seed?.pickupZone && isPrivateTransferZone(seed.pickupZone)),
   )
@@ -306,6 +401,14 @@ export function BookingWizard({
 
   const total = adults + children + infants + tourLeaders
   const isoDate = date ? toISODate(date) : ''
+  const confirmationNumber = useMemo(() => {
+    if (!program || !isoDate) return '—'
+    return nextBookingCode(
+      program,
+      isoDate,
+      bookings.map((booking) => booking.code),
+    )
+  }, [bookings, isoDate, program])
   const bookingOpen = !isoDate || isBookingOpen(isoDate)
   const programClosedOnDate =
     Boolean(program && isoDate) && isProgramClosed(isoDate, program!)
@@ -369,6 +472,25 @@ export function BookingWizard({
     return null
   }
 
+  function rememberCustomHotel(name: string) {
+    const trimmed = name.trim().replace(/\s+/g, ' ')
+    if (trimmed.length < 2) return
+    const existing = hotels.find((hotel) => hotel.name.toLowerCase() === trimmed.toLowerCase())
+    if (existing) {
+      setPickupHotel(existing.name)
+      if (!noTransfer) applyHotelSelection(existing)
+      return
+    }
+    let zoneName: string | null = null
+    if (privatePickup && privateArea && privateArea.toLowerCase() !== 'other') {
+      zoneName = zones.some((zone) => zone.name === privateArea) ? privateArea : null
+    } else if (!noTransfer && pickupZone && !isNoTransfer(pickupZone)) {
+      zoneName = zones.some((zone) => zone.name === pickupZone) ? pickupZone : null
+    }
+    addHotel(trimmed, zoneName, '')
+    setPickupHotel(trimmed)
+  }
+
   function applyHotelSelection(hotel: Hotel) {
     setPickupHotel(hotel.name)
     const zoneName = zoneNameForHotel(hotel)
@@ -397,7 +519,9 @@ export function BookingWizard({
     if (step === pickupStep) {
       if (noTransfer) return true
       if (privatePickup) return Boolean(privateAreaName && privateVehicleOption && privateVehicleFits)
-      return pickupZone !== null && zones.some((zone) => zone.name === pickupZone)
+      return (
+        joinPickup && pickupZone !== null && zones.some((zone) => zone.name === pickupZone)
+      )
     }
     if (step === reviewStep) return !overCapacity
     return true
@@ -421,6 +545,7 @@ export function BookingWizard({
     pickupZone,
     zones,
     noTransfer,
+    joinPickup,
     privatePickup,
     privateAreaName,
     privateVehicleOption,
@@ -455,15 +580,17 @@ export function BookingWizard({
                   : overCapacity
                     ? `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left on this date.`
                     : 'Enter the guest name.'
-                : privatePickup && !privateVehicleOption
-                  ? 'Choose Car / SUV or VAN.'
-                  : privatePickup && !privateVehicleFits
-                    ? privateVehicleOption?.vehicle === 'Car'
-                      ? 'Car / SUV is for 1–4 guests. Choose VAN for a larger group.'
-                      : 'VAN takes up to 12 guests.'
-                    : privatePickup
-                      ? 'Select a zone for the private transfer, or choose Other.'
-                      : 'Select a pickup zone, or choose No Transfer.',
+                : !joinPickup && !privatePickup
+                  ? 'Choose one pickup type.'
+                  : privatePickup && !privateVehicleOption
+                    ? 'Choose Car / SUV or VAN.'
+                    : privatePickup && !privateVehicleFits
+                      ? privateVehicleOption?.vehicle === 'Car'
+                        ? 'Car / SUV is for 1–4 guests. Choose VAN for a larger group.'
+                        : 'VAN takes up to 12 guests.'
+                      : privatePickup
+                        ? 'Select a zone for the private transfer, or choose Other.'
+                        : 'Select a pickup zone, or choose No Transfer.',
       )
       return
     }
@@ -573,6 +700,65 @@ export function BookingWizard({
 
   const headerEyebrow = eyebrow ?? (!selectAgent ? agent?.name : undefined)
 
+  function pickupHotelFields(optional: boolean) {
+    return (
+      <div className="flex w-full gap-3">
+        <div className="min-w-0 flex-1 space-y-2">
+          <Label htmlFor={optional ? 'hotel-no-transfer' : 'hotel'}>
+            {optional ? 'Hotel (optional)' : 'Pickup Hotel'}
+          </Label>
+          <HotelCombobox
+            id={optional ? 'hotel-no-transfer' : 'hotel'}
+            hotels={hotels}
+            value={pickupHotel}
+            onChange={(next) => {
+              setPickupHotel(next)
+              setError('')
+            }}
+            onSelectHotel={
+              optional
+                ? (hotel) => {
+                    setPickupHotel(hotel.name)
+                    setError('')
+                  }
+                : applyHotelSelection
+            }
+            onSelectOther={(typed) => {
+              const name = typed.trim()
+              if (name) rememberCustomHotel(name)
+              if (optional) {
+                setError('')
+                return
+              }
+              if (privatePickup) {
+                setPrivateArea('Other')
+                setError('')
+                return
+              }
+              if (zones.some((zone) => zone.name === 'Other')) {
+                setPickupZone('Other')
+              }
+              setError('')
+            }}
+          />
+          <p className="text-xs text-neutral-500">
+            Type a few letters to see saved hotels, including similar names. The last line adds a
+            new hotel and keeps it in the list.
+          </p>
+        </div>
+        <div className="w-[7.5rem] shrink-0 space-y-2 sm:w-32">
+          <Label htmlFor={optional ? 'room-number-no-transfer' : 'room-number'}>Room</Label>
+          <Input
+            id={optional ? 'room-number-no-transfer' : 'room-number'}
+            value={roomNumber}
+            onChange={(event) => setRoomNumber(event.target.value)}
+            className="h-11"
+          />
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="mx-auto max-w-3xl">
       <div className="mb-5 sm:mb-7">
@@ -655,34 +841,6 @@ export function BookingWizard({
               {steps[step]}
             </h2>
           </div>
-          {step === pickupStep ? (
-            <button
-              type="button"
-              onClick={() => {
-                if (noTransfer) {
-                  setPickupZone(null)
-                } else {
-                  setPickupZone(NO_TRANSFER_ZONE)
-                  setPrivatePickup(false)
-                }
-                setError('')
-              }}
-              className={cn(
-                'shrink-0 rounded-xl border px-3 py-2 text-left transition-all sm:px-3.5',
-                noTransfer
-                  ? 'border-teal-700 bg-teal-50/90 ring-1 ring-teal-700 shadow-sm shadow-teal-700/10'
-                  : 'border-teal-900/10 bg-white/80 text-teal-900/70 hover:border-teal-700/30',
-              )}
-            >
-              <span className="flex items-center gap-1.5 text-sm font-semibold text-teal-950">
-                {noTransfer ? <Check className="size-3.5 shrink-0 text-teal-800" /> : null}
-                No Transfer
-              </span>
-              <span className="mt-0.5 block text-[11px] leading-tight text-teal-900/45">
-                Guest needs no pickup
-              </span>
-            </button>
-          ) : null}
         </div>
 
         {selectAgent && step === 0 && (
@@ -920,52 +1078,55 @@ export function BookingWizard({
                 </div>
               )
             ) : null}
-            <div className="space-y-1">
-              <GuestRow
-                label="Adults"
-                hint="12 years and above"
-                value={adults}
-                max={
-                  seatsLeft !== null
-                    ? Math.max(0, seatsLeft - children - infants - tourLeaders)
-                    : undefined
-                }
-                onChange={setAdults}
-              />
-              <GuestRow
-                label="Children"
-                hint="3–11 years"
-                value={children}
-                max={
-                  seatsLeft !== null
-                    ? Math.max(0, seatsLeft - adults - infants - tourLeaders)
-                    : undefined
-                }
-                onChange={setChildren}
-              />
-              <GuestRow
-                label="Infants"
-                hint="Under 3 years"
-                value={infants}
-                max={
-                  seatsLeft !== null
-                    ? Math.max(0, seatsLeft - adults - children - tourLeaders)
-                    : undefined
-                }
-                onChange={setInfants}
-              />
-              <GuestRow
-                label="Tour Leaders"
-                hint="Accompanying guides"
-                value={tourLeaders}
-                max={
-                  seatsLeft !== null
-                    ? Math.max(0, seatsLeft - adults - children - infants)
-                    : undefined
-                }
-                onChange={setTourLeaders}
-              />
-              <div className="mt-4 flex items-center justify-between rounded-2xl bg-teal-950/[0.04] px-4 py-3.5">
+            <section className="space-y-3 rounded-2xl border-2 border-teal-500 bg-teal-50/70 p-4">
+              <h3 className="text-sm font-semibold text-teal-950">Passengers</h3>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <GuestRow
+                  label="Adults"
+                  hint="12 years and above"
+                  value={adults}
+                  max={
+                    seatsLeft !== null
+                      ? Math.max(0, seatsLeft - children - infants - tourLeaders)
+                      : undefined
+                  }
+                  onChange={setAdults}
+                />
+                <GuestRow
+                  label="Children"
+                  hint="3–11 years"
+                  value={children}
+                  max={
+                    seatsLeft !== null
+                      ? Math.max(0, seatsLeft - adults - infants - tourLeaders)
+                      : undefined
+                  }
+                  onChange={setChildren}
+                />
+                <GuestRow
+                  label="Infants"
+                  hint="Under 3 years"
+                  value={infants}
+                  max={
+                    seatsLeft !== null
+                      ? Math.max(0, seatsLeft - adults - children - tourLeaders)
+                      : undefined
+                  }
+                  onChange={setInfants}
+                />
+                <GuestRow
+                  label="Tour Leaders"
+                  hint="Accompanying guides"
+                  value={tourLeaders}
+                  max={
+                    seatsLeft !== null
+                      ? Math.max(0, seatsLeft - adults - children - infants)
+                      : undefined
+                  }
+                  onChange={setTourLeaders}
+                />
+              </div>
+              <div className="flex items-center justify-between rounded-2xl bg-teal-950/[0.04] px-4 py-3">
                 <span className="text-sm font-medium text-teal-900/55">Total Passengers</span>
                 <span className="text-right">
                   <span className="font-mono text-lg font-semibold tracking-tight text-teal-950 tabular-nums">
@@ -974,11 +1135,12 @@ export function BookingWizard({
                   <span className="ml-2 text-sm text-teal-900/40">({total})</span>
                 </span>
               </div>
-            </div>
+            </section>
 
-            <div className="max-w-2xl space-y-5 border-t border-teal-900/8 pt-5">
-              <div className="flex flex-col gap-4 sm:flex-row sm:gap-3">
-                <div className="min-w-0 flex-1 space-y-2">
+            <section className="space-y-4 rounded-2xl border-2 border-sky-500 bg-sky-50/70 p-4">
+              <h3 className="text-sm font-semibold text-sky-950">Guest details</h3>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div className="min-w-0 space-y-2">
                   <Label htmlFor="lead-guest">Guest Name</Label>
                   <Input
                     id="lead-guest"
@@ -989,189 +1151,138 @@ export function BookingWizard({
                     className="h-11"
                   />
                 </div>
-                <div className="min-w-0 flex-1 space-y-2">
+                <div className="min-w-0 space-y-2">
                   <Label htmlFor="agent-ref-guest">Voucher Number</Label>
                   <Input
                     id="agent-ref-guest"
                     value={agentRef}
                     onChange={(event) => setAgentRef(event.target.value)}
                     className="h-11"
+                    placeholder="Optional"
                   />
-                  <p className="text-xs text-neutral-500">
-                    Optional — voucher number for this booking.
-                  </p>
+                </div>
+                <div className="min-w-0 space-y-2">
+                  <Label htmlFor="cash-on-tour">Cash on tour</Label>
+                  <Input
+                    id="cash-on-tour"
+                    value={cashOnTour}
+                    onChange={(event) => setCashOnTour(event.target.value)}
+                    className="h-11"
+                  />
                 </div>
               </div>
-              <div className="max-w-md space-y-2">
-                <Label htmlFor="cash-on-tour">Cash on tour</Label>
-                <Input
-                  id="cash-on-tour"
-                  value={cashOnTour}
-                  onChange={(event) => setCashOnTour(event.target.value)}
-                  className="h-11"
-                  placeholder="e.g. 2,000 THB"
-                />
-                <p className="text-xs text-neutral-500">
-                  Optional — amount or note for cash to collect on tour.
-                </p>
-              </div>
-            </div>
+            </section>
           </div>
         )}
 
         {step === pickupStep && (
           <div className="space-y-5">
-            {noTransfer ? (
-              <div className="space-y-4">
-                <div className="rounded-xl border border-teal-200 bg-teal-50/80 px-4 py-3 text-sm text-teal-900/75">
-                  This booking has <span className="font-semibold text-teal-950">No Transfer</span> —
-                  the guest will arrange their own transport. Hotel is optional but shown on the van
-                  board when set.
-                </div>
-                <div className="flex max-w-md gap-3">
-                  <div className="min-w-0 flex-1 space-y-2">
-                    <Label htmlFor="hotel-no-transfer">Hotel (optional)</Label>
-                    <HotelCombobox
-                      id="hotel-no-transfer"
-                      hotels={hotels}
-                      value={pickupHotel}
-                      onChange={(next) => {
-                        setPickupHotel(next)
-                        setError('')
-                      }}
-                      onSelectHotel={(hotel) => {
-                        setPickupHotel(hotel.name)
-                        setError('')
-                      }}
-                      onSelectOther={() => setError('')}
-                    />
-                  </div>
-                  <div className="w-[7.5rem] shrink-0 space-y-2 sm:w-32">
-                    <Label htmlFor="room-number-no-transfer">Room</Label>
-                    <Input
-                      id="room-number-no-transfer"
-                      value={roomNumber}
-                      onChange={(event) => setRoomNumber(event.target.value)}
-                      className="h-11"
-                    />
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <>
-                <div className="flex max-w-md gap-3">
-                  <div className="min-w-0 flex-1 space-y-2">
-                    <Label htmlFor="hotel">Pickup Hotel</Label>
-                    <HotelCombobox
-                      id="hotel"
-                      hotels={hotels}
-                      value={pickupHotel}
-                      onChange={(next) => {
-                        setPickupHotel(next)
-                        setError('')
-                      }}
-                      onSelectHotel={applyHotelSelection}
-                      onSelectOther={() => {
-                        if (privatePickup) {
-                          setPrivateArea('Other')
-                          setError('')
-                          return
-                        }
-                        if (zones.some((zone) => zone.name === 'Other')) {
-                          setPickupZone('Other')
-                        }
-                        setError('')
-                      }}
-                    />
-                    <p className="text-xs text-neutral-500">
-                      Pick from the list when possible. Use Other for a hotel not listed — admin can
-                      add it later under Pickup Zones with the correct zone and time.
-                    </p>
-                  </div>
-                  <div className="w-[7.5rem] shrink-0 space-y-2 sm:w-32">
-                    <Label htmlFor="room-number">Room</Label>
-                    <Input
-                      id="room-number"
-                      value={roomNumber}
-                      onChange={(event) => setRoomNumber(event.target.value)}
-                      className="h-11"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <Label className="mb-3">Pickup Zone</Label>
+            <div>
+              <Label>Choose one pickup type</Label>
+              <p className="mt-1 text-xs text-neutral-500">
+                Select one option. Click the selected option again to close it.
+              </p>
+            </div>
+            <div className="space-y-3" role="radiogroup" aria-label="Choose one pickup type">
+              <div
+                className={cn(
+                  joinPickup && 'rounded-2xl border-2 border-teal-700 bg-teal-50',
+                )}
+              >
+              <PickupTypeButton
+                selected={joinPickup}
+                embedded={joinPickup}
+                tone="teal"
+                index={1}
+                title="Join Transfer Pickup"
+                subtitle="Shared van at the zone pickup time"
+                icon={<Bus className="size-4" />}
+                onClick={() => {
+                  if (joinPickup) {
+                    setJoinPickup(false)
+                    setError('')
+                    return
+                  }
+                  setJoinPickup(true)
+                  setPrivatePickup(false)
+                  setPrivateArea(null)
+                  setPrivateAreaOther('')
+                  setPrivateVehicle('')
+                  if (isNoTransfer(pickupZone)) setPickupZone(null)
+                  setError('')
+                }}
+              />
+              {joinPickup ? (
+                <div className="space-y-4 border-t border-teal-200 p-3">
                   <div className="grid gap-2 sm:grid-cols-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (privatePickup) {
-                          setPrivatePickup(false)
-                          setPrivateArea(null)
-                          setPrivateAreaOther('')
-                          setPrivateVehicle('')
-                        } else {
-                          setPrivatePickup(true)
-                          setPickupZone(null)
-                        }
-                        setError('')
-                      }}
-                      className={cn(
-                        'flex items-center gap-3 rounded-2xl border-2 px-3.5 py-3 text-left transition-all sm:col-span-2',
-                        privatePickup
-                          ? 'border-sky-700 bg-sky-100 ring-1 ring-sky-700 shadow-sm shadow-sky-700/15'
-                          : 'border-sky-400/80 bg-sky-50 hover:border-sky-600 hover:bg-sky-100/80',
-                      )}
-                    >
-                      <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-sky-700 text-white">
-                        <Car className="size-4" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block font-semibold text-sky-950">Private Transfers</span>
-                        <span className="mt-0.5 block text-xs text-sky-900/70">
-                          Admin will confirm the pickup time
-                        </span>
-                      </span>
-                      {privatePickup ? <Check className="size-4 shrink-0 text-sky-800" /> : null}
-                    </button>
-                    {privatePickup
-                      ? null
-                      : zones
-                      .filter((zone) => !isPrivateTransferZone(zone.name))
-                      .map((zone) => {
-                      const time = getZoneTime(zone.name)
-                      return (
-                        <button
-                          key={zone.name}
-                          type="button"
-                          onClick={() => {
-                            setPrivatePickup(false)
-                            setPickupZone(zone.name)
-                            setError('')
-                          }}
-                          className={cn(
-                            'flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-left transition-all',
-                            !privatePickup && pickupZone === zone.name
-                              ? 'border-teal-700 bg-teal-50/90 ring-1 ring-teal-700 shadow-sm shadow-teal-700/10'
-                              : 'border-teal-900/10 bg-white/70 hover:border-teal-700/30',
-                          )}
-                        >
-                          <span className="min-w-0 truncate font-semibold text-teal-950">
-                            {zone.name}
-                          </span>
-                          <span className="flex shrink-0 items-center gap-1.5 text-sm text-teal-900/50">
-                            <Clock3 className="size-3.5" />
-                            {zone.pending ? 'Awaiting time' : time}
-                            {!privatePickup && pickupZone === zone.name ? (
-                              <Check className="size-3.5 text-teal-800" />
-                            ) : null}
-                          </span>
-                        </button>
-                      )
-                    })}
+                      {zones
+                        .filter((zone) => !isPrivateTransferZone(zone.name))
+                        .map((zone) => {
+                          const time = getZoneTime(zone.name)
+                          const selected = pickupZone === zone.name
+                          return (
+                            <button
+                              key={zone.name}
+                              type="button"
+                              onClick={() => {
+                                setPickupZone(zone.name)
+                                setError('')
+                              }}
+                              className={cn(
+                                'flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-left transition-all',
+                                selected
+                                  ? 'border-teal-800 bg-teal-700 text-white shadow-sm'
+                                  : 'border-teal-200 bg-white text-teal-950 hover:border-teal-500',
+                              )}
+                            >
+                              <span className="min-w-0 truncate font-semibold">
+                                {zone.name}
+                              </span>
+                              <span
+                                className={cn(
+                                  'flex shrink-0 items-center gap-1.5 text-sm',
+                                  selected ? 'text-white/85' : 'text-teal-900/50',
+                                )}
+                              >
+                                <Clock3 className="size-3.5" />
+                                {zone.pending ? 'Awaiting time' : time}
+                                {selected ? <Check className="size-3.5" /> : null}
+                              </span>
+                            </button>
+                          )
+                        })}
+                    </div>
+                    {pickupHotelFields(false)}
                   </div>
-                </div>
-                {privatePickup ? (
-                  <div className="space-y-5">
+              ) : null}
+              </div>
+              <div
+                className={cn(
+                  privatePickup && 'rounded-2xl border-2 border-sky-700 bg-sky-50',
+                )}
+              >
+              <PickupTypeButton
+                selected={privatePickup}
+                embedded={privatePickup}
+                tone="sky"
+                index={2}
+                title="Private Transfers"
+                subtitle="Admin will confirm the pickup time"
+                icon={<Car className="size-4" />}
+                onClick={() => {
+                  if (privatePickup) {
+                    setPrivatePickup(false)
+                    setError('')
+                    return
+                  }
+                  setPrivatePickup(true)
+                  setJoinPickup(false)
+                  setPickupZone(null)
+                  setError('')
+                }}
+              />
+              {privatePickup ? (
+                  <div className="space-y-5 border-t border-sky-200 p-3">
                     <div>
                       <Label className="mb-2">Vehicle</Label>
                       <div className="grid gap-2 sm:grid-cols-2">
@@ -1188,19 +1299,27 @@ export function BookingWizard({
                                 setError('')
                               }}
                               className={cn(
-                                'rounded-xl border px-3.5 py-3 text-left transition-all',
+                                'flex items-center justify-between gap-2 rounded-xl border px-3.5 py-3 text-left transition-all',
                                 tooMany && 'cursor-not-allowed opacity-45',
                                 selected
-                                  ? 'border-sky-700 bg-sky-50 ring-1 ring-sky-700'
-                                  : 'border-sky-900/10 bg-white/80 hover:border-sky-600/40',
+                                  ? 'border-sky-800 bg-sky-700 text-white shadow-sm'
+                                  : 'border-sky-200 bg-white text-sky-950 hover:border-sky-500',
                               )}
                             >
-                              <span className="block text-sm font-semibold text-sky-950">
-                                {index + 1}. {option.label}
+                              <span className="min-w-0">
+                                <span className="block text-sm font-semibold">
+                                  {index + 1}. {option.label}
+                                </span>
+                                <span
+                                  className={cn(
+                                    'mt-0.5 block text-sm',
+                                    selected ? 'text-white/80' : 'text-sky-900/70',
+                                  )}
+                                >
+                                  {formatPrivateTransferPrice(option.priceThb)}
+                                </span>
                               </span>
-                              <span className="mt-0.5 block text-sm text-sky-900/70">
-                                {formatPrivateTransferPrice(option.priceThb)}
-                              </span>
+                              {selected ? <Check className="size-4 shrink-0" /> : null}
                             </button>
                           )
                         })}
@@ -1211,61 +1330,107 @@ export function BookingWizard({
                         </p>
                       ) : null}
                     </div>
-                    <div>
-                    <Label className="mb-1">Zone</Label>
-                    <p className="mb-3 text-xs text-neutral-500">
-                      Select the pickup zone, or Other if it is not listed.
-                    </p>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {privateZoneChoices.map((name) => {
-                        const zone = zones.find(
-                          (item) => item.name.toLowerCase() === name.toLowerCase(),
-                        )
-                        const selected = privateArea?.toLowerCase() === name.toLowerCase()
-                        const time = zone ? getZoneTime(zone.name) : ''
-                        return (
-                          <button
-                            key={name}
-                            type="button"
-                            onClick={() => {
-                              setPrivateArea(name)
-                              if (name.toLowerCase() !== 'other') setPrivateAreaOther('')
-                              setError('')
-                            }}
-                            className={cn(
-                              'flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-left transition-all',
-                              selected
-                                ? 'border-teal-700 bg-teal-50/90 ring-1 ring-teal-700 shadow-sm shadow-teal-700/10'
-                                : 'border-teal-900/10 bg-white/70 hover:border-teal-700/30',
-                            )}
-                          >
-                            <span className="min-w-0 truncate font-semibold text-teal-950">{name}</span>
-                            <span className="flex shrink-0 items-center gap-1.5 text-sm text-teal-900/50">
-                              <Clock3 className="size-3.5" />
-                              {zone?.pending || !time ? 'Awaiting time' : time}
-                              {selected ? <Check className="size-3.5 text-teal-800" /> : null}
-                            </span>
-                          </button>
-                        )
-                      })}
-                    </div>
-                    {privateArea?.toLowerCase() === 'other' ? (
-                      <div className="mt-3 max-w-md space-y-2">
-                        <Label htmlFor="private-zone-other">Other zone</Label>
-                        <Input
-                          id="private-zone-other"
-                          value={privateAreaOther}
-                          onChange={(event) => setPrivateAreaOther(event.target.value)}
-                          className="h-11"
-                          placeholder="Area not on the list"
-                        />
+                    {privateVehicle ? (
+                      <div>
+                        <Label className="mb-1">Zone</Label>
+                        <p className="mb-3 text-xs text-neutral-500">
+                          Select the pickup zone, or Other if it is not listed.
+                        </p>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {privateZoneChoices.map((name) => {
+                            const zone = zones.find(
+                              (item) => item.name.toLowerCase() === name.toLowerCase(),
+                            )
+                            const selected = privateArea?.toLowerCase() === name.toLowerCase()
+                            const time = zone ? getZoneTime(zone.name) : ''
+                            return (
+                              <button
+                                key={name}
+                                type="button"
+                                onClick={() => {
+                                  setPrivateArea(name)
+                                  if (name.toLowerCase() !== 'other') setPrivateAreaOther('')
+                                  setError('')
+                                }}
+                                className={cn(
+                                  'flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-left transition-all',
+                                  selected
+                                    ? 'border-sky-800 bg-sky-700 text-white shadow-sm'
+                                    : 'border-sky-200 bg-white text-sky-950 hover:border-sky-500',
+                                )}
+                              >
+                                <span className="min-w-0 truncate font-semibold">{name}</span>
+                                <span
+                                  className={cn(
+                                    'flex shrink-0 items-center gap-1.5 text-sm',
+                                    selected ? 'text-white/85' : 'text-sky-900/55',
+                                  )}
+                                >
+                                  <Clock3 className="size-3.5" />
+                                  {zone?.pending || !time ? 'Awaiting time' : time}
+                                  {selected ? <Check className="size-3.5" /> : null}
+                                </span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                        {privateArea?.toLowerCase() === 'other' ? (
+                          <div className="mt-3 max-w-md space-y-2">
+                            <Label htmlFor="private-zone-other">Other zone</Label>
+                            <Input
+                              id="private-zone-other"
+                              value={privateAreaOther}
+                              onChange={(event) => setPrivateAreaOther(event.target.value)}
+                              className="h-11"
+                              placeholder="Area not on the list"
+                            />
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
-                    </div>
+                    {pickupHotelFields(false)}
                   </div>
-                ) : null}
-              </>
-            )}
+              ) : null}
+              </div>
+              <div
+                className={cn(
+                  noTransfer && 'rounded-2xl border-2 border-amber-700 bg-amber-50',
+                )}
+              >
+              <PickupTypeButton
+                selected={noTransfer}
+                embedded={noTransfer}
+                tone="amber"
+                index={3}
+                title="No Transfer"
+                subtitle="Guest needs no pickup"
+                icon={<Ban className="size-4" />}
+                onClick={() => {
+                  if (noTransfer) {
+                    setPickupZone(null)
+                    setError('')
+                    return
+                  }
+                  setJoinPickup(false)
+                  setPrivatePickup(false)
+                  setPrivateArea(null)
+                  setPrivateAreaOther('')
+                  setPrivateVehicle('')
+                  setPickupZone(NO_TRANSFER_ZONE)
+                  setError('')
+                }}
+              />
+              {noTransfer ? (
+                <div className="space-y-4 border-t border-amber-200 p-3">
+                  <p className="text-sm text-neutral-600">
+                    The guest will arrange their own transport. Hotel is optional and still shows on
+                    the van board when set.
+                  </p>
+                  {pickupHotelFields(true)}
+                </div>
+              ) : null}
+              </div>
+            </div>
             <div className="max-w-md space-y-2">
               <Label htmlFor="pickup-note">Note</Label>
               <Textarea
@@ -1314,93 +1479,167 @@ export function BookingWizard({
                 or choose another date.
               </div>
             ) : null}
-            <div className="rounded-2xl bg-gradient-to-br from-teal-800 via-teal-700 to-cyan-700 px-5 py-5 text-white sm:px-6 sm:py-6">
-              <p className="text-sm font-semibold tracking-wide text-white/75">Guest Name</p>
-              <h3 className="font-display mt-1.5 text-3xl leading-tight font-semibold tracking-tight sm:text-4xl">
-                {leadGuest.trim() || '—'}
-              </h3>
-              {resolvedAgent?.name || (selectAgent && agentMode === 'new') ? (
-                <p className="mt-2 text-sm text-white/70">
-                  {resolvedAgent?.name || newAgentName.trim() || '—'}
-                  {selectAgent && agentMode === 'new' ? ' · New agent' : ''}
+            <section className="overflow-hidden rounded-2xl border border-teal-200 bg-white">
+              <div className="flex items-center gap-3 bg-gradient-to-r from-teal-800 to-cyan-700 px-4 py-3 text-white">
+                <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-white/15">
+                  <Ship className="size-4" />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-white/70">Booking</p>
+                  <p className="truncate font-display text-lg font-semibold tracking-tight">
+                    {leadGuest.trim() || '—'}
+                  </p>
+                </div>
+                <p className="ml-auto shrink-0 text-right text-sm text-white/80">
+                  {program ? programDisplayName(program) : '—'}
+                  <span className="mt-0.5 block text-[11px] font-medium tracking-wide text-white/70 uppercase">
+                    Confirmation number
+                  </span>
+                  <span className="block font-mono text-sm font-semibold tracking-tight text-white">
+                    {confirmationNumber}
+                  </span>
                 </p>
-              ) : null}
-              <div className="mt-5 grid grid-cols-2 gap-4 border-t border-white/15 pt-4 sm:grid-cols-3">
-                <SummaryFact
-                  label="Program"
-                  value={program ? programDisplayName(program) : '—'}
-                />
-                <SummaryFact label="Date" value={isoDate ? formatLongDate(isoDate) : '—'} />
-                <SummaryFact
-                  label="Passengers"
-                  value={`${total}`}
-                  hint={formatPaxBreakdown({ adults, children, infants, tourLeaders })}
+              </div>
+              <div className="space-y-4 p-4">
+              <div className="rounded-xl bg-teal-50 px-4 py-3 ring-1 ring-teal-200">
+                <p className="text-xs font-semibold tracking-wide text-teal-800 uppercase">Trip Date</p>
+                <p className="font-display mt-1 text-2xl font-semibold tracking-tight text-teal-950">
+                  {isoDate ? formatLongDate(isoDate) : '—'}
+                </p>
+              </div>
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
+                <DetailCell label="Guest name" value={leadGuest.trim() || '—'} emphasize />
+                {resolvedAgent?.name || (selectAgent && agentMode === 'new') ? (
+                  <DetailCell
+                    label="Agent"
+                    value={
+                      (resolvedAgent?.name || newAgentName.trim() || '—') +
+                      (selectAgent && agentMode === 'new' ? ' · New' : '')
+                    }
+                  />
+                ) : null}
+                <DetailCell label="Program" value={program ? programDisplayName(program) : '—'} />
+              </dl>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                <GuestStat label="Adults" value={adults} tone="teal" />
+                <GuestStat label="Children" value={children} tone="cyan" />
+                <GuestStat label="Infants" value={infants} tone="sky" />
+                <GuestStat label="Tour leaders" value={tourLeaders} tone="amber" />
+                <GuestStat
+                  label="Total"
+                  value={formatPaxBreakdown({ adults, children, infants, tourLeaders })}
+                  hint={`${total}`}
+                  tone="total"
                   className="col-span-2 sm:col-span-1"
                 />
               </div>
-            </div>
-
-            <ReviewSection title="Guests" icon={<Users className="size-3.5" />}>
-              <div className="grid grid-cols-4 gap-px overflow-hidden rounded-lg bg-teal-900/8">
-                <GuestStat label="Adults" value={adults} />
-                <GuestStat label="Children" value={children} />
-                <GuestStat label="Infants" value={infants} />
-                <GuestStat label="TL" value={tourLeaders} />
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-teal-900/8 pt-4 sm:grid-cols-4">
+                <DetailCell label="Park fee" value={formatIncludeLabel(parkFee)} />
+                {program === 'James Bond' ? (
+                  <DetailCell label="Canoe" value={formatIncludeLabel(canoe)} />
+                ) : null}
+                <DetailCell label="Voucher" value={agentRef.trim() || '—'} />
+                <DetailCell label="Cash on tour" value={cashOnTour.trim() || '—'} wrap />
+              </dl>
               </div>
-            </ReviewSection>
+            </section>
 
-            <ReviewSection title="Pickup" icon={<MapPin className="size-3.5" />}>
+            <section
+              className={cn(
+                'overflow-hidden rounded-2xl border bg-white',
+                noTransfer
+                  ? 'border-amber-200'
+                  : privatePickup
+                    ? 'border-sky-200'
+                    : 'border-teal-200',
+              )}
+            >
+              <div
+                className={cn(
+                  'flex items-center gap-3 px-4 py-3',
+                  noTransfer
+                    ? 'bg-amber-50 text-amber-950'
+                    : privatePickup
+                      ? 'bg-sky-50 text-sky-950'
+                      : 'bg-teal-50 text-teal-950',
+                )}
+              >
+                <span
+                  className={cn(
+                    'flex size-9 shrink-0 items-center justify-center rounded-xl text-white',
+                    noTransfer ? 'bg-amber-700' : privatePickup ? 'bg-sky-700' : 'bg-teal-700',
+                  )}
+                >
+                  {noTransfer ? (
+                    <Ban className="size-4" />
+                  ) : privatePickup ? (
+                    <Car className="size-4" />
+                  ) : (
+                    <Bus className="size-4" />
+                  )}
+                </span>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium opacity-70">Pickup</p>
+                  <p className="font-semibold">
+                    {noTransfer
+                      ? 'No Transfer'
+                      : privatePickup
+                        ? 'Private Transfers'
+                        : 'Join Transfer Pickup'}
+                  </p>
+                </div>
+              </div>
+              <div className="p-4">
               {noTransfer ? (
-                <p className="text-sm font-medium text-teal-950">
-                  No Transfer — guest arranges own transport
+                <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
+                  <DetailCell label="Type" value="No Transfer" emphasize />
+                  <DetailCell label="Hotel" value={pickupHotel || '—'} className="sm:col-span-2" wrap />
+                  <DetailCell label="Room" value={roomNumber.trim() || '—'} />
                   {note.trim() ? (
-                    <span className="mt-1 block text-teal-900/55 whitespace-pre-wrap break-words">
-                      Note: {note.trim()}
-                    </span>
+                    <DetailCell label="Note" value={note.trim()} className="col-span-2 sm:col-span-4" wrap />
                   ) : null}
-                </p>
+                </dl>
               ) : privatePickup ? (
-                <>
-                  <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
-                    <DetailCell label="Transfer" value="Private transfer" />
-                    <DetailCell
-                      label="Vehicle"
-                      value={
-                        privateVehicleOption
-                          ? `${privateVehicleOption.label} · ${formatPrivateTransferPrice(privateVehicleOption.priceThb)}`
-                          : '—'
-                      }
-                      className="sm:col-span-2"
-                    />
-                    <DetailCell label="Zone" value={privateAreaName || '—'} />
-                    <DetailCell label="Time" value="Admin confirms ASAP" emphasize />
-                    <DetailCell label="Hotel" value={pickupHotel || '—'} className="sm:col-span-2" />
-                    <DetailCell label="Room" value={roomNumber.trim() || '—'} />
-                    <DetailCell
-                      label="Note"
-                      value={note.trim() || '—'}
-                      className="col-span-2 sm:col-span-3"
-                      wrap
-                    />
-                  </dl>
-                </>
+                <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
+                  <DetailCell label="Type" value="Private transfer" emphasize />
+                  <DetailCell
+                    label="Vehicle"
+                    value={
+                      privateVehicleOption
+                        ? `${privateVehicleOption.label} · ${formatPrivateTransferPrice(privateVehicleOption.priceThb)}`
+                        : '—'
+                    }
+                    className="sm:col-span-2"
+                    wrap
+                  />
+                  <DetailCell label="Zone" value={privateAreaName || '—'} />
+                  <DetailCell label="Time" value="Admin confirms ASAP" emphasize />
+                  <DetailCell label="Hotel" value={pickupHotel || '—'} className="sm:col-span-2" wrap />
+                  <DetailCell label="Room" value={roomNumber.trim() || '—'} />
+                  {note.trim() ? (
+                    <DetailCell label="Note" value={note.trim()} className="col-span-2 sm:col-span-4" wrap />
+                  ) : null}
+                </dl>
               ) : (
                 <>
-                  <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
+                  <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
+                    <DetailCell label="Type" value="Join transfer" emphasize />
                     <DetailCell label="Zone" value={pickupZone ?? '—'} />
                     <DetailCell
                       label="Time"
                       value={pendingPickup ? 'Awaiting time' : pickupTime || '—'}
                       emphasize
                     />
-                    <DetailCell label="Hotel" value={pickupHotel || '—'} className="sm:col-span-2" />
+                    <DetailCell label="Hotel" value={pickupHotel || '—'} wrap />
                     <DetailCell label="Room" value={roomNumber.trim() || '—'} />
-                    <DetailCell
-                      label="Note"
-                      value={note.trim() || '—'}
-                      className="col-span-2 sm:col-span-3"
-                      wrap
-                    />
+                    {note.trim() ? (
+                      <DetailCell
+                        label="Note"
+                        value={note.trim()}
+                        className="col-span-2 sm:col-span-3"
+                        wrap
+                      />
+                    ) : null}
                   </dl>
                   {transferExtraChargePreview ? (
                     <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
@@ -1414,27 +1653,8 @@ export function BookingWizard({
                   ) : null}
                 </>
               )}
-            </ReviewSection>
-
-            <ReviewSection title="Tour options" icon={<Ship className="size-3.5" />}>
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
-                <DetailCell label="Park fee" value={formatIncludeLabel(parkFee)} />
-                {program === 'James Bond' ? (
-                  <DetailCell label="Canoe" value={formatIncludeLabel(canoe)} />
-                ) : null}
-                <DetailCell
-                  label="Voucher number"
-                  value={agentRef.trim() || '—'}
-                  className="col-span-2 sm:col-span-1"
-                />
-                <DetailCell
-                  label="Cash on tour"
-                  value={cashOnTour.trim() || '—'}
-                  className="col-span-2 sm:col-span-3"
-                  wrap
-                />
-              </dl>
-            </ReviewSection>
+              </div>
+            </section>
 
             {!selectAgent ? (
               <AmendmentPolicyNotice settings={bookingCutoffs} title="Please note before you confirm" />
@@ -1659,17 +1879,16 @@ function GuestRow({
   }
 
   return (
-    <div className="flex items-center justify-between border-b border-teal-900/6 py-4 last:border-0">
-      <div>
-        <div className="text-sm font-semibold text-teal-950">{label}</div>
-        <div className="text-xs text-teal-900/50">{hint}</div>
-      </div>
-      <div className="flex items-center gap-3">
+    <div className="flex h-full flex-col rounded-2xl border border-teal-900/10 bg-white px-3 py-3">
+      <div className="text-sm font-semibold text-teal-950">{label}</div>
+      <div className="mt-0.5 text-[11px] leading-tight text-teal-900/50">{hint}</div>
+      <div className="mt-3 flex items-center justify-between gap-1">
         <Button
           variant="outline"
           size="icon"
-          className="size-10 rounded-full"
+          className="size-8 shrink-0 rounded-full"
           onClick={() => onChange(Math.max(0, value - 1))}
+          aria-label={`Decrease ${label}`}
         >
           <Minus />
         </Button>
@@ -1693,14 +1912,14 @@ function GuestRow({
                 setEditing(false)
               }
             }}
-            className="h-10 w-14 rounded-xl border border-teal-700/35 bg-white text-center text-base font-semibold tabular-nums text-teal-950 outline-none ring-2 ring-teal-700/15"
+            className="h-8 w-10 rounded-lg border border-teal-700/35 bg-white text-center text-base font-semibold tabular-nums text-teal-950 outline-none ring-2 ring-teal-700/15"
           />
         ) : (
           <button
             type="button"
             title="Click or tap to type a number"
             onClick={startEdit}
-            className="min-w-7 rounded-lg px-1.5 py-1 text-center text-base font-semibold tabular-nums text-teal-950 transition-colors hover:bg-teal-950/[0.05]"
+            className="min-w-7 rounded-lg px-1 py-1 text-center text-lg font-semibold tabular-nums text-teal-950 transition-colors hover:bg-teal-950/[0.05]"
           >
             {value}
           </button>
@@ -1708,9 +1927,10 @@ function GuestRow({
         <Button
           variant="outline"
           size="icon"
-          className="size-10 rounded-full"
+          className="size-8 shrink-0 rounded-full"
           disabled={atMax}
           onClick={() => onChange(Math.min(hardCap, value + 1))}
+          aria-label={`Increase ${label}`}
         >
           <Plus />
         </Button>
@@ -1719,55 +1939,39 @@ function GuestRow({
   )
 }
 
-function SummaryFact({
+function GuestStat({
   label,
   value,
   hint,
+  tone = 'teal',
   className,
 }: {
   label: string
-  value: string
+  value: number | string
   hint?: string
+  tone?: 'teal' | 'cyan' | 'sky' | 'amber' | 'total'
   className?: string
 }) {
+  const toneClass = {
+    teal: 'border-teal-200 bg-teal-50 text-teal-950',
+    cyan: 'border-cyan-200 bg-cyan-50 text-cyan-950',
+    sky: 'border-sky-200 bg-sky-50 text-sky-950',
+    amber: 'border-amber-200 bg-amber-50 text-amber-950',
+    total: 'border-teal-800 bg-teal-800 text-white',
+  }[tone]
   return (
-    <div className={cn('min-w-0', className)}>
-      <p className="text-[11px] font-medium tracking-wide text-white/50 uppercase">{label}</p>
-      <p className="mt-0.5 text-base font-semibold tracking-tight">{value}</p>
-      {hint ? <p className="mt-0.5 text-xs text-white/55">{hint}</p> : null}
-    </div>
-  )
-}
-
-function ReviewSection({
-  title,
-  icon,
-  children,
-}: {
-  title: string
-  icon: ReactNode
-  children: ReactNode
-}) {
-  return (
-    <section className="rounded-xl border border-teal-900/8 bg-white/60 px-3.5 py-3 sm:px-4">
-      <div className="mb-2 flex items-center gap-1.5">
-        <span className="flex size-5 items-center justify-center rounded-md bg-teal-900/5 text-teal-800">
-          {icon}
-        </span>
-        <h4 className="text-xs font-semibold tracking-wide text-teal-900/55 uppercase">
-          {title}
-        </h4>
-      </div>
-      {children}
-    </section>
-  )
-}
-
-function GuestStat({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="bg-white px-2 py-2 text-center">
-      <p className="font-display text-lg font-semibold tracking-tight text-teal-950">{value}</p>
-      <p className="text-[10px] font-medium tracking-wide text-teal-900/45 uppercase">{label}</p>
+    <div className={cn('rounded-xl border px-3 py-2', toneClass, className)}>
+      <p className={cn('text-[11px] leading-tight', tone === 'total' ? 'text-white/70' : 'opacity-60')}>
+        {label}
+      </p>
+      <p className="mt-0.5 text-lg font-semibold tracking-tight tabular-nums">
+        {value}
+        {hint ? (
+          <span className={cn('ml-1.5 text-sm font-medium', tone === 'total' ? 'text-white/70' : 'opacity-50')}>
+            ({hint})
+          </span>
+        ) : null}
+      </p>
     </div>
   )
 }
@@ -1787,7 +1991,7 @@ function DetailCell({
 }) {
   return (
     <div className={cn('min-w-0', className)}>
-      <dt className="text-[10px] font-medium tracking-wide text-teal-900/40 uppercase">{label}</dt>
+      <dt className="text-xs text-teal-900/50">{label}</dt>
       <dd
         className={cn(
           'mt-0.5 text-sm text-teal-950',

@@ -74,6 +74,7 @@ export function EditBookingDialog({
     updateBookingDetails,
     hotels,
     zones,
+    addHotel,
     bookedPaxFor,
     bookingCutoffs,
     getCapacity,
@@ -468,15 +469,32 @@ export function EditBookingDialog({
                   value={pickupHotel}
                   onChange={setPickupHotel}
                   onSelectHotel={applyHotelSelection}
-                  onSelectOther={() => {
+                  onSelectOther={(typed) => {
+                    const name = typed.trim().replace(/\s+/g, ' ')
+                    if (name.length < 2) return
+                    const existing = hotels.find(
+                      (hotel) => hotel.name.toLowerCase() === name.toLowerCase(),
+                    )
+                    if (existing) {
+                      applyHotelSelection(existing)
+                      return
+                    }
+                    const zoneName =
+                      pickupZone &&
+                      !isNoTransfer(pickupZone) &&
+                      zones.some((zone) => zone.name === pickupZone)
+                        ? pickupZone
+                        : null
+                    addHotel(name, zoneName, '')
+                    setPickupHotel(name)
                     if (zones.some((zone) => zone.name === 'Other')) {
                       setPickupZone('Other')
                     }
                   }}
                 />
                 <p className="text-xs text-teal-900/50">
-                  Optional. Use Other if the hotel is missing — admin can add it under Pickup Zones
-                  with zone and time.
+                  Type a few letters to see saved hotels. The last line adds a new hotel and keeps
+                  it in the list.
                 </p>
               </div>
 
