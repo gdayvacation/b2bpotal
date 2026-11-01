@@ -46,7 +46,7 @@ export function AdminPickupZones() {
   const [zoneError, setZoneError] = useState('')
 
   const [hotelName, setHotelName] = useState('')
-  const [hotelZone, setHotelZone] = useState<string>(UNASSIGNED)
+  const [hotelZone, setHotelZone] = useState<string>('Other')
   const [hotelExtraCharge, setHotelExtraCharge] = useState('')
   const [hotelError, setHotelError] = useState('')
   const [hotelFilter, setHotelFilter] = useState('')
@@ -92,7 +92,8 @@ export function AdminPickupZones() {
   }
 
   function resolveZone(value: string): PickupZoneName | null {
-    return value === UNASSIGNED ? null : value
+    if (!value || value === UNASSIGNED) return 'Other'
+    return value
   }
 
   function handleAddHotel() {
@@ -102,7 +103,7 @@ export function AdminPickupZones() {
       return
     }
     setHotelName('')
-    setHotelZone(UNASSIGNED)
+    setHotelZone('Other')
     setHotelExtraCharge('')
     setHotelError('')
   }
@@ -110,7 +111,7 @@ export function AdminPickupZones() {
   function openEdit(hotel: Hotel) {
     setEditing(hotel)
     setEditName(hotel.name)
-    setEditZone(hotel.zoneName ?? UNASSIGNED)
+    setEditZone(hotel.zoneName ?? 'Other')
     setEditExtraCharge(hotel.extraChargeTransfer)
     setEditError('')
   }
@@ -284,10 +285,9 @@ export function AdminPickupZones() {
               onValueChange={(value) => setHotelZone(value ?? UNASSIGNED)}
             >
               <SelectTrigger className="h-10 w-full min-w-0">
-                <SelectValue placeholder="Unassigned" />
+                <SelectValue placeholder="Other" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
                 {assignableZones.map((zone) => (
                   <SelectItem key={zone.name} value={zone.name}>
                     {zone.name}
@@ -373,7 +373,7 @@ export function AdminPickupZones() {
                 <div className="min-w-0">
                   <p className="truncate font-medium text-teal-950">{hotel.name}</p>
                   <p className="text-xs text-teal-900/45">
-                    {hotel.zoneName ?? 'Unassigned'}
+                    {hotel.zoneName ?? 'Other'}
                     {hotel.extraChargeTransfer.trim() ? (
                       <span className="text-amber-800"> · {hotel.extraChargeTransfer.trim()}</span>
                     ) : null}
@@ -434,10 +434,9 @@ export function AdminPickupZones() {
                 onValueChange={(value) => setEditZone(value ?? UNASSIGNED)}
               >
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Unassigned" />
+                  <SelectValue placeholder="Other" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
                   {assignableZones.map((zone) => (
                     <SelectItem key={zone.name} value={zone.name}>
                       {zone.name}

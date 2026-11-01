@@ -63,6 +63,10 @@ function hotelMatchScore(query: string, name: string) {
   return best * 60
 }
 
+export function hotelQueryHasMatches(hotels: Hotel[], query: string) {
+  return rankHotelSuggestions(hotels, query).length > 0
+}
+
 function rankHotelSuggestions(hotels: Hotel[], query: string) {
   const active = hotels.filter((hotel) => hotel.active)
   const q = query.trim()
@@ -92,6 +96,8 @@ export function HotelCombobox({
   onChange,
   onSelectHotel,
   onSelectOther,
+  onCommit,
+  allowCreate = false,
   id = 'hotel',
   placeholder = 'Type to search hotels…',
 }: {
@@ -99,14 +105,19 @@ export function HotelCombobox({
   value: string
   onChange: (value: string) => void
   onSelectHotel: (hotel: Hotel) => void
-  /** Called when staff pick “Other” to save a hotel that is not in the catalog. */
+  /** Called when the last line is chosen. Agents use it for Other only. */
   onSelectOther?: (typedName: string) => void
+  /** Called after the field is left, once a list click has had time to register. */
+  onCommit?: (typedName: string) => void
+  /** When true, the last line can save a new hotel name. Agents leave this off. */
+  allowCreate?: boolean
   id?: string
   placeholder?: string
 }) {
   const [open, setOpen] = useState(false)
   const [highlight, setHighlight] = useState(0)
   const blurTimer = useRef<number | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   const query = value.trim()
   const suggestions = useMemo(
@@ -146,6 +157,7 @@ export function HotelCombobox({
   return (
     <div className="relative">
       <Input
+        ref={inputRef}
         id={id}
         role="combobox"
         aria-expanded={open}
@@ -161,7 +173,10 @@ export function HotelCombobox({
           setHighlight(0)
         }}
         onBlur={() => {
-          blurTimer.current = window.setTimeout(() => setOpen(false), 120)
+          blurTimer.current = window.setTimeout(() => {
+            setOpen(false)
+            onCommit?.(inputRef.current?.value ?? value)
+          }, 120)
         }}
         onChange={(event) => {
           onChange(event.target.value)
@@ -199,7 +214,9 @@ export function HotelCombobox({
         >
           {suggestions.length === 0 && query.length > 0 ? (
             <li className="px-3 py-2 text-xs text-teal-900/50">
-              No similar hotel saved. Use the last line to add this name.
+              {allowCreate
+                ? 'No similar hotel saved. Use the last line to add this name.'
+                : 'No saved hotel matches. Hotel and zone will be Other.'}
             </li>
           ) : suggestions.some((item) => item.similar) ? (
             <li className="px-3 py-1.5 text-[11px] font-medium tracking-wide text-teal-900/45 uppercase">
@@ -225,7 +242,7 @@ export function HotelCombobox({
                   <HotelIcon className="size-3.5 shrink-0 text-teal-800/45" />
                   <span className="min-w-0 flex-1 font-medium">{hotel.name}</span>
                   <span className="shrink-0 text-xs text-teal-900/45">
-                    {item.similar ? 'Similar' : (hotel.zoneName ?? 'Unassigned')}
+                    {item.similar ? 'Similar' : (hotel.zoneName ?? 'Other')}
                   </span>
                   {selected ? <Check className="size-3.5 shrink-0 text-teal-800" /> : null}
                 </button>
@@ -245,9 +262,13 @@ export function HotelCombobox({
             >
               <PenLine className="size-3.5 shrink-0 text-amber-700" />
               <span className="min-w-0 flex-1 font-medium">
-                {query && !exactMatch ? `Add “${query}” as a new hotel` : 'Other — not in the list'}
+                {allowCreate && query && !exactMatch
+                  ? `Add “${query}” as a new hotel`
+                  : 'Other'}
               </span>
-              <span className="shrink-0 text-xs font-semibold text-amber-800">New</span>
+              {allowCreate ? (
+                <span className="shrink-0 text-xs font-semibold text-amber-800">New</span>
+              ) : null}
             </button>
           </li>
         </ul>

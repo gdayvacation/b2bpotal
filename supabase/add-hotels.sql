@@ -36,7 +36,7 @@ create policy pilot_hotels_all on public.hotels
   for all to anon, authenticated using (true) with check (true);
 
 -- -----------------------------------------------------------------------------
--- Catalog (deduped from partner history). null zone = admin assigns later.
+-- Catalog (deduped from partner history). Hotels without a zone use Other.
 -- -----------------------------------------------------------------------------
 insert into public.hotels (name, zone_name, active, sort_order) values
   ('Amari Phuket', 'Patong', true, 10),
@@ -76,9 +76,10 @@ insert into public.hotels (name, zone_name, active, sort_order) values
   ('Princess Seaview Resort and Spa', 'Karon', true, 520),
   ('Thavorn Palm Beach Resort Phuket', 'Karon', true, 530),
   ('Utopia Karon', 'Karon', true, 540),
-  ('La Vista', null, true, 900),
-  ('Marriott Merlin Beach', null, true, 910),
-  ('Radisson Resort and Suites Phuket', null, true, 920)
+  ('La Vista', 'Patong', true, 900),
+  ('Marriott Merlin Beach', 'TriTrang', true, 910),
+  ('Radisson Resort and Suites Phuket', 'Other', true, 920),
+  ('Other', 'Other', true, 1000)
 on conflict ((lower(trim(name)))) do update set
   zone_name = excluded.zone_name,
   active = excluded.active,

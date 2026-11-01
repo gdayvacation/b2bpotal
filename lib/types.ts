@@ -197,7 +197,7 @@ export type PickupZone = {
   pending: boolean
 }
 
-/** Catalog hotel for agent typeahead; zone null = admin still needs to assign. */
+/** Catalog hotel for agent typeahead. A missing zone is treated as Other. */
 export type Hotel = {
   id: string
   name: string

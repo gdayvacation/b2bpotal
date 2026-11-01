@@ -5011,11 +5011,20 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       removeZone: (name) => {
         if (isCorePickupZone(name)) return
         setZones((current) => current.filter((zone) => zone.name !== name))
+        const fallback: PickupZoneName | null = zones.some(
+          (zone) => zone.name === 'Other' && zone.name !== name,
+        )
+          ? 'Other'
+          : null
+        const moved = hotels.filter((hotel) => hotel.zoneName === name)
         setHotels((current) =>
           current.map((hotel) =>
-            hotel.zoneName === name ? { ...hotel, zoneName: null } : hotel,
+            hotel.zoneName === name ? { ...hotel, zoneName: fallback } : hotel,
           ),
         )
+        for (const hotel of moved) {
+          persistQuietly('upsertHotel', upsertHotel({ ...hotel, zoneName: fallback }))
+        }
         persistQuietly('deleteZone', deleteZone(name))
       },
       addHotel: (name, zoneName, extraChargeTransfer) => {
@@ -5025,15 +5034,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           (hotel) => hotel.name.toLowerCase() === trimmedName.toLowerCase(),
         )
         if (duplicate) return 'This hotel already exists.'
-        if (zoneName) {
-          const zoneExists = zones.some((zone) => zone.name === zoneName)
-          if (!zoneExists) return 'Select a valid pickup zone.'
+        if (zoneName && !zones.some((zone) => zone.name === zoneName)) {
+          return 'Select a valid pickup zone.'
         }
+        const assignedZone =
+          zoneName || (zones.some((zone) => zone.name === 'Other') ? 'Other' : null)
         const note = (extraChargeTransfer ?? '').trim()
         const hotel: Hotel = {
           id: crypto.randomUUID(),
           name: trimmedName,
-          zoneName,
+          zoneName: assignedZone,
           active: true,
           extraChargeTransfer: note,
         }
@@ -5051,17 +5061,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             hotel.id !== id && hotel.name.toLowerCase() === trimmedName.toLowerCase(),
         )
         if (duplicate) return 'This hotel already exists.'
-        if (zoneName) {
-          const zoneExists = zones.some((zone) => zone.name === zoneName)
-          if (!zoneExists) return 'Select a valid pickup zone.'
+        if (zoneName && !zones.some((zone) => zone.name === zoneName)) {
+          return 'Select a valid pickup zone.'
         }
+        const assignedZone =
+          zoneName || (zones.some((zone) => zone.name === 'Other') ? 'Other' : null)
         const existing = hotels.find((hotel) => hotel.id === id)
         if (!existing) return 'Hotel not found.'
         const note = (extraChargeTransfer ?? existing.extraChargeTransfer).trim()
         const updated: Hotel = {
           ...existing,
           name: trimmedName,
-          zoneName,
+          zoneName: assignedZone,
           extraChargeTransfer: note,
         }
         setHotels((current) =>
@@ -5107,10 +5118,11 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           const key = entry.name.toLowerCase()
           const existing = byName.get(key)
           if (existing) {
-            if (existing.zoneName !== entry.zoneName) {
+            const catalogZone = entry.zoneName || existing.zoneName || 'Other'
+            if (existing.zoneName !== catalogZone) {
               const hotel: Hotel = {
                 ...existing,
-                zoneName: entry.zoneName,
+                zoneName: catalogZone,
                 active: true,
               }
               const at = next.findIndex((item) => item.id === existing.id)
@@ -5124,7 +5136,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           const hotel: Hotel = {
             id: crypto.randomUUID(),
             name: entry.name,
-            zoneName: entry.zoneName,
+            zoneName: entry.zoneName || 'Other',
             active: true,
             extraChargeTransfer: '',
           }

@@ -1,10 +1,10 @@
 /**
  * Canonical hotel catalog (deduped from partner history).
- * zoneName null = admin must assign (Patong / Kata / Karon only for now).
+ * A hotel with no zone uses Other.
  */
 export type HotelSeed = {
   name: string
-  zoneName: 'Patong' | 'Kata' | 'Karon' | null
+  zoneName: 'Patong' | 'Kata' | 'Karon' | 'Other'
 }
 
 export const HOTEL_CATALOG: HotelSeed[] = [
@@ -161,7 +161,7 @@ export const HOTEL_CATALOG: HotelSeed[] = [
   { name: 'Princess Seaview Resort and Spa', zoneName: 'Karon' },
   { name: 'Thavorn Palm Beach Resort Phuket', zoneName: 'Karon' },
   { name: 'Utopia Karon', zoneName: 'Karon' },
-  // Unassigned
-  { name: 'La Vista', zoneName: null },
-  { name: 'Radisson Resort and Suites Phuket', zoneName: null },
+  { name: 'La Vista', zoneName: 'Patong' },
+  { name: 'Radisson Resort and Suites Phuket', zoneName: 'Other' },
+  { name: 'Other', zoneName: 'Other' },
 ]

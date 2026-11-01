@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { HotelCombobox } from '@/components/hotel-combobox'
+import { HotelCombobox, hotelQueryHasMatches } from '@/components/hotel-combobox'
 import { usePortal } from '@/components/portal-provider'
 import { Button } from '@/components/ui/button'
 import {
@@ -255,6 +255,37 @@ export function EditBookingDialog({
       return
     }
 
+    let hotelForSave = pickupHotel.trim()
+    let zoneForSave = agentKeepsPrivate
+      ? booking.pickupZone
+      : transferKind === 'none'
+        ? NO_TRANSFER_ZONE
+        : transferKind === 'private'
+          ? PRIVATE_TRANSFER_ZONE
+          : pickupZone
+
+    if (actor?.role !== 'admin') {
+      const exact = hotels.find(
+        (hotel) => hotel.active && hotel.name.toLowerCase() === hotelForSave.toLowerCase(),
+      )
+      if (!hotelForSave) {
+        hotelForSave = ''
+      } else if (exact) {
+        hotelForSave = exact.name
+      } else if (
+        hotelForSave.toLowerCase() === 'other' ||
+        !hotelQueryHasMatches(hotels, hotelForSave)
+      ) {
+        hotelForSave = 'Other'
+        if (transferKind === 'join') zoneForSave = 'Other'
+        setPickupHotel('Other')
+        if (transferKind === 'join') setPickupZone('Other')
+      } else {
+        setError('Choose a saved hotel from the list, or leave a name that is not listed to use Other.')
+        return
+      }
+    }
+
     if (seatsHint && pax > seatsHint.seatsLeft) {
       setError(
         seatsHint.seatsLeft === 0
@@ -289,14 +320,8 @@ export function EditBookingDialog({
         children,
         infants,
         tourLeaders,
-        pickupZone: agentKeepsPrivate
-          ? booking.pickupZone
-          : transferKind === 'none'
-            ? NO_TRANSFER_ZONE
-            : transferKind === 'private'
-              ? PRIVATE_TRANSFER_ZONE
-              : pickupZone,
-        pickupHotel: pickupHotel,
+        pickupZone: zoneForSave,
+        pickupHotel: hotelForSave,
         roomNumber: roomNumber,
         pickupTime:
           transferKind === 'private' && canUsePrivate
@@ -469,7 +494,15 @@ export function EditBookingDialog({
                   value={pickupHotel}
                   onChange={setPickupHotel}
                   onSelectHotel={applyHotelSelection}
+                  allowCreate={actor?.role === 'admin'}
                   onSelectOther={(typed) => {
+                    if (actor?.role !== 'admin') {
+                      setPickupHotel('Other')
+                      if (zones.some((zone) => zone.name === 'Other')) {
+                        setPickupZone('Other')
+                      }
+                      return
+                    }
                     const name = typed.trim().replace(/\s+/g, ' ')
                     if (name.length < 2) return
                     const existing = hotels.find(
@@ -493,8 +526,9 @@ export function EditBookingDialog({
                   }}
                 />
                 <p className="text-xs text-teal-900/50">
-                  Type a few letters to see saved hotels. The last line adds a new hotel and keeps
-                  it in the list.
+                  {actor?.role === 'admin'
+                    ? 'Type a few letters to see saved hotels. The last line adds a new hotel and keeps it in the list.'
+                    : 'Type a few letters to see saved hotels. If nothing is listed, the hotel and zone are Other.'}
                 </p>
               </div>
 

@@ -18,7 +18,7 @@ import {
 } from 'lucide-react'
 import { AmendmentPolicyNotice } from '@/components/amendment-policy-notice'
 import { usePortal } from '@/components/portal-provider'
-import { HotelCombobox } from '@/components/hotel-combobox'
+import { HotelCombobox, hotelQueryHasMatches } from '@/components/hotel-combobox'
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
 import {
@@ -336,14 +336,49 @@ export function BookingWizard({
     }
   }, [agents, seed?.agentName])
 
-  // If hotel is known but zone empty, reuse catalog zone when hotels load.
+  // Join transfer takes its zone from the hotel. The agent does not pick a zone.
   useEffect(() => {
-    if (!seed?.pickupHotel || pickupZone || privatePickup) return
+    if (!joinPickup) return
+    const name = pickupHotel.trim().toLowerCase()
+    if (!name) {
+      setPickupZone(null)
+      return
+    }
+    if (name === 'other') {
+      setPickupZone(zones.some((zone) => zone.name === 'Other') ? 'Other' : null)
+      return
+    }
     const hotel = hotels.find(
-      (item) => item.name.toLowerCase() === seed.pickupHotel.trim().toLowerCase(),
+      (item) => item.active && item.name.toLowerCase() === name,
     )
-    if (hotel?.zoneName) setPickupZone(hotel.zoneName)
-  }, [hotels, seed?.pickupHotel, pickupZone, privatePickup])
+    if (!hotel) {
+      const unmatched =
+        !selectAgent && !hotelQueryHasMatches(hotels, pickupHotel)
+      setPickupZone(
+        unmatched && zones.some((zone) => zone.name === 'Other') ? 'Other' : null,
+      )
+      return
+    }
+    if (hotel.zoneName && zones.some((zone) => zone.name === hotel.zoneName)) {
+      setPickupZone(hotel.zoneName)
+      return
+    }
+    setPickupZone(zones.some((zone) => zone.name === 'Other') ? 'Other' : null)
+  }, [joinPickup, pickupHotel, hotels, zones, selectAgent])
+
+  // An unlisted hotel on a private transfer uses the Other area.
+  useEffect(() => {
+    if (!privatePickup || selectAgent) return
+    const name = pickupHotel.trim()
+    if (!name) return
+    const listed = hotels.some(
+      (hotel) => hotel.active && hotel.name.toLowerCase() === name.toLowerCase(),
+    )
+    if (listed) return
+    if (name.toLowerCase() !== 'other' && hotelQueryHasMatches(hotels, name)) return
+    setPrivateArea((current) => (current?.toLowerCase() === 'other' ? current : 'Other'))
+    setPrivateAreaOther('')
+  }, [privatePickup, selectAgent, pickupHotel, hotels])
 
   // Match a seeded private area to a live zone name, or keep it as Other.
   useEffect(() => {
@@ -590,9 +625,20 @@ export function BookingWizard({
                         : 'VAN takes up to 12 guests.'
                       : privatePickup
                         ? 'Select a zone for the private transfer, or choose Other.'
-                        : 'Select a pickup zone, or choose No Transfer.',
+                        : joinPickup
+                          ? 'Enter a saved hotel. The zone and pickup time come from the hotel.'
+                          : 'Select a pickup zone, or choose No Transfer.',
       )
       return
+    }
+
+    if (step === pickupStep && !selectAgent) {
+      const resolvedHotel = resolveAgentHotelName(pickupHotel)
+      if (resolvedHotel === null) {
+        setError('Choose a saved hotel from the list, or leave a name that is not listed to use Other.')
+        return
+      }
+      applyUnlistedHotel(pickupHotel)
     }
 
     if (selectAgent && step === 0 && agentMode === 'new') {
@@ -624,8 +670,36 @@ export function BookingWizard({
     setStep((current) => Math.min(current + 1, steps.length - 1))
   }
 
+  function resolveAgentHotelName(name: string) {
+    const trimmed = name.trim()
+    if (!trimmed) return ''
+    const exact = hotels.find(
+      (hotel) => hotel.active && hotel.name.toLowerCase() === trimmed.toLowerCase(),
+    )
+    if (exact) return exact.name
+    if (trimmed.toLowerCase() === 'other') return 'Other'
+    if (!hotelQueryHasMatches(hotels, trimmed)) return 'Other'
+    return null
+  }
+
+  function applyUnlistedHotel(name: string) {
+    if (selectAgent) return
+    if (resolveAgentHotelName(name) !== 'Other') return
+    if (name.trim().toLowerCase() === 'other') return
+    setPickupHotel('Other')
+    if (privatePickup) {
+      setPrivateArea('Other')
+      setPrivateAreaOther('')
+    }
+  }
+
   function confirm() {
     if (!program || !date || !resolvedPickupZone || !resolvedAgent) return
+    if (!selectAgent && resolveAgentHotelName(pickupHotel) === null) {
+      setError('Choose a saved hotel from the list, or leave a name that is not listed to use Other.')
+      return
+    }
+    if (!selectAgent) applyUnlistedHotel(pickupHotel)
     if (!selectAgent && agent?.status === 'Inactive') {
       setError('This agent is inactive and cannot create bookings.')
       return
@@ -669,7 +743,9 @@ export function BookingWizard({
           tourLeaders,
           leadGuest: leadGuest.trim(),
           pickupZone: resolvedPickupZone,
-          pickupHotel: pickupHotel.trim(),
+          pickupHotel: selectAgent
+            ? pickupHotel.trim()
+            : (resolveAgentHotelName(pickupHotel) ?? 'Other'),
           roomNumber: roomNumber.trim(),
           note: note.trim(),
           cashOnTour: cashOnTour.trim(),
@@ -723,15 +799,21 @@ export function BookingWizard({
                   }
                 : applyHotelSelection
             }
+            allowCreate={selectAgent}
             onSelectOther={(typed) => {
-              const name = typed.trim()
-              if (name) rememberCustomHotel(name)
+              if (selectAgent) {
+                const name = typed.trim()
+                if (name) rememberCustomHotel(name)
+              } else {
+                setPickupHotel('Other')
+              }
               if (optional) {
                 setError('')
                 return
               }
               if (privatePickup) {
                 setPrivateArea('Other')
+                setPrivateAreaOther('')
                 setError('')
                 return
               }
@@ -740,10 +822,12 @@ export function BookingWizard({
               }
               setError('')
             }}
+            onCommit={(typed) => applyUnlistedHotel(typed)}
           />
           <p className="text-xs text-neutral-500">
-            Type a few letters to see saved hotels, including similar names. The last line adds a
-            new hotel and keeps it in the list.
+            {selectAgent
+              ? 'Type a few letters to see saved hotels, including similar names. The last line adds a new hotel and keeps it in the list.'
+              : 'Type a few letters to see saved hotels. If nothing is listed, the hotel and zone are Other.'}
           </p>
         </div>
         <div className="w-[7.5rem] shrink-0 space-y-2 sm:w-32">
@@ -1214,46 +1298,26 @@ export function BookingWizard({
               />
               {joinPickup ? (
                 <div className="space-y-4 border-t border-teal-200 p-3">
-                  <div className="grid gap-2 sm:grid-cols-2">
-                      {zones
-                        .filter((zone) => !isPrivateTransferZone(zone.name))
-                        .map((zone) => {
-                          const time = getZoneTime(zone.name)
-                          const selected = pickupZone === zone.name
-                          return (
-                            <button
-                              key={zone.name}
-                              type="button"
-                              onClick={() => {
-                                setPickupZone(zone.name)
-                                setError('')
-                              }}
-                              className={cn(
-                                'flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-left transition-all',
-                                selected
-                                  ? 'border-teal-800 bg-teal-700 text-white shadow-sm'
-                                  : 'border-teal-200 bg-white text-teal-950 hover:border-teal-500',
-                              )}
-                            >
-                              <span className="min-w-0 truncate font-semibold">
-                                {zone.name}
-                              </span>
-                              <span
-                                className={cn(
-                                  'flex shrink-0 items-center gap-1.5 text-sm',
-                                  selected ? 'text-white/85' : 'text-teal-900/50',
-                                )}
-                              >
-                                <Clock3 className="size-3.5" />
-                                {zone.pending ? 'Awaiting time' : time}
-                                {selected ? <Check className="size-3.5" /> : null}
-                              </span>
-                            </button>
-                          )
-                        })}
+                  {pickupHotelFields(false)}
+                  {pickupZone && zones.some((zone) => zone.name === pickupZone) ? (
+                    <div className="flex items-center justify-between gap-3 rounded-xl border border-teal-200 bg-white px-3.5 py-3">
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-semibold tracking-wide text-teal-900/45 uppercase">
+                          Zone
+                        </p>
+                        <p className="truncate font-semibold text-teal-950">{pickupZone}</p>
+                      </div>
+                      <span className="flex shrink-0 items-center gap-1.5 text-sm text-teal-900/70">
+                        <Clock3 className="size-3.5" />
+                        {selectedZone?.pending ? 'Awaiting time' : pickupTime}
+                      </span>
                     </div>
-                    {pickupHotelFields(false)}
-                  </div>
+                  ) : (
+                    <p className="text-xs text-neutral-500">
+                      Enter a hotel. Its zone and pickup time show here.
+                    </p>
+                  )}
+                </div>
               ) : null}
               </div>
               <div
@@ -1443,7 +1507,7 @@ export function BookingWizard({
                 }
               />
             </div>
-            {noTransfer ? null : privatePickup ? (
+            {noTransfer || joinPickup ? null : privatePickup ? (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                 Admin will confirm the pickup time for you ASAP.
               </div>
