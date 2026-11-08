@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   DEFAULT_INVOICE_SETTINGS,
+  agencyRateKey,
   invoiceBalance,
   invoicePayments,
   nextDocumentNumber,
@@ -17,6 +18,7 @@ import {
 import { syncPrebuyDeductFromInvoice } from '@/lib/prebuy-allotment-sync'
 import {
   loadInvoiceStore,
+  deleteAlternateAgencyRates,
   saveAgencyRates,
   saveInvoiceDocument,
   saveInvoiceDocuments,
@@ -99,10 +101,22 @@ export function useInvoiceStore() {
   }, [])
 
   const updateRates = useCallback(async (next: AgencyInvoiceRates) => {
-    setRates((current) => [...current.filter((row) => row.agentSlug !== next.agentSlug), next])
+    setRates((current) => [
+      ...current.filter((row) => agencyRateKey(row) !== agencyRateKey(next)),
+      next,
+    ])
     setError(null)
     const result = await saveAgencyRates(next)
     if (result?.error) setError(`Save rates failed: ${result.error}`)
+  }, [])
+
+  const removeAlternateRates = useCallback(async (agentSlug: string) => {
+    setRates((current) =>
+      current.filter((row) => !(row.agentSlug === agentSlug && row.rateLine === 2)),
+    )
+    setError(null)
+    const result = await deleteAlternateAgencyRates(agentSlug)
+    if (result?.error) setError(`Remove second rate failed: ${result.error}`)
   }, [])
 
   const addDocuments = useCallback(async (docs: InvoiceDocument[]) => {
@@ -229,6 +243,7 @@ export function useInvoiceStore() {
     reload,
     updateSettings,
     updateRates,
+    removeAlternateRates,
     addDocuments,
     replaceDocument,
     removeDocument,

@@ -82,6 +82,12 @@ export function formatAgentBillingType(value: AgentBillingType | null | undefine
 
 export type AgencyInvoiceRates = {
   agentSlug: string
+  /**
+   * 1 (default) = the agent's main rate line. 2 = second rate line for the opposite National Park
+   * option (agent sells both Included and Excluded). Line 2 only applies to bookings from
+   * PARK_RATE_SPLIT_FROM onward.
+   */
+  rateLine?: 1 | 2
   billingType: AgentBillingType
   adultPrice: number
   childPrice: number
@@ -319,17 +325,74 @@ export function emptyAgencyRates(agentSlug: string): AgencyInvoiceRates {
   }
 }
 
+/** Bookings with a travel date on/after this day pick the rate line that matches their National Park option. */
+export const PARK_RATE_SPLIT_FROM = '2026-11-01'
+
+export function agencyRateKey(row: Pick<AgencyInvoiceRates, 'agentSlug' | 'rateLine'>) {
+  return `${row.agentSlug}::${row.rateLine === 2 ? 2 : 1}`
+}
+
+/** The agent's main (line 1) rate row. */
 export function ratesForAgent(
   rates: AgencyInvoiceRates[],
   agentSlug: string,
 ): AgencyInvoiceRates {
-  const found = rates.find((row) => row.agentSlug === agentSlug)
+  const found = rates.find((row) => row.agentSlug === agentSlug && row.rateLine !== 2)
   if (!found) return emptyAgencyRates(agentSlug)
   return {
     ...emptyAgencyRates(agentSlug),
     ...found,
+    rateLine: undefined,
     billingType: parseAgentBillingType(found.billingType),
   }
+}
+
+/** The agent's second rate line (opposite National Park option), if admin added one. */
+export function alternateRatesForAgent(
+  rates: AgencyInvoiceRates[],
+  agentSlug: string,
+): AgencyInvoiceRates | null {
+  const found = rates.find((row) => row.agentSlug === agentSlug && row.rateLine === 2)
+  if (!found) return null
+  return {
+    ...emptyAgencyRates(agentSlug),
+    ...found,
+    rateLine: 2,
+    billingType: parseAgentBillingType(found.billingType),
+  }
+}
+
+/** Start a second rate line from the main line, flipped to the other National Park option. */
+export function newAlternateRates(primary: AgencyInvoiceRates): AgencyInvoiceRates {
+  const included = !primary.nationalParkIncluded
+  return {
+    ...primary,
+    rateLine: 2,
+    nationalParkIncluded: included,
+    nationalParkFee: included ? 0 : primary.nationalParkFee || DEFAULT_NATIONAL_PARK_FEE,
+  }
+}
+
+/**
+ * Rates to bill a booking with.
+ * From PARK_RATE_SPLIT_FROM, an agent with two rate lines is billed on the line that matches the
+ * booking's National Park option (Included → INC line, Not Included → Exc line). Everything else
+ * uses the agent's main line. Billing type always follows the main line.
+ */
+export function ratesForBooking(
+  rates: AgencyInvoiceRates[],
+  booking: Pick<Booking, 'agentSlug' | 'date' | 'parkFee'>,
+): AgencyInvoiceRates {
+  const primary = ratesForAgent(rates, booking.agentSlug)
+  if (booking.date < PARK_RATE_SPLIT_FROM) return primary
+  const alternate = alternateRatesForAgent(rates, booking.agentSlug)
+  if (!alternate) return primary
+  const wantIncluded = booking.parkFee === 'Included'
+  if (Boolean(primary.nationalParkIncluded) === wantIncluded) return primary
+  if (Boolean(alternate.nationalParkIncluded) === wantIncluded) {
+    return { ...alternate, billingType: primary.billingType }
+  }
+  return primary
 }
 
 export function agencyRatesReady(rates: AgencyInvoiceRates) {
@@ -444,6 +507,8 @@ export function changeDateFeeLineDescription(heads: number, perPerson: number) {
 /** AD+CH heads that count against prebuy (tour + no-show + late change date + prebuy cancel with charge). */
 export function prebuyDeductHeads(
   items: Pick<InvoiceItem, 'lineKind' | 'adults' | 'children' | 'description'>[],
+  /** false = adults only. Children are billed on a separate invoice and keep their heads. */
+  deductChildren = true,
 ) {
   return items
     .filter(
@@ -457,7 +522,8 @@ export function prebuyDeductHeads(
           /^Cancelled · head deduct/i.test(item.description ?? '')),
     )
     .reduce(
-      (sum, item) => sum + Math.max(0, item.adults) + Math.max(0, item.children),
+      (sum, item) =>
+        sum + Math.max(0, item.adults) + (deductChildren ? Math.max(0, item.children) : 0),
       0,
     )
 }

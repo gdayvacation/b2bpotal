@@ -12,6 +12,7 @@ import {
   Pencil,
   Plus,
   Printer,
+  Settings2,
   Trash2,
   Wallet,
 } from 'lucide-react'
@@ -83,6 +84,12 @@ import {
   type AgentAllotmentParkFee,
   type AgentAllotmentPayStatus,
 } from '@/lib/supabase/agent-allotment-db'
+import {
+  deductsChildren,
+  listAgentAllotmentSettings,
+  saveAgentAllotmentSettings,
+  type AgentAllotmentSettings,
+} from '@/lib/supabase/agent-allotment-settings-db'
 import {
   fetchAgentBookingDayPax,
   listAgentAllotmentDaily,
@@ -834,7 +841,12 @@ export function AdminAgentAllotment() {
   const [workProgram, setWorkProgram] = useState<Program>('PP')
   const [rows, setRows] = useState<AgentAllotment[]>([])
   const [dailyRows, setDailyRows] = useState<AgentAllotmentDaily[]>([])
-  const [bookingDayPax, setBookingDayPax] = useState<AgentBookingDayPax[]>([])
+  const [rawBookingDayPax, setBookingDayPax] = useState<AgentBookingDayPax[]>([])
+  const [settingsRows, setSettingsRows] = useState<AgentAllotmentSettings[]>([])
+  const [setupOpen, setSetupOpen] = useState(false)
+  const [setupDeductChildren, setSetupDeductChildren] = useState(true)
+  const [setupError, setSetupError] = useState('')
+  const [savingSetup, setSavingSetup] = useState(false)
   const [advanceExpanded, setAdvanceExpanded] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
@@ -851,9 +863,8 @@ export function AdminAgentAllotment() {
   const [editError, setEditError] = useState('')
   const [savingEdit, setSavingEdit] = useState(false)
   const [ledgerDraft, setLedgerDraft] = useState<Draft>(emptyDraft)
-  const [ledgerError, setLedgerError] = useState('')
+  const [, setLedgerError] = useState('')
   const [savingLedger, setSavingLedger] = useState(false)
-  const [savingRate, setSavingRate] = useState(false)
   const [topUpDraft, setTopUpDraft] = useState(() => ({
     paidDate: todayISO(),
     heads: '',
@@ -981,6 +992,26 @@ export function AdminAgentAllotment() {
         .map((row) => ({ day: row.day, totalDeduct: row.totalDeduct }))
         .sort((a, b) => a.day.localeCompare(b.day)),
     [selectedAgentDaily, earliestLotOpen, today],
+  )
+
+  /** Setup for the open agent: do children come off the head count? */
+  const selectedDeductChildren = deductsChildren(settingsRows, selectedAgentSlug, workProgram)
+
+  /**
+   * Booking heads as they count against the allotment. Adults-only agents never lose heads
+   * to children, so their day totals are adults only. The raw rows keep the child count
+   * so the sheet can still list them as invoiced.
+   */
+  const bookingDayPax = useMemo(
+    () =>
+      selectedDeductChildren
+        ? rawBookingDayPax
+        : rawBookingDayPax.map((row) => ({
+            ...row,
+            children: 0,
+            totalDeduct: row.adults,
+          })),
+    [rawBookingDayPax, selectedDeductChildren],
   )
 
   /** Future tour dates — preview only, not deducted from allotment yet. */
@@ -1163,8 +1194,9 @@ export function AdminAgentAllotment() {
       buildAllotmentSheet({
         lots: selectedAgentRows,
         daily: selectedAgentDaily,
-        bookings: bookingDayPax,
+        bookings: rawBookingDayPax,
         today,
+        deductChildren: selectedDeductChildren,
       }).map((line) => ({
         ...line,
         bookings: line.bookings.map((booking) => ({
@@ -1172,7 +1204,7 @@ export function AdminAgentAllotment() {
           status: allotmentGuestStatus(booking),
         })),
       })),
-    [selectedAgentRows, selectedAgentDaily, bookingDayPax, today],
+    [selectedAgentRows, selectedAgentDaily, rawBookingDayPax, selectedDeductChildren, today],
   )
   const exportMonths = useMemo(() => {
     const months = [...new Set(sheetLines.map((line) => line.date.slice(0, 7)))]
@@ -1292,16 +1324,51 @@ export function AdminAgentAllotment() {
     setDailyRows(daily)
   }
 
+  function openSetup() {
+    setSetupDeductChildren(selectedDeductChildren)
+    setSetupError('')
+    setSetupOpen(true)
+  }
+
+  async function handleSetupSave() {
+    if (!selectedAgentSlug) return
+    setSavingSetup(true)
+    setSetupError('')
+    try {
+      await saveAgentAllotmentSettings({
+        agentSlug: selectedAgentSlug,
+        program: workProgram,
+        deductChildren: setupDeductChildren,
+      })
+      setSettingsRows(await listAgentAllotmentSettings())
+      setSetupOpen(false)
+    } catch (caught) {
+      setSetupError(
+        caught instanceof Error
+          ? `${caught.message} If this table is new, run supabase/add-agent-allotment-settings.sql.`
+          : 'Could not save setup.',
+      )
+    } finally {
+      setSavingSetup(false)
+    }
+  }
+
   useEffect(() => {
     let cancelled = false
     async function load() {
       setLoading(true)
       setLoadError('')
       try {
-        const [next, daily] = await Promise.all([listAgentAllotments(), listAgentAllotmentDaily()])
+        const [next, daily, settings] = await Promise.all([
+          listAgentAllotments(),
+          listAgentAllotmentDaily(),
+          // A missing settings table must not break the page. Everyone then deducts all heads.
+          listAgentAllotmentSettings().catch(() => [] as AgentAllotmentSettings[]),
+        ])
         if (!cancelled) {
           setRows(next)
           setDailyRows(daily)
+          setSettingsRows(settings)
         }
       } catch (caught) {
         if (!cancelled) {
@@ -1637,42 +1704,6 @@ export function AdminAgentAllotment() {
       previousHeads: line.headsDelta,
     })
     await refresh()
-  }
-
-  async function handleSaveRate(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setLedgerError('')
-    const latest = selectedAgentRows.at(-1)
-    if (!latest) {
-      setLedgerError('This rate is saved with the first row.')
-      return
-    }
-    const adultPrice = parseMoney(ledgerDraft.adultPrice)
-    const childPrice = parseMoney(ledgerDraft.childPrice)
-    if (!Number.isFinite(adultPrice) || adultPrice < 0 || !Number.isFinite(childPrice) || childPrice < 0) {
-      setLedgerError('Enter a valid rate.')
-      return
-    }
-    setSavingRate(true)
-    try {
-      await updateAgentAllotment(latest.id, {
-        agentSlug: latest.agentSlug,
-        agentName: latest.agentName,
-        program: latest.program,
-        adultSeats: latest.adultSeats,
-        childSeats: latest.childSeats,
-        adultPrice,
-        childPrice,
-        parkFee: ledgerDraft.parkFee,
-        paidDate: latest.paidDate || today,
-        note: latest.note,
-      })
-      await refresh()
-    } catch (caught) {
-      setLedgerError(caught instanceof Error ? caught.message : 'Could not save the rate.')
-    } finally {
-      setSavingRate(false)
-    }
   }
 
   async function moveSavedDay(day: string, allotmentId: string) {
@@ -2677,13 +2708,28 @@ export function AdminAgentAllotment() {
           title={agentName || 'Agent Allotment'}
           description={`One ${workProgram === 'PP' ? 'Phi Phi' : 'James Bond'} sheet. Add or reduce heads and money on any row. Each day's used heads are filled in automatically.`}
           actions={
-            <Button type="button" variant="outline" size="sm" onClick={() => setView('add')}>
-              <ArrowLeft className="size-3.5" />
-              Back
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={openSetup}>
+                <Settings2 className="size-3.5" />
+                Setup
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => setView('add')}>
+                <ArrowLeft className="size-3.5" />
+                Back
+              </Button>
+            </div>
           }
         />
         {programBar}
+        <p className="-mt-2 mb-4 text-xs text-teal-900/55">
+          Head count:{' '}
+          <span className="font-semibold text-teal-950">
+            {selectedDeductChildren ? 'adults + children' : 'adults only'}
+          </span>
+          {selectedDeductChildren
+            ? ''
+            : ' · children are listed on the daily sum as invoiced, not deducted.'}
+        </p>
         {bookingPaxError ? (
           <p className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-800">
             {bookingPaxError}
@@ -2817,74 +2863,9 @@ export function AdminAgentAllotment() {
             <p className="pb-2 text-xs text-teal-900/45">
               {exportSheetLines.length === 0
                 ? 'Nothing in this month and lot.'
-                : `${exportPeriodLabel}. Save as Excel, or PDF from the print dialog.`}
+                : `${exportPeriodLabel}. Save as Excel, or PDF from the print menu.`}
             </p>
           </div>
-          <form
-            className="flex flex-wrap items-end gap-2 border-b border-teal-900/8 px-3 py-3"
-            onSubmit={(event) => void handleSaveRate(event)}
-          >
-            <div className="space-y-1">
-              <Label className="text-[11px] text-teal-900/45">Rate AD</Label>
-              <Input
-                type="number"
-                min={0}
-                step={1}
-                value={ledgerDraft.adultPrice}
-                onChange={(event) =>
-                  setLedgerDraft((current) => ({ ...current, adultPrice: event.target.value }))
-                }
-                className="h-9 w-28"
-                aria-label="Adult rate"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-[11px] text-teal-900/45">Rate CH</Label>
-              <Input
-                type="number"
-                min={0}
-                step={1}
-                value={ledgerDraft.childPrice}
-                onChange={(event) =>
-                  setLedgerDraft((current) => ({ ...current, childPrice: event.target.value }))
-                }
-                className="h-9 w-28"
-                aria-label="Child rate"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-[11px] text-teal-900/45">Park</Label>
-              <select
-                value={ledgerDraft.parkFee}
-                onChange={(event) =>
-                  setLedgerDraft((current) => ({
-                    ...current,
-                    parkFee: event.target.value as AgentAllotmentParkFee,
-                  }))
-                }
-                className="h-9 rounded-xl border border-teal-900/12 bg-white/80 px-2 text-sm"
-                aria-label="Park fee"
-              >
-                <option value="inc">Inc</option>
-                <option value="exc">Exc</option>
-              </select>
-            </div>
-            <Button
-              type="submit"
-              variant="outline"
-              size="sm"
-              disabled={savingRate || selectedAgentRows.length === 0}
-              className="h-9"
-            >
-              {savingRate ? 'Saving…' : 'Save rate'}
-            </Button>
-            <p className="pb-2 text-xs text-teal-900/45">
-              {selectedAgentRows.length === 0
-                ? 'This rate is used on the first row.'
-                : 'Account rate. Each day’s used heads are filled in automatically.'}
-            </p>
-          </form>
-          {ledgerError ? <p className="px-3 py-2 text-sm text-red-600">{ledgerError}</p> : null}
           {sheetTotals.pendingHeads > 0 ? (
             <p className="border-b border-teal-900/8 px-3 py-2 text-xs text-teal-900/55">
               {sheetTotals.pendingHeads} heads from bookings are already on the sheet and are not saved in Daily checker yet.
@@ -2899,6 +2880,65 @@ export function AdminAgentAllotment() {
             onRemove={handleSheetRemove}
           />
         </Surface>
+
+        <Dialog open={setupOpen} onOpenChange={setSetupOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Setup · {agentName}</DialogTitle>
+              <DialogDescription>
+                How this agent&apos;s {programLabel} allotment counts heads. Applies to the daily sheet,
+                the Daily checker and prebuy invoices from now on. Days already saved stay as they are.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              {(
+                [
+                  {
+                    value: true,
+                    title: 'Deduct adults and children',
+                    body: 'Every adult and child comes off the head count.',
+                  },
+                  {
+                    value: false,
+                    title: 'Deduct adults only',
+                    body: 'Children do not come off the head count. They still show on the daily sum as invoiced, because the agent pays for them on a separate invoice.',
+                  },
+                ] as const
+              ).map((option) => (
+                <label
+                  key={String(option.value)}
+                  className={cn(
+                    'flex cursor-pointer gap-3 rounded-2xl border px-3.5 py-3 text-sm transition',
+                    setupDeductChildren === option.value
+                      ? 'border-teal-600/50 bg-teal-50/60'
+                      : 'border-teal-900/10 bg-white/80 hover:border-teal-600/30',
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="allotment-setup-deduct"
+                    className="mt-1 accent-teal-700"
+                    checked={setupDeductChildren === option.value}
+                    onChange={() => setSetupDeductChildren(option.value)}
+                  />
+                  <span>
+                    <span className="block font-semibold text-teal-950">{option.title}</span>
+                    <span className="block text-xs text-teal-900/60">{option.body}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            {setupError ? <p className="text-sm text-red-600">{setupError}</p> : null}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setSetupOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="button" disabled={savingSetup} onClick={() => void handleSetupSave()}>
+                {savingSetup ? 'Saving…' : 'Save setup'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <Dialog
           open={editing !== null}
@@ -3242,6 +3282,9 @@ export function AdminAgentAllotment() {
                       <p className="mt-0.5 text-xs text-teal-900/45">
                         {summary.purchases} lots ·{' '}
                         {summary.seats} heads
+                        {!deductsChildren(settingsRows, summary.slug, workProgram)
+                          ? ' · adults only'
+                          : ''}
                       </p>
                     </div>
                     <span
@@ -3300,113 +3343,6 @@ export function AdminAgentAllotment() {
               )
             })}
           </div>
-        </div>
-      ) : null}
-
-      {!loading && programLots.length > 0 ? (
-        <div className="mt-5">
-          <h2 className="mb-2 text-sm font-semibold text-teal-950">Recent lots</h2>
-          <p className="mb-3 text-xs text-teal-900/50">
-            Click Open to view transfers and head usage on that lot.
-          </p>
-          <Surface className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="px-4 text-teal-700/45">Agent</TableHead>
-                  <TableHead className="text-right text-teal-700/45">Price AD</TableHead>
-                  <TableHead className="text-right text-teal-700/45">Price CH</TableHead>
-                  <TableHead className="text-center text-teal-700/45">Park Fee</TableHead>
-                  <TableHead className="text-right text-teal-700/45">Heads</TableHead>
-                  <TableHead className="text-right text-teal-700/45">Amount</TableHead>
-                  <TableHead className="text-right text-teal-700/45">Paid</TableHead>
-                  <TableHead className="text-right text-teal-700/45">Due</TableHead>
-                  <TableHead className="text-teal-700/45">Status</TableHead>
-                  <TableHead className="text-right text-teal-700/45" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {programLots.map((row) => {
-                  const status = allotmentPayStatus(row)
-                  return (
-                    <TableRow key={row.id}>
-                      <TableCell className="px-4">
-                        <button
-                          type="button"
-                          className="font-medium text-teal-900 underline-offset-2 hover:underline"
-                          onClick={() => openAgent(row.agentSlug)}
-                        >
-                          {row.agentName}
-                        </button>
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {row.adultPrice > 0 ? formatMoney(row.adultPrice) : '—'}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {row.childPrice > 0 ? formatMoney(row.childPrice) : '—'}
-                      </TableCell>
-                      <TableCell className="text-center font-medium">
-                        {formatAllotmentParkFee(row.parkFee)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums font-medium">
-                        {row.seats}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums font-semibold">
-                        {formatMoney(row.totalAmount)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {formatMoney(allotmentPaidTotal(row))}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums text-amber-800">
-                        {formatMoney(allotmentBalance(row))}
-                      </TableCell>
-                      <TableCell>
-                        <span
-                          className={cn(
-                            'inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase ring-1 ring-inset',
-                            payStatusClass(status),
-                          )}
-                        >
-                          {payStatusLabel(status)}
-                        </span>
-                        {allotmentOtherCash(row) !== 0 ? (
-                          <p
-                            className={cn(
-                              'mt-1 text-[10px]',
-                              allotmentOtherCash(row) < 0 ? 'text-rose-700' : 'text-teal-900/50',
-                            )}
-                          >
-                            {allotmentOtherCash(row) > 0 ? '+' : ''}
-                            {formatMoney(allotmentOtherCash(row))} other
-                          </p>
-                        ) : null}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-2">
-                          <Button variant="outline" size="sm" onClick={() => openLot(row)}>
-                            Open
-                          </Button>
-                          <Button variant="outline" size="sm" onClick={() => openEdit(row)}>
-                            <Pencil data-icon="inline-start" />
-                            Edit
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="icon-sm"
-                            className="text-neutral-400 hover:text-red-600"
-                            aria-label={`Remove this lot for ${row.agentName}`}
-                            onClick={() => void handleDelete(row)}
-                          >
-                            <Trash2 />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )
-                })}
-              </TableBody>
-            </Table>
-          </Surface>
         </div>
       ) : null}
 

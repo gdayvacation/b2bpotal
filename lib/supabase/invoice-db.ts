@@ -3,6 +3,7 @@ import { selectAllPaged } from '@/lib/supabase/paged'
 import {
   DEFAULT_INVOICE_SETTINGS,
   DEFAULT_NATIONAL_PARK_FEE,
+  agencyRateKey,
   emptyAgencyRates,
   invoicePayments,
   migrateInvoiceDocumentNumbers,
@@ -49,6 +50,7 @@ type SettingsRow = {
 
 type RatesRow = {
   agent_slug: string
+  rate_line?: number | null
   billing_type?: string | null
   adult_price: number | string
   child_price: number | string
@@ -163,6 +165,7 @@ function settingsToRow(settings: InvoiceSettings, includeSignature = true): Sett
 function mapRates(row: RatesRow): AgencyInvoiceRates {
   return {
     agentSlug: row.agent_slug,
+    ...(Number(row.rate_line) === 2 ? { rateLine: 2 as const } : {}),
     billingType: parseAgentBillingType(row.billing_type),
     adultPrice: num(row.adult_price),
     childPrice: num(row.child_price),
@@ -200,19 +203,24 @@ function mergeRatesWithLocal(
   localRates: AgencyInvoiceRates[],
   rawRows: RatesRow[],
 ): AgencyInvoiceRates[] {
-  const localBySlug = new Map(normalizeRates(localRates).map((row) => [row.agentSlug, row]))
-  const rawBySlug = new Map(rawRows.map((row) => [row.agent_slug, row]))
+  const localBySlug = new Map(normalizeRates(localRates).map((row) => [agencyRateKey(row), row]))
+  const rawBySlug = new Map(
+    rawRows.map((row) => [
+      agencyRateKey({ agentSlug: row.agent_slug, rateLine: Number(row.rate_line) === 2 ? 2 : 1 }),
+      row,
+    ]),
+  )
   const merged = cloudRates.map((row) => {
-    const raw = rawBySlug.get(row.agentSlug)
-    const local = localBySlug.get(row.agentSlug)
+    const raw = rawBySlug.get(agencyRateKey(row))
+    const local = localBySlug.get(agencyRateKey(row))
     if ((raw?.billing_type == null || raw.billing_type === '') && local?.billingType) {
       return { ...row, billingType: local.billingType }
     }
     return row
   })
-  const seen = new Set(merged.map((row) => row.agentSlug))
+  const seen = new Set(merged.map((row) => agencyRateKey(row)))
   for (const row of localBySlug.values()) {
-    if (!seen.has(row.agentSlug)) merged.push(row)
+    if (!seen.has(agencyRateKey(row))) merged.push(row)
   }
   return merged
 }
@@ -220,6 +228,7 @@ function mergeRatesWithLocal(
 function ratesToRow(rates: AgencyInvoiceRates, includeBillingType = true): RatesRow {
   return {
     agent_slug: rates.agentSlug,
+    ...(rates.rateLine === 2 ? { rate_line: 2 } : {}),
     ...(includeBillingType ? { billing_type: parseAgentBillingType(rates.billingType) } : {}),
     adult_price: rates.adultPrice,
     child_price: rates.childPrice,
@@ -527,12 +536,20 @@ export async function saveInvoiceSettings(settings: InvoiceSettings): Promise<{ 
 
 export async function saveAgencyRates(rates: AgencyInvoiceRates): Promise<{ error?: string }> {
   const current = readLocal<AgencyInvoiceRates[]>(RATES_KEY, [])
-  const next = [...current.filter((row) => row.agentSlug !== rates.agentSlug), rates]
+  const next = [...current.filter((row) => agencyRateKey(row) !== agencyRateKey(rates)), rates]
   writeLocal(RATES_KEY, next)
   if (!hasSupabaseConfig()) return {}
   try {
     const supabase = getSupabaseBrowserClient()
     const { error } = await supabase.from('agency_invoice_rates').upsert(ratesToRow(rates))
+    if (error && rates.rateLine === 2) {
+      // Never fall back to the column-less save here — it would overwrite the main rate line.
+      const message = /rate_line|schema cache|column|primary|unique|conflict/i.test(error.message)
+        ? 'Second rate line needs the database update. Run supabase/add-agency-rate-line.sql in the Supabase SQL Editor.'
+        : error.message
+      console.warn('[supabase] second rate line save failed', error.message)
+      return { error: message }
+    }
     if (error) {
       const missingColumn =
         /billing_type|national_park_fee|national_park_included|schema cache|column/i.test(
@@ -560,6 +577,30 @@ export async function saveAgencyRates(rates: AgencyInvoiceRates): Promise<{ erro
     const msg = String(error)
     console.warn('[supabase] agency invoice rates save failed', msg)
     return { error: msg }
+  }
+}
+
+/** Remove an agent's second rate line. The main line is never deleted here. */
+export async function deleteAlternateAgencyRates(agentSlug: string): Promise<{ error?: string }> {
+  const current = readLocal<AgencyInvoiceRates[]>(RATES_KEY, [])
+  writeLocal(
+    RATES_KEY,
+    current.filter((row) => !(row.agentSlug === agentSlug && row.rateLine === 2)),
+  )
+  if (!hasSupabaseConfig()) return {}
+  try {
+    const supabase = getSupabaseBrowserClient()
+    const { error } = await supabase
+      .from('agency_invoice_rates')
+      .delete()
+      .eq('agent_slug', agentSlug)
+      .eq('rate_line', 2)
+    if (error && !/rate_line|schema cache|column/i.test(error.message)) {
+      return { error: error.message }
+    }
+    return {}
+  } catch (error) {
+    return { error: String(error) }
   }
 }
 

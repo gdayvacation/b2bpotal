@@ -78,7 +78,15 @@ function lineTitle(line: AllotmentSheetLine, hideNote = false) {
   if (line.kind === 'refund') return 'No transfer refund'
   if (line.kind === 'charge') return line.note || 'Extra charge'
   if (line.kind === 'usage') {
-    return [line.counted ? 'Heads used' : 'Future booking', line.pending ? 'From bookings' : '', hideNote ? '' : line.note]
+    const invoicedTag =
+      hideNote && line.childrenInvoiced > 0
+        ? `${line.childrenInvoiced} child${line.childrenInvoiced === 1 ? '' : 'ren'} invoiced`
+        : ''
+    return [
+      line.counted ? 'Heads used' : 'Future booking',
+      line.pending ? 'From bookings' : '',
+      hideNote ? invoicedTag : line.note,
+    ]
       .filter(Boolean)
       .join(' · ')
   }
@@ -278,6 +286,7 @@ export function AllotmentSheet({
     const heads = rows.reduce((sum, line) => sum + line.headsDelta, 0)
     const money = rows.reduce((sum, line) => sum + (line.moneyDelta ?? 0), 0)
     const last = rows.at(-1)
+    const invoicedChildren = rows.reduce((sum, line) => sum + line.childrenInvoiced, 0)
     const cell = cn(dayEdge, 'px-2 py-1.5')
     return (
       <tr
@@ -299,7 +308,14 @@ export function AllotmentSheet({
             <span className="ml-1 text-[10px] font-semibold tracking-wide text-teal-800 uppercase">Today</span>
           ) : null}
         </td>
-        <td className={cn(cell, 'font-medium text-teal-900/70')}>Daily Sum</td>
+        <td className={cn(cell, 'font-medium text-teal-900/70')}>
+          Daily Sum
+          {invoicedChildren > 0 ? (
+            <span className="ml-2 rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-sky-800 uppercase">
+              {invoicedChildren} CH invoiced
+            </span>
+          ) : null}
+        </td>
         <td
           className={cn(
             cell,
@@ -347,6 +363,7 @@ export function AllotmentSheet({
 
   function renderUsageDetails(line: AllotmentSheetLine, columns: number) {
     const refundTotal = line.bookings.reduce((sum, booking) => sum + noTransferRefund(booking), 0)
+    const childrenInvoiced = line.childrenInvoiced > 0
     return (
       <tr key={`${line.key}-bookings`} className="bg-[#f4faf7] text-teal-950">
         <td className="border border-teal-900/10" />
@@ -364,7 +381,9 @@ export function AllotmentSheet({
                   <th className="pb-1 pr-3 font-semibold whitespace-nowrap">Hotel</th>
                   <th className="pb-1 pr-3 font-semibold whitespace-nowrap">Transfers</th>
                   <th className="pb-1 pr-3 text-right font-semibold whitespace-nowrap">Adults</th>
-                  <th className="pb-1 pr-3 text-right font-semibold whitespace-nowrap">Children</th>
+                  <th className="pb-1 pr-3 text-right font-semibold whitespace-nowrap">
+                    Children{childrenInvoiced ? ' (invoiced)' : ''}
+                  </th>
                   <th className="pb-1 pr-3 text-right font-semibold whitespace-nowrap">Refund</th>
                   <th className="pb-1 font-semibold whitespace-nowrap">Status</th>
                 </tr>
@@ -385,7 +404,14 @@ export function AllotmentSheet({
                     </td>
                     <td className="py-px pr-3 whitespace-nowrap">{booking.noTransfer ? 'NoTF' : ''}</td>
                     <td className="py-px pr-3 text-right tabular-nums">{booking.adults}</td>
-                    <td className="py-px pr-3 text-right tabular-nums">{booking.children}</td>
+                    <td
+                      className={cn(
+                        'py-px pr-3 text-right tabular-nums',
+                        childrenInvoiced && booking.children > 0 && 'text-sky-700 italic',
+                      )}
+                    >
+                      {booking.children}
+                    </td>
                     <td className="py-px pr-3 text-right whitespace-nowrap tabular-nums text-rose-700">
                       {refund === 0 ? '' : `-${formatMoney(refund)}`}
                     </td>
@@ -393,9 +419,14 @@ export function AllotmentSheet({
                       className={cn(
                         'py-px whitespace-nowrap',
                         booking.status === 'Canceled' && 'font-medium text-red-600',
+                        booking.status !== 'Canceled' && 'text-sky-700',
                       )}
                     >
-                      {booking.status === 'Canceled' ? 'Canceled' : ''}
+                      {booking.status === 'Canceled'
+                        ? 'Canceled'
+                        : childrenInvoiced && booking.children > 0
+                          ? `${booking.children} CH invoiced`
+                          : ''}
                     </td>
                   </tr>
                   )
@@ -797,7 +828,14 @@ export function AllotmentSheet({
                           )}
                         </td>
                         <td className={cn(bar, 'font-semibold whitespace-nowrap')}>{formatShortDate(group.date)}</td>
-                        <td className={cn(bar, 'font-medium text-teal-900/70')}>Daily Sum</td>
+                        <td className={cn(bar, 'font-medium text-teal-900/70')}>
+                          Daily Sum
+                          {rows.reduce((sum, line) => sum + line.childrenInvoiced, 0) > 0 ? (
+                            <span className="ml-2 rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-sky-800 uppercase">
+                              {rows.reduce((sum, line) => sum + line.childrenInvoiced, 0)} CH invoiced
+                            </span>
+                          ) : null}
+                        </td>
                         <td className={cn(bar, 'text-right font-semibold tabular-nums')}>{heads}</td>
                         <td className={cn(bar, 'text-right font-semibold tabular-nums')}>
                           {value === 0 ? '—' : formatMoney(value)}

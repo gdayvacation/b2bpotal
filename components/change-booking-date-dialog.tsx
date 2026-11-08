@@ -18,7 +18,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { formatThbAmount } from '@/lib/booking-cutoffs'
-import { bookingTourAmount, parseAgentBillingType, ratesForAgent } from '@/lib/invoice'
+import { bookingTourAmount, parseAgentBillingType, ratesForBooking } from '@/lib/invoice'
 import { useInvoiceStore } from '@/components/admin/use-invoice-store'
 import { dateFromISO, formatLongDate, startOfToday, toISODate, todayISO } from '@/lib/format'
 import { totalPassengers, type Booking, type BookingActor } from '@/lib/types'
@@ -59,7 +59,7 @@ export function ChangeBookingDateDialog({
   const todayIso = todayISO()
   const pax = booking ? totalPassengers(booking) : 0
   const agentRates = booking
-    ? ratesForAgent(invoiceStore.rates, booking.agentSlug)
+    ? ratesForBooking(invoiceStore.rates, booking)
     : null
   const prebuy = agentRates ? parseAgentBillingType(agentRates.billingType) === 'prebuy' : false
   const fullTourFee = booking && agentRates ? bookingTourAmount(booking, agentRates) : 0

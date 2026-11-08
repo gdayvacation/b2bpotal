@@ -5,7 +5,7 @@ import {
   invoicesForBookings,
   itemsAgentTotal,
   programPaxLineLabel,
-  ratesForAgent,
+  ratesForBooking,
   type InvoiceDocument,
   type InvoiceItem,
 } from '@/lib/invoice'
@@ -362,7 +362,7 @@ export async function syncPaxChangeToInvoices(
   const store = await loadInvoiceStore()
   const linked = invoicesForBookings(store.invoices, [booking.code])
   if (linked.length === 0) return { updated: 0 }
-  const agency = ratesForAgent(store.rates, booking.agentSlug)
+  const agency = ratesForBooking(store.rates, booking)
   const billParkFee = !agency.nationalParkIncluded
   const park = excludedParkFeeRates(agency.nationalParkFee)
   const updated = linked.map((doc) =>

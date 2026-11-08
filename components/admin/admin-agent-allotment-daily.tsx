@@ -20,14 +20,18 @@ import { getArrivedPaxSnapshot } from '@/lib/check-in-arrived-pax'
 import { addDaysISO, formatShortDate, todayISO } from '@/lib/format'
 import { listAgentAllotments, type AgentAllotment } from '@/lib/supabase/agent-allotment-db'
 import {
+  deductsChildren,
+  listAgentAllotmentSettings,
+  type AgentAllotmentSettings,
+} from '@/lib/supabase/agent-allotment-settings-db'
+import {
   listAgentAllotmentDaily,
   upsertAgentAllotmentDaily,
   type AgentAllotmentDaily,
 } from '@/lib/supabase/agent-allotment-daily-db'
 import {
-  allotmentHeadUse,
+  bookedPaxOf,
   chargedCancelDeductsAllotment,
-  chargeablePax,
   countsTowardAllotment,
   type Booking,
   type Program,
@@ -42,6 +46,8 @@ type CheckerRow = {
   checkInHead: number
   noShowHead: number
   invoiceHead: number
+  /** Children not deducted because this agent pays for them on a separate invoice. */
+  childInvoiced: number
   suggestedDeduct: number
   totalDeduct: number
   saved: boolean
@@ -88,29 +94,38 @@ function formatMonthLabel(isoDate: string) {
   })
 }
 
-function headsFromPax(pax: { adults: number; children: number }) {
-  return chargeablePax(pax)
+/** Heads this party takes off the allotment. Adults-only agents never lose heads to children. */
+function headsFromPax(pax: { adults: number; children: number }, deductChildren: boolean) {
+  return Math.max(0, pax.adults) + (deductChildren ? Math.max(0, pax.children) : 0)
 }
 
 function lotSaveLabel(lot: AgentAllotment) {
   return `${formatShortDate(lot.paidDate || lot.createdAt.slice(0, 10))} · ${lot.adultPrice}`
 }
 
-function bookingHeads(booking: Booking) {
-  return allotmentHeadUse(booking)
+/** Party that counts against allotment. Charged cancels use the originally booked party. */
+function allotmentPax(booking: Booking) {
+  return chargedCancelDeductsAllotment(booking) ? bookedPaxOf(booking) : booking
+}
+
+function bookingHeads(booking: Booking, deductChildren: boolean) {
+  return headsFromPax(allotmentPax(booking), deductChildren)
 }
 
 function checkInHeadsForBooking(
   booking: Booking,
   attendance: 'checked' | 'no-show' | null,
+  deductChildren: boolean,
 ): { checkIn: number; noShow: number } {
   if (attendance === 'no-show') {
-    return { checkIn: 0, noShow: bookingHeads(booking) }
+    return { checkIn: 0, noShow: bookingHeads(booking, deductChildren) }
   }
   if (attendance === 'checked') {
     const arrived = getArrivedPaxSnapshot(booking.date, booking.program, booking.code)
     return {
-      checkIn: arrived ? headsFromPax(arrived) : bookingHeads(booking),
+      checkIn: arrived
+        ? headsFromPax(arrived, deductChildren)
+        : bookingHeads(booking, deductChildren),
       noShow: 0,
     }
   }
@@ -132,6 +147,7 @@ export function AdminAgentAllotmentDailyChecker({
   const [purchasedByAgent, setPurchasedByAgent] = useState<Record<string, number>>({})
   const [allotments, setAllotments] = useState<AgentAllotment[]>([])
   const [allDaily, setAllDaily] = useState<AgentAllotmentDaily[]>([])
+  const [settingsRows, setSettingsRows] = useState<AgentAllotmentSettings[]>([])
   const [draftDeduct, setDraftDeduct] = useState<Record<string, string>>({})
   const [savingKey, setSavingKey] = useState<string | null>(null)
   const [loadError, setLoadError] = useState('')
@@ -153,10 +169,13 @@ export function AdminAgentAllotmentDailyChecker({
   }, [invoiceStore.invoices])
 
   async function refresh() {
-    const [allotments, everyDaily] = await Promise.all([
+    const [allotments, everyDaily, settings] = await Promise.all([
       listAgentAllotments(),
       listAgentAllotmentDaily(),
+      // A missing settings table must not block the checker. Everyone then deducts all heads.
+      listAgentAllotmentSettings().catch(() => [] as AgentAllotmentSettings[]),
     ])
+    setSettingsRows(settings)
     const programLots = allotments.filter((row) => row.program === program)
     const purchased: Record<string, number> = {}
     for (const row of programLots) {
@@ -235,6 +254,7 @@ export function AdminAgentAllotmentDailyChecker({
           checkInHead: number
           noShowHead: number
           invoiceHead: number
+          childInvoiced: number
         }
       >()
 
@@ -245,14 +265,19 @@ export function AdminAgentAllotmentDailyChecker({
           checkInHead: 0,
           noShowHead: 0,
           invoiceHead: 0,
+          childInvoiced: 0,
         }
-        const heads = bookingHeads(booking)
+        const deductChildren = deductsChildren(settingsRows, booking.agentSlug, program)
+        const heads = bookingHeads(booking, deductChildren)
+        if (!deductChildren) {
+          current.childInvoiced += Math.max(0, allotmentPax(booking).children)
+        }
         current.bookingHead += heads
         if (chargedCancelDeductsAllotment(booking)) {
           current.noShowHead += heads
         } else {
           const attendance = getCheckInAttendance(booking.date, booking.program, booking.code)
-          const mix = checkInHeadsForBooking(booking, attendance)
+          const mix = checkInHeadsForBooking(booking, attendance, deductChildren)
           current.checkInHead += mix.checkIn
           current.noShowHead += mix.noShow
         }
@@ -272,6 +297,7 @@ export function AdminAgentAllotmentDailyChecker({
           checkInHead: 0,
           noShowHead: 0,
           invoiceHead: 0,
+          childInvoiced: 0,
         })
       }
 
@@ -284,7 +310,8 @@ export function AdminAgentAllotmentDailyChecker({
           stats.bookingHead === 0 &&
           stats.checkInHead === 0 &&
           stats.noShowHead === 0 &&
-          stats.invoiceHead === 0
+          stats.invoiceHead === 0 &&
+          stats.childInvoiced === 0
         ) {
           continue
         }
@@ -297,6 +324,7 @@ export function AdminAgentAllotmentDailyChecker({
           checkInHead: stats.checkInHead,
           noShowHead: stats.noShowHead,
           invoiceHead: stats.invoiceHead,
+          childInvoiced: stats.childInvoiced,
           suggestedDeduct: suggested > 0 ? suggested : stats.bookingHead,
           totalDeduct: saved?.totalDeduct ?? (suggested > 0 ? suggested : stats.bookingHead),
           saved: Boolean(saved),
@@ -323,6 +351,7 @@ export function AdminAgentAllotmentDailyChecker({
     purchasedByAgent,
     savedByDayAgent,
     selectedDays,
+    settingsRows,
   ])
 
   useEffect(() => {
@@ -357,10 +386,11 @@ export function AdminAgentAllotmentDailyChecker({
         acc.checkIn += row.checkInHead
         acc.noShow += row.noShowHead
         acc.invoice += row.invoiceHead
+        acc.childInvoiced += row.childInvoiced
         acc.deduct += draft
         return acc
       },
-      { booking: 0, checkIn: 0, noShow: 0, invoice: 0, deduct: 0 },
+      { booking: 0, checkIn: 0, noShow: 0, invoice: 0, childInvoiced: 0, deduct: 0 },
     )
   }, [draftDeduct, rows])
 
@@ -509,6 +539,15 @@ export function AdminAgentAllotmentDailyChecker({
               Invoice <span className="font-semibold text-teal-950">{dayTotals.invoice}</span>
             </span>
             <span>·</span>
+            {dayTotals.childInvoiced > 0 ? (
+              <>
+                <span>
+                  CH invoiced{' '}
+                  <span className="font-semibold text-sky-700">{dayTotals.childInvoiced}</span>
+                </span>
+                <span>·</span>
+              </>
+            ) : null}
             <span>
               Total Deduct <span className="font-semibold text-teal-950">{dayTotals.deduct}</span>
             </span>
@@ -588,6 +627,14 @@ export function AdminAgentAllotmentDailyChecker({
                       <dt className="text-xs text-teal-900/45">Invoice</dt>
                       <dd className="font-semibold tabular-nums text-teal-950">{row.invoiceHead}</dd>
                     </div>
+                    {row.childInvoiced > 0 ? (
+                      <div className="col-span-2">
+                        <dt className="text-xs text-teal-900/45">Children (not deducted)</dt>
+                        <dd className="font-semibold tabular-nums text-sky-700">
+                          {row.childInvoiced} invoiced
+                        </dd>
+                      </div>
+                    ) : null}
                   </dl>
                   <div className="mt-3 flex items-end gap-2">
                     <div className="min-w-0 flex-1 space-y-1">
@@ -631,6 +678,9 @@ export function AdminAgentAllotmentDailyChecker({
                   <TableHead className="text-right text-teal-700/45">Check in</TableHead>
                   <TableHead className="text-right text-teal-700/45">No Show</TableHead>
                   <TableHead className="text-right text-teal-700/45">Invoice</TableHead>
+                  {dayTotals.childInvoiced > 0 ? (
+                    <TableHead className="text-right text-teal-700/45">CH invoiced</TableHead>
+                  ) : null}
                   <TableHead className="text-right text-teal-700/45">Total Deduct</TableHead>
                   <TableHead className="text-right text-teal-700/45">Left</TableHead>
                   <TableHead className="text-right text-teal-700/45" />
@@ -681,6 +731,11 @@ export function AdminAgentAllotmentDailyChecker({
                       <TableCell className="text-right tabular-nums">{row.checkInHead}</TableCell>
                       <TableCell className="text-right tabular-nums">{row.noShowHead}</TableCell>
                       <TableCell className="text-right tabular-nums">{row.invoiceHead}</TableCell>
+                      {dayTotals.childInvoiced > 0 ? (
+                        <TableCell className="text-right tabular-nums text-sky-700">
+                          {row.childInvoiced > 0 ? row.childInvoiced : '—'}
+                        </TableCell>
+                      ) : null}
                       <TableCell className="text-right">
                         <Input
                           type="number"

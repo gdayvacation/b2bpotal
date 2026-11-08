@@ -3,7 +3,7 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, Check, ChevronDown, Save, Trash2, Upload } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, Check, ChevronDown, CornerDownRight, Plus, Save, Trash2, Upload, X } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
 import { useInvoiceStore } from '@/components/admin/use-invoice-store'
 import { PageHeader, Surface } from '@/components/ui-primitives'
@@ -22,15 +22,19 @@ import {
   AGENT_BILLING_TYPES,
   DEFAULT_INVOICE_SETTINGS,
   DEFAULT_NATIONAL_PARK_FEE,
+  PARK_RATE_SPLIT_FROM,
+  agencyRateKey,
   agencyRatesReady,
+  alternateRatesForAgent,
   emptyAgencyRates,
+  newAlternateRates,
   parseAgentBillingType,
   parseMoneyInput,
   ratesForAgent,
   type AgencyInvoiceRates,
   type InvoiceSettings,
 } from '@/lib/invoice'
-import { uniqueAgentSlug } from '@/lib/format'
+import { formatShortDate, uniqueAgentSlug } from '@/lib/format'
 
 function readSignatureFile(file: File) {
   return new Promise<string>((resolve, reject) => {
@@ -131,7 +135,16 @@ export function AdminInvoiceSetup() {
   const pathname = usePathname()
   const invoicesHref = pathname.startsWith('/accounting') ? '/accounting' : '/admin/invoices'
   const { agents, addAgent } = usePortal()
-  const { settings, rates, loading, cloud, error: storeError, updateSettings, updateRates } = useInvoiceStore()
+  const {
+    settings,
+    rates,
+    loading,
+    cloud,
+    error: storeError,
+    updateSettings,
+    updateRates,
+    removeAlternateRates,
+  } = useInvoiceStore()
   const [draftSettings, setDraftSettings] = useState<InvoiceSettings | null>(null)
   const [saved, setSaved] = useState<'company' | string | null>(null)
   const [rateDrafts, setRateDrafts] = useState<Record<string, AgencyInvoiceRates>>({})
@@ -146,7 +159,15 @@ export function AdminInvoiceSetup() {
   const company = draftSettings ?? settings
 
   function ratesFor(slug: string) {
-    return rateDrafts[slug] ?? ratesForAgent(rates, slug)
+    return rateDrafts[agencyRateKey({ agentSlug: slug })] ?? ratesForAgent(rates, slug)
+  }
+
+  /** Second rate line (opposite National Park option), if admin added one. */
+  function altRatesFor(slug: string) {
+    return (
+      rateDrafts[agencyRateKey({ agentSlug: slug, rateLine: 2 })] ??
+      alternateRatesForAgent(rates, slug)
+    )
   }
 
   const activeAgents = useMemo(() => {
@@ -199,17 +220,19 @@ export function AdminInvoiceSetup() {
     )
     setRateDrafts((current) => ({
       ...current,
-      [slug]: emptyAgencyRates(slug),
+      [agencyRateKey({ agentSlug: slug })]: emptyAgencyRates(slug),
     }))
     setNewAgentName('')
     setAddAgentError('')
     setSort({ key: 'agency', dir: 'asc' })
   }
 
-  function patchRates(slug: string, patch: Partial<AgencyInvoiceRates>) {
+  function patchRates(slug: string, patch: Partial<AgencyInvoiceRates>, line: 1 | 2 = 1) {
+    const base = line === 2 ? altRatesFor(slug) : ratesFor(slug)
+    if (!base) return
     setRateDrafts((current) => ({
       ...current,
-      [slug]: { ...ratesFor(slug), ...patch },
+      [agencyRateKey({ agentSlug: slug, rateLine: line })]: { ...base, ...patch },
     }))
   }
 
@@ -221,23 +244,42 @@ export function AdminInvoiceSetup() {
   }
 
   async function persistAgent(next: AgencyInvoiceRates) {
-    setRateDrafts((current) => ({ ...current, [next.agentSlug]: next }))
+    const key = agencyRateKey(next)
+    setRateDrafts((current) => ({ ...current, [key]: next }))
     await updateRates(next)
     setRateDrafts((current) => {
       const draft = { ...current }
-      delete draft[next.agentSlug]
+      delete draft[key]
       return draft
     })
-    setSaved(next.agentSlug)
+    setSaved(key)
     window.setTimeout(() => setSaved(null), 1800)
   }
 
-  async function saveAgent(slug: string) {
-    await persistAgent(ratesFor(slug))
+  async function saveAgent(slug: string, line: 1 | 2 = 1) {
+    const row = line === 2 ? altRatesFor(slug) : ratesFor(slug)
+    if (row) await persistAgent(row)
   }
 
   async function changeBillingType(slug: string, billingType: AgencyInvoiceRates['billingType']) {
     await persistAgent({ ...ratesFor(slug), billingType })
+    // The second rate line always follows the main line's billing type.
+    const alt = altRatesFor(slug)
+    if (alt) await persistAgent({ ...alt, billingType })
+  }
+
+  async function addSecondRate(slug: string) {
+    if (altRatesFor(slug)) return
+    await persistAgent(newAlternateRates(ratesFor(slug)))
+  }
+
+  async function removeSecondRate(slug: string) {
+    setRateDrafts((current) => {
+      const draft = { ...current }
+      delete draft[agencyRateKey({ agentSlug: slug, rateLine: 2 })]
+      return draft
+    })
+    await removeAlternateRates(slug)
   }
 
   async function changeNationalPark(
@@ -254,6 +296,16 @@ export function AdminInvoiceSetup() {
         : (patch.nationalParkFee ??
           (current.nationalParkFee || DEFAULT_NATIONAL_PARK_FEE)),
     })
+    // Keep the second rate line on the opposite National Park option.
+    const alt = altRatesFor(slug)
+    if (alt) {
+      const altIncluded = !included
+      await persistAgent({
+        ...alt,
+        nationalParkIncluded: altIncluded,
+        nationalParkFee: altIncluded ? 0 : alt.nationalParkFee || DEFAULT_NATIONAL_PARK_FEE,
+      })
+    }
   }
 
   return (
@@ -463,7 +515,9 @@ export function AdminInvoiceSetup() {
               <p className="mt-1 text-sm text-teal-900/55">
                 Prebuy deducts AD+CH heads; Invoice bills tour price. National Park: INC (no price) or
                 Exc (set fee). Change date &amp; cancel are automatic — on-time free, after cutoff full
-                charge on the bill. Infants / TL are free.
+                charge on the bill. Infants / TL are free. Click an agent name to add a second rate line
+                (INC and Exc National Park) — from {formatShortDate(PARK_RATE_SPLIT_FROM)}, each booking is
+                billed on the rate that matches the park option it was booked with.
               </p>
             </div>
           </div>
@@ -564,20 +618,78 @@ export function AdminInvoiceSetup() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {activeAgents.map((agent) => {
-                const row = ratesFor(agent.slug)
+              {activeAgents.flatMap((agent) => {
+                const main = ratesFor(agent.slug)
+                const alt = altRatesFor(agent.slug)
+                const lines: { row: AgencyInvoiceRates; line: 1 | 2 }[] = [{ row: main, line: 1 }]
+                if (alt) lines.push({ row: alt, line: 2 })
+                return lines.map(({ row, line }) => {
+                const second = line === 2
+                const label = second ? `${agent.name} 2nd rate` : agent.name
                 const noRates = !agencyRatesReady(row)
                 const parkIncluded = Boolean(row.nationalParkIncluded)
-                const isSaved = saved === agent.slug
-                const billingType = parseAgentBillingType(row.billingType)
+                const isSaved = saved === agencyRateKey({ agentSlug: agent.slug, rateLine: line })
+                const billingType = parseAgentBillingType(main.billingType)
                 const isPrebuy = billingType === 'prebuy'
                 return (
-                  <TableRow key={agent.slug} className="border-teal-900/8">
+                  <TableRow
+                    key={agencyRateKey({ agentSlug: agent.slug, rateLine: line })}
+                    className={second ? 'border-teal-900/8 bg-teal-950/[0.025]' : 'border-teal-900/8'}
+                  >
                     <TableCell className="whitespace-normal px-2 py-2 align-middle font-medium text-teal-950">
                       <div className="min-w-0">
-                        <span className="block text-[12px] leading-snug break-words">
-                          {agent.name}
-                        </span>
+                        {second ? (
+                          <div className="flex items-start gap-1">
+                            <CornerDownRight className="mt-0.5 size-3 shrink-0 text-teal-900/45" />
+                            <div className="min-w-0 flex-1">
+                              <span className="block text-[11px] font-medium leading-snug text-teal-900/70">
+                                {parkIncluded ? 'Included' : 'Excluded'} National Park rate
+                              </span>
+                              <span className="block text-[10px] font-normal text-teal-900/45">
+                                Bookings from {formatShortDate(PARK_RATE_SPLIT_FROM)}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              className="shrink-0 rounded p-0.5 text-rose-500 hover:bg-rose-50 hover:text-rose-700"
+                              title="Remove second rate"
+                              aria-label={`Remove second rate for ${agent.name}`}
+                              onClick={() => void removeSecondRate(agent.slug)}
+                            >
+                              <X className="size-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="block max-w-full rounded text-left text-[12px] leading-snug break-words hover:text-teal-700 hover:underline"
+                              title={
+                                alt
+                                  ? 'This agent has two rates (Included and Excluded National Park)'
+                                  : 'Click to add a second rate line (Included / Excluded National Park)'
+                              }
+                              onClick={() => void addSecondRate(agent.slug)}
+                              aria-label={
+                                alt
+                                  ? `${agent.name} has two rates`
+                                  : `Add second rate line for ${agent.name}`
+                              }
+                            >
+                              {agent.name}
+                            </button>
+                            {!alt ? (
+                              <button
+                                type="button"
+                                className="mt-0.5 inline-flex items-center gap-0.5 text-[10px] font-normal text-teal-700/70 hover:text-teal-900"
+                                onClick={() => void addSecondRate(agent.slug)}
+                              >
+                                <Plus className="size-2.5" />
+                                {parkIncluded ? 'Add Exc rate' : 'Add INC rate'}
+                              </button>
+                            ) : null}
+                          </>
+                        )}
                         {noRates ? (
                           <span className="mt-0.5 block text-[10px] font-normal text-rose-500">
                             No rates
@@ -586,63 +698,85 @@ export function AdminInvoiceSetup() {
                       </div>
                     </TableCell>
                     <TableCell className="px-1.5 py-2 align-middle">
-                      <select
-                        aria-label={`${agent.name} billing type`}
-                        value={billingType}
-                        onChange={(event) =>
-                          void changeBillingType(
-                            agent.slug,
-                            parseAgentBillingType(event.target.value),
-                          )
-                        }
-                        className={
-                          isPrebuy
-                            ? 'h-8 w-full min-w-0 rounded-md border border-amber-500/50 bg-amber-50 px-1 text-center text-[11px] font-semibold text-amber-950 outline-none focus-visible:border-amber-600 focus-visible:ring-2 focus-visible:ring-amber-400/30'
-                            : 'h-8 w-full min-w-0 rounded-md border border-sky-500/40 bg-sky-50 px-1 text-center text-[11px] font-medium text-sky-950 outline-none focus-visible:border-sky-600 focus-visible:ring-2 focus-visible:ring-sky-400/30'
-                        }
-                      >
-                        {AGENT_BILLING_TYPES.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.value === 'prebuy' ? 'Prebuy' : 'Invoice'}
-                          </option>
-                        ))}
-                      </select>
+                      {second ? (
+                        <span
+                          className={`block text-center text-[11px] font-medium ${isPrebuy ? 'text-amber-900' : 'text-sky-900'}`}
+                          title="Follows the main rate line"
+                        >
+                          {isPrebuy ? 'Prebuy' : 'Invoice'}
+                        </span>
+                      ) : (
+                        <select
+                          aria-label={`${agent.name} billing type`}
+                          value={billingType}
+                          onChange={(event) =>
+                            void changeBillingType(
+                              agent.slug,
+                              parseAgentBillingType(event.target.value),
+                            )
+                          }
+                          className={
+                            isPrebuy
+                              ? 'h-8 w-full min-w-0 rounded-md border border-amber-500/50 bg-amber-50 px-1 text-center text-[11px] font-semibold text-amber-950 outline-none focus-visible:border-amber-600 focus-visible:ring-2 focus-visible:ring-amber-400/30'
+                              : 'h-8 w-full min-w-0 rounded-md border border-sky-500/40 bg-sky-50 px-1 text-center text-[11px] font-medium text-sky-950 outline-none focus-visible:border-sky-600 focus-visible:ring-2 focus-visible:ring-sky-400/30'
+                          }
+                        >
+                          {AGENT_BILLING_TYPES.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.value === 'prebuy' ? 'Prebuy' : 'Invoice'}
+                            </option>
+                          ))}
+                        </select>
+                      )}
                     </TableCell>
                     <TableCell className="px-1.5 py-2 align-middle">
                       <MoneyField
                         value={row.adultPrice}
-                        onChange={(value) => patchRates(agent.slug, { adultPrice: value })}
+                        onChange={(value) => patchRates(agent.slug, { adultPrice: value }, line)}
                       />
                     </TableCell>
                     <TableCell className="px-1.5 py-2 align-middle">
                       <MoneyField
                         value={row.childPrice}
-                        onChange={(value) => patchRates(agent.slug, { childPrice: value })}
+                        onChange={(value) => patchRates(agent.slug, { childPrice: value }, line)}
                       />
                     </TableCell>
                     <TableCell className="px-1.5 py-2 align-middle">
                       <div className="flex items-center justify-center gap-1">
-                        <select
-                          aria-label={`${agent.name} national park`}
-                          value={parkIncluded ? 'included' : 'excluded'}
-                          onChange={(event) => {
-                            const included = event.target.value === 'included'
-                            void changeNationalPark(agent.slug, {
-                              nationalParkIncluded: included,
-                              nationalParkFee: included
-                                ? 0
-                                : row.nationalParkFee || DEFAULT_NATIONAL_PARK_FEE,
-                            })
-                          }}
-                          className={
-                            parkIncluded
-                              ? 'h-8 w-[3.5rem] shrink-0 rounded-md border border-emerald-500/45 bg-emerald-50 px-0.5 text-center text-[11px] font-semibold text-emerald-950 outline-none'
-                              : 'h-8 w-[3.5rem] shrink-0 rounded-md border border-orange-400/50 bg-orange-50 px-0.5 text-center text-[11px] font-semibold text-orange-950 outline-none'
-                          }
-                        >
-                          <option value="included">INC</option>
-                          <option value="excluded">Exc</option>
-                        </select>
+                        {second ? (
+                          <span
+                            className={
+                              parkIncluded
+                                ? 'inline-flex h-8 w-[3.5rem] shrink-0 items-center justify-center rounded-md border border-emerald-500/45 bg-emerald-50 text-[11px] font-semibold text-emerald-950'
+                                : 'inline-flex h-8 w-[3.5rem] shrink-0 items-center justify-center rounded-md border border-orange-400/50 bg-orange-50 text-[11px] font-semibold text-orange-950'
+                            }
+                            title="Opposite of the main rate line"
+                          >
+                            {parkIncluded ? 'INC' : 'Exc'}
+                          </span>
+                        ) : (
+                          <select
+                            aria-label={`${agent.name} national park`}
+                            value={parkIncluded ? 'included' : 'excluded'}
+                            onChange={(event) => {
+                              const included = event.target.value === 'included'
+                              void changeNationalPark(agent.slug, {
+                                nationalParkIncluded: included,
+                                nationalParkFee: included
+                                  ? 0
+                                  : row.nationalParkFee || DEFAULT_NATIONAL_PARK_FEE,
+                              })
+                            }}
+                            className={
+                              parkIncluded
+                                ? 'h-8 w-[3.5rem] shrink-0 rounded-md border border-emerald-500/45 bg-emerald-50 px-0.5 text-center text-[11px] font-semibold text-emerald-950 outline-none'
+                                : 'h-8 w-[3.5rem] shrink-0 rounded-md border border-orange-400/50 bg-orange-50 px-0.5 text-center text-[11px] font-semibold text-orange-950 outline-none'
+                            }
+                          >
+                            <option value="included">INC</option>
+                            <option value="excluded">Exc</option>
+                          </select>
+                        )}
                         {parkIncluded ? (
                           <span className="inline-flex h-8 w-[4.25rem] items-center justify-center text-[11px] text-teal-900/35">
                             —
@@ -652,9 +786,11 @@ export function AdminInvoiceSetup() {
                             <MoneyField
                               value={row.nationalParkFee || DEFAULT_NATIONAL_PARK_FEE}
                               onChange={(value) =>
-                                patchRates(agent.slug, {
-                                  nationalParkFee: value || DEFAULT_NATIONAL_PARK_FEE,
-                                })
+                                patchRates(
+                                  agent.slug,
+                                  { nationalParkFee: value || DEFAULT_NATIONAL_PARK_FEE },
+                                  line,
+                                )
                               }
                             />
                           </div>
@@ -666,7 +802,7 @@ export function AdminInvoiceSetup() {
                         <MoneyField
                           value={row.privateTransferExtra}
                           onChange={(value) =>
-                            patchRates(agent.slug, { privateTransferExtra: value })
+                            patchRates(agent.slug, { privateTransferExtra: value }, line)
                           }
                         />
                       </div>
@@ -675,7 +811,9 @@ export function AdminInvoiceSetup() {
                       <div className="mx-auto w-full max-w-[5.5rem]">
                         <MoneyField
                           value={row.extraZoneCharge}
-                          onChange={(value) => patchRates(agent.slug, { extraZoneCharge: value })}
+                          onChange={(value) =>
+                            patchRates(agent.slug, { extraZoneCharge: value }, line)
+                          }
                         />
                       </div>
                     </TableCell>
@@ -684,7 +822,7 @@ export function AdminInvoiceSetup() {
                         <MoneyField
                           value={row.otherServiceCharge}
                           onChange={(value) =>
-                            patchRates(agent.slug, { otherServiceCharge: value })
+                            patchRates(agent.slug, { otherServiceCharge: value }, line)
                           }
                         />
                       </div>
@@ -695,8 +833,8 @@ export function AdminInvoiceSetup() {
                         size="sm"
                         variant={isSaved ? 'default' : 'outline'}
                         className="h-8 rounded-lg px-2.5 text-[11px]"
-                        onClick={() => saveAgent(agent.slug)}
-                        aria-label={isSaved ? `${agent.name} saved` : `Save ${agent.name}`}
+                        onClick={() => saveAgent(agent.slug, line)}
+                        aria-label={isSaved ? `${label} saved` : `Save ${label}`}
                       >
                         {isSaved ? (
                           <Check className="size-3.5" />
@@ -708,6 +846,7 @@ export function AdminInvoiceSetup() {
                     </TableCell>
                   </TableRow>
                 )
+                })
               })}
             </TableBody>
           </Table>

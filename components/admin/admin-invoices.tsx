@@ -74,6 +74,7 @@ import {
   prebuyDeductHeads,
   invoiceListedDates,
   ratesForAgent,
+  ratesForBooking,
   type AgentBillingType,
   type InvoiceDocument,
   type PaymentChannel,
@@ -86,6 +87,11 @@ import {
   invoicesToExportRows,
 } from '@/lib/invoice-export'
 import { loadPrebuyHeadBalance } from '@/lib/prebuy-allotment-sync'
+import {
+  deductsChildren,
+  listAgentAllotmentSettings,
+  type AgentAllotmentSettings,
+} from '@/lib/supabase/agent-allotment-settings-db'
 import {
   bookingOnPartnerBoat,
   formatPaxBreakdown,
@@ -606,6 +612,20 @@ export function AdminInvoices() {
   const [editInvoiceIsNew, setEditInvoiceIsNew] = useState(false)
   const [shareNote, setShareNote] = useState('')
   const [message, setMessage] = useState('')
+  const [allotmentSettings, setAllotmentSettings] = useState<AgentAllotmentSettings[]>([])
+  useEffect(() => {
+    let cancelled = false
+    listAgentAllotmentSettings()
+      .then((rows) => {
+        if (!cancelled) setAllotmentSettings(rows)
+      })
+      .catch(() => {
+        // No setup table yet: every agent deducts adults and children.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
   const [prebuyBalance, setPrebuyBalance] = useState<{
     remaining: number
     purchased: number
@@ -707,7 +727,7 @@ export function AdminInvoices() {
 
   function bookingInvoiceItems(booking: Booking, otherService = includeOtherService) {
     const enrollments = getCheckInEnrollments(booking.date, booking.program, booking.code)
-    const items = buildInvoiceItemsForBooking(booking, ratesForAgent(store.rates, booking.agentSlug), {
+    const items = buildInvoiceItemsForBooking(booking, ratesForBooking(store.rates, booking), {
       includeOtherService: otherService,
       attendance: getCheckInAttendance(booking.date, booking.program, booking.code),
       thaiGuests: thaiParkSeatsFromGuests(booking.adults, booking.children, enrollments),
@@ -756,7 +776,7 @@ export function AdminInvoices() {
         return includePending
       })
       .map((booking) => {
-        const rates = ratesForAgent(store.rates, booking.agentSlug)
+        const rates = ratesForBooking(store.rates, booking)
         const billingType = parseAgentBillingType(rates.billingType)
         const items = bookingInvoiceItems(booking)
         const invoice = store.invoices.find(
@@ -807,7 +827,13 @@ export function AdminInvoices() {
           booking,
           billingType,
           billTotal: pricedForCharge ? storedTotal : liveTotal,
-          deductHeads: billingType === 'prebuy' ? prebuyDeductHeads(items) : 0,
+          deductHeads:
+            billingType === 'prebuy'
+              ? prebuyDeductHeads(
+                  items,
+                  deductsChildren(allotmentSettings, booking.agentSlug, booking.program),
+                )
+              : 0,
           liveTotal,
           guestCollect: priced
             ? invoiceGuestAmountForBooking(priced, booking.code)
@@ -862,6 +888,7 @@ export function AdminInvoices() {
     isSearching,
     billProgram,
     query,
+    allotmentSettings,
     store.invoices,
     store.rates,
     toDate,
@@ -2065,17 +2092,17 @@ export function AdminInvoices() {
                               booking.status === 'Cancelled'
                                 ? 'Cancelled — National Park Fee is not charged'
                                 : booking.parkFee === 'Included' ||
-                                    ratesForAgent(store.rates, booking.agentSlug).nationalParkIncluded
+                                    ratesForBooking(store.rates, booking).nationalParkIncluded
                                   ? 'Included — no Exc park fee'
-                                  : `Not included — Exc price ${ratesForAgent(store.rates, booking.agentSlug).nationalParkFee || DEFAULT_NATIONAL_PARK_FEE} THB (set in Setup)`
+                                  : `Not included — Exc price ${ratesForBooking(store.rates, booking).nationalParkFee || DEFAULT_NATIONAL_PARK_FEE} THB (set in Setup)`
                             }
                           >
                             {booking.status === 'Cancelled'
                               ? '—'
                               : booking.parkFee === 'Included' ||
-                                  ratesForAgent(store.rates, booking.agentSlug).nationalParkIncluded
+                                  ratesForBooking(store.rates, booking).nationalParkIncluded
                                 ? 'INC'
-                                : `Exc: ${ratesForAgent(store.rates, booking.agentSlug).nationalParkFee || DEFAULT_NATIONAL_PARK_FEE}`}
+                                : `Exc: ${ratesForBooking(store.rates, booking).nationalParkFee || DEFAULT_NATIONAL_PARK_FEE}`}
                           </TableCell>
                           <TableCell
                             className={cn(

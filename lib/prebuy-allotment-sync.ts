@@ -15,6 +15,7 @@ import {
   listAgentAllotmentDailyByAgent,
   upsertAgentAllotmentDaily,
 } from '@/lib/supabase/agent-allotment-daily-db'
+import { loadDeductChildren } from '@/lib/supabase/agent-allotment-settings-db'
 import { hasSupabaseConfig } from '@/lib/supabase/client'
 
 export type PrebuyHeadBalance = {
@@ -72,7 +73,10 @@ export async function syncPrebuyDeductFromInvoice(
   if (billing !== 'prebuy') return { ok: true }
   if (!hasSupabaseConfig()) return { ok: true }
 
-  const heads = prebuyDeductHeads(doc.items)
+  const program = documentProgram(doc) ?? 'PP'
+  // Adults-only agents keep their children's heads. Children are billed on a separate invoice.
+  const deductChildren = await loadDeductChildren(doc.agentSlug, program)
+  const heads = prebuyDeductHeads(doc.items, deductChildren)
   if (heads <= 0) return { ok: true }
 
   const byDate = new Map<string, number>()
@@ -87,12 +91,11 @@ export async function syncPrebuyDeductFromInvoice(
     if (!isDeductLine) continue
     const day = (item.travelDate || doc.issueDate || '').slice(0, 10)
     if (!day) continue
-    const lineHeads = Math.max(0, item.adults) + Math.max(0, item.children)
+    const lineHeads = Math.max(0, item.adults) + (deductChildren ? Math.max(0, item.children) : 0)
     if (lineHeads <= 0) continue
     byDate.set(day, (byDate.get(day) ?? 0) + lineHeads)
   }
   if (byDate.size === 0) return { ok: true }
-  const program = documentProgram(doc) ?? 'PP'
 
   try {
     const existing = await listAgentAllotmentDailyByAgent(doc.agentSlug)

@@ -119,6 +119,11 @@ export type AllotmentSheetLine = {
   counted: boolean
   /** Usage taken from live bookings before Daily checker save. */
   pending: boolean
+  /**
+   * Children on this day that are NOT taken off the head count because the agent
+   * pays for them on a separate invoice. 0 when children are deducted.
+   */
+  childrenInvoiced: number
   lotId: string | null
   paymentId: string | null
 }
@@ -178,7 +183,10 @@ export function buildAllotmentSheet(input: {
   daily: AgentAllotmentDaily[]
   bookings: AgentBookingDayPax[]
   today: string
+  /** false = only adults come off the head count; children are shown as invoiced. Default true. */
+  deductChildren?: boolean
 }): AllotmentSheetLine[] {
+  const deductChildren = input.deductChildren !== false
   const lots = sortLots(input.lots)
   if (lots.length === 0) return []
   const earliest = lotOpen(lots[0]!)
@@ -209,6 +217,7 @@ export function buildAllotmentSheet(input: {
         value: null,
         counted: true,
         pending: false,
+        childrenInvoiced: 0,
         lotId: lot.id,
         paymentId: transfer.id.endsWith('-opening') ? null : transfer.id,
       })
@@ -228,21 +237,35 @@ export function buildAllotmentSheet(input: {
     const saved = savedByDay.get(day)
     const booking = bookingByDay.get(day)
     const savedHeads = Math.max(0, saved?.totalDeduct ?? 0)
-    const bookingHeads = Math.max(0, booking?.totalDeduct ?? 0)
+    const dayAdults = Math.max(0, booking?.adults ?? 0)
+    const dayChildren = Math.max(0, booking?.children ?? 0)
+    // Adults-only agents: children never come off the head count. They are shown as invoiced.
+    const bookingHeads = booking ? (deductChildren ? dayAdults + dayChildren : dayAdults) : 0
+    const childrenInvoiced = deductChildren ? 0 : dayChildren
     // A saved 0 must not hide live bookings. Charged cancels are already inside bookingHeads.
-    if (savedHeads <= 0 && bookingHeads <= 0) continue
+    if (savedHeads <= 0 && bookingHeads <= 0 && childrenInvoiced <= 0) continue
     const pending = !saved
     // A saved daily total can be only part of the day (one invoice). Every booking on the day is still used.
     const heads = Math.max(savedHeads, bookingHeads)
-    if (heads <= 0) continue
+    if (heads <= 0 && childrenInvoiced <= 0) continue
     const counted = saved ? Boolean(saved.allotmentId) || day <= input.today : day <= input.today
     const mix =
-      booking && (pending || booking.totalDeduct === heads)
-        ? `${booking.adults}A+${booking.children}C`
+      booking && (pending || bookingHeads === heads)
+        ? deductChildren
+          ? `${booking.adults}A+${booking.children}C`
+          : childrenInvoiced > 0
+            ? `${booking.adults}A · ${childrenInvoiced}C invoiced`
+            : `${booking.adults}A`
         : ''
     const note = [mix, saved ? cleanNote(saved.note) : ''].filter(Boolean).join(' · ')
     const rates = ratesOn(day)
-    const value = usageCharge(heads, booking?.adults ?? 0, booking?.children ?? 0, rates.adult, rates.child)
+    const value = usageCharge(
+      heads,
+      dayAdults,
+      deductChildren ? dayChildren : 0,
+      rates.adult,
+      rates.child,
+    )
     const bookings = (booking?.bookings ?? []).map((item) => ({
       code: item.code,
       agentRef: item.agentRef,
@@ -283,6 +306,7 @@ export function buildAllotmentSheet(input: {
         value: null,
         counted,
         pending: false,
+        childrenInvoiced: 0,
         lotId: null,
         paymentId: null,
       })
@@ -300,6 +324,7 @@ export function buildAllotmentSheet(input: {
         value: null,
         counted,
         pending: false,
+        childrenInvoiced: 0,
         lotId: null,
         paymentId: null,
       })
@@ -316,6 +341,7 @@ export function buildAllotmentSheet(input: {
       value: value === 0 ? null : value,
       counted,
       pending,
+      childrenInvoiced,
       lotId: null,
       paymentId: null,
     })
@@ -333,6 +359,7 @@ export function buildAllotmentSheet(input: {
         value: null,
         counted,
         pending: false,
+        childrenInvoiced: 0,
         lotId: null,
         paymentId: null,
       })
@@ -361,6 +388,7 @@ export function buildAllotmentSheet(input: {
       moneyLeft,
       counted: event.counted,
       pending: event.pending,
+      childrenInvoiced: event.childrenInvoiced,
       lotId: event.lotId,
       paymentId: event.paymentId,
     }

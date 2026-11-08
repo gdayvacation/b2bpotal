@@ -53,7 +53,7 @@ import {
 } from '@/components/ui/table'
 import { addDaysISO, formatShortDate, startOfToday, toISODate } from '@/lib/format'
 import { OPS_BOOKING_LOOKBACK_DAYS } from '@/lib/supabase/portal-db'
-import { bookingTourAmount, parseAgentBillingType, ratesForAgent } from '@/lib/invoice'
+import { bookingTourAmount, parseAgentBillingType, ratesForBooking } from '@/lib/invoice'
 import { formatThbAmount, isLateFeeTimeForDate } from '@/lib/booking-cutoffs'
 import { usePortalTodayISO } from '@/lib/use-portal-today'
 import {
@@ -571,7 +571,7 @@ export function AdminBookings() {
   }
 
   function openCancel(booking: Booking) {
-    const rates = ratesForAgent(invoiceStore.rates, booking.agentSlug)
+    const rates = ratesForBooking(invoiceStore.rates, booking)
     const suggested = bookingTourAmount(booking, rates)
     const late = isLateFeeTimeForDate(bookingCutoffs, booking.date)
     setCancelCharge(late && suggested > 0 ? String(suggested) : '0')
@@ -1098,14 +1098,14 @@ export function AdminBookings() {
               <AdminCancelChargeField
                 suggested={bookingTourAmount(
                   cancelTarget,
-                  ratesForAgent(invoiceStore.rates, cancelTarget.agentSlug),
+                  ratesForBooking(invoiceStore.rates, cancelTarget),
                 )}
                 value={cancelCharge}
                 onChange={setCancelCharge}
                 lateWindow={isLateFeeTimeForDate(bookingCutoffs, cancelTarget.date)}
                 prebuy={
                   parseAgentBillingType(
-                    ratesForAgent(invoiceStore.rates, cancelTarget.agentSlug).billingType,
+                    ratesForBooking(invoiceStore.rates, cancelTarget).billingType,
                   ) === 'prebuy'
                 }
               />
