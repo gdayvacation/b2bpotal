@@ -232,7 +232,7 @@ const COPY = {
     addonReceiptTitle: 'Add-on receipt',
     addonPayStaff:
       'Please contact marina staff to pay, confirm the service, and get the ticket.',
-    addonDone: 'Done',
+    addonDone: 'Done, and go to Pay',
     addonIconScuba: 'Scuba Diving',
     addonIconShared: 'Share LongTail Boat',
     addonIconPrivate: 'Private LongTail Boat',
@@ -502,7 +502,7 @@ const COPY = {
     addonReceiptTitle: 'ऐड-ऑन रसीद',
     addonPayStaff:
       'कृपया भुगतान करके सेवा की पुष्टि करने और टिकट लेने के लिए मरीना स्टाफ से संपर्क करें।',
-    addonDone: 'हो गया',
+    addonDone: 'हो गया, भुगतान करें',
     addonIconScuba: 'स्कूबा डाइविंग',
     addonIconShared: 'शेयर लॉन्गटेल नाव',
     addonIconPrivate: 'प्राइवेट लॉन्गटेल नाव',

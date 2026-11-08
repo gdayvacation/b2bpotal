@@ -233,6 +233,19 @@
   }
 }
 
+@keyframes gday-pay-nudge {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  40% {
+    transform: translateY(-4px);
+  }
+  70% {
+    transform: translateY(1px);
+  }
+}
+
 @keyframes gday-fade-up {
   from {
     opacity: 0;

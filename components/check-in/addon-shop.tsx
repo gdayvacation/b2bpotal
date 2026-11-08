@@ -310,9 +310,17 @@ export function AddonShop({
 
   useEffect(() => {
     if (!notedKind) return
-    const timer = window.setTimeout(() => setNotedKind(null), 2500)
+    const timer = window.setTimeout(() => setNotedKind(null), 4500)
     return () => window.clearTimeout(timer)
   }, [notedKind])
+
+  useEffect(() => {
+    if (!notedKind || services.length === 0) return
+    document.getElementById('addon-added')?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    })
+  }, [notedKind, services.length])
 
   function partyOf(line: CheckInServiceLine) {
     const draft = draftParty[line.id]
@@ -519,7 +527,13 @@ export function AddonShop({
       ) : null}
 
       {services.length > 0 ? (
-        <div className="rounded-2xl bg-white px-4 py-3.5 shadow-md shadow-emerald-900/10 ring-1 ring-emerald-300/80">
+        <div
+          id="addon-added"
+          className={cn(
+            'scroll-mt-4 rounded-2xl bg-white px-4 py-3.5 shadow-md shadow-emerald-900/10 ring-1 ring-emerald-300/80',
+            notedKind && 'ring-2 ring-emerald-500',
+          )}
+        >
           <p className="text-sm font-semibold text-emerald-950">{t('addonSummary')}</p>
           <ul className="mt-2 space-y-2">
             {services.map((line) => {
@@ -689,7 +703,14 @@ export function AddonShop({
               {t('addonConfirmedWait')}
             </p>
           ) : null}
-          <Button type="button" className="mt-3 h-11 w-full" onClick={onDone}>
+          <Button
+            type="button"
+            className={cn(
+              'mt-3 h-11 w-full',
+              notedKind && 'motion-safe:animate-[gday-pay-nudge_0.7s_ease-in-out_3]',
+            )}
+            onClick={onDone}
+          >
             {t('addonDone')}
           </Button>
         </div>
