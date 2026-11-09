@@ -3,7 +3,8 @@ export const GUEST_SIGNED_IN_EVENT = 'gday-guest-signed-in'
 
 export const HELPER_DATE_COOKIE = 'gday-helper-date'
 export const HELPER_KEY_COOKIE = 'gday-helper-key'
-export const HELPER_COOKIE_MAX_AGE = 60 * 60 * 16
+/** Long enough for a scan the evening before to last through the next tour day. */
+export const HELPER_COOKIE_MAX_AGE = 60 * 60 * 48
 
 export type HelperBoardState = 'ok' | 'too_early' | 'closed' | 'invalid'
 

@@ -83,18 +83,7 @@ import {
 import { getArrivedPaxSnapshot } from '@/lib/check-in-arrived-pax'
 import { formatGuestPaxParts, hasPartialNoShow, originalBookedPax } from '@/lib/check-in-booked-pax'
 import { publicOrigin } from '@/lib/public-origin'
-import {
-  DEFAULT_HELPER_BOARD_HOURS,
-  helperBoardHoursValid,
-  helperBoardIssueDate,
-  helperBoardUrl,
-  isHelperBoardClosed,
-  isHelperBoardNotYetOpen,
-  isHelperBoardOpen,
-  loadHelperBoardHours,
-  saveHelperBoardHours,
-  type HelperBoardHours,
-} from '@/lib/check-in-helper'
+import { helperBoardUrl } from '@/lib/check-in-helper'
 import { sharedLongtailQtyLabel } from '@/lib/check-in-addon-catalog'
 import { guestCheckInUrl } from '@/lib/check-in-qr'
 import { useQrDataUrl } from '@/lib/use-qr-data-url'
@@ -750,59 +739,51 @@ function QrTab() {
   const [origin, setOrigin] = useState('')
   const [now, setNow] = useState(() => new Date())
   const [copied, setCopied] = useState(false)
-  const [hours, setHours] = useState<HelperBoardHours>(DEFAULT_HELPER_BOARD_HOURS)
+  const [issueDate, setIssueDate] = useState('')
   const [helperKey, setHelperKey] = useState('')
   const [helperError, setHelperError] = useState('')
-  const hoursOk = helperBoardHoursValid(hours)
-  const issueDate = helperBoardIssueDate(now, hours)
   const today = todayISO(now)
-  const todayClosed = isHelperBoardClosed(today, now, hours)
-  const todayNotOpen = isHelperBoardNotYetOpen(today, now, hours)
-  const todayOpen = isHelperBoardOpen(today, now, hours)
   const helperUrl =
-    origin && hoursOk && helperKey ? helperBoardUrl(origin, issueDate, hours, helperKey) : ''
+    origin && issueDate && helperKey ? helperBoardUrl(origin, issueDate, helperKey) : ''
   const qrSrc = useQrDataUrl(helperUrl)
 
   useEffect(() => {
     setOrigin(publicOrigin())
-    setHours(loadHelperBoardHours())
     const id = window.setInterval(() => setNow(new Date()), 15_000)
-    return () => window.clearInterval(id)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') setNow(new Date())
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.clearInterval(id)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [])
 
   useEffect(() => {
-    if (!hoursOk) {
-      setHelperKey('')
-      return
-    }
     let cancelled = false
-    setHelperKey('')
     setHelperError('')
     ;(async () => {
-      const response = await fetch('/api/check-in/helper/link', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: issueDate, open: hours.open, close: hours.close }),
-      })
+      const response = await fetch('/api/check-in/helper/link', { method: 'POST' })
       const payload = (await response.json().catch(() => ({}))) as {
+        date?: string
         key?: string
         error?: string
       }
       if (cancelled) return
-      if (!response.ok || !payload.key) {
+      if (!response.ok || !payload.key || !payload.date) {
+        setHelperKey('')
+        setIssueDate('')
         setHelperError(payload.error || 'Could not create helper QR.')
         return
       }
+      setIssueDate(payload.date)
       setHelperKey(payload.key)
     })()
     return () => {
       cancelled = true
     }
-  }, [hours.close, hours.open, hoursOk, issueDate])
-
-  function updateHours(patch: Partial<HelperBoardHours>) {
-    setHours((current) => saveHelperBoardHours({ ...current, ...patch }))
-  }
+  }, [today])
 
   async function copyLink() {
     if (!helperUrl) return
@@ -823,54 +804,16 @@ function QrTab() {
         </div>
         <p className="text-sm font-semibold text-teal-950">QR code for Helper</p>
         <p className="mt-1 max-w-sm text-xs leading-relaxed text-teal-900/50">
-          Staff scan this to open the van board for {formatLongDate(issueDate)}. They can make guest
-          QR codes and see hotel, boat, and pay. Service and ticket stay admin-only.
+          {issueDate
+            ? `Staff scan this to open the van board for ${formatLongDate(issueDate)}. It stays open, with no open or close time.`
+            : 'Staff scan this to open the van board. It stays open, with no open or close time.'}{' '}
+          They can make guest QR codes and see hotel, boat, and pay. Service and ticket stay
+          admin-only.
         </p>
-
-        <div className="mt-4 grid w-full grid-cols-2 gap-3 text-left">
-          <div className="space-y-1.5">
-            <Label htmlFor="helper-qr-open">Open QR</Label>
-            <Input
-              id="helper-qr-open"
-              type="time"
-              value={hours.open}
-              onChange={(event) => updateHours({ open: event.target.value })}
-              className="h-10"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="helper-qr-close">Close QR</Label>
-            <Input
-              id="helper-qr-close"
-              type="time"
-              value={hours.close}
-              onChange={(event) => updateHours({ close: event.target.value })}
-              className="h-10"
-            />
-          </div>
-        </div>
         <p className="mt-2 w-full text-left text-[11px] leading-relaxed text-teal-800/60">
-          Helpers can open this board from {hours.open} until {hours.close} Thailand time on{' '}
-          {formatLongDate(issueDate)}. After {hours.close} the page locks and cannot be opened again.
+          Helpers can check guests in any time for this day. After midnight the check-in date moves
+          to the next day, and they can see that day’s guests.
         </p>
-        {!hoursOk ? (
-          <p className="mt-2 w-full rounded-xl bg-rose-50 px-3 py-2 text-left text-xs font-medium text-rose-900">
-            Close QR must be later than Open QR.
-          </p>
-        ) : todayClosed ? (
-          <p className="mt-2 w-full rounded-xl bg-amber-50 px-3 py-2 text-left text-xs font-medium text-amber-900">
-            Today’s helper board closed at {hours.close}. This QR is for tomorrow — it opens at{' '}
-            {hours.open}.
-          </p>
-        ) : todayNotOpen ? (
-          <p className="mt-2 w-full rounded-xl bg-sky-50 px-3 py-2 text-left text-xs font-medium text-sky-950">
-            Helper board opens at {hours.open} Thailand time. This QR is ready to share now.
-          </p>
-        ) : todayOpen ? (
-          <p className="mt-2 w-full rounded-xl bg-teal-50 px-3 py-2 text-left text-xs font-medium text-teal-900">
-            Helper board is open now. It closes at {hours.close} Thailand time.
-          </p>
-        ) : null}
         <div className="mt-5 w-full overflow-hidden rounded-2xl bg-white p-3 ring-1 ring-teal-900/10">
           {qrSrc ? (
             // eslint-disable-next-line @next/next/no-img-element

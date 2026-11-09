@@ -1557,8 +1557,8 @@ function AgentGroupSection({
                   key={`${group.agentSlug}-${booking.code}`}
                   className={cn(
                     stripe
-                      ? 'bg-teal-50/50 hover:bg-teal-50/70'
-                      : 'bg-stone-50/80 hover:bg-stone-100/70',
+                      ? 'bg-emerald-50 hover:bg-emerald-100'
+                      : 'bg-stone-200 hover:bg-stone-300',
                   )}
                 >
                   <TableCell className="tabular-nums text-teal-900/55">{no}</TableCell>
@@ -1636,7 +1636,7 @@ function AgentGroupSection({
                       rowSpan={span}
                       className={cn(
                         'align-middle border-l border-teal-900/15 px-3 py-2.5',
-                        stripe ? 'bg-teal-50/50' : 'bg-stone-50/80',
+                        stripe ? 'bg-emerald-50' : 'bg-stone-200',
                       )}
                     >
                       {vanLabel.startsWith('Van') ? (
@@ -1808,7 +1808,7 @@ function AgentJobOrderPrintSheet({
                         return (
                           <tr
                             key={`${group.agentSlug}-${booking.code}`}
-                            className={stripe ? 'bg-teal-50/55' : 'bg-stone-50/70'}
+                            className={stripe ? 'bg-emerald-50' : 'bg-stone-200'}
                           >
                             <td className={cn(td, 'text-center tabular-nums text-teal-900/55')}>
                               {no}
@@ -1863,7 +1863,7 @@ function AgentJobOrderPrintSheet({
                                 className={cn(
                                   td,
                                   'align-middle',
-                                  stripe ? 'bg-teal-50/55' : 'bg-stone-50/70',
+                                  stripe ? 'bg-emerald-50' : 'bg-stone-200',
                                 )}
                               >
                                 {vanLabel.startsWith('Van')

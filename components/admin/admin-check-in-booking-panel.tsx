@@ -298,7 +298,7 @@ export function AdminCheckInBookingPanel({
     setCheckInAttendance(today, booking.program, booking.code, null)
   }
 
-  function applyPartialNoShow() {
+  async function applyPartialNoShow() {
     if (!booking) return
     setError('')
     if (nsTotal < 1) {
@@ -345,7 +345,7 @@ export function AdminCheckInBookingPanel({
       trimCheckInEnrollments(today, booking.program, booking.code, nextTotal)
     }
 
-    const result = updateBookingDetails(
+    const result = await updateBookingDetails(
       booking.code,
       {
         adults: nextAdults,
@@ -406,7 +406,7 @@ export function AdminCheckInBookingPanel({
 
     // Everyone moves: the whole booking goes to the new date and carries the extra charge there.
     if (movesEveryone) {
-      const moved = changeBookingDate(booking.code, newDate, {
+      const moved = await changeBookingDate(booking.code, newDate, {
         bypassCutoff: true,
         actor,
         lateDateChange: false,
@@ -478,7 +478,7 @@ export function AdminCheckInBookingPanel({
       infants: moveInfants,
       tourLeaders: moveTourLeaders,
     })
-    const shrink = updateBookingDetails(
+    const shrink = await updateBookingDetails(
       booking.code,
       {
         adults: stayAdults,
@@ -522,11 +522,11 @@ export function AdminCheckInBookingPanel({
     setExtraCharge('')
   }
 
-  function undoNoShow() {
+  async function undoNoShow() {
     if (!booking || !undoTarget || !undoRestore || !canUndoNoShow) return
     setError('')
     setSaving(true)
-    const result = updateBookingDetails(
+    const result = await updateBookingDetails(
       booking.code,
       { ...undoTarget },
       { actor, bypassCutoff: true, lateChangeFee: 0, opsAdjust: true },
@@ -551,7 +551,7 @@ export function AdminCheckInBookingPanel({
     setAction(null)
   }
 
-  function applyOwnArrival() {
+  async function applyOwnArrival() {
     if (!booking) return
     setArrivalError('')
     if (arrTotal < 1) {
@@ -624,7 +624,7 @@ export function AdminCheckInBookingPanel({
     }
 
     if (canRestoreSeats) {
-      const result = updateBookingDetails(
+      const result = await updateBookingDetails(
         booking.code,
         {
           adults: Math.min(bookedCap.adults, booking.adults + arrived.adults),
@@ -649,7 +649,7 @@ export function AdminCheckInBookingPanel({
       if (restoredAll) clearArrivedPaxSnapshot(today, booking.program, booking.code)
     } else {
       const arrivedAll = paxTotal(arrived) >= currentTotal
-      const result = updateBookingDetails(
+      const result = await updateBookingDetails(
         booking.code,
         {
           ...(attendance === 'no-show' && !arrivedAll

@@ -81,6 +81,8 @@ import type {
 } from '@/lib/types'
 import {
   DEFAULT_BOAT_CAPACITY,
+  DEFAULT_JB_CAPACITY,
+  DEFAULT_PP_CAPACITY,
   dayBoatPlanKey,
   dayVehiclePlanKey,
   emptyDayBoatPlan,
@@ -487,6 +489,102 @@ export function isMissingBookingCodeAllocator(message: string) {
   return /could not find the function|portal_allocate_booking_code[^\n]* does not exist|PGRST202|42883/i.test(
     message,
   )
+}
+
+function writeErrorText(error: unknown) {
+  if (typeof error === 'string') return error
+  if (error instanceof Error) return error.message
+  if (!error || typeof error !== 'object') return ''
+  const row = error as { message?: string; details?: string; hint?: string }
+  return [row.message, row.details, row.hint].filter(Boolean).join(' ')
+}
+
+/** Pull the user-facing sentence out of a seat-limit database error. */
+export function readSeatLimitError(error: unknown): string | null {
+  const message = writeErrorText(error)
+  const marker = 'SEAT_LIMIT:'
+  const index = message.indexOf(marker)
+  if (index < 0) return null
+  return message.slice(index + marker.length).trim() || 'This departure is sold out.'
+}
+
+export function bookingWriteError(error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : ''
+  return readSeatLimitError(message) ?? (message || fallback)
+}
+
+function throwIfSeatLimit(error: { message?: string; details?: string; hint?: string } | null) {
+  const seat = readSeatLimitError(error)
+  if (seat) throw new Error(seat)
+}
+
+export function isMissingSeatUsage(message: string) {
+  return /portal_seat_usage|could not find the function|PGRST202|42883|does not exist/i.test(message)
+}
+
+export function seatUsageKey(date: string, program: string) {
+  return `${date.slice(0, 10)}|${program}`
+}
+
+/** Replace totals inside the fetched window and keep dates outside it. */
+export function mergeSeatUsage(
+  current: Record<string, number>,
+  incoming: Record<string, number>,
+  from: string,
+  to: string,
+) {
+  const next: Record<string, number> = {}
+  for (const [key, value] of Object.entries(current)) {
+    const date = key.slice(0, 10)
+    if (date < from || date > to) next[key] = value
+  }
+  return { ...next, ...incoming }
+}
+
+type SeatUsageRow = { travel_date: string; program: string; booked: number }
+
+/** Booked seats for every agency. Returns totals only — no guest names. */
+export async function fetchSeatUsage(fromDate: string, toDate: string) {
+  const supabase = getSupabaseBrowserClient()
+  const { data, error } = await supabase.rpc('portal_seat_usage', {
+    p_from: fromDate.slice(0, 10),
+    p_to: toDate.slice(0, 10),
+  })
+  if (error) throw new Error([error.message, error.details, error.hint].filter(Boolean).join(' '))
+  const next: Record<string, number> = {}
+  for (const row of (data ?? []) as SeatUsageRow[]) {
+    const date = String(row.travel_date).slice(0, 10)
+    next[seatUsageKey(date, row.program)] = Number(row.booked) || 0
+  }
+  return next
+}
+
+/** Live booked count and the capacity saved for that program. */
+export async function fetchDaySeatState(date: string, program: 'PP' | 'James Bond') {
+  const iso = date.slice(0, 10)
+  const supabase = getSupabaseBrowserClient()
+  const [usage, availabilityRes] = await Promise.all([
+    fetchSeatUsage(iso, iso),
+    supabase
+      .from('availability')
+      .select('pp_capacity,james_bond_capacity')
+      .eq('date', iso)
+      .maybeSingle(),
+  ])
+  if (availabilityRes.error) throw new Error(availabilityRes.error.message)
+  const row = availabilityRes.data
+  const ppCapacity = row ? Number(row.pp_capacity) : null
+  const jamesBondCapacity = row ? Number(row.james_bond_capacity) : null
+  const capacity =
+    program === 'PP'
+      ? (ppCapacity ?? DEFAULT_PP_CAPACITY)
+      : (jamesBondCapacity ?? DEFAULT_JB_CAPACITY)
+  return {
+    booked: usage[seatUsageKey(iso, program)] ?? 0,
+    capacity,
+    ppCapacity,
+    jamesBondCapacity,
+  }
 }
 
 /**
@@ -1222,19 +1320,25 @@ export async function insertBooking(booking: Booking) {
   const row = bookingToRow(booking)
   const { error } = await supabase.from('bookings').insert(row)
   if (!error) return
+  throwIfSeatLimit(error)
   const { no_show_date_move: _noShowDateMove, ...withoutMoveFlag } = row
   const retryMove = await supabase.from('bookings').insert(withoutMoveFlag)
   if (!retryMove.error) return
+  throwIfSeatLimit(retryMove.error)
   const { late_cancel: _lateCancel, cancel_fee: _cancelFee, ...withoutCancel } = withoutMoveFlag
   const { error: withoutCancelError } = await supabase.from('bookings').insert(withoutCancel)
   if (!withoutCancelError) return
+  throwIfSeatLimit(withoutCancelError)
   const {
     late_change_fee: _lateChangeFee,
     late_date_change: _lateDateChange,
     ...withoutFee
   } = withoutCancel
   const { error: fallbackError } = await supabase.from('bookings').insert(withoutFee)
-  if (fallbackError) throw new Error(`insert booking: ${fallbackError.message}`)
+  if (fallbackError) {
+    throwIfSeatLimit(fallbackError)
+    throw new Error(`insert booking: ${fallbackError.message}`)
+  }
 }
 
 export async function updateBookingStatus(
@@ -1293,10 +1397,12 @@ export async function updateBookingDate(
   }
   const { error } = await supabase.from('bookings').update(patch).eq('code', code)
   if (!error) return
+  throwIfSeatLimit(error)
   if (extra?.noShowDateMove !== undefined) {
     const { no_show_date_move: _noShowDateMove, ...withoutFlag } = patch
     const retry = await supabase.from('bookings').update(withoutFlag).eq('code', code)
     if (!retry.error) return
+    throwIfSeatLimit(retry.error)
   }
   if (
     extra?.lateChangeFee !== undefined ||
@@ -1308,6 +1414,7 @@ export async function updateBookingDate(
       .update({ date })
       .eq('code', code)
     if (!fallbackError) return
+    throwIfSeatLimit(fallbackError)
     throw new Error(`update booking date: ${fallbackError.message}`)
   }
   throw new Error(`update booking date: ${error.message}`)
@@ -1320,7 +1427,10 @@ export async function updateBookingRebook(
 ) {
   const supabase = getSupabaseBrowserClient()
   const { error } = await supabase.from('bookings').update({ date, status }).eq('code', code)
-  if (error) throw new Error(`rebook booking: ${error.message}`)
+  if (error) {
+    throwIfSeatLimit(error)
+    throw new Error(`rebook booking: ${error.message}`)
+  }
 }
 
 export async function updateBookingDetails(
@@ -1384,6 +1494,7 @@ export async function updateBookingDetails(
   }
   const { error } = await supabase.from('bookings').update(payload).eq('code', booking.code)
   if (!error) return
+  throwIfSeatLimit(error)
   const {
     original_adults: _originalAdults,
     original_children: _originalChildren,
@@ -1404,7 +1515,10 @@ export async function updateBookingDetails(
     .from('bookings')
     .update(withoutPrivate)
     .eq('code', booking.code)
-  if (fallbackError) throw new Error(`update booking details: ${fallbackError.message}`)
+  if (fallbackError) {
+    throwIfSeatLimit(fallbackError)
+    throw new Error(`update booking details: ${fallbackError.message}`)
+  }
 }
 
 type BookingEventRow = {

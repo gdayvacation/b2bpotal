@@ -65,7 +65,7 @@ export function PickupNoShowDialog({
     tourLeaders: booking.tourLeaders,
   })
 
-  function applyPartial() {
+  async function applyPartial() {
     if (!booking) return
     setError('')
     if (nsTotal < 1) {
@@ -111,7 +111,7 @@ export function PickupNoShowDialog({
     if (nextTotal < enrolled) {
       trimCheckInEnrollments(today, booking.program, booking.code, nextTotal)
     }
-    const result = updateBookingDetails(
+    const result = await updateBookingDetails(
       booking.code,
       {
         adults: nextAdults,

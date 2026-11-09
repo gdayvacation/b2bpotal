@@ -2711,6 +2711,10 @@ function VehicleBoard({
                                 </Button>
                               ) : null}
                             </div>
+                            {/* Guests whose pickup zone is "No Transfer" belong on this card by
+                                definition — deleting it would hide them from the van board. */}
+                            {isNoTransferCard &&
+                            items.some((item) => isNoTransfer(item.booking.pickupZone)) ? null : (
                             <Button
                               type="button"
                               variant="ghost"
@@ -2718,6 +2722,16 @@ function VehicleBoard({
                               className="ml-auto h-6 shrink-0 px-1.5 text-[10px] text-rose-800 hover:bg-rose-50 hover:text-rose-900"
                               onClick={(event) => {
                                 event.stopPropagation()
+                                const guestCount = items.length
+                                if (
+                                  !window.confirm(
+                                    guestCount > 0
+                                      ? `Delete ${vanBoardLabel(van, plan)} only? ${guestCount} guest booking(s) on this van go back to waiting. Other vans and all boat cards are not changed.`
+                                      : `Delete ${vanBoardLabel(van, plan)}? Other vans are not changed.`,
+                                  )
+                                ) {
+                                  return
+                                }
                                 onRemoveVan(van)
                                 if (openVan === van) setOpenVan(null)
                               }}
@@ -2725,6 +2739,7 @@ function VehicleBoard({
                               <Trash2 className="size-3" />
                               Delete
                             </Button>
+                            )}
                           </div>
                         </div>
 

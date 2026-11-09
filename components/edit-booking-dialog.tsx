@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { HotelCombobox, hotelQueryHasMatches } from '@/components/hotel-combobox'
 import { usePortal } from '@/components/portal-provider'
 import { Button } from '@/components/ui/button'
@@ -100,6 +100,8 @@ export function EditBookingDialog({
   const [parkFee, setParkFee] = useState<IncludeOption>('Included')
   const [canoe, setCanoe] = useState<IncludeOption>('Included')
   const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
   const [confirmLate, setConfirmLate] = useState(false)
   const [confirmDuplicate, setConfirmDuplicate] = useState(false)
   const [duplicateText, setDuplicateText] = useState('')
@@ -247,7 +249,8 @@ export function EditBookingDialog({
     setPrivateDriverPhone('')
   }
 
-  function handleSave() {
+  async function handleSave() {
+    if (savingRef.current) return
     if (!booking) return
     const agentKeepsPrivate = transferKind === 'private' && !canUsePrivate
     if (transferKind === 'private' && canUsePrivate && !privateVehicle && privatePickupTime.trim()) {
@@ -312,75 +315,82 @@ export function EditBookingDialog({
       return
     }
 
-    const result = updateBookingDetails(
-      booking.code,
-      {
-        leadGuest,
-        adults,
-        children,
-        infants,
-        tourLeaders,
-        pickupZone: zoneForSave,
-        pickupHotel: hotelForSave,
-        roomNumber: roomNumber,
-        pickupTime:
-          transferKind === 'private' && canUsePrivate
-            ? privatePickupTime.trim() || 'Awaiting pickup time'
+    savingRef.current = true
+    setSaving(true)
+    try {
+      const result = await updateBookingDetails(
+        booking.code,
+        {
+          leadGuest,
+          adults,
+          children,
+          infants,
+          tourLeaders,
+          pickupZone: zoneForSave,
+          pickupHotel: hotelForSave,
+          roomNumber: roomNumber,
+          pickupTime:
+            transferKind === 'private' && canUsePrivate
+              ? privatePickupTime.trim() || 'Awaiting pickup time'
+              : undefined,
+          privateTransferVehicle: agentKeepsPrivate
+            ? booking.privateTransferVehicle
+            : transferKind === 'private'
+              ? privateVehicle
+              : '',
+          privateTransferPrice: agentKeepsPrivate
+            ? booking.privateTransferPrice
+            : transferKind === 'private' && privateVehicle
+              ? privateTransferPriceFor(privateVehicle)
+              : '',
+          privateDriverName: agentKeepsPrivate
+            ? booking.privateDriverName
+            : transferKind === 'private'
+              ? privateDriverName
+              : '',
+          privateDriverPhone: agentKeepsPrivate
+            ? booking.privateDriverPhone
+            : transferKind === 'private'
+              ? privateDriverPhone
+              : '',
+          note,
+          cashOnTour,
+          agentRef,
+          parkFee,
+          canoe: booking.program === 'James Bond' ? canoe : null,
+        },
+        {
+          bypassCutoff,
+          actor,
+          lateChangeFee: reduceCharge
+            ? bypassCutoff
+              ? parsedAdminFee
+              : suggestedReduceFee
             : undefined,
-        privateTransferVehicle: agentKeepsPrivate
-          ? booking.privateTransferVehicle
-          : transferKind === 'private'
-            ? privateVehicle
-            : '',
-        privateTransferPrice: agentKeepsPrivate
-          ? booking.privateTransferPrice
-          : transferKind === 'private' && privateVehicle
-            ? privateTransferPriceFor(privateVehicle)
-            : '',
-        privateDriverName: agentKeepsPrivate
-          ? booking.privateDriverName
-          : transferKind === 'private'
-            ? privateDriverName
-            : '',
-        privateDriverPhone: agentKeepsPrivate
-          ? booking.privateDriverPhone
-          : transferKind === 'private'
-            ? privateDriverPhone
-            : '',
-        note,
-        cashOnTour,
-        agentRef,
-        parkFee,
-        canoe: booking.program === 'James Bond' ? canoe : null,
-      },
-      {
-        bypassCutoff,
-        actor,
-        lateChangeFee: reduceCharge
-          ? bypassCutoff
-            ? parsedAdminFee
-            : suggestedReduceFee
-          : undefined,
-      },
-    )
-    if (!result.ok) {
-      setError(result.error)
-      return
-    }
-    // If the pax changed and there is a check-in "arrived" override for this booking,
-    // clear it so the check-in board re-reads from the updated booking.  This handles
-    // the case where a group has already fully checked in and the admin then adds (or
-    // removes) guests from the Booking page — without clearing the override the board
-    // would keep using the stale arrived count and hide the new guest slot.
-    const newTotal = adults + children + infants + tourLeaders
-    const oldTotal = totalPassengers(booking)
-    if (newTotal !== oldTotal) {
-      const arrivedSnap = getArrivedPaxSnapshot(booking.date, booking.program, booking.code)
-      if (arrivedSnap) {
-        clearArrivedPaxSnapshot(booking.date, booking.program, booking.code)
+        },
+      )
+      if (!result.ok) {
+        setError(result.error)
+        return
       }
+      // If the pax changed and there is a check-in "arrived" override for this booking,
+      // clear it so the check-in board re-reads from the updated booking.  This handles
+      // the case where a group has already fully checked in and the admin then adds (or
+      // removes) guests from the Booking page — without clearing the override the board
+      // would keep using the stale arrived count and hide the new guest slot.
+      const newTotal = adults + children + infants + tourLeaders
+      const oldTotal = totalPassengers(booking)
+      if (newTotal !== oldTotal) {
+        const arrivedSnap = getArrivedPaxSnapshot(booking.date, booking.program, booking.code)
+        if (arrivedSnap) {
+          clearArrivedPaxSnapshot(booking.date, booking.program, booking.code)
+        }
+      }
+      onOpenChange(false)
+    } finally {
+      savingRef.current = false
+      setSaving(false)
     }
-    onOpenChange(false)
   }
 
   const transferLockedPrivate = Boolean(
@@ -773,11 +783,14 @@ export function EditBookingDialog({
             type="button"
             onClick={handleSave}
             disabled={
+              saving ||
               (transferLockedPrivate && noTransfer) ||
               Boolean(seatsHint && pax > seatsHint.seatsLeft)
             }
           >
-            {startWithTransfer
+            {saving
+              ? 'Saving…'
+              : startWithTransfer
               ? confirmDuplicate
                 ? 'Save anyway'
                 : 'Save transfer'

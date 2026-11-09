@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AdminExtraChargeField,
   AmendmentPolicyNotice,
@@ -52,6 +52,8 @@ export function ChangeBookingDateDialog({
   const invoiceStore = useInvoiceStore()
   const [selected, setSelected] = useState<Date | undefined>()
   const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
   const [confirmLate, setConfirmLate] = useState(false)
   const [adminFee, setAdminFee] = useState('0')
   const isRebook = mode === 'rebook'
@@ -120,7 +122,8 @@ export function ChangeBookingDateDialog({
     isProgramClosed,
   ])
 
-  function handleSave() {
+  async function handleSave() {
+    if (savingRef.current) return
     if (!booking || !selected) {
       setError('Choose a travel date.')
       return
@@ -138,20 +141,27 @@ export function ChangeBookingDateDialog({
       setConfirmLate(true)
       return
     }
-    const result = isRebook
-      ? rebookBooking(booking.code, nextIso, { bypassCutoff, actor })
-      : changeBookingDate(booking.code, nextIso, {
-          bypassCutoff,
-          actor,
-          // Same cutoff as Add Booking: free before lateFeeFromTime, full charge after.
-          lateDateChange: needsAdminConfirm ? parsedAdminFee > 0 : lateChange ? true : undefined,
-          lateChangeFee: needsAdminConfirm ? parsedAdminFee : undefined,
-        })
-    if (!result.ok) {
-      setError(result.error)
-      return
+    savingRef.current = true
+    setSaving(true)
+    try {
+      const result = isRebook
+        ? await rebookBooking(booking.code, nextIso, { bypassCutoff, actor })
+        : await changeBookingDate(booking.code, nextIso, {
+            bypassCutoff,
+            actor,
+            // Same cutoff as Add Booking: free before lateFeeFromTime, full charge after.
+            lateDateChange: needsAdminConfirm ? parsedAdminFee > 0 : lateChange ? true : undefined,
+            lateChangeFee: needsAdminConfirm ? parsedAdminFee : undefined,
+          })
+      if (!result.ok) {
+        setError(result.error)
+        return
+      }
+      onOpenChange(false)
+    } finally {
+      savingRef.current = false
+      setSaving(false)
     }
-    onOpenChange(false)
   }
 
   const dateDialogCopy = booking
@@ -272,12 +282,13 @@ export function ChangeBookingDateDialog({
             type="button"
             onClick={handleSave}
             disabled={
+              saving ||
               !selected ||
               (selected ? dayUnavailable(selected) : true) ||
               selectedIso === booking?.date
             }
           >
-            {confirmLabel}
+            {saving ? 'Saving…' : confirmLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

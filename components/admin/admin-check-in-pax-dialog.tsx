@@ -140,7 +140,7 @@ export function AdminCheckInPaxDialog({
     }
 
     const note = appendRemark(booking.note, remark)
-    const result = updateBookingDetails(
+    const result = await updateBookingDetails(
       booking.code,
       {
         adults,

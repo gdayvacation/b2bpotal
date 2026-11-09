@@ -4,47 +4,15 @@ import { useEffect, useState } from 'react'
 import { Lock } from 'lucide-react'
 import { HelperCheckInBoard } from '@/components/admin/admin-check-in'
 import { BrandMark } from '@/components/brand-mark'
-import {
-  isHelperBoardClosed,
-  isHelperBoardNotYetOpen,
-  normalizeHelperBoardHours,
-} from '@/lib/check-in-helper'
 import { formatLongDate, formatShortDate } from '@/lib/format'
 import { publicOrigin } from '@/lib/public-origin'
 
-export function HelperCheckIn({
-  date,
-  openTime,
-  closeTime,
-}: {
-  date: string
-  openTime?: string
-  closeTime?: string
-}) {
+export function HelperCheckIn({ date }: { date: string }) {
   const [origin, setOrigin] = useState('')
-  const [now, setNow] = useState(() => new Date())
-  const hours = normalizeHelperBoardHours({ open: openTime, close: closeTime })
 
   useEffect(() => {
     setOrigin(publicOrigin())
-    const id = window.setInterval(() => setNow(new Date()), 10_000)
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') setNow(new Date())
-    }
-    const onFocus = () => setNow(new Date())
-    document.addEventListener('visibilitychange', onVisible)
-    window.addEventListener('focus', onFocus)
-    return () => {
-      window.clearInterval(id)
-      document.removeEventListener('visibilitychange', onVisible)
-      window.removeEventListener('focus', onFocus)
-    }
   }, [])
-
-  const validDate = /^\d{4}-\d{2}-\d{2}$/.test(date)
-  const hoursReady = Boolean(hours.open && hours.close)
-  const expired = validDate && hoursReady && isHelperBoardClosed(date, now, hours)
-  const tooEarly = validDate && hoursReady && isHelperBoardNotYetOpen(date, now, hours)
 
   return (
     <div className="gday-app min-h-dvh">
@@ -58,37 +26,25 @@ export function HelperCheckIn({
       </header>
 
       <main className="mx-auto max-w-6xl px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6 sm:py-7">
-        {expired || tooEarly ? (
-          <LockedHelperBoard
-            date={date}
-            openTime={hours.open}
-            closeTime={hours.close}
-            tooEarly={tooEarly}
-            expired={expired}
-          />
-        ) : (
-          <div className="space-y-3 sm:space-y-5">
-            <div className="flex items-end justify-between gap-3">
-              <div className="min-w-0">
-                <p className="gday-soft-label hidden sm:block">Marina helper</p>
-                <h1 className="font-display text-xl font-semibold tracking-tight text-teal-950 sm:mt-1 sm:text-2xl">
-                  Guest check-in
-                </h1>
-                <p className="mt-1 hidden max-w-2xl text-sm leading-relaxed text-teal-950/55 sm:block">
-                  Van list for {formatLongDate(date)}. Make a guest QR from each row. This board is
-                  open from {hours.open} until {hours.close} Thailand time.
-                </p>
-                <p className="mt-0.5 text-[13px] text-teal-900/50 sm:hidden">
-                  Open {hours.open}–{hours.close}
-                </p>
-              </div>
-              <p className="shrink-0 rounded-full bg-white px-2.5 py-1 text-[13px] font-semibold text-teal-950 ring-1 ring-teal-900/10 sm:hidden">
-                {formatShortDate(date)}
+        <div className="space-y-3 sm:space-y-5">
+          <div className="flex items-end justify-between gap-3">
+            <div className="min-w-0">
+              <p className="gday-soft-label hidden sm:block">Marina helper</p>
+              <h1 className="font-display text-xl font-semibold tracking-tight text-teal-950 sm:mt-1 sm:text-2xl">
+                Guest check-in
+              </h1>
+              <p className="mt-1 hidden max-w-2xl text-sm leading-relaxed text-teal-950/55 sm:block">
+                Van list for {formatLongDate(date)}. Make a guest QR from each row. This board stays
+                open. After midnight it moves to the next day.
               </p>
+              <p className="mt-0.5 text-[13px] text-teal-900/50 sm:hidden">Open all day</p>
             </div>
-            <HelperCheckInBoard date={date} origin={origin} />
+            <p className="shrink-0 rounded-full bg-white px-2.5 py-1 text-[13px] font-semibold text-teal-950 ring-1 ring-teal-900/10 sm:hidden">
+              {formatShortDate(date)}
+            </p>
           </div>
-        )}
+          <HelperCheckInBoard date={date} origin={origin} />
+        </div>
       </main>
     </div>
   )
@@ -96,24 +52,20 @@ export function HelperCheckIn({
 
 export function LockedHelperBoard({
   date,
-  openTime,
-  closeTime,
   tooEarly,
   expired,
 }: {
   date: string
-  openTime: string
-  closeTime: string
   tooEarly: boolean
   expired: boolean
 }) {
-  const title = tooEarly ? 'Helper board not open yet' : 'Helper board closed'
+  const title = tooEarly ? 'Helper board not open yet' : expired ? 'Helper board closed' : 'Helper link'
   const body = !date
     ? 'This helper link is not valid.'
     : tooEarly
-      ? `This helper page for ${formatLongDate(date)} opens at ${openTime} Thailand time.`
+      ? `This helper page for ${formatLongDate(date)} is not open yet.`
       : expired
-        ? `This helper page for ${formatLongDate(date)} closed at ${closeTime} and cannot be opened again.`
+        ? `This helper page for ${formatLongDate(date)} has ended. Scan the current helper QR.`
         : 'This helper link is not valid.'
 
   return (

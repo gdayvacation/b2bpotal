@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from 'react'
 import { normalizeAgentCompany, type AgentCompanyProfile } from '@/lib/agent-company'
-import { bookingCodeStem, formatThb, nextBookingCode, todayISO, uniqueAgentSlug } from '@/lib/format'
+import { addDaysISO, bookingCodeStem, formatThb, nextBookingCode, todayISO, uniqueAgentSlug } from '@/lib/format'
 import { guestQrRepeatFetchOpen, msUntilGuestQrRepeatFetchCutoff } from '@/lib/guest-qr-sync'
 import { autoAssignBoats } from '@/lib/boat-assign'
 import {
@@ -231,6 +231,11 @@ import {
   fetchCheckInMaps,
   fetchCheckInSnapshotRpc,
   fetchAvailabilitySettings,
+  fetchDaySeatState,
+  fetchSeatUsage,
+  bookingWriteError,
+  isMissingSeatUsage,
+  mergeSeatUsage,
   fetchGuestBoatForCode,
   fetchDayBoatPlans,
   fetchDayVehiclePlans,
@@ -490,12 +495,12 @@ type PortalContextValue = {
     code: string,
     newDate: string,
     options?: BookingActionOptions,
-  ) => { ok: true } | { ok: false; error: string }
+  ) => Promise<{ ok: true } | { ok: false; error: string }>
   rebookBooking: (
     code: string,
     newDate: string,
     options?: BookingActionOptions,
-  ) => { ok: true } | { ok: false; error: string }
+  ) => Promise<{ ok: true } | { ok: false; error: string }>
   updateBookingDetails: (
     code: string,
     patch: {
@@ -520,7 +525,7 @@ type PortalContextValue = {
       privateDriverPhone?: string
     },
     options?: BookingActionOptions,
-  ) => { ok: true; booking: Booking } | { ok: false; error: string }
+  ) => Promise<{ ok: true; booking: Booking } | { ok: false; error: string }>
   setBookingPickupTime: (
     code: string,
     pickupTime: string,
@@ -935,6 +940,8 @@ function isBangkokRushHour(): boolean {
  *   check-in:  adaptive (2 min rush / 15 min off-peak) — unchanged
  */
 const STAFF_BOOKINGS_POLL_MS = 3 * 60_000
+/** Agents cannot see other agencies' bookings, so refresh the shared seat total this often. */
+const PARTNER_SEAT_POLL_MS = 30_000
 /** Full booking reload. Incremental polls cover edits; this only catches deletes and drift. */
 const STAFF_BOOKINGS_FULL_REFRESH_MS = 45 * 60_000
 const STAFF_DAY_PLAN_POLL_MS = 3 * 60_000
@@ -1058,6 +1065,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   const [zones, setZones] = useState<PickupZone[]>([])
   const [hotels, setHotels] = useState<Hotel[]>([])
   const [availability, setAvailability] = useState<Availability[]>([])
+  /** Booked seats per day and program, counted across every agency. */
+  const [seatUsage, setSeatUsage] = useState<Record<string, number>>({})
   const [dayBoatPlans, setDayBoatPlans] = useState<Record<string, DayBoatPlan>>({})
   const [dayVehiclePlans, setDayVehiclePlans] = useState<Record<string, DayVehiclePlan>>({})
   const [checkInAttendance, setCheckInAttendanceMap] =
@@ -2104,6 +2113,47 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     }
   }, [hydrated, partnerLive, sessionRole])
 
+  /** Partners only see their own bookings, so the shared seat total comes from the database. */
+  useEffect(() => {
+    if (!hydrated || sessionRole !== 'partner' || !partnerLive) return
+
+    let cancelled = false
+    let timer: number | undefined
+
+    async function refreshSeatUsage() {
+      if (cancelled) return
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      const from = partnerBookingsFromDate()
+      const to = addDaysISO(todayISO(), 500)
+      try {
+        const incoming = await fetchSeatUsage(from, to)
+        if (cancelled) return
+        setSeatUsage((current) => mergeSeatUsage(current, incoming, from, to))
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (!isMissingSeatUsage(message)) {
+          console.error('[portal] seat usage refresh failed', error)
+        }
+      }
+    }
+
+    function onVisible() {
+      if (document.visibilityState === 'visible') void refreshSeatUsage()
+    }
+
+    document.addEventListener('visibilitychange', onVisible)
+    void refreshSeatUsage()
+    timer = window.setInterval(() => {
+      void refreshSeatUsage()
+    }, PARTNER_SEAT_POLL_MS)
+
+    return () => {
+      cancelled = true
+      document.removeEventListener('visibilitychange', onVisible)
+      if (timer != null) window.clearInterval(timer)
+    }
+  }, [hydrated, partnerLive, sessionRole])
+
   const refreshArrangementGroups = useCallback(async (range?: { from: string; to: string }) => {
     if (arrangementWritePendingRef.current > 0) return
     try {
@@ -2757,13 +2807,89 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    const bookedPaxFor = (date: string, program: 'PP' | 'James Bond') =>
-      bookings
+    const bookedPaxFor = (date: string, program: 'PP' | 'James Bond') => {
+      const local = bookings
         .filter(
           (booking) =>
             isActiveBooking(booking) && booking.date === date && booking.program === program,
         )
         .reduce((sum, booking) => sum + totalPassengers(booking), 0)
+      // Staff already hold every booking. Agents do not, so use the shared total.
+      if (sessionRole !== 'partner') return local
+      const remote = seatUsage[`${date}|${program}`]
+      return typeof remote === 'number' ? remote : local
+    }
+
+    const rememberLiveSeats = (
+      date: string,
+      program: 'PP' | 'James Bond',
+      booked: number,
+      capacities: { ppCapacity: number; jamesBondCapacity: number } | null,
+    ) => {
+      const key = `${date}|${program}`
+      setSeatUsage((current) => (current[key] === booked ? current : { ...current, [key]: booked }))
+      if (!capacities) return
+      setAvailability((current) => {
+        const existing = current.find((item) => item.date === date)
+        if (
+          existing &&
+          existing.ppCapacity === capacities.ppCapacity &&
+          existing.jamesBondCapacity === capacities.jamesBondCapacity
+        ) {
+          return current
+        }
+        const nextRow = {
+          date,
+          ppCapacity: capacities.ppCapacity,
+          jamesBondCapacity: capacities.jamesBondCapacity,
+        }
+        if (!existing) return [...current, nextRow].sort((a, b) => a.date.localeCompare(b.date))
+        return current.map((item) => (item.date === date ? nextRow : item))
+      })
+    }
+
+    const adjustSeatUsage = (date: string, program: 'PP' | 'James Bond', delta: number) => {
+      if (!delta) return
+      const key = `${date}|${program}`
+      setSeatUsage((current) => {
+        const base = current[key]
+        if (typeof base !== 'number') return current
+        const next = Math.max(0, base + delta)
+        return next === base ? current : { ...current, [key]: next }
+      })
+    }
+
+    async function seatsFor(date: string, program: 'PP' | 'James Bond') {
+      const fallback = getCapacity(date)
+      let capacity = program === 'PP' ? fallback.ppCapacity : fallback.jamesBondCapacity
+      let booked = bookingsRef.current
+        .filter(
+          (booking) =>
+            isActiveBooking(booking) && booking.date === date && booking.program === program,
+        )
+        .reduce((sum, booking) => sum + totalPassengers(booking), 0)
+      const remote = seatUsage[`${date}|${program}`]
+      if (sessionRole === 'partner' && typeof remote === 'number') booked = remote
+      try {
+        const live = await fetchDaySeatState(date, program)
+        capacity = live.capacity
+        booked = live.booked
+        rememberLiveSeats(
+          date,
+          program,
+          live.booked,
+          live.ppCapacity != null && live.jamesBondCapacity != null
+            ? { ppCapacity: live.ppCapacity, jamesBondCapacity: live.jamesBondCapacity }
+            : null,
+        )
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (!isMissingSeatUsage(message)) {
+          console.warn('[portal] could not refresh seat count', error)
+        }
+      }
+      return { capacity, booked, seatsLeft: Math.max(0, capacity - booked) }
+    }
 
     const resolveActor = (actor?: BookingActor): BookingActor =>
       actor ?? { role: 'admin', name: 'Admin' }
@@ -3145,11 +3271,54 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       })
     }
 
+    /**
+     * Guests moved off a partner van onto a regular van are unlocked from the partner boat.
+     * Only THESE bookings are touched — every other booking's boat card stays as arranged.
+     * Returns the resulting boat assignments (or null when nothing changed) so a follow-up
+     * boat sync in the same tick builds on it instead of the stale rendered plan.
+     */
+    const releaseFromPartnerBoats = (
+      date: string,
+      program: Program,
+      codes: string[],
+      targetVan: number | null,
+    ): DayBoatPlan['assignments'] | null => {
+      if (targetVan === null || codes.length === 0) return null
+      const targetMeta = getDayVehiclePlan(date, program).vanMeta[String(targetVan)]
+      if (isDummyVan(targetVan) || vanTransferKind(targetVan, targetMeta) === 'partner') return null
+      const strip = (assignments: DayBoatPlan['assignments'], plan: DayBoatPlan) => {
+        let changed = false
+        const next = { ...assignments }
+        for (const code of codes) {
+          const legs = normalizeBoatAssignment(next[code])
+          if (!legs.some((leg) => isPartnerBoat(plan, leg.boat))) continue
+          const compact = compactBoatAssignment(legs.filter((leg) => !isPartnerBoat(plan, leg.boat)))
+          if (compact) next[code] = compact
+          else delete next[code]
+          changed = true
+        }
+        return changed ? next : null
+      }
+      const key = dayBoatPlanKey(date, program)
+      const rendered = getDayBoatPlan(date, program)
+      const base = boatAssignmentsPendingRef.current[key] ?? rendered.assignments
+      const next = strip(base, rendered)
+      if (!next) return null
+      boatAssignmentsPendingRef.current[key] = next
+      upsertPlan(date, program, (plan) => {
+        const hydrated = hydrateDayBoatPlan(plan)
+        const stripped = strip(hydrated.assignments, hydrated)
+        return stripped ? { ...plan, assignments: stripped } : plan
+      })
+      return next
+    }
+
     const followVanOntoBoat = (
       date: string,
       program: Program,
       van: number,
       vehicleAssignments: DayVehiclePlan['assignments'],
+      boatAssignmentsOverride?: DayBoatPlan['assignments'] | null,
     ) => {
       const meta = getDayVehiclePlan(date, program).vanMeta[String(van)]
       if (isDummyVan(van) || vanTransferKind(van, meta) === 'partner') {
@@ -3163,7 +3332,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
       const nextAssignments = adoptVanBookingsOntoSharedBoat(
         countable,
         vehicleAssignments,
-        getDayBoatPlan(date, program).assignments,
+        boatAssignmentsOverride ?? getDayBoatPlan(date, program).assignments,
         van,
       )
       if (!nextAssignments) return
@@ -4207,17 +4376,14 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
 
         const pax = totalPassengers(input)
-        const caps = getCapacity(input.date)
-        const capacity = input.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
-        const booked = bookedPaxFor(input.date, input.program)
-        const seatsLeft = Math.max(0, capacity - booked)
-        if (pax > seatsLeft) {
+        const room = await seatsFor(input.date, input.program)
+        if (pax > room.seatsLeft) {
           return {
             ok: false,
             error:
-              seatsLeft === 0
-                ? `${input.program} is sold out on this date (${capacity} seats).`
-                : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${input.program} on this date (capacity ${capacity}).`,
+              room.seatsLeft === 0
+                ? `${input.program} is sold out on this date (${room.capacity} seats).`
+                : `Only ${room.seatsLeft} seat${room.seatsLeft === 1 ? '' : 's'} left for ${input.program} on this date (capacity ${room.capacity}).`,
           }
         }
 
@@ -4334,12 +4500,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         )
         try {
           const saved = await savePromise
+          adjustSeatUsage(saved.date, saved.program, totalPassengers(saved))
           return { ok: true, booking: saved }
         } catch (error) {
           setBookings((rows) => rows.filter((row) => !triedCodes.has(row.code)))
-          const message =
-            error instanceof Error ? error.message : 'Failed to save booking to Supabase'
-          return { ok: false, error: `Booking ${failedCode} was not saved: ${message}` }
+          const raw = error instanceof Error ? error.message : 'Failed to save booking to Supabase'
+          const seat = bookingWriteError(error, raw)
+          const friendly = /sold out|seat left|seats left/i.test(seat)
+          return {
+            ok: false,
+            error: friendly ? seat : `Booking ${failedCode} was not saved: ${raw}`,
+          }
         }
       },
       cancelBooking: (code, options) => {
@@ -4365,6 +4536,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               : booking,
           ),
         )
+        adjustSeatUsage(existing.date, existing.program, -totalPassengers(existing))
         const cancelledSummary = lateCancel
           ? cancelFee !== undefined
             ? `Cancelled · charge ${cancelFee.toLocaleString('en-US')} THB · was ${existing.date}`
@@ -4396,7 +4568,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
         return { ok: true }
       },
-      changeBookingDate: (code, newDate, options) => {
+      changeBookingDate: async (code, newDate, options) => {
         const existing = bookings.find((booking) => booking.code === code)
         if (!existing || existing.status === 'Cancelled') {
           return { ok: false, error: 'Booking not found or already cancelled.' }
@@ -4429,18 +4601,14 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
 
         const pax = totalPassengers(existing)
-        const caps = getCapacity(trimmedDate)
-        const capacity =
-          existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
-        const booked = bookedPaxFor(trimmedDate, existing.program)
-        const seatsLeft = Math.max(0, capacity - booked)
-        if (pax > seatsLeft) {
+        const room = await seatsFor(trimmedDate, existing.program)
+        if (pax > room.seatsLeft) {
           return {
             ok: false,
             error:
-              seatsLeft === 0
-                ? `${existing.program} is sold out on ${trimmedDate} (${capacity} seats).`
-                : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${existing.program} on ${trimmedDate}.`,
+              room.seatsLeft === 0
+                ? `${existing.program} is sold out on ${trimmedDate} (${room.capacity} seats).`
+                : `Only ${room.seatsLeft} seat${room.seatsLeft === 1 ? '' : 's'} left for ${existing.program} on ${trimmedDate}.`,
           }
         }
 
@@ -4464,7 +4632,24 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           : existing.lateDateChange === true || chargeLateDateChange
         const nextNoShowDateMove = marinaMove ? true : existing.noShowDateMove === true
         const movedFrom = marinaMove ? { code, date: oldDate } : null
-
+        const dateChangedSummary = marinaMove
+          ? `Date changed ${oldDate} → ${trimmedDate} · head use stays on ${oldDate} · change-date fee ${typedFee.toLocaleString('en-US')} THB on ${trimmedDate}`
+          : chargeLateDateChange
+            ? `Date changed ${oldDate} → ${trimmedDate} · late change · full charge (Invoice) / head deduct (Prebuy)`
+            : options?.lateDateChange === false && inLateFeeWindow
+              ? `Date changed ${oldDate} → ${trimmedDate} · late change waived`
+              : `Date changed ${oldDate} → ${trimmedDate}`
+        try {
+          await updateBookingDate(code, trimmedDate, {
+            lateDateChange: nextLateDateChange,
+            noShowDateMove: nextNoShowDateMove,
+            ...(marinaMove && movedFrom
+              ? { lateChangeFee: typedFee, movedFrom }
+              : {}),
+          })
+        } catch (error) {
+          return { ok: false, error: bookingWriteError(error, 'Could not change the travel date.') }
+        }
         setBookings((current) =>
           current.map((booking) =>
             booking.code === code
@@ -4480,25 +4665,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               : booking,
           ),
         )
-        const dateChangedSummary = marinaMove
-          ? `Date changed ${oldDate} → ${trimmedDate} · head use stays on ${oldDate} · change-date fee ${typedFee.toLocaleString('en-US')} THB on ${trimmedDate}`
-          : chargeLateDateChange
-            ? `Date changed ${oldDate} → ${trimmedDate} · late change · full charge (Invoice) / head deduct (Prebuy)`
-            : options?.lateDateChange === false && inLateFeeWindow
-              ? `Date changed ${oldDate} → ${trimmedDate} · late change waived`
-              : `Date changed ${oldDate} → ${trimmedDate}`
-        persistBookingWrite(
-          'updateBookingDate',
-          updateBookingDate(code, trimmedDate, {
-            lateDateChange: nextLateDateChange,
-            noShowDateMove: nextNoShowDateMove,
-            ...(marinaMove && movedFrom
-              ? { lateChangeFee: typedFee, movedFrom }
-              : {}),
-          }).then(() => {
-            logBookingEvent(code, 'date_changed', dateChangedSummary, options?.actor)
-          }),
-        )
+        adjustSeatUsage(oldDate, program, -pax)
+        adjustSeatUsage(trimmedDate, program, pax)
+        logBookingEvent(code, 'date_changed', dateChangedSummary, options?.actor)
 
         const boatAssignment = getDayBoatPlan(oldDate, program).assignments[code]
         const vanAssignment = getDayVehiclePlan(oldDate, program).assignments[code]
@@ -4531,7 +4700,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
         return { ok: true }
       },
-      rebookBooking: (code, newDate, options) => {
+      rebookBooking: async (code, newDate, options) => {
         const existing = bookings.find((booking) => booking.code === code)
         if (!existing) {
           return { ok: false, error: 'Booking not found.' }
@@ -4564,18 +4733,14 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
 
         const pax = totalPassengers(existing)
-        const caps = getCapacity(trimmedDate)
-        const capacity =
-          existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
-        const booked = bookedPaxFor(trimmedDate, existing.program)
-        const seatsLeft = Math.max(0, capacity - booked)
-        if (pax > seatsLeft) {
+        const room = await seatsFor(trimmedDate, existing.program)
+        if (pax > room.seatsLeft) {
           return {
             ok: false,
             error:
-              seatsLeft === 0
-                ? `${existing.program} is sold out on this date (${capacity} seats).`
-                : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left for ${existing.program} on this date (capacity ${capacity}).`,
+              room.seatsLeft === 0
+                ? `${existing.program} is sold out on this date (${room.capacity} seats).`
+                : `Only ${room.seatsLeft} seat${room.seatsLeft === 1 ? '' : 's'} left for ${existing.program} on this date (capacity ${room.capacity}).`,
           }
         }
 
@@ -4590,7 +4755,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           awaiting &&
           (privateZone || (zone?.pending ?? existing.pickupZone === 'Other'))
         const nextStatus = pending ? ('Pending Pickup Time' as const) : ('Confirmed' as const)
-
+        const rebookedSummary = `Rebooked to ${trimmedDate} · ${nextStatus}`
+        try {
+          await updateBookingRebook(code, trimmedDate, nextStatus)
+        } catch (error) {
+          return { ok: false, error: bookingWriteError(error, 'Could not rebook this booking.') }
+        }
         setBookings((current) =>
           current.map((booking) =>
             booking.code === code
@@ -4598,18 +4768,13 @@ export function PortalProvider({ children }: { children: ReactNode }) {
               : booking,
           ),
         )
-        const rebookedSummary = `Rebooked to ${trimmedDate} · ${nextStatus}`
-        persistBookingWrite(
-          'updateBookingRebook',
-          updateBookingRebook(code, trimmedDate, nextStatus).then(() => {
-            logBookingEvent(code, 'rebooked', rebookedSummary, options?.actor)
-          }),
-        )
+        adjustSeatUsage(trimmedDate, existing.program, pax)
+        logBookingEvent(code, 'rebooked', rebookedSummary, options?.actor)
         relocateBookingDayData(existing.date, trimmedDate, existing.program, code)
 
         return { ok: true }
       },
-      updateBookingDetails: (code, patch, options) => {
+      updateBookingDetails: async (code, patch, options) => {
         const existing = bookings.find((booking) => booking.code === code)
         if (!existing || existing.status === 'Cancelled') {
           return { ok: false, error: 'Booking not found or already cancelled.' }
@@ -4791,18 +4956,14 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const oldPax = totalPassengers(existing)
         const delta = newPax - oldPax
         if (delta > 0) {
-          const caps = getCapacity(existing.date)
-          const capacity =
-            existing.program === 'PP' ? caps.ppCapacity : caps.jamesBondCapacity
-          const booked = bookedPaxFor(existing.date, existing.program)
-          const seatsLeft = Math.max(0, capacity - booked)
-          if (delta > seatsLeft) {
+          const room = await seatsFor(existing.date, existing.program)
+          if (delta > room.seatsLeft) {
             return {
               ok: false,
               error:
-                seatsLeft === 0
-                  ? `No seats left to add guests on this date (capacity ${capacity}).`
-                  : `Only ${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left — cannot add ${delta} more.`,
+                room.seatsLeft === 0
+                  ? `No seats left to add guests on this date (capacity ${room.capacity}).`
+                  : `Only ${room.seatsLeft} seat${room.seatsLeft === 1 ? '' : 's'} left — cannot add ${delta} more.`,
             }
           }
         }
@@ -4873,18 +5034,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
         if (changes.length === 0) return { ok: false, error: 'No changes to save.' }
 
+        try {
+          await updateBookingDetails(next, { writeOriginalPax: livePaxChanged, writeMovedOut })
+        } catch (error) {
+          return { ok: false, error: bookingWriteError(error, 'Could not save this booking.') }
+        }
         setBookings((current) =>
           current.map((booking) => (booking.code === code ? next : booking)),
         )
+        adjustSeatUsage(existing.date, existing.program, delta)
         const detailsEditedSummary = `Updated ${changes.join(', ')}`
-        persistBookingWrite(
-          'updateBookingDetails',
-          updateBookingDetails(next, { writeOriginalPax: livePaxChanged, writeMovedOut }).then(
-            () => {
-              logBookingEvent(code, 'details_edited', detailsEditedSummary, options?.actor)
-            },
-          ),
-        )
+        logBookingEvent(code, 'details_edited', detailsEditedSummary, options?.actor)
         if (next.pickupZone !== existing.pickupZone || next.pickupHotel !== existing.pickupHotel) {
           upsertVehiclePlan(existing.date, existing.program, (plan) => {
             if (!(code in plan.assignments)) return plan
@@ -5781,7 +5941,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           assignments,
           vanMeta: withVirtualVanMeta(plan.vanMeta, van),
         }))
-        if (van !== null) followVanOntoBoat(date, program, van, assignments)
+        const released = releaseFromPartnerBoats(date, program, [bookingCode], van)
+        if (van !== null) followVanOntoBoat(date, program, van, assignments, released)
         const nextKind =
           van === null
             ? 'unassigned'
@@ -5824,7 +5985,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           assignments,
           vanMeta: withVirtualVanMeta(plan.vanMeta, van),
         }))
-        if (van !== null) followVanOntoBoat(date, program, van, assignments)
+        const released = releaseFromPartnerBoats(date, program, bookingCodes, van)
+        if (van !== null) followVanOntoBoat(date, program, van, assignments, released)
         const nextKind =
           van === null
             ? 'unassigned'
@@ -5858,12 +6020,25 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         if (cleaned.length === 0) delete assignments[bookingCode]
         else assignments[bookingCode] = cleaned
         upsertVehiclePlan(date, program, (plan) => ({ ...plan, assignments }))
-        for (const van of [...new Set(cleaned.map((leg) => leg.van))]) {
-          followVanOntoBoat(date, program, van, assignments)
+        // Split onto regular vans only → unlock THIS booking from the partner boat (others stay).
+        const splitVans = [...new Set(cleaned.map((leg) => leg.van))]
+        const anyPartnerLeg = splitVans.some(
+          (van) =>
+            isDummyVan(van) || vanTransferKind(van, current.vanMeta[String(van)]) === 'partner',
+        )
+        const released =
+          splitVans.length > 0 && !anyPartnerLeg
+            ? releaseFromPartnerBoats(date, program, [bookingCode], splitVans[0])
+            : null
+        for (const van of splitVans) {
+          followVanOntoBoat(date, program, van, assignments, released)
         }
         const booking = bookings.find((item) => item.code === bookingCode)
         if (booking && cleaned.length > 0) {
-          const boatPlan = getDayBoatPlan(date, program)
+          const boatPlan = {
+            ...getDayBoatPlan(date, program),
+            assignments: released ?? getDayBoatPlan(date, program).assignments,
+          }
           const byBoat = new Map<number, number>()
           for (const leg of cleaned) {
             const vanBoat = primaryBoatNumber(
@@ -6083,12 +6258,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         const partnerCompany =
           meta?.outsourceCompany?.trim() || meta?.label?.trim() || unpackVanPlate(meta?.plate).plate || ''
         const dropPartnerBoat = vanTransferKind(van, meta) === 'partner'
-        const returning: string[] = []
         const leavingPrivate: string[] = []
         const assignments: Record<string, VanSplit[]> = {}
         for (const [code, legs] of Object.entries(current.assignments)) {
           if (legs.some((leg) => leg.van === van)) {
-            returning.push(code)
+            // Split guests keep their legs on OTHER vans — only drop the leg on the deleted van.
+            // Guests with no remaining van go back to waiting. Their BOAT arrangement is kept:
+            // deleting a van card only rearranges vans, never the boat cards.
+            const remaining = legs.filter((leg) => leg.van !== van)
+            if (remaining.length > 0) {
+              assignments[code] = remaining
+              continue
+            }
             const booking = bookings.find((row) => row.code === code && isActiveBooking(row))
             if (booking && bookingTransferKind(booking, current, boatPlan) === 'private') {
               leavingPrivate.push(code)
@@ -6102,9 +6283,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         if (!isVirtualVan(van) && van >= 1 && van <= 3) {
           vanMeta[String(van)] = hiddenVanMeta()
         }
-        const linkedBoat = dropPartnerBoat
-          ? findLinkedPartnerBoat(boatPlan, partnerCompany, partnerCompany, returning)
-          : null
+        // Only drop the partner boat that was created for THIS van (matched by company name) and
+        // only when nobody is on it. Never fall back to "the only partner boat" or the boat that
+        // holds this van's guests — that wiped unrelated boat arrangements.
+        const namedBoat = dropPartnerBoat ? findPartnerBoatByCompany(boatPlan, partnerCompany) : null
+        const linkedBoat =
+          namedBoat &&
+          !Object.values(boatPlan.assignments).some((assigned) =>
+            normalizeBoatAssignment(assigned).some((leg) => leg.boat === namedBoat),
+          )
+            ? namedBoat
+            : null
         const otherPartnerStillUsesBoat = Boolean(
           linkedBoat &&
             Object.entries(vanMeta).some(([key, other]) => {
@@ -6125,15 +6314,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           assignments,
           vanMeta,
         }))
-        if (returning.length > 0 || (linkedBoat && !otherPartnerStillUsesBoat)) {
+        if (linkedBoat && !otherPartnerStillUsesBoat) {
           upsertPlan(date, program, (plan) => {
-            let next = hydrateDayBoatPlan(plan)
-            if (returning.length > 0) {
-              const nextAssignments = { ...next.assignments }
-              for (const code of returning) delete nextAssignments[code]
-              next = { ...next, assignments: nextAssignments }
-            }
-            if (!linkedBoat || otherPartnerStillUsesBoat) return next
+            const next = hydrateDayBoatPlan(plan)
             const index = linkedBoat - 1
             if (index < 0 || index >= next.capacities.length || next.capacities.length <= 1) {
               return next
@@ -6166,7 +6349,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         }
       },
     }
-  }, [agents, bookings, ensureBookingsForRange, ensureBookingByCode, zones, hotels, availability, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, checkInGroupGuides, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, arrangementGroupMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, checkInReady, sessionRole, setGuestBoatWatchStable, loadError])
+  }, [agents, bookings, ensureBookingsForRange, ensureBookingByCode, zones, hotels, availability, seatUsage, dayBoatPlans, dayVehiclePlans, checkInAttendance, checkInEnrollment, checkInPayment, checkInTicket, checkInServices, checkInSequence, checkInGuestEdit, checkInNotes, checkInGroupGuides, pickupNoShowMap, ownArrivalMap, jobOrderActionMap, arrangementGroupMap, fleetVans, drivers, bookingCutoffs, bookingClosures, bookingEventsByCode, hydrated, checkInReady, sessionRole, setGuestBoatWatchStable, loadError])
 
   const partnerDataLive = sessionRole !== 'partner' || partnerLive
   const staffDataLive =
