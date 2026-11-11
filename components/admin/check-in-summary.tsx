@@ -560,17 +560,22 @@ function BoatTable({ title, rows }: { title?: string; rows: BoatSummary[] }) {
         </p>
       ) : null}
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[36rem] border-collapse text-sm">
+        <table className="w-full min-w-[42rem] border-collapse text-sm">
           <thead>
             <tr className="border-b border-teal-900/10 bg-teal-950/[0.03] text-[11px] font-bold tracking-wide text-teal-900/55 uppercase">
               <th className="px-3 py-2 text-left font-bold">Boat</th>
               <th className="px-2 py-2 text-left font-bold">Guide</th>
               <th className="px-3 py-2 text-left font-bold">Arranged</th>
               <th className="px-3 py-2 text-left font-bold">Real check-in</th>
+              <th className="px-3 py-2 text-left font-bold">No-show</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => {
+              const noShowCount = Math.max(
+                0,
+                paxBreakdownTotal(row.arranged) - paxBreakdownTotal(row.checked),
+              )
               const checkInDiffers =
                 row.arranged.adults !== row.checked.adults ||
                 row.arranged.children !== row.checked.children ||
@@ -605,6 +610,13 @@ function BoatTable({ title, rows }: { title?: string; rows: BoatSummary[] }) {
                   )}
                 >
                   {formatPaxEasy(row.checked)}
+                </td>
+                <td className="px-3 py-2.5 whitespace-nowrap tabular-nums">
+                  {noShowCount > 0 ? (
+                    <span className="font-semibold text-rose-600">-{noShowCount}</span>
+                  ) : (
+                    <span className="text-teal-900/30">—</span>
+                  )}
                 </td>
               </tr>
               )

@@ -6,6 +6,7 @@ import { boatThemeFor } from '@/lib/boat-theme'
 import { formatCheckInServicesOption, type CheckInServiceLine } from '@/lib/check-in-services'
 import { formatLongDate } from '@/lib/format'
 import { bookingPaxOnVanAndBoat } from '@/lib/boat-load'
+import { getArrivedPaxSnapshot } from '@/lib/check-in-arrived-pax'
 import {
   DEFAULT_BOAT_CAPACITY,
   boatDisplayName,
@@ -18,7 +19,6 @@ import {
   isNoTransfer,
   isNoTransferVan,
   normalizeBoatAssignment,
-  totalPassengers,
   type Booking,
   type DayBoatPlan,
   type DayVehiclePlan,
@@ -30,6 +30,22 @@ import {
   sortOrderOnVan,
 } from '@/lib/vehicle-assign'
 import { cn } from '@/lib/utils'
+
+/** Returns arrived-pax snapshot when available, otherwise original booking pax. */
+function livePaxFor(
+  booking: Booking,
+  date: string,
+  program: Program,
+): Pick<Booking, 'adults' | 'children' | 'infants' | 'tourLeaders'> {
+  const arrived = getArrivedPaxSnapshot(date, program, booking.code)
+  if (!arrived) return booking
+  return {
+    adults: arrived.adults,
+    children: arrived.children,
+    infants: arrived.infants,
+    tourLeaders: arrived.tourLeaders,
+  }
+}
 
 type GuidePassengerRow = {
   bookingCode: string
@@ -137,6 +153,11 @@ export function GuideJobOrderPrint({
   const active = bookings.filter(
     (booking) => getCheckInAttendance(date, program, booking.code) !== 'no-show',
   )
+  // Helper: merge booking identity fields with live arrived pax
+  function liveBooking(booking: Booking): Booking {
+    const live = livePaxFor(booking, date, program)
+    return { ...booking, ...live }
+  }
 
   const sheets = boatNumbers.map((boat, boatIndex) => {
           const guide = boatPlan.guides?.[boat - 1] ?? emptyBoatGuide()
@@ -185,12 +206,12 @@ export function GuideJobOrderPrint({
           }
 
           function paxOnThisBoat(booking: Booking) {
-            return bookingPaxOnBoat(booking, boatPlan.assignments[booking.code], boat)
+            return bookingPaxOnBoat(liveBooking(booking), boatPlan.assignments[booking.code], boat)
           }
 
           function vanPaxOnThisBoat(booking: Booking, van: number) {
             return bookingPaxOnVanAndBoat(
-              booking,
+              liveBooking(booking),
               vehiclePlan.assignments[booking.code],
               boatPlan.assignments[booking.code],
               van,
@@ -229,7 +250,7 @@ export function GuideJobOrderPrint({
                   const split = (legs?.length ?? 0) > 1
                   const showExtras = !split || primaryVan(legs) === van
                   return guideLeaderPrintRow(
-                    booking,
+                    liveBooking(booking),
                     vanPaxOnThisBoat(booking, van),
                     showExtras ? getCheckInServices(date, program, booking.code) : [],
                     showExtras ? getCheckInNote(date, program, booking.code) : '',
@@ -245,7 +266,7 @@ export function GuideJobOrderPrint({
                   title: `No transfer · ${noTransfer.reduce((sum, booking) => sum + paxOnThisBoat(booking), 0)} pax`,
                   rows: noTransfer.map((booking) =>
                     guideLeaderPrintRow(
-                      booking,
+                      liveBooking(booking),
                       paxOnThisBoat(booking),
                       getCheckInServices(date, program, booking.code),
                       getCheckInNote(date, program, booking.code),
@@ -259,7 +280,7 @@ export function GuideJobOrderPrint({
                   title: `Guests · ${loose.reduce((sum, booking) => sum + paxOnThisBoat(booking), 0)} pax`,
                   rows: loose.map((booking) =>
                     guideLeaderPrintRow(
-                      booking,
+                      liveBooking(booking),
                       paxOnThisBoat(booking),
                       getCheckInServices(date, program, booking.code),
                       getCheckInNote(date, program, booking.code),
@@ -278,9 +299,11 @@ export function GuideJobOrderPrint({
           const pax = onBoat.reduce((sum, booking) => sum + paxOnThisBoat(booking), 0)
           const paxMix = onBoat.reduce(
             (acc, booking) => {
+              const live = liveBooking(booking)
+              const liveTotalPax = live.adults + live.children + live.infants + live.tourLeaders
               const mix = allocatePaxBreakdown(
-                booking,
-                normalizeBoatAssignment(boatPlan.assignments[booking.code], totalPassengers(booking)).map(
+                live,
+                normalizeBoatAssignment(boatPlan.assignments[booking.code], liveTotalPax).map(
                   (leg, index) => ({ van: leg.boat, pax: leg.pax, sortOrder: index }),
                 ),
                 boat,

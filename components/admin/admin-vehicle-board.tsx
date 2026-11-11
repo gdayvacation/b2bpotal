@@ -111,6 +111,8 @@ import {
 import type { ArrangementGroupKind } from '@/lib/arrangement-groups'
 import { bookingPaxOnVanAndBoat } from '@/lib/boat-load'
 import { originalBookedPax } from '@/lib/check-in-booked-pax'
+import { getArrivedPaxSnapshot } from '@/lib/check-in-arrived-pax'
+import { enrolledSeatCount } from '@/lib/check-in-enrollment'
 import { paxTotal } from '@/lib/pickup-marina-sync'
 import { cn } from '@/lib/utils'
 
@@ -1359,6 +1361,7 @@ function VehicleBoard({
     assignBookingToBoat,
     getCheckInServices,
     getCheckInAttendance,
+    getCheckInEnrollments,
     getPickupNoShow,
     getArrangementGroup,
   } = usePortal()
@@ -3109,30 +3112,51 @@ function VehicleBoard({
                   const theme = boatThemeFor(boatPlan, boat)
                   const boatDrop = dropTarget === `boat-${boat}`
                   const boatLoadLabel = `${formatPaxShort(boatMix)}/${boatCap}`
-                  const boatNoShow = items.reduce((sum, booking) => {
-                    const whole =
-                      getCheckInAttendance(date, program, booking.code) === 'no-show'
-                    return (
-                      sum +
-                      bookingNoShowCount(
-                        date,
-                        program,
-                        booking,
-                        getPickupNoShow(date, program, booking.code),
-                        whole,
-                      )
-                    )
-                  }, 0)
+                  // Mirror check-in-summary logic exactly:
+                  // A booking is "checked in" if:
+                  //   1. attendance === 'checked', OR
+                  //   2. an arrived-pax snapshot exists (marina recorded real pax), OR
+                  //   3. enough enrollments cover all booked seats
+                  // Live pax = arrived snapshot when set, else current booking pax.
                   const boatCheckedIn = items.reduce(
-                    (acc, booking) =>
-                      getCheckInAttendance(date, program, booking.code) === 'checked'
-                        ? addPaxBreakdown(
-                            acc,
-                            bookingMixOnBoat(booking, boatPlan.assignments[booking.code], boat),
-                          )
-                        : acc,
+                    (acc, booking) => {
+                      const attendance = getCheckInAttendance(date, program, booking.code)
+                      if (attendance === 'no-show') return acc
+                      const arrived = getArrivedPaxSnapshot(date, program, booking.code)
+                      const enrolled = enrolledSeatCount(
+                        getCheckInEnrollments(date, program, booking.code),
+                      )
+                      const bookingSeats = totalPassengers(booking)
+                      const isChecked =
+                        attendance === 'checked' ||
+                        arrived !== null ||
+                        enrolled >= bookingSeats
+                      if (!isChecked) return acc
+                      const livePax = arrived
+                        ? { adults: arrived.adults, children: arrived.children, infants: arrived.infants, tourLeaders: arrived.tourLeaders }
+                        : booking
+                      return addPaxBreakdown(
+                        acc,
+                        bookingMixOnBoat(livePax, boatPlan.assignments[booking.code], boat),
+                      )
+                    },
                     emptyPaxBreakdown(),
                   )
+                  // No-show = arranged pax on this boat minus pax that actually arrived/checked.
+                  // Whole-no-show bookings contribute 0 arrived pax (full no-show).
+                  const boatArrivedForNoShow = items.reduce(
+                    (acc, booking) => {
+                      const attendance = getCheckInAttendance(date, program, booking.code)
+                      if (attendance === 'no-show') return acc
+                      const arrived = getArrivedPaxSnapshot(date, program, booking.code)
+                      const livePax = arrived
+                        ? { adults: arrived.adults, children: arrived.children, infants: arrived.infants, tourLeaders: arrived.tourLeaders }
+                        : booking
+                      return addPaxBreakdown(acc, bookingMixOnBoat(livePax, boatPlan.assignments[booking.code], boat))
+                    },
+                    emptyPaxBreakdown(),
+                  )
+                  const boatNoShow = Math.max(0, paxBreakdownTotal(boatMix) - paxBreakdownTotal(boatArrivedForNoShow))
                   return (
                   <div
                     key={boat}
@@ -3401,11 +3425,6 @@ function VehicleBoard({
                             <Trash2 className="size-3.5" />
                           </button>
                         </div>
-                        {boatNoShow > 0 ? (
-                          <span className="rounded-md bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-rose-800">
-                            NS -{boatNoShow}
-                          </span>
-                        ) : null}
                       </div>
                     </div>
                     <div
@@ -3618,9 +3637,16 @@ function VehicleBoard({
                       </p>
                     )}
                     {items.length > 0 ? (
-                      <p className="mt-2 text-[11px] font-semibold text-rose-600 tabular-nums">
-                        Checked-in: {formatPaxShort(boatCheckedIn)}
-                      </p>
+                      <div className="mt-2 space-y-0.5">
+                        <p className="text-[11px] font-semibold text-rose-600 tabular-nums">
+                          Checked-in: {formatPaxShort(boatCheckedIn)}
+                        </p>
+                        {boatNoShow > 0 ? (
+                          <p className="text-[11px] font-semibold text-rose-700 tabular-nums">
+                            No-show: -{boatNoShow}
+                          </p>
+                        ) : null}
+                      </div>
                     ) : null}
                       </>
                     )}
