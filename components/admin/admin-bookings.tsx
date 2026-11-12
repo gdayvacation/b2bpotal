@@ -413,6 +413,99 @@ function bookingPaxTitle(booking: Booking) {
   return parts.length ? parts.join(' · ') : undefined
 }
 
+const DUPLICATE_REVIEWED_KEY = 'gday-admin-duplicate-reviewed'
+
+type DuplicateInfo = {
+  /** Stable id for the whole group — changes when another booking joins it. */
+  groupKey: string
+  reason: string
+  others: string[]
+}
+
+function normalizeGuestName(name: string) {
+  return name
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\b(mr|mrs|ms|miss|mstr|dr)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * Live, upcoming bookings from the same agent that look like the same reservation:
+ * same voucher number, or same trip date + program + lead guest.
+ */
+function findPossibleDuplicates(bookings: Booking[], fromDate: string) {
+  const groups = new Map<string, { reason: string; codes: string[] }>()
+  const add = (key: string, reason: string, code: string) => {
+    const group = groups.get(key) ?? { reason, codes: [] }
+    group.codes.push(code)
+    groups.set(key, group)
+  }
+
+  for (const booking of bookings) {
+    if (booking.status === 'Cancelled' || booking.date < fromDate) continue
+    const guest = normalizeGuestName(booking.leadGuest)
+    if (guest) {
+      add(
+        `guest|${booking.agentSlug}|${booking.date}|${booking.program}|${guest}`,
+        'Same agent, trip date, program and guest',
+        booking.code,
+      )
+    }
+    const ref = booking.agentRef?.trim().toLowerCase()
+    if (ref) {
+      add(`ref|${booking.agentSlug}|${ref}`, 'Same agent voucher number', booking.code)
+    }
+  }
+
+  const result = new Map<string, DuplicateInfo>()
+  for (const { reason, codes } of groups.values()) {
+    if (codes.length < 2) continue
+    const sorted = [...codes].sort()
+    for (const code of sorted) {
+      const others = sorted.filter((other) => other !== code)
+      const existing = result.get(code)
+      if (!existing) {
+        result.set(code, { groupKey: sorted.join(','), reason, others })
+        continue
+      }
+      if (!existing.reason.includes(reason)) existing.reason = `${existing.reason} · ${reason}`
+      existing.others = Array.from(new Set([...existing.others, ...others])).sort()
+      existing.groupKey = [code, ...existing.others].sort().join(',')
+    }
+  }
+  return result
+}
+
+function useReviewedDuplicates() {
+  const [reviewed, setReviewed] = useState<Set<string>>(() => new Set())
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(DUPLICATE_REVIEWED_KEY)
+      if (raw) setReviewed(new Set(JSON.parse(raw) as string[]))
+    } catch {
+      // ignore unreadable storage
+    }
+  }, [])
+
+  function markReviewed(groupKey: string) {
+    setReviewed((current) => {
+      const next = new Set(current)
+      next.add(groupKey)
+      try {
+        window.localStorage.setItem(DUPLICATE_REVIEWED_KEY, JSON.stringify([...next]))
+      } catch {
+        // ignore unavailable storage
+      }
+      return next
+    })
+  }
+
+  return { reviewed, markReviewed }
+}
+
 export function AdminBookings() {
   const { bookings, bookingCutoffs, cancelBooking, hydrated, setBookingPickupTime } = usePortal()
   const invoiceStore = useInvoiceStore()
@@ -447,12 +540,22 @@ export function AdminBookings() {
   const hasActiveFilter = quick === 'today' || hasSelectedDate || isSearching || program !== 'all'
   const today = usePortalTodayISO()
   const searchFrom = addDaysISO(today, -OPS_BOOKING_LOOKBACK_DAYS)
+  const { reviewed: reviewedDuplicates, markReviewed: markDuplicateReviewed } =
+    useReviewedDuplicates()
+
+  const duplicates = useMemo(() => {
+    const all = findPossibleDuplicates(bookings, today)
+    for (const [code, info] of all) {
+      if (reviewedDuplicates.has(info.groupKey)) all.delete(code)
+    }
+    return all
+  }, [bookings, today, reviewedDuplicates])
 
   const filtered = useMemo(() => {
     const dateIso = selectedDate ? toISODate(selectedDate) : null
     const dir = sortDir === 'asc' ? 1 : -1
 
-    return bookings
+    const sorted = bookings
       .filter((booking) => {
         if (program !== 'all' && booking.program !== program) return false
         if (isSearching) {
@@ -500,7 +603,39 @@ export function AdminBookings() {
         }
         return b.date.localeCompare(a.date) || b.code.localeCompare(a.code)
       })
-  }, [bookings, program, quick, selectedDate, isSearching, query, sortKey, sortDir, today, searchFrom])
+
+    const pinned = sorted
+      .filter((booking) => duplicates.has(booking.code))
+      .sort(
+        (a, b) =>
+          duplicates.get(a.code)!.groupKey.localeCompare(duplicates.get(b.code)!.groupKey) ||
+          a.code.localeCompare(b.code, undefined, { numeric: true }),
+      )
+    if (pinned.length === 0) return sorted
+    return [...pinned, ...sorted.filter((booking) => !duplicates.has(booking.code))]
+  }, [
+    bookings,
+    duplicates,
+    program,
+    quick,
+    selectedDate,
+    isSearching,
+    query,
+    sortKey,
+    sortDir,
+    today,
+    searchFrom,
+  ])
+
+  const duplicateGroups = useMemo(() => {
+    const groups = new Map<string, Booking[]>()
+    for (const booking of filtered) {
+      const info = duplicates.get(booking.code)
+      if (!info) continue
+      groups.set(info.groupKey, [...(groups.get(info.groupKey) ?? []), booking])
+    }
+    return [...groups.entries()]
+  }, [filtered, duplicates])
 
   const capped = !hasActiveFilter
   const list = capped ? filtered.slice(0, RECENT_LIMIT) : filtered
@@ -692,6 +827,42 @@ export function AdminBookings() {
         </div>
       ) : null}
 
+      {duplicateGroups.length > 0 ? (
+        <div className="mb-4 flex items-start gap-3 rounded-2xl border border-orange-200 bg-orange-50/90 px-4 py-3 text-sm text-orange-950">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-orange-600" />
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold">
+              {duplicateGroups.length === 1
+                ? '1 possible duplicate booking'
+                : `${duplicateGroups.length} possible duplicate bookings`}
+            </p>
+            <p className="mt-0.5 text-xs text-orange-900/75">
+              Same agent with the same voucher number, or same trip date, program and guest.
+              Pinned to the top — check with the agent whether it was booked by mistake.
+            </p>
+            <ul className="mt-2 space-y-1.5">
+              {duplicateGroups.map(([groupKey, rows]) => (
+                <li key={groupKey} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                  <span className="font-mono font-semibold">
+                    {rows.map((row) => row.code).join(' · ')}
+                  </span>
+                  <span className="text-orange-900/70">
+                    {rows[0].agentName} · {formatShortDate(rows[0].date)} · {rows[0].leadGuest}
+                  </span>
+                  <button
+                    type="button"
+                    className="rounded-full bg-white/80 px-2 py-0.5 font-semibold text-orange-900 ring-1 ring-orange-300 hover:bg-white"
+                    onClick={() => markDuplicateReviewed(groupKey)}
+                  >
+                    Checked — not duplicate
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      ) : null}
+
       <Surface className="mb-4 p-3 sm:p-4">
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
@@ -873,7 +1044,9 @@ export function AdminBookings() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {pageRows.map((booking) => (
+                {pageRows.map((booking) => {
+                  const duplicate = duplicates.get(booking.code)
+                  return (
                   <TableRow
                     key={booking.code}
                     className={cn(
@@ -881,6 +1054,8 @@ export function AdminBookings() {
                       createdCode === booking.code && 'bg-emerald-50/70',
                       booking.movedFrom && booking.status !== 'Cancelled' && 'bg-amber-50/70',
                       booking.status === 'Cancelled' && 'bg-rose-50/70 text-rose-900/80',
+                      duplicate &&
+                        'bg-orange-100/70 shadow-[inset_3px_0_0_var(--color-orange-500)] hover:bg-orange-100',
                     )}
                     onClick={() => setVoucherTarget(booking)}
                   >
@@ -889,9 +1064,18 @@ export function AdminBookings() {
                         'truncate px-2 font-mono text-[12px] font-medium hover:underline',
                         booking.status === 'Cancelled' && 'text-rose-800 line-through decoration-rose-300',
                       )}
-                      title={booking.code}
+                      title={
+                        duplicate
+                          ? `Possible duplicate of ${duplicate.others.join(', ')} — ${duplicate.reason}`
+                          : booking.code
+                      }
                     >
                       {booking.code}
+                      {duplicate ? (
+                        <span className="mt-0.5 block w-fit rounded bg-orange-500 px-1 py-px font-sans text-[9px] font-semibold tracking-wide text-white uppercase">
+                          Duplicate?
+                        </span>
+                      ) : null}
                     </TableCell>
                     <TableCell className="truncate px-2 hover:underline" title={formatShortDate(booking.date)}>
                       {formatShortDate(booking.date)}
@@ -960,7 +1144,8 @@ export function AdminBookings() {
                       />
                     </TableCell>
                   </TableRow>
-                ))}
+                  )
+                })}
               </TableBody>
             </Table>
 

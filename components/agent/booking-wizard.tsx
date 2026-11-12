@@ -756,16 +756,19 @@ export function BookingWizard({
         { bypassCutoff: selectAgent },
       )
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not save this booking.')
-      return
-    } finally {
       savingRef.current = false
       setSaving(false)
+      setError(err instanceof Error ? err.message : 'Could not save this booking.')
+      return
     }
     if (!result.ok) {
+      savingRef.current = false
+      setSaving(false)
       setError(result.error)
       return
     }
+    // Stay locked until navigation unmounts the wizard; on a slow connection the
+    // button would otherwise re-enable and a second click creates a duplicate.
     setDuplicateOpen(false)
     if (onSuccess) {
       onSuccess(result.booking)
