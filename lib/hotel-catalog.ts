@@ -41,7 +41,7 @@ export const HOTEL_CATALOG: HotelSeed[] = [
   { name: 'Dinso Resort & Villas Phuket', zoneName: 'Patong' },
   { name: 'DoubleTree by Hilton Phuket Banthai Resort', zoneName: 'Patong' },
   { name: 'Duangjitt Resort', zoneName: 'Patong' },
-  { name: 'Elite Suites Patong, Phuket', zoneName: 'Patong' },
+  { name: 'Elite Suites Patong', zoneName: 'Patong' },
   { name: "Fishermen's Harbour", zoneName: 'Patong' },
   { name: 'Four Points by Sheraton', zoneName: 'Patong' },
   { name: 'FunDee Boutique Hotel', zoneName: 'Patong' },
@@ -119,7 +119,7 @@ export const HOTEL_CATALOG: HotelSeed[] = [
   { name: 'Tiras Patong Beach Hotel', zoneName: 'Patong' },
   { name: 'WOOVO Phuket Patong', zoneName: 'Patong' },
   { name: 'Wyndham Grand Phuket Kalim Bay', zoneName: 'Patong' },
-  { name: 'Zenseana Phuket Hotel', zoneName: 'Patong' },
+  { name: 'Zenseana Resort & Spa', zoneName: 'Patong' },
   { name: 'Zostel Phuket Hostel', zoneName: 'Patong' },
   // Kata
   { name: 'Aurico Kata Resort & Spa', zoneName: 'Kata' },
@@ -162,6 +162,6 @@ export const HOTEL_CATALOG: HotelSeed[] = [
   { name: 'Thavorn Palm Beach Resort Phuket', zoneName: 'Karon' },
   { name: 'Utopia Karon', zoneName: 'Karon' },
   { name: 'La Vista', zoneName: 'Patong' },
-  { name: 'Radisson Resort and Suites Phuket', zoneName: 'Other' },
+  { name: 'Radisson Resort & Suites Phuket', zoneName: 'Other' },
   { name: 'Other', zoneName: 'Other' },
 ]
