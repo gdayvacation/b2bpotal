@@ -440,6 +440,10 @@ function BookingReport({ onBack }: { onBack: () => void }) {
     setArrangeCodes(next)
   }, [arrangeKind, rows, getArrangementGroup])
 
+  const groupFor = (booking: Booking) =>
+    getArrangementGroup(booking.date, booking.program, booking.code)
+  const reportSections = buildReportSections(rows, program, (booking) => groupFor(booking) === 'private')
+
   const activeRows = rows.filter(isActiveBooking)
   const totalPax = sumPax(activeRows)
   const ppPax = sumPax(activeRows.filter((b) => b.program === 'PP'))
@@ -790,7 +794,7 @@ function BookingReport({ onBack }: { onBack: () => void }) {
               </div>
               <p className="text-xs text-teal-900/50">
                 Choose Private or Partner, tick the bookings, then save. Those bookings stay together
-                on จัดการรถ / เรือ / ไกด์.
+                on จัดการรถ / เรือ / ไกด์. Private bookings move to their own table below.
               </p>
               {arrangeNote ? <p className="text-xs font-medium text-teal-800">{arrangeNote}</p> : null}
             </div>
@@ -849,51 +853,25 @@ function BookingReport({ onBack }: { onBack: () => void }) {
 
           {rows.length === 0 ? (
             <EmptyState>No bookings match these filters.</EmptyState>
-          ) : program === 'all' ? (
-            <div className="divide-y divide-teal-900/8">
-              <BookingReportSection
-                title="PP · Phi Phi Islands"
-                rows={rows.filter((b) => b.program === 'PP')}
-                showCanoe={false}
-                arrangeKind={arrangeKind}
-                selectedCodes={arrangeCodes}
-                onToggleCode={toggleArrangeCode}
-                groupFor={(booking) =>
-                  getArrangementGroup(booking.date, booking.program, booking.code)
-                }
-                sortKey={sortKey}
-                sortDir={sortDir}
-                onSort={chooseSort}
-              />
-              <BookingReportSection
-                title="James Bond · Phang Nga Bay"
-                rows={rows.filter((b) => b.program === 'James Bond')}
-                showCanoe
-                arrangeKind={arrangeKind}
-                selectedCodes={arrangeCodes}
-                onToggleCode={toggleArrangeCode}
-                groupFor={(booking) =>
-                  getArrangementGroup(booking.date, booking.program, booking.code)
-                }
-                sortKey={sortKey}
-                sortDir={sortDir}
-                onSort={chooseSort}
-              />
-            </div>
           ) : (
-            <BookingReportSection
-              rows={rows}
-              showCanoe={program === 'James Bond'}
-              arrangeKind={arrangeKind}
-              selectedCodes={arrangeCodes}
-              onToggleCode={toggleArrangeCode}
-              groupFor={(booking) =>
-                getArrangementGroup(booking.date, booking.program, booking.code)
-              }
-              sortKey={sortKey}
-              sortDir={sortDir}
-              onSort={chooseSort}
-            />
+            <div className="divide-y divide-teal-900/8">
+              {reportSections.map((section) => (
+                <BookingReportSection
+                  key={section.key}
+                  title={section.title}
+                  tone={section.private ? 'private' : 'default'}
+                  rows={section.rows}
+                  showCanoe={section.showCanoe}
+                  arrangeKind={arrangeKind}
+                  selectedCodes={arrangeCodes}
+                  onToggleCode={toggleArrangeCode}
+                  groupFor={groupFor}
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={chooseSort}
+                />
+              ))}
+            </div>
           )}
         </Surface>
       </div>
@@ -910,6 +888,7 @@ function BookingReport({ onBack }: { onBack: () => void }) {
         ppPax={ppPax}
         jbPax={jbPax}
         program={program}
+        sections={reportSections}
       />
 
       <style>{`
@@ -1010,7 +989,9 @@ function ReportPrintSheet({
   ppPax,
   jbPax,
   program,
+  sections,
 }: {
+  sections: ReportSection[]
   dateLabel: string
   programLabel: string
   agentLabel: string
@@ -1063,24 +1044,65 @@ function ReportPrintSheet({
 
       {rows.length === 0 ? (
         <p className="py-8 text-center text-sm text-neutral-500">No bookings match these filters.</p>
-      ) : program === 'all' ? (
-        <div className="space-y-3.5">
-          <BookingPrintSection
-            title="PP · Phi Phi Islands"
-            rows={rows.filter((b) => b.program === 'PP')}
-            showCanoe={false}
-          />
-          <BookingPrintSection
-            title="James Bond · Phang Nga Bay"
-            rows={rows.filter((b) => b.program === 'James Bond')}
-            showCanoe
-          />
-        </div>
       ) : (
-        <BookingPrintSection rows={rows} showCanoe={program === 'James Bond'} />
+        <div className="space-y-3.5">
+          {sections.map((section) => (
+            <BookingPrintSection
+              key={section.key}
+              title={section.title}
+              rows={section.rows}
+              showCanoe={section.showCanoe}
+            />
+          ))}
+        </div>
       )}
     </div>
   )
+}
+
+type ReportSection = {
+  key: string
+  title?: string
+  rows: Booking[]
+  showCanoe: boolean
+  private: boolean
+}
+
+const PROGRAM_SECTIONS: { program: Program; title: string }[] = [
+  { program: 'PP', title: 'PP · Phi Phi Islands' },
+  { program: 'James Bond', title: 'James Bond · Phang Nga Bay' },
+]
+
+/** Each program table is followed by its own table for bookings marked Private. */
+function buildReportSections(
+  rows: Booking[],
+  program: ProgramFilter,
+  isPrivate: (booking: Booking) => boolean,
+): ReportSection[] {
+  const programs = PROGRAM_SECTIONS.filter((p) => program === 'all' || p.program === program)
+  return programs.flatMap((p) => {
+    const showCanoe = p.program === 'James Bond'
+    const privateRows = rows.filter((b) => b.program === p.program && isPrivate(b))
+    const sections: ReportSection[] = [
+      {
+        key: p.program,
+        title: program === 'all' ? p.title : undefined,
+        rows: rows.filter((b) => b.program === p.program && !isPrivate(b)),
+        showCanoe,
+        private: false,
+      },
+    ]
+    if (privateRows.length > 0) {
+      sections.push({
+        key: `private-${p.program}`,
+        title: `Private · ${p.title}`,
+        rows: privateRows,
+        showCanoe,
+        private: true,
+      })
+    }
+    return sections
+  })
 }
 
 function sectionStats(rows: Booking[]) {
@@ -1113,6 +1135,7 @@ function sectionStats(rows: Booking[]) {
 
 function BookingReportSection({
   title,
+  tone = 'default',
   rows,
   showCanoe,
   arrangeKind,
@@ -1124,6 +1147,7 @@ function BookingReportSection({
   onSort,
 }: {
   title?: string
+  tone?: 'default' | 'private'
   rows: Booking[]
   showCanoe: boolean
   arrangeKind: ArrangementGroupKind | null
@@ -1148,9 +1172,18 @@ function BookingReportSection({
   return (
     <div>
       {title ? (
-        <div className="border-b border-teal-900/8 bg-teal-950/[0.03] px-4 py-2.5 sm:px-5">
-          <p className="text-sm font-semibold text-teal-950">{title}</p>
-          <p className="text-xs text-teal-900/45">
+        <div
+          className={cn(
+            'border-b px-4 py-2.5 sm:px-5',
+            tone === 'private'
+              ? 'border-sky-900/10 bg-sky-50/80'
+              : 'border-teal-900/8 bg-teal-950/[0.03]',
+          )}
+        >
+          <p className={cn('text-sm font-semibold', tone === 'private' ? 'text-sky-950' : 'text-teal-950')}>
+            {title}
+          </p>
+          <p className={cn('text-xs', tone === 'private' ? 'text-sky-900/55' : 'text-teal-900/45')}>
             {active.length} booking{active.length === 1 ? '' : 's'} · {totalPax} pax
           </p>
         </div>
