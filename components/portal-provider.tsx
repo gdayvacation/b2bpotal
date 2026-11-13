@@ -4917,13 +4917,17 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           next.tourLeaders !== existing.tourLeaders
         if (livePaxChanged) {
           const prior = bookedPaxOf(existing)
+          // Raising a count first refills guests marked no-show (live below original); only the
+          // part above the original grows it. Lowering a count is an amendment of the original.
+          const amend = (before: number, live: number, after: number) =>
+            after > live ? Math.max(before, after) : before + (after - live)
           const proposed = options?.opsAdjust
             ? prior
             : {
-                adults: prior.adults + (next.adults - existing.adults),
-                children: prior.children + (next.children - existing.children),
-                infants: prior.infants + (next.infants - existing.infants),
-                tourLeaders: prior.tourLeaders + (next.tourLeaders - existing.tourLeaders),
+                adults: amend(prior.adults, existing.adults, next.adults),
+                children: amend(prior.children, existing.children, next.children),
+                infants: amend(prior.infants, existing.infants, next.infants),
+                tourLeaders: amend(prior.tourLeaders, existing.tourLeaders, next.tourLeaders),
               }
           const original = {
             adults: Math.max(next.adults, proposed.adults),

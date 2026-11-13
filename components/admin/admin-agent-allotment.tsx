@@ -16,7 +16,6 @@ import {
   Trash2,
   Wallet,
 } from 'lucide-react'
-import { AdminAgentAllotmentDailyChecker } from '@/components/admin/admin-agent-allotment-daily'
 import { AdminAgentAllotmentHistory } from '@/components/admin/admin-agent-allotment-history'
 import { AllotmentSheet, type SheetLineDraft } from '@/components/admin/allotment-sheet'
 import { usePortal } from '@/components/portal-provider'
@@ -625,7 +624,7 @@ function splitAllocatedPax(allocated: number, dayAdults: number, dayChildren: nu
   if (heads <= 0) return { adults: 0, children: 0 }
   const dayTotal = Math.max(0, dayAdults) + Math.max(0, dayChildren)
   if (dayTotal <= 0) {
-    // Daily checker only — price as AD (same as lot head pool).
+    // Saved heads with no bookings that day — price as AD (same as lot head pool).
     return { adults: heads, children: 0 }
   }
   let adults = Math.round((Math.max(0, dayAdults) * heads) / dayTotal)
@@ -981,7 +980,7 @@ export function AdminAgentAllotment() {
 
   /**
    * Saved days that are not pinned to a lot (the imported sheet) still spread
-   * across lots. Live bookings stay in Daily checker until Save.
+   * across lots. Live bookings stay pending until the prebuy invoice saves them.
    */
   const selectedAgentDailyForFifo = useMemo(
     () =>
@@ -2868,7 +2867,7 @@ export function AdminAgentAllotment() {
           </div>
           {sheetTotals.pendingHeads > 0 ? (
             <p className="border-b border-teal-900/8 px-3 py-2 text-xs text-teal-900/55">
-              {sheetTotals.pendingHeads} heads from bookings are already on the sheet and are not saved in Daily checker yet.
+              {sheetTotals.pendingHeads} heads from bookings are already on the sheet and are not saved yet. They are saved when the prebuy invoice is made.
             </p>
           ) : null}
           <AllotmentSheet
@@ -2886,8 +2885,8 @@ export function AdminAgentAllotment() {
             <DialogHeader>
               <DialogTitle>Setup · {agentName}</DialogTitle>
               <DialogDescription>
-                How this agent&apos;s {programLabel} allotment counts heads. Applies to the daily sheet,
-                the Daily checker and prebuy invoices from now on. Days already saved stay as they are.
+                How this agent&apos;s {programLabel} allotment counts heads. Applies to the daily sheet
+                and prebuy invoices from now on. Days already saved stay as they are.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-2">
