@@ -83,19 +83,6 @@ export function VoucherPreview({
     live.agentName.trim().toLowerCase() !== issuerName.trim().toLowerCase()
   const booked = bookedPaxOf(live)
   const total = totalPassengers(booked)
-  const liveTotal = totalPassengers(live)
-  const noShowParts = live.movedOutPax
-    ? []
-    : (
-        [
-          [booked.adults - live.adults, 'AD'],
-          [booked.children - live.children, 'CH'],
-          [booked.infants - live.infants, 'INF'],
-          [booked.tourLeaders - live.tourLeaders, 'TL'],
-        ] as const
-      )
-        .filter(([count]) => count > 0)
-        .map(([count, label]) => `${count} ${label}`)
   const cancelled = live.status === 'Cancelled'
   const pickupLine = [
     live.pickupHotel,
@@ -252,11 +239,6 @@ export function VoucherPreview({
               <GuestStat label="Infants" value={booked.infants} />
               <GuestStat label="TL" value={booked.tourLeaders} />
             </div>
-            {noShowParts.length > 0 ? (
-              <p className="mt-1.5 text-xs font-medium text-rose-700">
-                No show {noShowParts.join(' + ')} · on tour {liveTotal}
-              </p>
-            ) : null}
           </Section>
 
           <Section title="Pickup" icon={<MapPin className="size-3.5" />}>
