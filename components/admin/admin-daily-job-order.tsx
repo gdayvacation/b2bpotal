@@ -1590,7 +1590,13 @@ function AgentGroupSection({
                       {booking.pickupHotel || '—'}
                     </div>
                   </TableCell>
-                  <TableCell className="px-1 text-center text-xs whitespace-nowrap">
+                  <TableCell
+                    className={cn(
+                      'px-1 text-center text-xs whitespace-nowrap',
+                      formatIncludeLabel(booking.parkFee) === 'Included' &&
+                        'font-semibold text-red-600',
+                    )}
+                  >
                     {formatIncludeLabel(booking.parkFee)}
                   </TableCell>
                   {showCanoe ? (
@@ -1833,7 +1839,14 @@ function AgentJobOrderPrintSheet({
                               {formatPickupTime(booking.pickupTime)}
                             </td>
                             <td className={td}>{booking.pickupHotel}</td>
-                            <td className={cn(td, 'text-center whitespace-nowrap')}>
+                            <td
+                              className={cn(
+                                td,
+                                'text-center whitespace-nowrap',
+                                formatIncludeLabel(booking.parkFee) === 'Included' &&
+                                  'font-semibold text-red-600',
+                              )}
+                            >
                               {formatIncludeLabel(booking.parkFee)}
                             </td>
                             {showCanoe ? (
