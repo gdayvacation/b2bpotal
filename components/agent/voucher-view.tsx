@@ -16,6 +16,7 @@ import { formatThbAmount } from '@/lib/booking-cutoffs'
 import { formatIncludeLabel, formatLongDate, formatShortDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
+  bookedPaxOf,
   bookingMoveNote,
   formatPickupZoneLabel,
   isNoTransfer,
@@ -80,7 +81,21 @@ export function VoucherPreview({
   const issuerContact = [issuerPhone, issuerEmail].filter(Boolean).join(' · ')
   const showBookingAgent =
     live.agentName.trim().toLowerCase() !== issuerName.trim().toLowerCase()
-  const total = totalPassengers(live)
+  const booked = bookedPaxOf(live)
+  const total = totalPassengers(booked)
+  const liveTotal = totalPassengers(live)
+  const noShowParts = live.movedOutPax
+    ? []
+    : (
+        [
+          [booked.adults - live.adults, 'AD'],
+          [booked.children - live.children, 'CH'],
+          [booked.infants - live.infants, 'INF'],
+          [booked.tourLeaders - live.tourLeaders, 'TL'],
+        ] as const
+      )
+        .filter(([count]) => count > 0)
+        .map(([count, label]) => `${count} ${label}`)
   const cancelled = live.status === 'Cancelled'
   const pickupLine = [
     live.pickupHotel,
@@ -232,11 +247,16 @@ export function VoucherPreview({
         <div className="space-y-2.5 px-3.5 py-3.5 sm:px-4">
           <Section title="Guests" icon={<Users className="size-3.5" />}>
             <div className="grid grid-cols-4 gap-px overflow-hidden rounded-lg bg-teal-900/8">
-              <GuestStat label="Adults" value={live.adults} />
-              <GuestStat label="Children" value={live.children} />
-              <GuestStat label="Infants" value={live.infants} />
-              <GuestStat label="TL" value={live.tourLeaders} />
+              <GuestStat label="Adults" value={booked.adults} />
+              <GuestStat label="Children" value={booked.children} />
+              <GuestStat label="Infants" value={booked.infants} />
+              <GuestStat label="TL" value={booked.tourLeaders} />
             </div>
+            {noShowParts.length > 0 ? (
+              <p className="mt-1.5 text-xs font-medium text-rose-700">
+                No show {noShowParts.join(' + ')} · on tour {liveTotal}
+              </p>
+            ) : null}
           </Section>
 
           <Section title="Pickup" icon={<MapPin className="size-3.5" />}>
