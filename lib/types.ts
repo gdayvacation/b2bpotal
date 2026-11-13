@@ -1166,15 +1166,30 @@ export function countsTowardAllotment(
   return isActiveBooking(booking) || chargedCancelDeductsAllotment(booking)
 }
 
-/** AD+CH this booking takes from allotment. Charged cancels use the originally booked party. */
-export function allotmentHeadUse(
+/**
+ * Party this booking takes from allotment: the originally booked guests, since no-shows still
+ * use heads. Guests moved to another date are deducted there instead.
+ */
+export function allotmentPax(
   booking: Pick<
     Booking,
     'status' | 'lateCancel' | 'cancelFee' | 'adults' | 'children' | 'infants' | 'tourLeaders'
-  > & { originalPax?: BookingPax | null },
-) {
-  if (chargedCancelDeductsAllotment(booking)) return chargeablePax(bookedPaxOf(booking))
-  return chargeablePax(booking)
+  > & { originalPax?: BookingPax | null; movedOutPax?: BookingPax | null },
+): BookingPax {
+  const booked = bookedPaxOf(booking)
+  const moved = chargedCancelDeductsAllotment(booking) ? null : booking.movedOutPax
+  if (!moved) return booked
+  return {
+    adults: Math.max(0, booked.adults - moved.adults),
+    children: Math.max(0, booked.children - moved.children),
+    infants: Math.max(0, booked.infants - moved.infants),
+    tourLeaders: Math.max(0, booked.tourLeaders - moved.tourLeaders),
+  }
+}
+
+/** AD+CH heads this booking takes from allotment. */
+export function allotmentHeadUse(booking: Parameters<typeof allotmentPax>[0]) {
+  return chargeablePax(allotmentPax(booking))
 }
 
 /** Compact pax readout: adults+children+infants+tourLeadersT → e.g. 3+2+1+1T */

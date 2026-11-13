@@ -25,6 +25,7 @@ import { formatMonthLabel, formatShortDate, todayISO } from '@/lib/format'
 import { listAgentAllotments, type AgentAllotment } from '@/lib/supabase/agent-allotment-db'
 import {
   allotmentHeadUse,
+  allotmentPax,
   chargedCancelDeductsAllotment,
   countsTowardAllotment,
   formatPaxBreakdown,
@@ -505,8 +506,9 @@ export function AdminAgentAllotmentHistory({
           agents.find((a) => a.slug === agentSlug)?.name ||
           agentSlug
         const rates = ratesForAgent(agentSlug, agentName)
-        const adults = Math.max(0, booking.adults)
-        const children = Math.max(0, booking.children)
+        const party = allotmentPax(booking)
+        const adults = party.adults
+        const children = party.children
 
         result.push({
           key: `${booking.code}|${date}`,
@@ -518,7 +520,7 @@ export function AdminAgentAllotmentHistory({
           bookingLabel: chargedCancelDeductsAllotment(booking)
             ? `${programLabel(booking.program)} · Cancelled · charge`
             : `${programLabel(booking.program)} · ${booking.status}`,
-          paxLabel: formatPaxBreakdown(booking),
+          paxLabel: formatPaxBreakdown(party),
           program: booking.program,
           adults,
           children,
@@ -1275,7 +1277,7 @@ export function AdminAgentAllotmentHistory({
                                       {chargedCancelDeductsAllotment(bk) ? ' · charge' : ''}
                                     </td>
                                     <td className="px-2 py-1.5 tabular-nums text-teal-900/70">
-                                      {formatPaxBreakdown(bk)}
+                                      {formatPaxBreakdown(allotmentPax(bk))}
                                     </td>
                                     <td className="px-2 py-1.5 text-right font-semibold tabular-nums text-teal-950">
                                       {allotmentHeadUse(bk)}

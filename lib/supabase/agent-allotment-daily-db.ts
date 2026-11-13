@@ -194,7 +194,7 @@ export async function fetchAgentBookingDayPax(
     const { data, error } = await supabase
       .from('bookings')
       .select(
-        'code,agent_ref,lead_guest,pickup_hotel,pickup_zone,transfer_extra_charge,date,adults,children,status,late_cancel,cancel_fee,original_adults,original_children,late_date_change,no_show_date_move,moved_from_code,late_change_fee',
+        'code,agent_ref,lead_guest,pickup_hotel,pickup_zone,transfer_extra_charge,date,adults,children,status,late_cancel,cancel_fee,original_adults,original_children,moved_out_adults,moved_out_children,late_date_change,no_show_date_move,moved_from_code,late_change_fee',
       )
       .eq('agent_slug', slug)
       .eq('program', program)
@@ -219,6 +219,8 @@ export async function fetchAgentBookingDayPax(
       cancel_fee: number | string | null
       original_adults: number | string | null
       original_children: number | string | null
+      moved_out_adults: number | string | null
+      moved_out_children: number | string | null
       late_date_change: boolean | null
       no_show_date_move: boolean | null
       moved_from_code: string | null
@@ -264,9 +266,15 @@ export async function fetchAgentBookingDayPax(
         row.late_date_change === true ||
         row.no_show_date_move === true ||
         Boolean(String(row.moved_from_code ?? '').trim())
-      const pax = chargedCancel ? bookedPaxOf(shaped) : shaped
-      const useAdults = Math.max(0, pax.adults)
-      const useChildren = Math.max(0, pax.children)
+      // No-shows still use heads, so deduct the booked party. Guests moved to another date
+      // are deducted on that date instead.
+      const pax = bookedPaxOf(shaped)
+      const movedAdults = chargedCancel ? 0 : Math.max(0, Math.floor(Number(row.moved_out_adults) || 0))
+      const movedChildren = chargedCancel
+        ? 0
+        : Math.max(0, Math.floor(Number(row.moved_out_children) || 0))
+      const useAdults = Math.max(0, pax.adults - movedAdults)
+      const useChildren = Math.max(0, pax.children - movedChildren)
       if (useAdults + useChildren <= 0) continue
       const current = byDay.get(day) ?? { adults: 0, children: 0, bookings: [] }
       current.adults += useAdults
