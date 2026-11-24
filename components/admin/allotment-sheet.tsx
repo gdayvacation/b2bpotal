@@ -325,7 +325,7 @@ export function AllotmentSheet({
           {moveLots.length > 0 && (!moveFromDay || group.date >= moveFromDay) ? (
             <select
               aria-label={`Move ${formatShortDate(group.date)} to another lot`}
-              className="ml-2 h-6 rounded-lg border border-teal-900/15 bg-white px-1.5 text-[11px] font-medium text-teal-950"
+              className="ml-2 h-7 rounded-lg border border-teal-800/30 bg-white px-2 text-[11px] font-semibold text-teal-900"
               defaultValue=""
               onClick={(event) => event.stopPropagation()}
               onKeyDown={(event) => event.stopPropagation()}
@@ -335,7 +335,7 @@ export function AllotmentSheet({
                 if (lotId) onMoveUsage?.(group.date, lotId)
               }}
             >
-              <option value="">Move to lot…</option>
+              <option value="">Move day</option>
               {moveLots.map((lot) => (
                 <option key={lot.id} value={lot.id}>
                   {lot.label}
