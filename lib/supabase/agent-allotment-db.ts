@@ -40,6 +40,11 @@ export type AgentAllotment = {
   payments: AgentAllotmentPayment[]
   /** This lot receives the next Daily checker save for the agent. */
   receivesBookings: boolean
+  /**
+   * Bookings from this day belong to this lot until the next lot's usageFrom.
+   * Null means this lot has not been handed any booking days.
+   */
+  usageFrom: string | null
   note: string
   createdAt: string
   updatedAt: string
@@ -60,6 +65,7 @@ type AgentAllotmentRow = {
   paid_date?: string | null
   payments?: unknown
   receives_bookings?: boolean | null
+  usage_from?: string | null
   note: string | null
   created_at: string
   updated_at: string
@@ -272,6 +278,7 @@ function mapRow(row: AgentAllotmentRow): AgentAllotment {
     paidDate: row.paid_date?.slice(0, 10) || null,
     payments: parseAllotmentPayments(row.payments),
     receivesBookings: row.receives_bookings === true,
+    usageFrom: row.usage_from?.slice(0, 10) || null,
     note: row.note?.trim() || '',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -367,6 +374,57 @@ export async function createAgentAllotment(input: AgentAllotmentInput): Promise<
     throw new Error(error.message)
   }
   return mapRow(data as AgentAllotmentRow)
+}
+
+/**
+ * Move this lot's transfers dated on or after `fromDay` onto another lot.
+ * Heads and the lot total move with those lines so the old lot does not keep them.
+ */
+export async function moveAllotmentPaymentsFromDay(
+  sourceId: string,
+  targetId: string,
+  fromDay: string,
+  untilDay = '',
+): Promise<number> {
+  const day = fromDay.trim()
+  const end = untilDay.trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('Enter a valid date.')
+  if (sourceId === targetId) return 0
+  const source = await getAgentAllotment(sourceId)
+  const target = await getAgentAllotment(targetId)
+  const moving = source.payments.filter((payment) => {
+    const paid = payment.paidDate.slice(0, 10)
+    if (paid < day) return false
+    if (end && paid >= end) return false
+    return true
+  })
+  if (moving.length === 0) return 0
+  const movingIds = new Set(moving.map((payment) => payment.id))
+  const heads = moving.reduce((sum, payment) => sum + (payment.moneyOnly ? 0 : payment.heads ?? 0), 0)
+  const amount = moving.reduce((sum, payment) => sum + (payment.moneyOnly ? 0 : payment.amount), 0)
+  await saveAllotmentAccount(source, {
+    adultSeats: Math.max(0, source.adultSeats - heads),
+    totalAmount: source.totalAmount - amount,
+    payments: source.payments.filter((payment) => !movingIds.has(payment.id)),
+  })
+  await saveAllotmentAccount(target, {
+    adultSeats: target.adultSeats + heads,
+    totalAmount: target.totalAmount + amount,
+    payments: [...target.payments, ...moving],
+  })
+  return moving.length
+}
+
+/** Hand this lot the booking days from `usageFrom` onward. Pass null to clear that handoff. */
+export async function setAgentAllotmentUsageFrom(
+  id: string,
+  usageFrom: string | null,
+): Promise<void> {
+  const supabase = requireSupabase()
+  const day = usageFrom?.trim() || null
+  if (day && !/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('Enter a valid date.')
+  const { error } = await supabase.from('agent_allotments').update({ usage_from: day }).eq('id', id)
+  if (error) throw new Error(error.message)
 }
 
 export async function updateAgentAllotment(

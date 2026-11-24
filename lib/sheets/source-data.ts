@@ -578,6 +578,7 @@ function mapAllotment(row: Record<string, unknown>): AgentAllotment | null {
     paidDate: paidDate && /^\d{4}-\d{2}-\d{2}$/.test(paidDate) ? paidDate : null,
     payments: parseAllotmentPayments(row.payments),
     receivesBookings: row.receives_bookings === true,
+    usageFrom: row.usage_from ? String(row.usage_from).slice(0, 10) : null,
     note: String(row.note ?? '').trim(),
     createdAt: String(row.created_at ?? ''),
     updatedAt: String(row.updated_at ?? ''),

@@ -136,6 +136,44 @@ function lotOpen(lot: AgentAllotment) {
   return (lot.paidDate || lot.createdAt).slice(0, 10)
 }
 
+export type AllotmentUsageRange = { from: string; until: string }
+
+/**
+ * Booking days for one lot. The oldest lot keeps every day until someone moves
+ * a day onto a later lot. A move starts at usageFrom and runs until the next one.
+ */
+export function allotmentUsageRanges(lot: AgentAllotment, lots: AgentAllotment[]): AllotmentUsageRange[] {
+  if (lots.length === 0) return []
+  const base = lots[0]!
+  const cuts = lots
+    .flatMap((row) => (row.usageFrom ? [{ id: row.id, day: row.usageFrom }] : []))
+    .sort((a, b) => a.day.localeCompare(b.day) || a.id.localeCompare(b.id))
+  const segments: { lotId: string; from: string; until: string }[] = []
+  let owner = base.id
+  let cursor = lotOpen(base)
+  for (const cut of cuts) {
+    if (cut.day > cursor) {
+      segments.push({ lotId: owner, from: cursor, until: cut.day })
+      cursor = cut.day
+    }
+    owner = cut.id
+    cursor = cut.day
+  }
+  segments.push({ lotId: owner, from: cursor, until: '' })
+  return segments
+    .filter((segment) => segment.lotId === lot.id && segment.from < (segment.until || '9999-12-31'))
+    .map(({ from, until }) => ({ from, until }))
+}
+
+export function allotmentUsageOwner(day: string, lots: AgentAllotment[]) {
+  for (const lot of lots) {
+    if (allotmentUsageRanges(lot, lots).some((range) => day >= range.from && (!range.until || day < range.until))) {
+      return lot.id
+    }
+  }
+  return lots[0]?.id ?? ''
+}
+
 function sortLots(lots: AgentAllotment[]) {
   return [...lots].sort((a, b) => {
     return lotOpen(a).localeCompare(lotOpen(b)) || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
@@ -199,8 +237,12 @@ type BuildAllotmentSheetInput = {
   deductChildren?: boolean
   /** When daily ledger rows exist, past usage uses saved daily only (not full booking back-fill). */
   ledgerBacked?: boolean
-  /** First day shown on the agent sheet (e.g. newest lot open — October hidden). */
+  /** First day of this lot. Earlier usage stays on the previous lot. Balance starts at 0. */
   fromDay?: string
+  /** First day of the next lot. Usage from this day onward stays off this lot. */
+  usageUntilDay?: string
+  /** Booking days that belong on this lot. An empty list shows the lot's money and heads only. */
+  usageRanges?: AllotmentUsageRange[] | null
   __fullBuild?: boolean
   /** Running balance before the first visible row when the sheet starts mid-history. */
   __startingBalance?: { heads: number; money: number } | null
@@ -208,11 +250,13 @@ type BuildAllotmentSheetInput = {
 
 export function buildAllotmentSheet(input: BuildAllotmentSheetInput): AllotmentSheetLine[] {
   const fromDay = String(input.fromDay ?? '').slice(0, 10)
+  const usageUntil = String(input.usageUntilDay ?? '').slice(0, 10)
   if (fromDay && !input.__fullBuild) {
-    // Newest-lot sheet: no carry from hidden months — wallet starts at 0 on fromDay.
+    // This lot starts at 0. Nothing is carried in from the previous lot.
     return buildAllotmentSheet({
       ...input,
       fromDay,
+      usageUntilDay: usageUntil,
       __fullBuild: true,
       __startingBalance: { heads: 0, money: 0 },
     })
@@ -291,15 +335,22 @@ export function buildAllotmentSheet(input: BuildAllotmentSheetInput): AllotmentS
     }
   }
 
+  const usageRanges = input.usageRanges ?? null
   const savedByDay = new Map<string, AgentAllotmentDaily>()
   for (const row of input.daily) {
-    if (row.day < earliest) continue
+    if (!usageRanges && row.day < earliest) continue
     savedByDay.set(row.day, row)
   }
   const bookingByDay = new Map(input.bookings.map((row) => [row.day, row]))
   const days = new Set<string>([...savedByDay.keys(), ...bookingByDay.keys()])
   for (const day of days) {
-    if (day < earliest) continue
+    if (usageRanges) {
+      const inRange = usageRanges.some((range) => day >= range.from && (!range.until || day < range.until))
+      if (!inRange) continue
+    } else {
+      if (day < earliest) continue
+      if (usageUntil && day >= usageUntil) continue
+    }
     const saved = savedByDay.get(day)
     const booking = bookingByDay.get(day)
     const savedHeads = Math.max(0, saved?.totalDeduct ?? 0)

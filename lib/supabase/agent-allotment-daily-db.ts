@@ -127,6 +127,29 @@ export async function upsertAgentAllotmentDaily(input: {
   return mapRow(data as AgentAllotmentDailyRow)
 }
 
+/** Pin every saved day in [fromDay, untilDay) to this lot. Later days follow the sheet window too. */
+export async function assignAgentAllotmentDailyRange(input: {
+  agentSlug: string
+  program?: Program
+  fromDay: string
+  untilDay?: string
+  allotmentId: string
+}): Promise<void> {
+  const supabase = requireSupabase()
+  const program: Program = input.program === 'James Bond' ? 'James Bond' : 'PP'
+  const fromDay = input.fromDay.trim()
+  const untilDay = input.untilDay?.trim() || ''
+  let query = supabase
+    .from('agent_allotment_daily')
+    .update({ allotment_id: input.allotmentId })
+    .eq('agent_slug', input.agentSlug.trim())
+    .eq('program', program)
+    .gte('day', fromDay)
+  if (untilDay) query = query.lt('day', untilDay)
+  const { error } = await query
+  if (error) throw new Error(error.message)
+}
+
 export async function moveAgentAllotmentDaily(input: {
   day: string
   agentSlug: string

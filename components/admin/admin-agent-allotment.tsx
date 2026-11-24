@@ -47,6 +47,8 @@ import {
 } from '@/lib/allotment-lot-fifo'
 import {
   allotmentSheetTotals,
+  allotmentUsageOwner,
+  allotmentUsageRanges,
   buildAllotmentSheet,
   lotTransfers,
   type AllotmentSheetLine,
@@ -54,11 +56,9 @@ import {
 import {
   allotmentExportFilename,
   allotmentExportPeriodLabel,
-  allotmentLotRange,
   downloadAllotmentExcel,
   filterAllotmentSheetLines,
   printAllotmentPdf,
-  sortAllotmentLots,
 } from '@/lib/allotment-sheet-export'
 import { formatMonthLabel, formatShortDate, todayISO, uniqueAgentSlug } from '@/lib/format'
 import {
@@ -74,7 +74,9 @@ import {
   formatAllotmentParkFee,
   listAgentAllotments,
   removeLastAgentAllotmentPayment,
+  moveAllotmentPaymentsFromDay,
   setAgentAllotmentReceiving,
+  setAgentAllotmentUsageFrom,
   topUpAgentAllotment,
   updateAgentAllotment,
   removeAllotmentSheetLine,
@@ -91,6 +93,7 @@ import {
 } from '@/lib/supabase/agent-allotment-settings-db'
 import {
   fetchAgentBookingDayPax,
+  assignAgentAllotmentDailyRange,
   listAgentAllotmentDaily,
   moveAgentAllotmentDaily,
   type AgentAllotmentDaily,
@@ -834,6 +837,8 @@ export function AdminAgentAllotment() {
   const [showLots, setShowLots] = useState(false)
   /** 'book' = running wallet, 'active' = lot in use, otherwise a lot id. */
   const [bookTab, setBookTab] = useState<'book' | 'active' | string>('active')
+  /** The lot tab open on the agent sheet. Each lot is its own balance. */
+  const [sheetLotId, setSheetLotId] = useState('')
   const lotTabStripRef = useRef<HTMLDivElement>(null)
   const [selectedAgentSlug, setSelectedAgentSlug] = useState('')
   const [selectedLotId, setSelectedLotId] = useState('')
@@ -851,7 +856,6 @@ export function AdminAgentAllotment() {
   const [loadError, setLoadError] = useState('')
   const [bookingPaxError, setBookingPaxError] = useState('')
   const [exportMonth, setExportMonth] = useState('')
-  const [exportLotId, setExportLotId] = useState('')
   const [exportIncludeFuture, setExportIncludeFuture] = useState(true)
   const [exportingSheet, setExportingSheet] = useState<'excel' | 'pdf' | null>(null)
   const [draft, setDraft] = useState<Draft>(emptyDraft)
@@ -978,15 +982,17 @@ export function AdminAgentAllotment() {
     [selectedAgentRows],
   )
 
-  /** Agent sheet starts when the newest lot opens (hides earlier lots / October ledger). */
-  const sheetFromDay = useMemo(() => {
-    const opens = selectedAgentRows
-      .map((row) => (row.paidDate || row.createdAt).slice(0, 10))
-      .filter(Boolean)
-      .sort((a, b) => a.localeCompare(b))
-    if (opens.length === 0) return ''
-    return (opens.length > 1 ? opens.at(-1) : opens[0]) ?? ''
-  }, [selectedAgentRows])
+  /** One tab, one lot. The next lot does not inherit this lot's money or heads. */
+  const sheetLotIndex = selectedAgentRows.findIndex((row) => row.id === sheetLotId)
+  const resolvedSheetLot =
+    (sheetLotIndex >= 0 ? selectedAgentRows[sheetLotIndex] : selectedAgentRows.at(-1)) ?? null
+  const resolvedSheetLotIndex = resolvedSheetLot
+    ? selectedAgentRows.findIndex((row) => row.id === resolvedSheetLot.id)
+    : -1
+  const sheetLotOpen = resolvedSheetLot
+    ? (resolvedSheetLot.paidDate || resolvedSheetLot.createdAt).slice(0, 10)
+    : ''
+  const sheetUsageRanges = resolvedSheetLot ? allotmentUsageRanges(resolvedSheetLot, selectedAgentRows) : []
 
   /**
    * Saved days that are not pinned to a lot (the imported sheet) still spread
@@ -1201,12 +1207,13 @@ export function AdminAgentAllotment() {
   const sheetLines = useMemo(
     () =>
       buildAllotmentSheet({
-        lots: selectedAgentRows,
+        lots: resolvedSheetLot ? [resolvedSheetLot] : [],
         daily: selectedAgentDaily,
         bookings: rawBookingDayPax,
         today,
         deductChildren: selectedDeductChildren,
-        fromDay: sheetFromDay,
+        fromDay: sheetLotOpen,
+        usageRanges: sheetUsageRanges,
       }).map((line) => ({
         ...line,
         bookings: line.bookings.map((booking) => ({
@@ -1214,7 +1221,15 @@ export function AdminAgentAllotment() {
           status: allotmentGuestStatus(booking),
         })),
       })),
-    [selectedAgentRows, selectedAgentDaily, rawBookingDayPax, selectedDeductChildren, today, sheetFromDay],
+    [
+      resolvedSheetLot,
+      selectedAgentDaily,
+      rawBookingDayPax,
+      selectedDeductChildren,
+      today,
+      sheetLotOpen,
+      sheetUsageRanges,
+    ],
   )
   const exportMonths = useMemo(() => {
     const months = [...new Set(sheetLines.map((line) => line.date.slice(0, 7)))]
@@ -1227,7 +1242,6 @@ export function AdminAgentAllotment() {
     if (!days.includes(today)) return days
     return [today, ...days.filter((day) => day !== today)]
   }, [sheetLines, today])
-  const exportLots = useMemo(() => sortAllotmentLots(selectedAgentRows), [selectedAgentRows])
   const sheetTotals = useMemo(() => allotmentSheetTotals(sheetLines), [sheetLines])
   const lotBooks = useMemo(
     () =>
@@ -1249,7 +1263,7 @@ export function AdminAgentAllotment() {
   const fifoUsed = selectedAgentFifo.summaries.reduce((sum, row) => sum + row.used, 0)
   const fifoPurchased = selectedAgentFifo.summaries.reduce((sum, row) => sum + row.purchased, 0)
   const bookHeadsLeft = fifoPurchased - fifoUsed
-  const bookRate = selectedAgentRows.at(-1)?.adultPrice ?? 0
+  const bookRate = resolvedSheetLot?.adultPrice ?? 0
   const receivingLotId = selectedAgentRows.find((row) => row.receivesBookings)?.id ?? ''
   const pendingChecker = useMemo(() => {
     const savedDays = new Set(selectedAgentDaily.map((row) => row.day))
@@ -1289,6 +1303,15 @@ export function AdminAgentAllotment() {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
     setSelectedAgentSlug(slug)
     setSelectedLotId('')
+    const newest = rows
+      .filter((row) => row.agentSlug === slug && row.program === workProgram)
+      .sort((a, b) => {
+        const aOpen = (a.paidDate || a.createdAt).slice(0, 10)
+        const bOpen = (b.paidDate || b.createdAt).slice(0, 10)
+        return aOpen.localeCompare(bOpen) || a.createdAt.localeCompare(b.createdAt)
+      })
+      .at(-1)
+    setSheetLotId(newest?.id ?? '')
     setLedgerError('')
     setShowLots(false)
     setBookTab('active')
@@ -1427,7 +1450,6 @@ export function AdminAgentAllotment() {
 
   useEffect(() => {
     setExportMonth('')
-    setExportLotId('')
     setExportIncludeFuture(true)
   }, [selectedAgentSlug, workProgram])
 
@@ -1513,7 +1535,10 @@ export function AdminAgentAllotment() {
       await setAgentAllotmentReceiving(created.agentSlug, created.id)
       setDraft(emptyDraft())
       await refresh()
-      openLot(created)
+      setSelectedAgentSlug(created.agentSlug)
+      setSelectedLotId(created.id)
+      setSheetLotId(created.id)
+      setView('agent')
     } catch (caught) {
       setAddError(caught instanceof Error ? caught.message : 'Could not save allotment.')
     } finally {
@@ -1606,7 +1631,10 @@ export function AdminAgentAllotment() {
         parkFee: current.parkFee,
       }))
       await refresh()
-      openLot(created)
+      setSelectedAgentSlug(created.agentSlug)
+      setSelectedLotId(created.id)
+      setSheetLotId(created.id)
+      setView('agent')
     } catch (caught) {
       setLedgerError(caught instanceof Error ? caught.message : 'Could not save allotment.')
     } finally {
@@ -1627,7 +1655,7 @@ export function AdminAgentAllotment() {
   async function handleSheetAdd(draft: SheetLineDraft) {
     const agent = sheetAgent()
     if (!agent) throw new Error('Agent not found.')
-    const lot = selectedAgentRows.at(-1) ?? null
+    const lot = resolvedSheetLot
     if (!lot) {
       if (draft.heads <= 0) {
         throw new Error('The first row needs the heads you are buying. Deduct money on the next row.')
@@ -1648,6 +1676,7 @@ export function AdminAgentAllotment() {
         note: draft.note,
       })
       await setAgentAllotmentReceiving(created.agentSlug, created.id)
+      setSheetLotId(created.id)
       await updateAllotmentSheetLine(created.id, {
         paymentId: created.id,
         heads: draft.heads,
@@ -1658,25 +1687,16 @@ export function AdminAgentAllotment() {
         preserveTotal: true,
       })
     } else if (draft.heads < 0) {
-      const available = selectedAgentRows.reduce((sum, row) => sum + row.adultSeats, 0)
+      const available = lot.adultSeats
       if (-draft.heads > available) {
-        throw new Error(`You can reduce at most ${available} purchased heads.`)
+        throw new Error(`You can reduce at most ${available} purchased heads on this lot.`)
       }
-      let remaining = -draft.heads
-      let amountLeft = draft.amount
-      for (const row of [...selectedAgentRows].reverse()) {
-        if (remaining <= 0) break
-        const take = Math.min(row.adultSeats, remaining)
-        if (take <= 0) continue
-        await topUpAgentAllotment(row.id, {
-          heads: -take,
-          amount: amountLeft,
-          paidDate: draft.date,
-          note: draft.note,
-        })
-        amountLeft = 0
-        remaining -= take
-      }
+      await topUpAgentAllotment(lot.id, {
+        heads: draft.heads,
+        amount: draft.amount,
+        paidDate: draft.date,
+        note: draft.note,
+      })
       if (!lot.receivesBookings) await setAgentAllotmentReceiving(lot.agentSlug, lot.id)
     } else {
       await topUpAgentAllotment(lot.id, {
@@ -1714,6 +1734,58 @@ export function AdminAgentAllotment() {
       previousHeads: line.headsDelta,
     })
     await refresh()
+  }
+
+  async function moveUsageFromDay(day: string, targetLotId: string) {
+    if (!selectedAgentSlug) return
+    const targetIndex = selectedAgentRows.findIndex((row) => row.id === targetLotId)
+    const target = targetIndex >= 0 ? selectedAgentRows[targetIndex] : null
+    if (!target) return
+    const ownerId = allotmentUsageOwner(day, selectedAgentRows)
+    const targetLabel = target.note.trim() || `Lot ${targetIndex + 1}`
+    const lockedUntil =
+      selectedAgentRows
+        .map((row) => row.usageFrom)
+        .filter((value): value is string => Boolean(value))
+        .sort()[0] ?? ''
+    if (lockedUntil && day < lockedUntil) return
+    const ok = window.confirm(
+      `Move ${formatShortDate(day)} and every later booking day to ${targetLabel}?\n\nHeads, money, and bookings from that day move with it. Earlier days stay on this lot.`,
+    )
+    if (!ok) return
+    const owner = selectedAgentRows.find((row) => row.id === ownerId)
+    const clearOwner = Boolean(owner?.usageFrom && owner.usageFrom >= day && owner.id !== target.id)
+    const nextCut =
+      selectedAgentRows
+        .filter((row) => {
+          if (!row.usageFrom || row.usageFrom <= day) return false
+          if (row.id === target.id) return false
+          if (clearOwner && row.id === owner?.id) return false
+          return true
+        })
+        .map((row) => row.usageFrom as string)
+        .sort()[0] ?? ''
+    try {
+      if (ownerId !== target.id) {
+        if (clearOwner && owner) await setAgentAllotmentUsageFrom(owner.id, null)
+        await setAgentAllotmentUsageFrom(target.id, day)
+        await assignAgentAllotmentDailyRange({
+          agentSlug: selectedAgentSlug,
+          program: workProgram,
+          fromDay: day,
+          untilDay: nextCut,
+          allotmentId: target.id,
+        })
+      }
+      for (const lot of selectedAgentRows) {
+        if (lot.id === target.id) continue
+        await moveAllotmentPaymentsFromDay(lot.id, target.id, day, nextCut)
+      }
+      await refresh()
+      setSheetLotId(target.id)
+    } catch (caught) {
+      window.alert(caught instanceof Error ? caught.message : 'Could not move this day.')
+    }
   }
 
   async function moveSavedDay(day: string, allotmentId: string) {
@@ -2663,7 +2735,7 @@ export function AdminAgentAllotment() {
     const programLabel = workProgram === 'PP' ? 'Phi Phi' : 'James Bond'
     const exportDay = /^\d{4}-\d{2}-\d{2}$/.test(exportMonth) ? exportMonth : ''
     const exportMonthOnly = exportDay ? '' : exportMonth
-    const exportRange = exportLotId ? allotmentLotRange(exportLots, exportLotId) : null
+    const exportRange = null
     const exportSheetLines = filterAllotmentSheetLines(sheetLines, {
       month: exportMonthOnly,
       day: exportDay,
@@ -2671,9 +2743,8 @@ export function AdminAgentAllotment() {
       today,
       includeFuture: exportIncludeFuture,
     })
-    const exportLot = exportLots.find((lot) => lot.id === exportLotId)
-    const exportLotLabel = exportLot
-      ? `${exportLot.note.trim() || 'Lot'} · ${formatShortDate(exportLot.paidDate || exportLot.createdAt.slice(0, 10))}`
+    const exportLotLabel = resolvedSheetLot
+      ? `${resolvedSheetLot.note.trim() || `Lot ${resolvedSheetLotIndex + 1}`} · ${formatShortDate(sheetLotOpen)}`
       : ''
     const exportPeriodLabel = allotmentExportPeriodLabel({
       month: exportMonthOnly,
@@ -2716,7 +2787,7 @@ export function AdminAgentAllotment() {
       <div className="w-full">
         <PageHeader
           title={agentName || 'Agent Allotment'}
-          description={`One ${workProgram === 'PP' ? 'Phi Phi' : 'James Bond'} sheet. Add or reduce heads and money on any row. Each day's used heads are filled in automatically.`}
+          description={`Each ${workProgram === 'PP' ? 'Phi Phi' : 'James Bond'} lot is its own tab. A new lot starts at zero and does not change an older lot's money or heads.`}
           actions={
             <div className="flex items-center gap-2">
               <Button type="button" variant="outline" size="sm" onClick={openSetup}>
@@ -2782,7 +2853,7 @@ export function AdminAgentAllotment() {
             <p className="mt-1 text-lg font-semibold tabular-nums text-teal-950">
               {bookRate > 0 ? formatMoney(bookRate) : '—'}
               <span className="ml-1 text-sm font-normal text-teal-900/45">
-                {formatAllotmentParkFee(selectedAgentRows.at(-1)?.parkFee ?? 'exc')}
+                {formatAllotmentParkFee(resolvedSheetLot?.parkFee ?? 'exc')}
               </span>
             </p>
           </Surface>
@@ -2816,24 +2887,6 @@ export function AdminAgentAllotment() {
                     ))}
                   </optgroup>
                 ) : null}
-              </select>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-[11px] text-teal-900/45">Lot</Label>
-              <select
-                value={exportLotId}
-                onChange={(event) => setExportLotId(event.target.value)}
-                className="h-9 max-w-[16rem] rounded-xl border border-teal-900/12 bg-white/80 px-2 text-sm"
-                aria-label="Export lot"
-              >
-                <option value="">All lots</option>
-                {exportLots.map((lot, index) => (
-                  <option key={lot.id} value={lot.id}>
-                    {(lot.note.trim() || `Lot ${index + 1}`) +
-                      ' · ' +
-                      formatShortDate(lot.paidDate || lot.createdAt.slice(0, 10))}
-                  </option>
-                ))}
               </select>
             </div>
             <div className="space-y-1">
@@ -2884,7 +2937,25 @@ export function AdminAgentAllotment() {
           <AllotmentSheet
             lines={sheetLines}
             today={today}
-            storageKey={`gday-allotment-sheet:${workProgram}:${selectedAgentSlug}`}
+            storageKey={`gday-allotment-sheet:${workProgram}:${selectedAgentSlug}:${resolvedSheetLot?.id ?? 'none'}`}
+            lots={selectedAgentRows.map((lot, index) => ({
+              id: lot.id,
+              label: lot.note.trim() || `Lot ${index + 1}`,
+              date: (lot.paidDate || lot.createdAt).slice(0, 10),
+              active: lot.id === resolvedSheetLot?.id,
+            }))}
+            onSelectLot={setSheetLotId}
+            moveFromDay={
+              selectedAgentRows
+                .map((lot) => lot.usageFrom)
+                .filter((day): day is string => Boolean(day))
+                .sort()[0] ?? ''
+            }
+            moveLots={selectedAgentRows.flatMap((lot, index) => {
+              if (index === 0 || lot.id === resolvedSheetLot?.id || lot.usageFrom) return []
+              return [{ id: lot.id, label: lot.note.trim() || `Lot ${index + 1}` }]
+            })}
+            onMoveUsage={(day, lotId) => void moveUsageFromDay(day, lotId)}
             onAdd={handleSheetAdd}
             onUpdate={handleSheetUpdate}
             onRemove={handleSheetRemove}
@@ -3252,7 +3323,8 @@ export function AdminAgentAllotment() {
         </form>
         <p className="mt-3 text-xs text-teal-900/45">
           Lot total {formatMoney(addTotals.totalAmount)} THB. Paid now can be 0 or partial — add
-          more transfers inside the lot afterward.
+          more transfers inside the lot afterward. Opening a lot adds a new tab and starts its
+          own heads and money. It does not change the previous lot.
         </p>
         {addError ? <p className="mt-3 text-sm text-red-600">{addError}</p> : null}
       </Surface>

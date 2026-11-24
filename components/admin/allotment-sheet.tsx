@@ -128,6 +128,11 @@ export function AllotmentSheet({
   lines,
   today,
   storageKey,
+  lots = [],
+  onSelectLot,
+  moveLots = [],
+  moveFromDay = '',
+  onMoveUsage,
   onAdd,
   onUpdate,
   onRemove,
@@ -135,6 +140,12 @@ export function AllotmentSheet({
   lines: AllotmentSheetLine[]
   today: string
   storageKey: string
+  lots?: { id: string; label: string; date: string; active: boolean }[]
+  onSelectLot?: (lotId: string) => void
+  moveLots?: { id: string; label: string }[]
+  /** Days before this date are locked. Empty means no day has been moved yet. */
+  moveFromDay?: string
+  onMoveUsage?: (day: string, lotId: string) => void
   onAdd: (draft: SheetLineDraft) => Promise<void>
   onUpdate: (line: AllotmentSheetLine, draft: SheetLineDraft) => Promise<void>
   onRemove: (line: AllotmentSheetLine) => Promise<void>
@@ -311,6 +322,27 @@ export function AllotmentSheet({
         </td>
         <td className={cn(cell, 'font-medium text-teal-900/70')}>
           Daily Sum
+          {moveLots.length > 0 && (!moveFromDay || group.date >= moveFromDay) ? (
+            <select
+              aria-label={`Move ${formatShortDate(group.date)} to another lot`}
+              className="ml-2 h-6 rounded-lg border border-teal-900/15 bg-white px-1.5 text-[11px] font-medium text-teal-950"
+              defaultValue=""
+              onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => event.stopPropagation()}
+              onChange={(event) => {
+                const lotId = event.target.value
+                event.target.value = ''
+                if (lotId) onMoveUsage?.(group.date, lotId)
+              }}
+            >
+              <option value="">Move to lot…</option>
+              {moveLots.map((lot) => (
+                <option key={lot.id} value={lot.id}>
+                  {lot.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
           {invoicedChildren > 0 ? (
             <span className="ml-2 rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-sky-800 uppercase">
               {invoicedChildren} CH invoiced
@@ -624,7 +656,32 @@ export function AllotmentSheet({
 
   return (
     <div>
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-900/10 px-3 py-2">
+      <div className="border-b border-teal-900/10 px-3 py-2">
+        {lots.length > 0 ? (
+          <div className="mb-2 flex gap-2 overflow-x-auto" role="tablist" aria-label="Lots">
+            {lots.map((lot) => (
+              <button
+                key={lot.id}
+                type="button"
+                role="tab"
+                aria-selected={lot.active}
+                onClick={() => onSelectLot?.(lot.id)}
+                className={cn(
+                  'shrink-0 rounded-xl border px-3.5 py-2 text-left transition',
+                  lot.active
+                    ? 'border-teal-700 bg-teal-800 text-white'
+                    : 'border-teal-900/12 bg-white text-teal-950 hover:border-teal-700/40 hover:bg-teal-50',
+                )}
+              >
+                <span className="block text-sm font-semibold leading-none">{lot.label}</span>
+                <span className={cn('mt-1 block text-[11px] leading-none', lot.active ? 'text-white/75' : 'text-teal-900/50')}>
+                  {formatShortDate(lot.date)}
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-teal-900/55">
           Today is the top day. Older days run down the sheet. Tap a day to fold or open its rows.
           Tap a Heads used row to see each booking’s agent reference, guest name, and hotel. Those details stay closed until you open them.
@@ -641,6 +698,7 @@ export function AllotmentSheet({
               Open all days
             </button>
           ) : null}
+        </div>
         </div>
       </div>
       <div className="max-h-[min(68vh,760px)] overflow-auto">
