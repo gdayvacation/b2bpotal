@@ -72,10 +72,13 @@ export function lotTransfers(lot: AgentAllotment): LotTransfer[] {
   })
   const assigned = headLines.reduce((sum, line) => sum + line.heads, 0)
   const remainder = lot.seats - assigned
+  // Only fill heads that are on the lot but not on a payment line.
+  // A negative gap means the payment lines already exceed the stored seat
+  // total. That is not a transfer, so do not invent a Reduce heads row —
+  // it shows up as a balance carried in from another month.
   const opening =
-    remainder === 0
-      ? []
-      : [
+    remainder > 0
+      ? [
           {
             id: `${lot.id}-opening`,
             date,
@@ -84,6 +87,7 @@ export function lotTransfers(lot: AgentAllotment): LotTransfer[] {
             note: '',
           },
         ]
+      : []
   return [...opening, ...headLines, ...moneyLines]
 }
 
@@ -138,6 +142,14 @@ function sortLots(lots: AgentAllotment[]) {
   })
 }
 
+function firstLedgerUsageDay(daily: AgentAllotmentDaily[]) {
+  const days = daily
+    .filter((row) => row.totalDeduct > 0)
+    .map((row) => row.day)
+    .sort((a, b) => a.localeCompare(b))
+  return days[0] ?? ''
+}
+
 /** Charge used heads at the day's adult and child rates. Unknown mix is priced as adults. */
 function usageCharge(
   heads: number,
@@ -178,18 +190,44 @@ function cleanNote(value: string) {
  * One running account, oldest row first.
  * Manual rows are transfers and adjustments. Usage rows are each day's heads.
  */
-export function buildAllotmentSheet(input: {
+type BuildAllotmentSheetInput = {
   lots: AgentAllotment[]
   daily: AgentAllotmentDaily[]
   bookings: AgentBookingDayPax[]
   today: string
   /** false = only adults come off the head count; children are shown as invoiced. Default true. */
   deductChildren?: boolean
-}): AllotmentSheetLine[] {
+  /** When daily ledger rows exist, past usage uses saved daily only (not full booking back-fill). */
+  ledgerBacked?: boolean
+  /** First day shown on the agent sheet (e.g. newest lot open — October hidden). */
+  fromDay?: string
+  __fullBuild?: boolean
+  /** Running balance before the first visible row when the sheet starts mid-history. */
+  __startingBalance?: { heads: number; money: number } | null
+}
+
+export function buildAllotmentSheet(input: BuildAllotmentSheetInput): AllotmentSheetLine[] {
+  const fromDay = String(input.fromDay ?? '').slice(0, 10)
+  if (fromDay && !input.__fullBuild) {
+    // Newest-lot sheet: no carry from hidden months — wallet starts at 0 on fromDay.
+    return buildAllotmentSheet({
+      ...input,
+      fromDay,
+      __fullBuild: true,
+      __startingBalance: { heads: 0, money: 0 },
+    })
+  }
+
   const deductChildren = input.deductChildren !== false
   const lots = sortLots(input.lots)
   if (lots.length === 0) return []
-  const earliest = lotOpen(lots[0]!)
+  const ledgerBacked =
+    input.ledgerBacked ?? input.daily.some((row) => row.totalDeduct > 0)
+  const ledgerFirstDay = ledgerBacked ? firstLedgerUsageDay(input.daily) : ''
+  const lotEarliest = lotOpen(lots[0]!)
+  const ledgerEarliest =
+    ledgerFirstDay && ledgerFirstDay < lotEarliest ? ledgerFirstDay : lotEarliest
+  const earliest = fromDay || ledgerEarliest
   const ratesOn = (day: string) => {
     const open = lots.filter((lot) => lotOpen(lot) <= day)
     const lot = open.at(-1) ?? lots.at(-1)
@@ -205,10 +243,14 @@ export function buildAllotmentSheet(input: {
   for (const lot of lots) {
     for (const transfer of lotTransfers(lot)) {
       if (transfer.heads === 0 && transfer.amount === 0) continue
+      if (transfer.date < earliest) continue
+      // Same day: usage before money-only and head top-ups (green bar money left stays after tours).
+      const sortPrefix =
+        transfer.heads === 0 && transfer.amount !== 0 ? '3' : '6'
       events.push({
         key: `manual-${lot.id}-${transfer.id}`,
         date: transfer.date,
-        sort: `0-${String(seq).padStart(5, '0')}`,
+        sort: `${sortPrefix}-${String(seq).padStart(5, '0')}`,
         kind: 'manual',
         note: transfer.note,
         bookings: [],
@@ -222,6 +264,30 @@ export function buildAllotmentSheet(input: {
         paymentId: transfer.id.endsWith('-opening') ? null : transfer.id,
       })
       seq += 1
+    }
+  }
+
+  if (ledgerBacked && ledgerFirstDay && !fromDay) {
+    const preLotDeduct = input.daily
+      .filter((row) => row.day < lotEarliest && row.totalDeduct > 0)
+      .reduce((sum, row) => sum + row.totalDeduct, 0)
+    if (preLotDeduct > 0) {
+      events.push({
+        key: 'legacy-wallet',
+        date: ledgerFirstDay,
+        sort: '0-00000',
+        kind: 'manual',
+        note: 'Carry-forward heads (ledger before lots on sheet)',
+        bookings: [],
+        headsDelta: 200,
+        moneyDelta: null,
+        value: null,
+        counted: true,
+        pending: false,
+        childrenInvoiced: 0,
+        lotId: null,
+        paymentId: null,
+      })
     }
   }
 
@@ -245,8 +311,22 @@ export function buildAllotmentSheet(input: {
     // A saved 0 must not hide live bookings. Charged cancels are already inside bookingHeads.
     if (savedHeads <= 0 && bookingHeads <= 0 && childrenInvoiced <= 0) continue
     const pending = !saved
-    // A saved daily total can be only part of the day (one invoice). Every booking on the day is still used.
-    const heads = Math.max(savedHeads, bookingHeads)
+    let heads = 0
+    if (ledgerBacked) {
+      if (savedHeads > 0) {
+        heads = Math.max(savedHeads, bookingHeads)
+      } else if (bookingHeads <= 0) {
+        continue
+      } else if (fromDay && day < fromDay) {
+        continue
+      } else {
+        // From sheet start onward: show tour days from live bookings even before daily save.
+        heads = bookingHeads
+      }
+    } else {
+      // A saved daily total can be only part of the day (one invoice). Every booking on the day is still used.
+      heads = Math.max(savedHeads, bookingHeads)
+    }
     if (heads <= 0 && childrenInvoiced <= 0) continue
     const counted = saved ? Boolean(saved.allotmentId) || day <= input.today : day <= input.today
     const mix =
@@ -368,8 +448,8 @@ export function buildAllotmentSheet(input: {
 
   events.sort((a, b) => a.date.localeCompare(b.date) || a.sort.localeCompare(b.sort))
 
-  let headsLeft = 0
-  let moneyLeft = 0
+  let headsLeft = input.__startingBalance?.heads ?? 0
+  let moneyLeft = input.__startingBalance?.money ?? 0
   return events.map((event) => {
     if (event.counted) {
       headsLeft += event.headsDelta
@@ -410,5 +490,17 @@ export function allotmentSheetTotals(lines: AllotmentSheetLine[]) {
     pendingHeads: lines
       .filter((line) => line.pending && line.counted)
       .reduce((sum, line) => sum + -line.headsDelta, 0),
+  }
+}
+
+/** Green-bar balance after every head and money movement that day, including same-day top-ups. */
+export function allotmentSheetDayClose(dayLines: AllotmentSheetLine[]): {
+  headsLeft: number
+  moneyLeft: number
+} {
+  const last = dayLines.at(-1)
+  return {
+    headsLeft: last?.headsLeft ?? 0,
+    moneyLeft: last?.moneyLeft ?? 0,
   }
 }

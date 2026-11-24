@@ -978,6 +978,16 @@ export function AdminAgentAllotment() {
     [selectedAgentRows],
   )
 
+  /** Agent sheet starts when the newest lot opens (hides earlier lots / October ledger). */
+  const sheetFromDay = useMemo(() => {
+    const opens = selectedAgentRows
+      .map((row) => (row.paidDate || row.createdAt).slice(0, 10))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+    if (opens.length === 0) return ''
+    return (opens.length > 1 ? opens.at(-1) : opens[0]) ?? ''
+  }, [selectedAgentRows])
+
   /**
    * Saved days that are not pinned to a lot (the imported sheet) still spread
    * across lots. Live bookings stay pending until the prebuy invoice saves them.
@@ -1196,6 +1206,7 @@ export function AdminAgentAllotment() {
         bookings: rawBookingDayPax,
         today,
         deductChildren: selectedDeductChildren,
+        fromDay: sheetFromDay,
       }).map((line) => ({
         ...line,
         bookings: line.bookings.map((booking) => ({
@@ -1203,7 +1214,7 @@ export function AdminAgentAllotment() {
           status: allotmentGuestStatus(booking),
         })),
       })),
-    [selectedAgentRows, selectedAgentDaily, rawBookingDayPax, selectedDeductChildren, today],
+    [selectedAgentRows, selectedAgentDaily, rawBookingDayPax, selectedDeductChildren, today, sheetFromDay],
   )
   const exportMonths = useMemo(() => {
     const months = [...new Set(sheetLines.map((line) => line.date.slice(0, 7)))]

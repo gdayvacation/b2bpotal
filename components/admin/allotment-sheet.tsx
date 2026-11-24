@@ -5,7 +5,7 @@ import { ChevronDown, ChevronRight, Pencil, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { formatShortDate, todayISO } from '@/lib/format'
 import { NO_TRANSFER_DISCOUNT_PER_PERSON } from '@/lib/invoice'
-import type { AllotmentSheetBooking, AllotmentSheetLine } from '@/lib/allotment-sheet'
+import { allotmentSheetDayClose, type AllotmentSheetBooking, type AllotmentSheetLine } from '@/lib/allotment-sheet'
 import { cn } from '@/lib/utils'
 
 export type SheetLineDraft = {
@@ -286,6 +286,7 @@ export function AllotmentSheet({
     const heads = rows.reduce((sum, line) => sum + line.headsDelta, 0)
     const money = rows.reduce((sum, line) => sum + (line.moneyDelta ?? 0), 0)
     const last = rows.at(-1)
+    const dayClose = allotmentSheetDayClose(rows)
     const invoicedChildren = rows.reduce((sum, line) => sum + line.childrenInvoiced, 0)
     const cell = cn(dayEdge, 'px-2 py-1.5')
     return (
@@ -331,10 +332,10 @@ export function AllotmentSheet({
           className={cn(
             cell,
             'text-right font-semibold tabular-nums',
-            (last?.headsLeft ?? 0) < 0 ? 'text-rose-700' : 'text-teal-950',
+            dayClose.headsLeft < 0 ? 'text-rose-700' : 'text-teal-950',
           )}
         >
-          {last?.headsLeft ?? 0}
+          {dayClose.headsLeft}
         </td>
         <td
           className={cn(
@@ -569,15 +570,7 @@ export function AllotmentSheet({
             >
               {line.headsDelta === 0 ? '—' : line.headsDelta > 0 ? `+${line.headsDelta}` : line.headsDelta}
             </td>
-            <td
-              className={cn(
-                cell,
-                'px-2 text-right font-semibold tabular-nums',
-                line.headsLeft < 0 ? 'text-rose-700' : 'text-teal-950',
-              )}
-            >
-              {line.headsLeft}
-            </td>
+            <td className={cn(cell, 'px-2 text-right text-teal-900/25')}>—</td>
             <td
               className={cn(
                 cell,
