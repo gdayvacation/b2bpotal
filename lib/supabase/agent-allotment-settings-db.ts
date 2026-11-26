@@ -11,12 +11,15 @@ export type AgentAllotmentSettings = {
   agentSlug: string
   program: Program
   deductChildren: boolean
+  /** Trip heads sheet + separate prepaid cash sheet (park fees, extras). */
+  splitPrepaidLedger: boolean
 }
 
 type SettingsRow = {
   agent_slug: string
   program?: string | null
   deduct_children: boolean | null
+  split_prepaid_ledger?: boolean | null
 }
 
 export const DEFAULT_DEDUCT_CHILDREN = true
@@ -33,6 +36,7 @@ function mapRow(row: SettingsRow): AgentAllotmentSettings {
     agentSlug: row.agent_slug,
     program: row.program === 'James Bond' ? 'James Bond' : 'PP',
     deductChildren: row.deduct_children !== false,
+    splitPrepaidLedger: row.split_prepaid_ledger === true,
   }
 }
 
@@ -55,6 +59,29 @@ export function deductsChildren(
 ) {
   const found = settings.find((row) => row.agentSlug === agentSlug && row.program === program)
   return found ? found.deductChildren : DEFAULT_DEDUCT_CHILDREN
+}
+
+export function splitPrepaidLedger(
+  settings: AgentAllotmentSettings[],
+  agentSlug: string,
+  program: Program,
+) {
+  const found = settings.find((row) => row.agentSlug === agentSlug && row.program === program)
+  return found?.splitPrepaidLedger === true
+}
+
+/** Rocket Bird and agents with setup flag use two allotment tables. */
+export function agentUsesSplitPrepaidLedger(
+  settings: AgentAllotmentSettings[],
+  agentSlug: string,
+  program: Program,
+  agentName?: string,
+) {
+  const slug = agentSlug.trim().toLowerCase()
+  const name = (agentName ?? '').trim()
+  if (slug.includes('rocket') && slug.includes('bird')) return true
+  if (/^rocket\s+bird$/i.test(name)) return true
+  return splitPrepaidLedger(settings, agentSlug, program)
 }
 
 /** One-agent lookup for code outside React. Falls back to deduct everyone if it cannot load. */
@@ -80,13 +107,27 @@ export async function loadDeductChildren(
 
 export async function saveAgentAllotmentSettings(input: AgentAllotmentSettings): Promise<void> {
   const supabase = requireSupabase()
-  const { error } = await supabase.from('agent_allotment_settings').upsert(
-    {
-      agent_slug: input.agentSlug.trim(),
-      program: input.program === 'James Bond' ? 'James Bond' : 'PP',
-      deduct_children: input.deductChildren,
-    },
-    { onConflict: 'agent_slug,program' },
-  )
+  const payload = {
+    agent_slug: input.agentSlug.trim(),
+    program: input.program === 'James Bond' ? 'James Bond' : 'PP',
+    deduct_children: input.deductChildren,
+    split_prepaid_ledger: input.splitPrepaidLedger === true,
+  }
+  const { error } = await supabase.from('agent_allotment_settings').upsert(payload, {
+    onConflict: 'agent_slug,program',
+  })
+  if (error && /split_prepaid|schema cache|column/i.test(error.message)) {
+    const { split_prepaid_ledger: _split, ...base } = payload
+    const retry = await supabase.from('agent_allotment_settings').upsert(base, {
+      onConflict: 'agent_slug,program',
+    })
+    if (retry.error) throw new Error(retry.error.message)
+    if (input.splitPrepaidLedger) {
+      throw new Error(
+        'Run supabase/add-agent-allotment-split-prepaid.sql in Supabase, then save again to store the split-table flag.',
+      )
+    }
+    return
+  }
   if (error) throw new Error(error.message)
 }

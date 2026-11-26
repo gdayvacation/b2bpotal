@@ -61,6 +61,7 @@ import {
   printAllotmentPdf,
 } from '@/lib/allotment-sheet-export'
 import { formatMonthLabel, formatShortDate, todayISO, uniqueAgentSlug } from '@/lib/format'
+import { DEFAULT_NATIONAL_PARK_FEE } from '@/lib/invoice'
 import {
   addAgentAllotmentPayment,
   allotmentBalance,
@@ -89,6 +90,7 @@ import {
   deductsChildren,
   listAgentAllotmentSettings,
   saveAgentAllotmentSettings,
+  agentUsesSplitPrepaidLedger,
   type AgentAllotmentSettings,
 } from '@/lib/supabase/agent-allotment-settings-db'
 import {
@@ -127,6 +129,17 @@ type PaymentDraft = {
   note: string
   /** Cash for other bills. Does not pay down this lot. */
   moneyOnly: boolean
+}
+
+/** Quick open-lot from the sheet tab bar (same agent, handover day). */
+type SheetOpenLotDraft = {
+  handoverDay: string
+  heads: string
+  adultPrice: string
+  childPrice: string
+  parkFee: AgentAllotmentParkFee
+  paidAmount: string
+  note: string
 }
 
 const emptyPaymentDraft = (): PaymentDraft => ({
@@ -849,6 +862,7 @@ export function AdminAgentAllotment() {
   const [settingsRows, setSettingsRows] = useState<AgentAllotmentSettings[]>([])
   const [setupOpen, setSetupOpen] = useState(false)
   const [setupDeductChildren, setSetupDeductChildren] = useState(true)
+  const [setupSplitPrepaid, setSetupSplitPrepaid] = useState(false)
   const [setupError, setSetupError] = useState('')
   const [savingSetup, setSavingSetup] = useState(false)
   const [advanceExpanded, setAdvanceExpanded] = useState(false)
@@ -857,6 +871,19 @@ export function AdminAgentAllotment() {
   const [bookingPaxError, setBookingPaxError] = useState('')
   const [exportMonth, setExportMonth] = useState('')
   const [exportIncludeFuture, setExportIncludeFuture] = useState(true)
+  const [splitLedgerTab, setSplitLedgerTab] = useState<'allotment' | 'prepaid'>('allotment')
+  const [sheetOpenLotDialog, setSheetOpenLotDialog] = useState(false)
+  const [sheetOpenLotDraft, setSheetOpenLotDraft] = useState<SheetOpenLotDraft>({
+    handoverDay: todayISO(),
+    heads: '',
+    adultPrice: '',
+    childPrice: '',
+    parkFee: 'exc',
+    paidAmount: '',
+    note: '',
+  })
+  const [sheetOpenLotError, setSheetOpenLotError] = useState('')
+  const [savingSheetOpenLot, setSavingSheetOpenLot] = useState(false)
   const [exportingSheet, setExportingSheet] = useState<'excel' | 'pdf' | null>(null)
   const [draft, setDraft] = useState<Draft>(emptyDraft)
   const [addError, setAddError] = useState('')
@@ -1095,6 +1122,16 @@ export function AdminAgentAllotment() {
 
   const selectedAgentSummary = agentSummaries.find((row) => row.slug === selectedAgentSlug) ?? null
 
+  const selectedSplitPrepaid = agentUsesSplitPrepaidLedger(
+    settingsRows,
+    selectedAgentSlug,
+    workProgram,
+    selectedAgentSummary?.name ||
+      selectedAgentRows[0]?.agentName ||
+      agents.find((agent) => agent.slug === selectedAgentSlug)?.name ||
+      '',
+  )
+
   const selectedLot = useMemo(
     () => rows.find((row) => row.id === selectedLotId) ?? null,
     [rows, selectedLotId],
@@ -1204,23 +1241,19 @@ export function AdminAgentAllotment() {
     () => buildDepositBook(selectedAgentRows, bookSourceDaily),
     [selectedAgentRows, bookSourceDaily],
   )
-  const sheetLines = useMemo(
-    () =>
-      buildAllotmentSheet({
-        lots: resolvedSheetLot ? [resolvedSheetLot] : [],
-        daily: selectedAgentDaily,
-        bookings: rawBookingDayPax,
-        today,
-        deductChildren: selectedDeductChildren,
-        fromDay: sheetLotOpen,
-        usageRanges: sheetUsageRanges,
-      }).map((line) => ({
-        ...line,
-        bookings: line.bookings.map((booking) => ({
-          ...booking,
-          status: allotmentGuestStatus(booking),
-        })),
-      })),
+  const sheetBuildBase = useMemo(
+    () => ({
+      lots: resolvedSheetLot ? [resolvedSheetLot] : [],
+      daily: selectedAgentDaily,
+      bookings: rawBookingDayPax,
+      today,
+      deductChildren: selectedDeductChildren,
+      fromDay: sheetLotOpen,
+      usageRanges: sheetUsageRanges,
+      program: workProgram,
+      lotParkFee: resolvedSheetLot?.parkFee ?? ('exc' as const),
+      nationalParkFee: DEFAULT_NATIONAL_PARK_FEE,
+    }),
     [
       resolvedSheetLot,
       selectedAgentDaily,
@@ -1229,7 +1262,33 @@ export function AdminAgentAllotment() {
       today,
       sheetLotOpen,
       sheetUsageRanges,
+      workProgram,
     ],
+  )
+  const mapSheetBookings = (lines: AllotmentSheetLine[]) =>
+    lines.map((line) => ({
+      ...line,
+      bookings: line.bookings.map((booking) => ({
+        ...booking,
+        status: allotmentGuestStatus(booking),
+      })),
+    }))
+  const sheetLines = useMemo(
+  () =>
+      mapSheetBookings(
+        buildAllotmentSheet({
+          ...sheetBuildBase,
+          moneyPool: selectedSplitPrepaid ? 'trip' : 'combined',
+        }),
+      ),
+    [sheetBuildBase, selectedSplitPrepaid],
+  )
+  const prepaidSheetLines = useMemo(
+    () =>
+      selectedSplitPrepaid
+        ? mapSheetBookings(buildAllotmentSheet({ ...sheetBuildBase, moneyPool: 'prepaid' }))
+        : [],
+    [sheetBuildBase, selectedSplitPrepaid],
   )
   const exportMonths = useMemo(() => {
     const months = [...new Set(sheetLines.map((line) => line.date.slice(0, 7)))]
@@ -1243,6 +1302,10 @@ export function AdminAgentAllotment() {
     return [today, ...days.filter((day) => day !== today)]
   }, [sheetLines, today])
   const sheetTotals = useMemo(() => allotmentSheetTotals(sheetLines), [sheetLines])
+  const prepaidSheetTotals = useMemo(
+    () => allotmentSheetTotals(prepaidSheetLines),
+    [prepaidSheetLines],
+  )
   const lotBooks = useMemo(
     () =>
       buildLotBooks(
@@ -1359,6 +1422,7 @@ export function AdminAgentAllotment() {
 
   function openSetup() {
     setSetupDeductChildren(selectedDeductChildren)
+    setSetupSplitPrepaid(selectedSplitPrepaid)
     setSetupError('')
     setSetupOpen(true)
   }
@@ -1372,6 +1436,7 @@ export function AdminAgentAllotment() {
         agentSlug: selectedAgentSlug,
         program: workProgram,
         deductChildren: setupDeductChildren,
+        splitPrepaidLedger: setupSplitPrepaid,
       })
       setSettingsRows(await listAgentAllotmentSettings())
       setSetupOpen(false)
@@ -1451,6 +1516,7 @@ export function AdminAgentAllotment() {
   useEffect(() => {
     setExportMonth('')
     setExportIncludeFuture(true)
+    setSplitLedgerTab('allotment')
   }, [selectedAgentSlug, workProgram])
 
   function resolveExistingAgent(slug: string) {
@@ -1710,6 +1776,22 @@ export function AdminAgentAllotment() {
     await refresh()
   }
 
+  async function handlePrepaidSheetAdd(draft: SheetLineDraft) {
+    const lot = resolvedSheetLot
+    if (!lot) throw new Error('Open a lot tab before adding prepaid cash.')
+    if (draft.amount === 0) throw new Error('Enter the prepaid amount.')
+    if (draft.amount < 0 && !draft.note.trim()) {
+      throw new Error('Enter what this cash was deducted for.')
+    }
+    await addAgentAllotmentPayment(lot.id, {
+      amount: draft.amount,
+      paidDate: draft.date,
+      note: draft.note,
+      moneyOnly: true,
+    })
+    await refresh()
+  }
+
   async function handleSheetUpdate(line: AllotmentSheetLine, draft: SheetLineDraft) {
     if (!line.lotId || !line.paymentId) {
       throw new Error('This usage row comes from bookings. Add a new row to adjust it.')
@@ -1734,6 +1816,119 @@ export function AdminAgentAllotment() {
       previousHeads: line.headsDelta,
     })
     await refresh()
+  }
+
+  function openSheetNewLotDialog() {
+    const base = resolvedSheetLot
+    const latestCut = selectedAgentRows
+      .map((row) => row.usageFrom)
+      .filter((value): value is string => Boolean(value))
+      .sort()
+      .at(-1)
+    const open = sheetLotOpen
+    const suggestedHandover =
+      latestCut && latestCut > today
+        ? latestCut
+        : open && open > today
+          ? open
+          : today
+    setSheetOpenLotDraft({
+      handoverDay: suggestedHandover,
+      heads: base ? seatsToDraftHeads(base) : '',
+      adultPrice: base ? String(base.adultPrice || '') : '',
+      childPrice: base ? String(base.childPrice || '') : '',
+      parkFee: base?.parkFee ?? 'exc',
+      paidAmount: '',
+      note: '',
+    })
+    setSheetOpenLotError('')
+    setSheetOpenLotDialog(true)
+  }
+
+  async function handleSheetOpenLot(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!selectedAgentSlug) return
+    const agent = resolveExistingAgent(selectedAgentSlug)
+    if (!agent) {
+      setSheetOpenLotError('Agent not found.')
+      return
+    }
+    const adultPrice = parseMoney(sheetOpenLotDraft.adultPrice)
+    const childPrice = parseMoney(sheetOpenLotDraft.childPrice)
+    const heads = parseHeads(sheetOpenLotDraft.heads || '0')
+    const handoverDay = sheetOpenLotDraft.handoverDay.trim()
+    if (!isIsoDate(handoverDay)) {
+      setSheetOpenLotError('Enter the first day that counts on this lot.')
+      return
+    }
+    if (!Number.isFinite(adultPrice) || adultPrice < 0) {
+      setSheetOpenLotError('Enter a valid AD price / head.')
+      return
+    }
+    if (!Number.isFinite(childPrice) || childPrice < 0) {
+      setSheetOpenLotError('Enter a valid CH price / head.')
+      return
+    }
+    if (!Number.isFinite(heads) || heads <= 0) {
+      setSheetOpenLotError('Enter total heads for this lot.')
+      return
+    }
+    const paidAmountRaw = sheetOpenLotDraft.paidAmount.trim()
+      ? parseMoney(sheetOpenLotDraft.paidAmount)
+      : 0
+    if (!Number.isFinite(paidAmountRaw) || paidAmountRaw < 0) {
+      setSheetOpenLotError('Enter a valid paid amount (0 if not transferred yet).')
+      return
+    }
+    const lotDraft: Draft = {
+      agentSlug: agent.slug,
+      newAgentName: '',
+      adultPrice: sheetOpenLotDraft.adultPrice,
+      childPrice: sheetOpenLotDraft.childPrice,
+      parkFee: sheetOpenLotDraft.parkFee,
+      heads: sheetOpenLotDraft.heads,
+      paidAmount: sheetOpenLotDraft.paidAmount,
+      paidDate: handoverDay,
+      note: sheetOpenLotDraft.note,
+    }
+    const totals = draftTotals(lotDraft)
+    if (paidAmountRaw - totals.totalAmount > 0.009) {
+      setSheetOpenLotError('Paid now cannot exceed the lot total.')
+      return
+    }
+    setSavingSheetOpenLot(true)
+    setSheetOpenLotError('')
+    try {
+      const created = await createAgentAllotment({
+        agentSlug: agent.slug,
+        agentName: agent.name,
+        program: workProgram,
+        adultSeats: heads,
+        childSeats: 0,
+        adultPrice,
+        childPrice,
+        parkFee: sheetOpenLotDraft.parkFee,
+        paidDate: handoverDay,
+        paidAmount: paidAmountRaw,
+        note: sheetOpenLotDraft.note,
+      })
+      await setAgentAllotmentUsageFrom(created.id, handoverDay)
+      await assignAgentAllotmentDailyRange({
+        agentSlug: agent.slug,
+        program: workProgram,
+        fromDay: handoverDay,
+        allotmentId: created.id,
+      })
+      await setAgentAllotmentReceiving(created.agentSlug, created.id)
+      await refresh()
+      setSheetLotId(created.id)
+      setSelectedLotId(created.id)
+      setSheetOpenLotDialog(false)
+    } catch (caught) {
+      setSheetOpenLotError(caught instanceof Error ? caught.message : 'Could not open lot.')
+    } finally {
+      setSavingSheetOpenLot(false)
+    }
   }
 
   async function moveUsageFromDay(day: string, targetLotId: string) {
@@ -2736,7 +2931,15 @@ export function AdminAgentAllotment() {
     const exportDay = /^\d{4}-\d{2}-\d{2}$/.test(exportMonth) ? exportMonth : ''
     const exportMonthOnly = exportDay ? '' : exportMonth
     const exportRange = null
-    const exportSheetLines = filterAllotmentSheetLines(sheetLines, {
+    const ledgerSourceLines =
+      selectedSplitPrepaid && splitLedgerTab === 'prepaid' ? prepaidSheetLines : sheetLines
+    const tabExportMonths = [...new Set(ledgerSourceLines.map((line) => line.date.slice(0, 7)))].sort(
+      (a, b) => b.localeCompare(a),
+    )
+    const tabExportDays = [...new Set(ledgerSourceLines.map((line) => line.date))].sort((a, b) =>
+      b.localeCompare(a),
+    )
+    const exportSheetLines = filterAllotmentSheetLines(ledgerSourceLines, {
       month: exportMonthOnly,
       day: exportDay,
       range: exportRange,
@@ -2746,6 +2949,8 @@ export function AdminAgentAllotment() {
     const exportLotLabel = resolvedSheetLot
       ? `${resolvedSheetLot.note.trim() || `Lot ${resolvedSheetLotIndex + 1}`} · ${formatShortDate(sheetLotOpen)}`
       : ''
+    const ledgerTabLabel =
+      selectedSplitPrepaid && splitLedgerTab === 'prepaid' ? 'Prepaid' : 'Allotment'
     const exportPeriodLabel = allotmentExportPeriodLabel({
       month: exportMonthOnly,
       day: exportDay,
@@ -2759,10 +2964,14 @@ export function AdminAgentAllotment() {
       try {
         await downloadAllotmentExcel({
           agentName: agentName || 'Agent',
-          programLabel,
+          programLabel: `${programLabel} · ${ledgerTabLabel}`,
           periodLabel: exportPeriodLabel,
           lines: exportSheetLines,
-          filename: allotmentExportFilename(agentName || 'agent', programLabel, exportPeriodLabel),
+          filename: allotmentExportFilename(
+            agentName || 'agent',
+            `${programLabel}-${ledgerTabLabel}`,
+            exportPeriodLabel,
+          ),
         })
       } catch (caught) {
         window.alert(caught instanceof Error ? caught.message : 'Could not download Excel.')
@@ -2775,7 +2984,7 @@ export function AdminAgentAllotment() {
       try {
         printAllotmentPdf({
           agentName: agentName || 'Agent',
-          programLabel,
+          programLabel: `${programLabel} · ${ledgerTabLabel}`,
           periodLabel: exportPeriodLabel,
           lines: exportSheetLines,
         })
@@ -2810,6 +3019,15 @@ export function AdminAgentAllotment() {
           {selectedDeductChildren
             ? ''
             : ' · children are listed on the daily sum as invoiced, not deducted.'}
+          {selectedSplitPrepaid ? (
+            <>
+              {' '}
+              ·{' '}
+              <span className="font-semibold text-teal-950">
+                Allotment and Prepaid are separate balances — either can run out first.
+              </span>
+            </>
+          ) : null}
         </p>
         {bookingPaxError ? (
           <p className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-800">
@@ -2817,6 +3035,28 @@ export function AdminAgentAllotment() {
           </p>
         ) : null}
 
+        {selectedSplitPrepaid ? (
+          <SegmentedControl className="mb-4 flex w-full gap-2 border-teal-900/12 bg-gradient-to-r from-teal-50/90 via-white/50 to-amber-50/90 p-1.5 shadow-sm">
+            <Segment
+              active={splitLedgerTab === 'allotment'}
+              tone="teal"
+              className="min-h-11 flex-1 text-base font-semibold"
+              onClick={() => setSplitLedgerTab('allotment')}
+            >
+              Allotment
+            </Segment>
+            <Segment
+              active={splitLedgerTab === 'prepaid'}
+              tone="amber"
+              className="min-h-11 flex-1 text-base font-semibold"
+              onClick={() => setSplitLedgerTab('prepaid')}
+            >
+              Prepaid
+            </Segment>
+          </SegmentedControl>
+        ) : null}
+
+        {(!selectedSplitPrepaid || splitLedgerTab === 'allotment') && (
         <div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           <Surface className="px-4 py-3">
             <p className="text-xs text-teal-900/45">Heads left</p>
@@ -2838,7 +3078,9 @@ export function AdminAgentAllotment() {
             </p>
           </Surface>
           <Surface className="px-4 py-3">
-            <p className="text-xs text-teal-900/45">Money left</p>
+            <p className="text-xs text-teal-900/45">
+              {selectedSplitPrepaid ? 'Trip money left' : 'Money left'}
+            </p>
             <p
               className={cn(
                 'mt-1 text-lg font-semibold tabular-nums',
@@ -2858,7 +3100,32 @@ export function AdminAgentAllotment() {
             </p>
           </Surface>
         </div>
+        )}
 
+        {selectedSplitPrepaid && splitLedgerTab === 'prepaid' ? (
+          <div className="mb-4 grid gap-2 sm:grid-cols-2">
+            <Surface className="px-4 py-3">
+              <p className="text-xs text-teal-900/45">Prepaid cash left</p>
+              <p
+                className={cn(
+                  'mt-1 text-2xl font-semibold tabular-nums',
+                  prepaidSheetTotals.moneyLeft < 0 ? 'text-rose-700' : 'text-teal-950',
+                )}
+              >
+                {formatMoney(prepaidSheetTotals.moneyLeft)}
+              </p>
+            </Surface>
+            <Surface className="px-4 py-3">
+              <p className="text-xs text-teal-900/45">Daily deductions</p>
+              <p className="mt-1 text-sm leading-snug text-teal-900/60">
+                Park fee per guest, change-date and zone charges from bookings each day. Add or deduct
+                cash with new rows. Not tied to heads left.
+              </p>
+            </Surface>
+          </div>
+        ) : null}
+
+        {(!selectedSplitPrepaid || splitLedgerTab === 'allotment') && (
         <Surface className="mb-4 overflow-hidden p-0">
           <div className="flex flex-wrap items-end gap-2 border-b border-teal-900/8 px-3 py-3">
             <div className="space-y-1">
@@ -2871,15 +3138,15 @@ export function AdminAgentAllotment() {
               >
                 <option value="">All months</option>
                 <optgroup label="Month">
-                  {exportMonths.map((month) => (
+                  {(selectedSplitPrepaid ? tabExportMonths : exportMonths).map((month) => (
                     <option key={month} value={month}>
                       {formatMonthLabel(`${month}-01`)}
                     </option>
                   ))}
                 </optgroup>
-                {exportDays.length > 0 ? (
+                {(selectedSplitPrepaid ? tabExportDays : exportDays).length > 0 ? (
                   <optgroup label="Date">
-                    {exportDays.map((day) => (
+                    {(selectedSplitPrepaid ? tabExportDays : exportDays).map((day) => (
                       <option key={day} value={day}>
                         {formatShortDate(day)}
                         {day === today ? ' · Today' : ''}
@@ -2937,6 +3204,7 @@ export function AdminAgentAllotment() {
           <AllotmentSheet
             lines={sheetLines}
             today={today}
+            addDefaultDate={sheetLotOpen}
             storageKey={`gday-allotment-sheet:${workProgram}:${selectedAgentSlug}:${resolvedSheetLot?.id ?? 'none'}`}
             lots={selectedAgentRows.map((lot, index) => ({
               id: lot.id,
@@ -2945,6 +3213,7 @@ export function AdminAgentAllotment() {
               active: lot.id === resolvedSheetLot?.id,
             }))}
             onSelectLot={setSheetLotId}
+            onOpenLot={openSheetNewLotDialog}
             moveFromDay={
               selectedAgentRows
                 .map((lot) => lot.usageFrom)
@@ -2961,6 +3230,216 @@ export function AdminAgentAllotment() {
             onRemove={handleSheetRemove}
           />
         </Surface>
+        )}
+
+        {selectedSplitPrepaid && splitLedgerTab === 'prepaid' ? (
+          <Surface className="mb-4 overflow-hidden p-0">
+            <div className="flex flex-wrap items-end gap-2 border-b border-teal-900/8 px-3 py-3">
+              <div className="space-y-1">
+                <Label className="text-[11px] text-teal-900/45">Period</Label>
+                <select
+                  value={exportMonth}
+                  onChange={(event) => setExportMonth(event.target.value)}
+                  className="h-9 max-w-[16rem] rounded-xl border border-teal-900/12 bg-white/80 px-2 text-sm"
+                  aria-label="Export month or date"
+                >
+                  <option value="">All months</option>
+                  <optgroup label="Month">
+                    {tabExportMonths.map((month) => (
+                      <option key={month} value={month}>
+                        {formatMonthLabel(`${month}-01`)}
+                      </option>
+                    ))}
+                  </optgroup>
+                  {tabExportDays.length > 0 ? (
+                    <optgroup label="Date">
+                      {tabExportDays.map((day) => (
+                        <option key={day} value={day}>
+                          {formatShortDate(day)}
+                          {day === today ? ' · Today' : ''}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ) : null}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[11px] text-teal-900/45">Future</Label>
+                <select
+                  value={exportIncludeFuture ? 'with' : 'without'}
+                  onChange={(event) => setExportIncludeFuture(event.target.value === 'with')}
+                  className="h-9 rounded-xl border border-teal-900/12 bg-white/80 px-2 text-sm"
+                  aria-label="Include future bookings"
+                >
+                  <option value="with">With future bookings</option>
+                  <option value="without">Up to today</option>
+                </select>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9"
+                disabled={exportingSheet !== null || exportSheetLines.length === 0}
+                onClick={() => void downloadSheetExcel()}
+              >
+                <FileSpreadsheet className="size-3.5" />
+                {exportingSheet === 'excel' ? 'Excel…' : 'Excel'}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9"
+                disabled={exportingSheet !== null || exportSheetLines.length === 0}
+                onClick={downloadSheetPdf}
+              >
+                <Printer className="size-3.5" />
+                PDF
+              </Button>
+              <p className="pb-2 text-xs text-teal-900/45">
+                {exportSheetLines.length === 0
+                  ? 'Nothing in this month and lot.'
+                  : `${exportPeriodLabel}. Save as Excel, or PDF from the print menu.`}
+              </p>
+            </div>
+            <AllotmentSheet
+              lines={prepaidSheetLines}
+              today={today}
+              addDefaultDate={sheetLotOpen}
+              storageKey={`gday-allotment-prepaid:${workProgram}:${selectedAgentSlug}:${resolvedSheetLot?.id ?? 'none'}`}
+              lots={selectedAgentRows.map((lot, index) => ({
+                id: lot.id,
+                label: lot.note.trim() || `Lot ${index + 1}`,
+                date: (lot.paidDate || lot.createdAt).slice(0, 10),
+                active: lot.id === resolvedSheetLot?.id,
+              }))}
+              onSelectLot={setSheetLotId}
+              onOpenLot={openSheetNewLotDialog}
+              moneyOnlyRows
+              onAdd={handlePrepaidSheetAdd}
+              onUpdate={handleSheetUpdate}
+              onRemove={handleSheetRemove}
+            />
+          </Surface>
+        ) : null}
+
+        <Dialog open={sheetOpenLotDialog} onOpenChange={setSheetOpenLotDialog}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Open new lot</DialogTitle>
+              <DialogDescription>
+                Starts a new tab at zero heads and zero trip money. From the handover day onward,
+                bookings and daily saves count on this lot — the same as Move day. Earlier days stay
+                on the previous lot.
+              </DialogDescription>
+            </DialogHeader>
+            <form className="space-y-4" onSubmit={(event) => void handleSheetOpenLot(event)}>
+              <div className="space-y-1.5">
+                <Label htmlFor="sheet-open-lot-handover">Bookings from this day</Label>
+                <Input
+                  id="sheet-open-lot-handover"
+                  type="date"
+                  required
+                  value={sheetOpenLotDraft.handoverDay}
+                  onChange={(event) =>
+                    setSheetOpenLotDraft((current) => ({ ...current, handoverDay: event.target.value }))
+                  }
+                  className="h-10"
+                />
+                <p className="text-xs text-teal-900/50">
+                  Pick the day you moved to this lot (or the first tour day on the new lot). The next
+                  days follow this lot automatically.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="sheet-open-lot-heads">Heads</Label>
+                  <Input
+                    id="sheet-open-lot-heads"
+                    type="number"
+                    min={1}
+                    step={1}
+                    required
+                    value={sheetOpenLotDraft.heads}
+                    onChange={(event) =>
+                      setSheetOpenLotDraft((current) => ({ ...current, heads: event.target.value }))
+                    }
+                    className="h-10"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="sheet-open-lot-paid">Paid now (THB)</Label>
+                  <Input
+                    id="sheet-open-lot-paid"
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={sheetOpenLotDraft.paidAmount}
+                    onChange={(event) =>
+                      setSheetOpenLotDraft((current) => ({ ...current, paidAmount: event.target.value }))
+                    }
+                    placeholder="0"
+                    className="h-10"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="sheet-open-lot-ad">Price / head AD</Label>
+                  <Input
+                    id="sheet-open-lot-ad"
+                    type="number"
+                    min={0}
+                    step={1}
+                    required
+                    value={sheetOpenLotDraft.adultPrice}
+                    onChange={(event) =>
+                      setSheetOpenLotDraft((current) => ({ ...current, adultPrice: event.target.value }))
+                    }
+                    className="h-10"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="sheet-open-lot-ch">Price / head CH</Label>
+                  <Input
+                    id="sheet-open-lot-ch"
+                    type="number"
+                    min={0}
+                    step={1}
+                    required
+                    value={sheetOpenLotDraft.childPrice}
+                    onChange={(event) =>
+                      setSheetOpenLotDraft((current) => ({ ...current, childPrice: event.target.value }))
+                    }
+                    className="h-10"
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="sheet-open-lot-note">Note</Label>
+                <Input
+                  id="sheet-open-lot-note"
+                  value={sheetOpenLotDraft.note}
+                  onChange={(event) =>
+                    setSheetOpenLotDraft((current) => ({ ...current, note: event.target.value }))
+                  }
+                  placeholder="e.g. Lot 2"
+                  className="h-10"
+                />
+              </div>
+              {sheetOpenLotError ? <p className="text-sm text-red-600">{sheetOpenLotError}</p> : null}
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setSheetOpenLotDialog(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={savingSheetOpenLot}>
+                  {savingSheetOpenLot ? 'Opening…' : 'Open lot tab'}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={setupOpen} onOpenChange={setSetupOpen}>
           <DialogContent className="sm:max-w-md">
@@ -3009,6 +3488,28 @@ export function AdminAgentAllotment() {
                 </label>
               ))}
             </div>
+            <label
+              className={cn(
+                'flex cursor-pointer gap-3 rounded-2xl border px-3.5 py-3 text-sm transition',
+                setupSplitPrepaid
+                  ? 'border-teal-600/50 bg-teal-50/60'
+                  : 'border-teal-900/10 bg-white/80 hover:border-teal-600/30',
+              )}
+            >
+              <input
+                type="checkbox"
+                className="mt-1 accent-teal-700"
+                checked={setupSplitPrepaid}
+                onChange={(event) => setSetupSplitPrepaid(event.target.checked)}
+              />
+              <span>
+                <span className="block font-semibold text-teal-950">Split prepaid cash</span>
+                <span className="block text-xs text-teal-900/60">
+                  Second table for money-only top-ups. Park fees, change-date fees, and extra charges
+                  deduct there instead of the trip money column.
+                </span>
+              </span>
+            </label>
             {setupError ? <p className="text-sm text-red-600">{setupError}</p> : null}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setSetupOpen(false)}>

@@ -84,7 +84,7 @@ export const NO_TRANSFER_TIME = 'No transfer' as const
 /** Dedicated private car/van — billed to agent in back office only. */
 export const PRIVATE_TRANSFER_ZONE = 'Private' as const
 
-export type PrivateTransferVehicle = 'Car' | 'Van'
+export type PrivateTransferVehicle = 'Car' | 'SUV' | 'Van'
 
 export const PRIVATE_TRANSFER_OPTIONS: ReadonlyArray<{
   vehicle: PrivateTransferVehicle
@@ -92,9 +92,16 @@ export const PRIVATE_TRANSFER_OPTIONS: ReadonlyArray<{
   maxPax: number
   label: string
 }> = [
-  { vehicle: 'Car', priceThb: 1400, maxPax: 4, label: 'Car / SUV (1-4 Pax)' },
-  { vehicle: 'Van', priceThb: 1800, maxPax: 12, label: 'VAN (max 12 Pax)' },
+  { vehicle: 'Car', priceThb: 1500, maxPax: 4, label: 'Car 1 – 4 Pax' },
+  { vehicle: 'SUV', priceThb: 1700, maxPax: 4, label: 'SUV 1 – 4 Pax' },
+  { vehicle: 'Van', priceThb: 1900, maxPax: 12, label: 'VAN 1 – 12 Pax' },
 ]
+
+export function isPrivateTransferVehicle(
+  value: string | null | undefined,
+): value is PrivateTransferVehicle {
+  return PRIVATE_TRANSFER_OPTIONS.some((item) => item.vehicle === value)
+}
 
 export function formatPrivateTransferPrice(priceThb: number) {
   return `${priceThb.toLocaleString('en-US')} THB`
@@ -103,6 +110,23 @@ export function formatPrivateTransferPrice(priceThb: number) {
 export function privateTransferPriceFor(vehicle: PrivateTransferVehicle) {
   const option = PRIVATE_TRANSFER_OPTIONS.find((item) => item.vehicle === vehicle)
   return option ? formatPrivateTransferPrice(option.priceThb) : ''
+}
+
+/** Private transfer vehicles that fit the booked headcount (adults + children + infants + tour leaders). */
+export function privateTransferOptionsForPax(pax: number) {
+  const count = Math.max(0, Math.floor(pax))
+  if (count <= 0) return []
+  return PRIVATE_TRANSFER_OPTIONS.filter((option) => count <= option.maxPax)
+}
+
+export function privateTransferVehicleFitsPax(
+  vehicle: '' | PrivateTransferVehicle,
+  pax: number,
+): boolean {
+  if (!vehicle) return true
+  const count = Math.max(0, Math.floor(pax))
+  const option = PRIVATE_TRANSFER_OPTIONS.find((item) => item.vehicle === vehicle)
+  return Boolean(option && count > 0 && count <= option.maxPax)
 }
 
 export function isCorePickupZone(name: string) {
@@ -154,6 +178,8 @@ export type Agent = {
   name: string
   country: string
   status: AgentStatus
+  /** Hidden from the agent settings list after remove; may still have bookings. */
+  archived?: boolean
   /** Legal / printed name on this agent's vouchers. Falls back to `name`. */
   companyName?: string
   /** Guest contact printed on the voucher. */

@@ -16,7 +16,12 @@
  */
 import 'server-only'
 import { createClient } from '@supabase/supabase-js'
-import { type Booking, type Program, type IncludeOption } from '@/lib/types'
+import {
+  type Booking,
+  type Program,
+  type IncludeOption,
+  isPrivateTransferVehicle,
+} from '@/lib/types'
 
 // ---------------------------------------------------------------------------
 // Service-role Supabase client — module-level singleton so the HTTP agent is
@@ -107,7 +112,7 @@ export async function fetchGuestBookingServer(code: string): Promise<Booking | n
       note: String(row.note ?? ''),
       cashOnTour: String(row.cash_on_tour ?? ''),
       transferExtraCharge: String(row.transfer_extra_charge ?? ''),
-      privateTransferVehicle: ptv === 'Car' || ptv === 'Van' ? ptv : '',
+      privateTransferVehicle: isPrivateTransferVehicle(ptv) ? ptv : '',
       privateTransferPrice: String(row.private_transfer_price ?? ''),
       privateDriverName: String(row.private_driver_name ?? ''),
       privateDriverPhone: String(row.private_driver_phone ?? ''),

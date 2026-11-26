@@ -93,21 +93,35 @@ export function Segment({
   onClick,
   children,
   className,
+  tone = 'default',
 }: {
   active: boolean
   onClick: () => void
   children: ReactNode
   className?: string
+  /** When set, active/inactive colors match a ledger (e.g. teal vs amber). */
+  tone?: 'default' | 'teal' | 'amber'
 }) {
+  const activeClass =
+    tone === 'amber'
+      ? 'bg-gradient-to-br from-amber-600 to-orange-700 text-white shadow-md shadow-orange-800/30'
+      : tone === 'teal'
+        ? 'bg-gradient-to-br from-teal-700 to-teal-900 text-white shadow-md shadow-teal-900/30'
+        : 'bg-gradient-to-br from-teal-700 to-cyan-700 text-white shadow-md shadow-teal-700/20'
+  const idleClass =
+    tone === 'amber'
+      ? 'bg-amber-50/90 text-amber-950/70 ring-1 ring-amber-800/20 hover:bg-amber-100 hover:text-amber-950'
+      : tone === 'teal'
+        ? 'bg-teal-50/90 text-teal-900/70 ring-1 ring-teal-800/15 hover:bg-teal-100 hover:text-teal-950'
+        : 'text-teal-900/55 hover:bg-white/70 hover:text-teal-950'
+
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
         'inline-flex items-center justify-center rounded-xl px-3.5 py-2 text-sm font-medium transition-all',
-        active
-          ? 'bg-gradient-to-br from-teal-700 to-cyan-700 text-white shadow-md shadow-teal-700/20'
-          : 'text-teal-900/55 hover:bg-white/70 hover:text-teal-950',
+        active ? activeClass : idleClass,
         className,
       )}
     >

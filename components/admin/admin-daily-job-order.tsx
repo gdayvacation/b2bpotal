@@ -36,6 +36,7 @@ import {
   isDummyVan,
   isNoTransfer,
   isNoTransferVan,
+  isPrivateTransfer,
   isSpecialTransfer,
   primaryBoatNumber,
   specialTransferKindLabel,
@@ -126,6 +127,78 @@ function displayVanCrew(group: VanGroup) {
     plate: group.plate.trim() || '—',
     phone: group.phone.trim() || '—',
   }
+}
+
+const AGENT_JO_SKIP_VAN_LABELS = new Set([
+  '—',
+  'No transfer',
+  'No Transfers',
+  'Waiting',
+  'Waiting — not on a van yet',
+])
+
+function agentJobRowCrew(
+  booking: Booking,
+  info: Pick<AgentJobRow, 'driver' | 'plate' | 'phone'> | undefined,
+) {
+  let driver = info?.driver ?? '—'
+  let plate = info?.plate ?? '—'
+  let phone = info?.phone ?? '—'
+  if (isPrivateTransfer(booking)) {
+    if ((!driver.trim() || driver === '—') && booking.privateDriverName.trim()) {
+      driver = booking.privateDriverName.trim()
+    }
+    if ((!phone.trim() || phone === '—') && booking.privateDriverPhone.trim()) {
+      phone = booking.privateDriverPhone.trim()
+    }
+  }
+  return { driver, plate, phone }
+}
+
+function agentJobOrderShowCrew(
+  vanLabel: string,
+  driver: string,
+  plate: string,
+  phone: string,
+  booking: Booking,
+) {
+  if (AGENT_JO_SKIP_VAN_LABELS.has(vanLabel)) return false
+  if (vanLabel.startsWith('Van')) return true
+  if (/private/i.test(vanLabel)) return true
+  if (isPrivateTransfer(booking)) return true
+  return [driver, plate, phone].some((value) => {
+    const trimmed = value.trim()
+    return trimmed.length > 0 && trimmed !== '—'
+  })
+}
+
+function AgentCrewDetailLines({
+  driver,
+  plate,
+  phone,
+  className,
+}: {
+  driver: string
+  plate: string
+  phone: string
+  className?: string
+}) {
+  return (
+    <div className={cn('space-y-1.5 text-sm leading-snug text-teal-900/80', className)}>
+      <p>
+        <span className="text-teal-900/50">Driver</span>{' '}
+        <span className="font-semibold text-teal-950">{driver}</span>
+      </p>
+      <p>
+        <span className="text-teal-900/50">Plate</span>{' '}
+        <span className="font-semibold text-teal-950">{plate}</span>
+      </p>
+      <p>
+        <span className="text-teal-900/50">Tel</span>{' '}
+        <span className="font-semibold text-teal-950">{phone}</span>
+      </p>
+    </div>
+  )
 }
 
 /** rowspan for Detail: merge consecutive rows that share the same van. */
@@ -1645,21 +1718,8 @@ function AgentGroupSection({
                         stripe ? 'bg-emerald-50' : 'bg-stone-200',
                       )}
                     >
-                      {vanLabel.startsWith('Van') ? (
-                        <div className="space-y-1.5 text-sm leading-snug text-teal-900/80">
-                          <p>
-                            <span className="text-teal-900/50">Driver</span>{' '}
-                            <span className="font-semibold text-teal-950">{driver}</span>
-                          </p>
-                          <p>
-                            <span className="text-teal-900/50">Plate</span>{' '}
-                            <span className="font-semibold text-teal-950">{plate}</span>
-                          </p>
-                          <p>
-                            <span className="text-teal-900/50">Tel</span>{' '}
-                            <span className="font-semibold text-teal-950">{phone}</span>
-                          </p>
-                        </div>
+                      {agentJobOrderShowCrew(vanLabel, driver, plate, phone, booking) ? (
+                        <AgentCrewDetailLines driver={driver} plate={plate} phone={phone} />
                       ) : (
                         <span className="text-sm text-teal-900/40">—</span>
                       )}
@@ -1879,7 +1939,7 @@ function AgentJobOrderPrintSheet({
                                   stripe ? 'bg-emerald-50' : 'bg-stone-200',
                                 )}
                               >
-                                {vanLabel.startsWith('Van')
+                                {agentJobOrderShowCrew(vanLabel, driver, plate, phone, booking)
                                   ? `${driver} · ${plate} · ${phone}`
                                   : '—'}
                               </td>
@@ -2682,13 +2742,14 @@ function buildAgentGroups(vanGroups: VanGroup[]): AgentGroup[] {
         agentName: name,
         rows: sorted.map((booking, index) => {
           const info = vanInfoByCode.get(booking.code)
+          const crew = agentJobRowCrew(booking, info)
           return {
             no: index + 1,
             booking,
             vanLabel: info?.label ?? '—',
-            driver: info?.driver ?? '—',
-            plate: info?.plate ?? '—',
-            phone: info?.phone ?? '—',
+            driver: crew.driver,
+            plate: crew.plate,
+            phone: crew.phone,
             cashOnTour: booking.cashOnTour?.trim() ?? '',
           }
         }),

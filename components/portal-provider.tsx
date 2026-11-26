@@ -398,6 +398,7 @@ import {
   privateTransferPriceFor,
   bookedPaxOf,
   totalPassengers,
+  isPrivateTransferVehicle,
 } from '@/lib/types'
 
 function prebuyNoShowMoveFee(
@@ -554,7 +555,7 @@ type PortalContextValue = {
   addAgent: (name: string) => string | null
   updateAgent: (slug: string, name: string) => string | null
   saveAgentCompanyProfile: (slug: string, profile: AgentCompanyProfile) => Promise<string | null>
-  removeAgent: (slug: string) => void
+  removeAgent: (slug: string) => Promise<string | null>
   setCapacity: (date: string, program: 'PP' | 'James Bond', capacity: number) => void
   setCapacityForDates: (
     dates: string[],
@@ -3446,10 +3447,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             changed = true
             return { ...booking, ...emptyPrivateTransferFields() }
           }
-          const vehicle =
-            booking.privateTransferVehicle === 'Car' || booking.privateTransferVehicle === 'Van'
-              ? booking.privateTransferVehicle
-              : 'Van'
+          const vehicle = isPrivateTransferVehicle(booking.privateTransferVehicle)
+            ? booking.privateTransferVehicle
+            : 'Van'
           const price = formatThb(amount)
           if (
             booking.privateTransferVehicle === vehicle &&
@@ -4424,8 +4424,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
           ? isLateFeeTimeForDate(bookingCutoffs, originDate)
           : false
         const requestedVehicle =
-          privateZone &&
-          (input.privateTransferVehicle === 'Car' || input.privateTransferVehicle === 'Van')
+          privateZone && isPrivateTransferVehicle(input.privateTransferVehicle)
             ? input.privateTransferVehicle
             : ''
         const booking: Booking = {
@@ -4841,10 +4840,9 @@ export function PortalProvider({ children }: { children: ReactNode }) {
             privateTransferAreaName(existing.pickupZone)
           next.pickupZone = area ? formatPrivateTransferZone(area) : PRIVATE_TRANSFER_ZONE
           next.transferExtraCharge = ''
-          const vehicle =
-            next.privateTransferVehicle === 'Car' || next.privateTransferVehicle === 'Van'
-              ? next.privateTransferVehicle
-              : null
+          const vehicle = isPrivateTransferVehicle(next.privateTransferVehicle)
+            ? next.privateTransferVehicle
+            : null
           if (!vehicle) {
             // Agent request: zone is set, admin confirms the pickup time later.
             Object.assign(next, emptyPrivateTransferFields())
@@ -5395,9 +5393,19 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         )
         return null
       },
-      removeAgent: (slug) => {
-        setAgents((current) => current.filter((agent) => agent.slug !== slug))
-        persistQuietly('deleteAgent', deleteAgent(slug))
+      removeAgent: async (slug) => {
+        let snapshot: Agent[] = []
+        setAgents((current) => {
+          snapshot = current
+          return current.filter((agent) => agent.slug !== slug)
+        })
+        try {
+          await deleteAgent(slug)
+          return null
+        } catch (caught) {
+          setAgents(snapshot)
+          return caught instanceof Error ? caught.message : 'Could not remove that agent.'
+        }
       },
       setCapacity: (date, program, capacity) => {
         setAvailability((current) => {

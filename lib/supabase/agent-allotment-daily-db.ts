@@ -186,6 +186,7 @@ export type AgentBookingLine = {
   changeDateFee?: number
   /** Guests were moved onto this date. */
   moved?: boolean
+  parkFee?: 'Included' | 'Not Included'
 }
 
 export type AgentBookingDayPax = {
@@ -217,7 +218,7 @@ export async function fetchAgentBookingDayPax(
     const { data, error } = await supabase
       .from('bookings')
       .select(
-        'code,agent_ref,lead_guest,pickup_hotel,pickup_zone,transfer_extra_charge,date,adults,children,status,late_cancel,cancel_fee,original_adults,original_children,moved_out_adults,moved_out_children,late_date_change,no_show_date_move,moved_from_code,late_change_fee',
+        'code,agent_ref,lead_guest,pickup_hotel,pickup_zone,transfer_extra_charge,park_fee,date,adults,children,status,late_cancel,cancel_fee,original_adults,original_children,moved_out_adults,moved_out_children,late_date_change,no_show_date_move,moved_from_code,late_change_fee',
       )
       .eq('agent_slug', slug)
       .eq('program', program)
@@ -234,6 +235,7 @@ export async function fetchAgentBookingDayPax(
       pickup_hotel: string | null
       pickup_zone: string | null
       transfer_extra_charge: string | null
+      park_fee: string | null
       date: string
       adults: number | string | null
       children: number | string | null
@@ -319,6 +321,10 @@ export async function fetchAgentBookingDayPax(
           changeDateFee: Math.max(0, Math.floor(Number(row.late_change_fee) || 0)),
           moved:
             row.no_show_date_move === true || Boolean(String(row.moved_from_code ?? '').trim()),
+          parkFee:
+            row.park_fee === 'Included' || row.park_fee === 'Not Included'
+              ? row.park_fee
+              : 'Included',
         })
       }
       byDay.set(day, current)

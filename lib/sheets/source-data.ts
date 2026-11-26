@@ -27,6 +27,7 @@ import {
   type Booking,
   type CheckInAttendance,
   type Program,
+  isPrivateTransferVehicle,
 } from '@/lib/types'
 
 export type SheetsEnrollmentRow = CheckInEnrollment & {
@@ -167,10 +168,9 @@ function mapBooking(row: BookingRow): Booking {
     note: row.note ?? '',
     cashOnTour: row.cash_on_tour ?? '',
     transferExtraCharge: row.transfer_extra_charge ?? '',
-    privateTransferVehicle:
-      row.private_transfer_vehicle === 'Car' || row.private_transfer_vehicle === 'Van'
-        ? row.private_transfer_vehicle
-        : '',
+    privateTransferVehicle: isPrivateTransferVehicle(row.private_transfer_vehicle)
+      ? row.private_transfer_vehicle
+      : '',
     privateTransferPrice: row.private_transfer_price ?? '',
     privateDriverName: row.private_driver_name ?? '',
     privateDriverPhone: row.private_driver_phone ?? '',

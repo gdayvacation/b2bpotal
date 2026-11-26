@@ -13,4 +13,4 @@ alter table public.bookings
 
 alter table public.bookings
   add constraint bookings_private_transfer_vehicle_check
-  check (private_transfer_vehicle in ('', 'Car', 'Van'));
+  check (private_transfer_vehicle in ('', 'Car', 'SUV', 'Van'));

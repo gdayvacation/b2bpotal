@@ -48,6 +48,8 @@ import {
   NO_TRANSFER_ZONE,
   PRIVATE_TRANSFER_OPTIONS,
   privateTransferAreaName,
+  privateTransferOptionsForPax,
+  privateTransferVehicleFitsPax,
   type Agent,
   type Booking,
   type Hotel,
@@ -195,6 +197,8 @@ export function BookingWizard({
     isBookingOpen,
     isProgramClosed,
     zones,
+    hydrated,
+    loadError,
   } = usePortal()
 
   const steps = useMemo(
@@ -366,19 +370,36 @@ export function BookingWizard({
     setPickupZone(zones.some((zone) => zone.name === 'Other') ? 'Other' : null)
   }, [joinPickup, pickupHotel, hotels, zones, selectAgent])
 
-  // An unlisted hotel on a private transfer uses the Other area.
+  // Private transfer: zone comes from the hotel catalog — no manual zone picker.
   useEffect(() => {
-    if (!privatePickup || selectAgent) return
+    if (!privatePickup) return
     const name = pickupHotel.trim()
-    if (!name) return
-    const listed = hotels.some(
-      (hotel) => hotel.active && hotel.name.toLowerCase() === name.toLowerCase(),
+    if (!name) {
+      setPrivateArea(null)
+      setPrivateAreaOther('')
+      return
+    }
+    const hotel = hotels.find(
+      (item) => item.active && item.name.toLowerCase() === name.toLowerCase(),
     )
-    if (listed) return
-    if (name.toLowerCase() !== 'other' && hotelQueryHasMatches(hotels, name)) return
-    setPrivateArea((current) => (current?.toLowerCase() === 'other' ? current : 'Other'))
-    setPrivateAreaOther('')
-  }, [privatePickup, selectAgent, pickupHotel, hotels])
+    if (hotel) {
+      const zoneName = zoneNameForHotel(hotel)
+      if (zoneName) {
+        setPrivateArea(zoneName)
+        if (zoneName.toLowerCase() !== 'other') setPrivateAreaOther('')
+      }
+      return
+    }
+    if (name.toLowerCase() === 'other') {
+      setPrivateArea('Other')
+      setPrivateAreaOther('')
+      return
+    }
+    if (!hotelQueryHasMatches(hotels, name)) {
+      setPrivateArea('Other')
+      setPrivateAreaOther('')
+    }
+  }, [privatePickup, pickupHotel, hotels, zones])
 
   // Match a seeded private area to a live zone name, or keep it as Other.
   useEffect(() => {
@@ -414,10 +435,12 @@ export function BookingWizard({
     setStep((current) => Math.min(current + 1, steps.length - 1))
   }
 
-  const activeAgents = useMemo(
-    () => agents.filter((item) => item.status === 'Active').slice().sort((a, b) => a.name.localeCompare(b.name)),
-    [agents],
-  )
+  const activeAgents = useMemo(() => {
+    const source = selectAgent
+      ? agents.filter((item) => !item.archived)
+      : agents.filter((item) => item.status === 'Active')
+    return source.slice().sort((a, b) => a.name.localeCompare(b.name))
+  }, [agents, selectAgent])
 
   const resolvedAgent: ResolvedAgent | null = useMemo(() => {
     if (!selectAgent && agent) return { slug: agent.slug, name: agent.name }
@@ -435,6 +458,7 @@ export function BookingWizard({
   }, [selectAgent, agent, agentMode, newAgentName, selectedAgentSlug, agents])
 
   const total = adults + children + infants + tourLeaders
+  const privateVehicleChoices = useMemo(() => privateTransferOptionsForPax(total), [total])
   const isoDate = date ? toISODate(date) : ''
   const confirmationNumber = useMemo(() => {
     if (!program || !isoDate) return '—'
@@ -470,13 +494,6 @@ export function BookingWizard({
   const selectedZone = zones.find((zone) => zone.name === pickupZone)
   const noTransfer = isNoTransfer(pickupZone)
   const pendingPickup = !privatePickup && !noTransfer && (selectedZone?.pending ?? false)
-  const privateZoneChoices = useMemo(() => {
-    const names = zones
-      .map((zone) => zone.name)
-      .filter((name) => !isNoTransfer(name) && !isPrivateTransferZone(name))
-    if (!names.some((name) => name.toLowerCase() === 'other')) names.push('Other')
-    return names
-  }, [zones])
   const privateAreaName = useMemo(() => {
     if (!privatePickup || !privateArea) return ''
     if (privateArea.trim().toLowerCase() === 'other') return privateAreaOther.trim() || 'Other'
@@ -491,7 +508,14 @@ export function BookingWizard({
       : pickupZone
   const privateVehicleOption =
     PRIVATE_TRANSFER_OPTIONS.find((option) => option.vehicle === privateVehicle) ?? null
-  const privateVehicleFits = !privateVehicleOption || total <= privateVehicleOption.maxPax
+  const privateVehicleFits = privateTransferVehicleFitsPax(privateVehicle, total)
+
+  useEffect(() => {
+    if (!privatePickup || !privateVehicle) return
+    if (!privateTransferVehicleFitsPax(privateVehicle, total)) {
+      setPrivateVehicle('')
+    }
+  }, [total, privatePickup, privateVehicle])
   const matchedHotel = useMemo(() => {
     const name = pickupHotel.trim().toLowerCase()
     if (!name) return null
@@ -553,7 +577,14 @@ export function BookingWizard({
       )
     if (step === pickupStep) {
       if (noTransfer) return true
-      if (privatePickup) return Boolean(privateAreaName && privateVehicleOption && privateVehicleFits)
+      if (privatePickup) {
+        return Boolean(
+          pickupHotel.trim().length > 0 &&
+            privateAreaName &&
+            privateVehicleOption &&
+            privateVehicleFits,
+        )
+      }
       return (
         joinPickup && pickupZone !== null && zones.some((zone) => zone.name === pickupZone)
       )
@@ -585,6 +616,7 @@ export function BookingWizard({
     privateAreaName,
     privateVehicleOption,
     privateVehicleFits,
+    pickupHotel,
     reviewStep,
   ])
 
@@ -617,15 +649,19 @@ export function BookingWizard({
                     : 'Enter the guest name.'
                 : !joinPickup && !privatePickup
                   ? 'Choose one pickup type.'
+                  : privatePickup && privateVehicleChoices.length === 0
+                    ? 'No private vehicle fits this group size (max 12). Reduce guests or choose join transfer.'
                   : privatePickup && !privateVehicleOption
-                    ? 'Choose Car / SUV or VAN.'
+                    ? `Choose a vehicle for ${total} guest${total === 1 ? '' : 's'}.`
                     : privatePickup && !privateVehicleFits
-                      ? privateVehicleOption?.vehicle === 'Car'
-                        ? 'Car / SUV is for 1–4 guests. Choose VAN for a larger group.'
-                        : 'VAN takes up to 12 guests.'
-                      : privatePickup
-                        ? 'Select a zone for the private transfer, or choose Other.'
-                        : joinPickup
+                      ? 'The selected vehicle does not fit this group. Choose another option.'
+                      : privatePickup && !pickupHotel.trim()
+                        ? 'Enter the pickup hotel.'
+                        : privatePickup && !privateAreaName
+                          ? 'Choose a saved hotel name, or finish typing if the hotel is not listed.'
+                          : privatePickup
+                            ? 'Choose a vehicle for this group.'
+                            : joinPickup
                           ? 'Enter a saved hotel. The zone and pickup time come from the hotel.'
                           : 'Select a pickup zone, or choose No Transfer.',
       )
@@ -683,8 +719,16 @@ export function BookingWizard({
   }
 
   function applyUnlistedHotel(name: string) {
-    if (selectAgent) return
-    if (resolveAgentHotelName(name) !== 'Other') return
+    const resolved = resolveAgentHotelName(name)
+    if (resolved === null) return
+    if (selectAgent) {
+      if (privatePickup && resolved === 'Other' && name.trim().toLowerCase() !== 'other') {
+        setPrivateArea('Other')
+        setPrivateAreaOther('')
+      }
+      return
+    }
+    if (resolved !== 'Other') return
     if (name.trim().toLowerCase() === 'other') return
     setPickupHotel('Other')
     if (privatePickup) {
@@ -828,9 +872,11 @@ export function BookingWizard({
             onCommit={(typed) => applyUnlistedHotel(typed)}
           />
           <p className="text-xs text-neutral-500">
-            {selectAgent
-              ? 'Type a few letters to see saved hotels, including similar names. The last line adds a new hotel and keeps it in the list.'
-              : 'Type a few letters to see saved hotels. If nothing is listed, the hotel and zone are Other.'}
+            {privatePickup
+              ? 'Type the hotel name. If it is saved, the pickup zone is filled in for you — no zone picker.'
+              : selectAgent
+                ? 'Type a few letters to see saved hotels, including similar names. The last line adds a new hotel and keeps it in the list.'
+                : 'Type a few letters to see saved hotels. If nothing is listed, the hotel and zone are Other.'}
           </p>
         </div>
         <div className="w-[7.5rem] shrink-0 space-y-2 sm:w-32">
@@ -971,7 +1017,15 @@ export function BookingWizard({
                 <Label className="mb-3">Choose agent</Label>
                 {activeAgents.length === 0 ? (
                   <p className="rounded-xl border border-dashed border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-500">
-                    No active agents yet. Use New agent to add one — it syncs to Invoice setup too.
+                    {!hydrated
+                      ? 'Loading agents…'
+                      : loadError
+                        ? `Could not load agents (${loadError}). Refresh the page after Supabase is reachable.`
+                        : selectAgent
+                          ? agents.length > 0
+                            ? 'Every agent is marked removed from the list. Use New agent or restore them in Supabase (agents.archived = false).'
+                            : 'No agents in the database yet. Use New agent to add one — it syncs to Invoice setup too.'
+                          : 'No active agents yet. Use New agent to add one — it syncs to Invoice setup too.'}
                   </p>
                 ) : (
                   <div className="grid max-h-72 gap-2 overflow-y-auto sm:grid-cols-2">
@@ -989,7 +1043,16 @@ export function BookingWizard({
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className="font-semibold text-teal-950">{item.name}</span>
-                          {selectedAgentSlug === item.slug ? <Check className="size-4 shrink-0" /> : null}
+                          <span className="flex shrink-0 items-center gap-1.5">
+                            {item.status === 'Inactive' ? (
+                              <span className="text-[10px] font-semibold tracking-wide text-amber-700 uppercase">
+                                Inactive
+                              </span>
+                            ) : null}
+                            {selectedAgentSlug === item.slug ? (
+                              <Check className="size-4 shrink-0" />
+                            ) : null}
+                          </span>
                         </div>
                       </button>
                     ))}
@@ -1351,111 +1414,92 @@ export function BookingWizard({
               {privatePickup ? (
                   <div className="space-y-5 border-t border-sky-200 p-3">
                     <div>
-                      <Label className="mb-2">Vehicle</Label>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        {PRIVATE_TRANSFER_OPTIONS.map((option, index) => {
-                          const tooMany = total > option.maxPax
-                          const selected = privateVehicle === option.vehicle
-                          return (
-                            <button
-                              key={option.vehicle}
-                              type="button"
-                              disabled={tooMany}
-                              onClick={() => {
-                                setPrivateVehicle(option.vehicle)
-                                setError('')
-                              }}
-                              className={cn(
-                                'flex items-center justify-between gap-2 rounded-xl border px-3.5 py-3 text-left transition-all',
-                                tooMany && 'cursor-not-allowed opacity-45',
-                                selected
-                                  ? 'border-sky-800 bg-sky-700 text-white shadow-sm'
-                                  : 'border-sky-200 bg-white text-sky-950 hover:border-sky-500',
-                              )}
-                            >
-                              <span className="min-w-0">
-                                <span className="block text-sm font-semibold">
-                                  {index + 1}. {option.label}
-                                </span>
-                                <span
-                                  className={cn(
-                                    'mt-0.5 block text-sm',
-                                    selected ? 'text-white/80' : 'text-sky-900/70',
-                                  )}
-                                >
-                                  {formatPrivateTransferPrice(option.priceThb)}
-                                </span>
-                              </span>
-                              {selected ? <Check className="size-4 shrink-0" /> : null}
-                            </button>
-                          )
-                        })}
-                      </div>
-                      {total > 4 ? (
-                        <p className="mt-2 text-xs text-sky-900/60">
-                          Car / SUV is for up to 4 guests. Larger groups use VAN.
+                      <Label className="mb-1">Vehicle</Label>
+                      <p className="mb-2 text-xs text-sky-900/60">
+                        Options match your booking:{' '}
+                        <span className="font-semibold text-sky-950">
+                          {total} guest{total === 1 ? '' : 's'}
+                        </span>
+                        {privateVehicleChoices.length > 0
+                          ? ` · ${privateVehicleChoices.length} vehicle${privateVehicleChoices.length === 1 ? '' : 's'} fit`
+                          : ''}
+                      </p>
+                      {privateVehicleChoices.length === 0 ? (
+                        <p className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-sm text-amber-950">
+                          No private vehicle fits {total} guests (max 12). Reduce the guest count on the
+                          previous step, or choose join transfer instead.
                         </p>
-                      ) : null}
-                    </div>
-                    {privateVehicle ? (
-                      <div>
-                        <Label className="mb-1">Zone</Label>
-                        <p className="mb-3 text-xs text-neutral-500">
-                          Select the pickup zone, or Other if it is not listed.
-                        </p>
-                        <div className="grid gap-2 sm:grid-cols-2">
-                          {privateZoneChoices.map((name) => {
-                            const zone = zones.find(
-                              (item) => item.name.toLowerCase() === name.toLowerCase(),
-                            )
-                            const selected = privateArea?.toLowerCase() === name.toLowerCase()
-                            const time = zone ? getZoneTime(zone.name) : ''
+                      ) : (
+                        <div
+                          className={cn(
+                            'grid gap-1.5 sm:gap-2',
+                            privateVehicleChoices.length >= 3
+                              ? 'grid-cols-3'
+                              : privateVehicleChoices.length === 2
+                                ? 'grid-cols-2'
+                                : 'grid-cols-1',
+                          )}
+                        >
+                          {privateVehicleChoices.map((option, index) => {
+                            const selected = privateVehicle === option.vehicle
                             return (
                               <button
-                                key={name}
+                                key={option.vehicle}
                                 type="button"
                                 onClick={() => {
-                                  setPrivateArea(name)
-                                  if (name.toLowerCase() !== 'other') setPrivateAreaOther('')
+                                  setPrivateVehicle(option.vehicle)
                                   setError('')
                                 }}
                                 className={cn(
-                                  'flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-left transition-all',
+                                  'flex min-w-0 flex-col items-start rounded-xl border px-2 py-2.5 text-left transition-all sm:flex-row sm:items-center sm:justify-between sm:px-3.5 sm:py-3',
                                   selected
                                     ? 'border-sky-800 bg-sky-700 text-white shadow-sm'
                                     : 'border-sky-200 bg-white text-sky-950 hover:border-sky-500',
                                 )}
                               >
-                                <span className="min-w-0 truncate font-semibold">{name}</span>
-                                <span
-                                  className={cn(
-                                    'flex shrink-0 items-center gap-1.5 text-sm',
-                                    selected ? 'text-white/85' : 'text-sky-900/55',
-                                  )}
-                                >
-                                  <Clock3 className="size-3.5" />
-                                  {zone?.pending || !time ? 'Awaiting time' : time}
-                                  {selected ? <Check className="size-3.5" /> : null}
+                                <span className="min-w-0">
+                                  <span className="block text-[11px] leading-snug font-semibold sm:text-sm">
+                                    {index + 1}. {option.label}
+                                  </span>
+                                  <span
+                                    className={cn(
+                                      'mt-0.5 block text-[11px] sm:text-sm',
+                                      selected ? 'text-white/80' : 'text-sky-900/70',
+                                    )}
+                                  >
+                                    {formatPrivateTransferPrice(option.priceThb)}
+                                  </span>
                                 </span>
+                                {selected ? (
+                                  <Check className="mt-1 size-3.5 shrink-0 sm:mt-0 sm:size-4" />
+                                ) : null}
                               </button>
                             )
                           })}
                         </div>
-                        {privateArea?.toLowerCase() === 'other' ? (
-                          <div className="mt-3 max-w-md space-y-2">
-                            <Label htmlFor="private-zone-other">Other zone</Label>
-                            <Input
-                              id="private-zone-other"
-                              value={privateAreaOther}
-                              onChange={(event) => setPrivateAreaOther(event.target.value)}
-                              className="h-11"
-                              placeholder="Area not on the list"
-                            />
-                          </div>
-                        ) : null}
+                      )}
+                    </div>
+                    {privateVehicle ? (
+                      <div className="space-y-2">
+                        {pickupHotelFields(false)}
+                        {privateAreaName ? (
+                          <p className="text-xs text-sky-900/60">
+                            Pickup zone:{' '}
+                            <span className="font-medium text-sky-950">{privateAreaName}</span>
+                            {pickupHotel.trim() ? ' (from hotel)' : null}
+                          </p>
+                        ) : pickupHotel.trim() ? (
+                          <p className="text-xs text-sky-900/50">
+                            Finish the hotel name or pick from the list — the zone sets itself.
+                          </p>
+                        ) : (
+                          <p className="text-xs text-sky-900/50">
+                            Enter the hotel. Saved hotels set the zone automatically; admin confirms
+                            pickup time later.
+                          </p>
+                        )}
                       </div>
                     ) : null}
-                    {pickupHotelFields(false)}
                   </div>
               ) : null}
               </div>

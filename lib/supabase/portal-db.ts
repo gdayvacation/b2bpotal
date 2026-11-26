@@ -100,6 +100,7 @@ import {
   compactBoatAssignment,
   normalizeBoatAssignment,
   persistBoatNames,
+  isPrivateTransferVehicle,
 } from '@/lib/types'
 
 // PERF sprint-2: Column projection maps — only fetch columns consumed by each Row mapper.
@@ -136,10 +137,52 @@ type AgentRow = {
   name: string
   country: string
   status: AgentStatus
+  archived?: boolean | null
   company_name?: string | null
   company_phone?: string | null
   company_email?: string | null
   logo_data_url?: string | null
+}
+
+function isForeignKeyViolation(error: { code?: string; message?: string }) {
+  return (
+    error.code === '23503' ||
+    /foreign key|violates foreign key constraint|still referenced/i.test(error.message ?? '')
+  )
+}
+
+function mapAgentRows(rows: AgentRow[]): Agent[] {
+  return rows.map(mapAgent)
+}
+
+function agentsArchivedColumnMissing(error: { message: string } | null) {
+  return Boolean(error && /archived|column|schema cache/i.test(error.message))
+}
+
+/** Loads agents for admin board; falls back when `agents.archived` migration is not applied yet. */
+async function fetchListedAgentRows(supabase: ReturnType<typeof getSupabaseBrowserClient>) {
+  const withArchived =
+    'slug,name,country,status,archived,company_name,company_phone,company_email'
+  const legacy = 'slug,name,country,status,company_name,company_phone,company_email'
+
+  let res = await supabase.from('agents').select(withArchived).order('name')
+  if (agentsArchivedColumnMissing(res.error)) {
+    console.warn(
+      '[supabase] agents.archived column missing — run supabase/add-agent-archived.sql',
+      res.error?.message,
+    )
+    res = await supabase.from('agents').select(legacy).order('name')
+    if (!res.error && res.data) {
+      return {
+        data: (res.data as Omit<AgentRow, 'archived'>[]).map((row) => ({
+          ...row,
+          archived: false,
+        })),
+        error: null as { message: string } | null,
+      }
+    }
+  }
+  return res
 }
 
 type ZoneRow = {
@@ -713,7 +756,7 @@ export async function loadPartnerPortalSnapshot(): Promise<PortalSnapshot> {
   }
 
   return {
-    agents: (agentsRes.data as AgentRow[]).map(mapAgent),
+    agents: mapAgentRows((agentsRes.data as AgentRow[]) ?? []),
     zones: (zonesRes.data as ZoneRow[]).map(mapZone),
     hotels,
     bookings,
@@ -732,7 +775,8 @@ function mapAgent(row: AgentRow): Agent {
     slug: row.slug,
     name: row.name,
     country: row.country,
-    status: row.status,
+    status: row.status === 'Inactive' ? 'Inactive' : 'Active',
+    archived: row.archived === true,
     companyName: row.company_name ?? '',
     companyPhone: row.company_phone ?? '',
     companyEmail: row.company_email ?? '',
@@ -780,10 +824,9 @@ function mapBooking(row: BookingRow): Booking {
     note: row.note ?? '',
     cashOnTour: row.cash_on_tour ?? '',
     transferExtraCharge: row.transfer_extra_charge ?? '',
-    privateTransferVehicle:
-      row.private_transfer_vehicle === 'Car' || row.private_transfer_vehicle === 'Van'
-        ? row.private_transfer_vehicle
-        : '',
+    privateTransferVehicle: isPrivateTransferVehicle(row.private_transfer_vehicle)
+      ? row.private_transfer_vehicle
+      : '',
     privateTransferPrice: row.private_transfer_price ?? '',
     privateDriverName: row.private_driver_name ?? '',
     privateDriverPhone: row.private_driver_phone ?? '',
@@ -1170,12 +1213,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
     closuresRes,
   ] = await Promise.all([
     // PERF sprint-2: select only mapped columns for catalog and config tables.
-    guestLite
-      ? emptyRows()
-      : supabase
-          .from('agents')
-          .select('slug,name,country,status,company_name,company_phone,company_email')
-          .order('name'),
+    guestLite ? emptyRows() : fetchListedAgentRows(supabase),
     guestLite ? emptyRows() : supabase.from('pickup_zones').select('name,time,pending').order('sort_order'),
     guestLite ? emptyRows() : supabase.from('hotels').select('id,name,zone_name,active,extra_charge_transfer').order('name'),
     fetchBookingsInDateRange(operationalBookingsFromDate()),
@@ -1294,7 +1332,7 @@ export async function loadPortalSnapshot(): Promise<PortalSnapshot> {
   }
 
   return {
-    agents: (agentsRes.data as AgentRow[]).map(mapAgent),
+    agents: mapAgentRows((agentsRes.data as AgentRow[]) ?? []),
     zones: (zonesRes.data as ZoneRow[]).map(mapZone),
     hotels,
     bookings: bookingRows,
@@ -2055,10 +2093,36 @@ export async function saveAgentCompany(slug: string, profile: AgentCompanyProfil
   if (error) throw new Error(error.message)
 }
 
+async function archiveAgent(slug: string) {
+  const supabase = getSupabaseBrowserClient()
+  const { error: updateError } = await supabase
+    .from('agents')
+    .update({ archived: true, status: 'Inactive' })
+    .eq('slug', slug)
+  if (updateError) {
+    if (/archived|column|schema cache/i.test(updateError.message)) {
+      throw new Error(
+        'This agent has bookings. Run supabase/add-agent-archived.sql on the database, then try again.',
+      )
+    }
+    throw new Error(`archive agent: ${updateError.message}`)
+  }
+  const { error: keyError } = await supabase.from('agent_access_keys').delete().eq('agent_slug', slug)
+  if (keyError && !/does not exist|relation|schema cache/i.test(keyError.message)) {
+    throw new Error(`revoke agent link: ${keyError.message}`)
+  }
+}
+
+/** Removes an agent from the admin list; hard-deletes when possible, otherwise archives (bookings keep their slug). */
 export async function deleteAgent(slug: string) {
   const supabase = getSupabaseBrowserClient()
-  const { error } = await supabase.from('agents').delete().eq('slug', slug)
-  if (error) throw new Error(`delete agent: ${error.message}`)
+  const { error: delError } = await supabase.from('agents').delete().eq('slug', slug)
+  if (!delError) return
+  if (isForeignKeyViolation(delError)) {
+    await archiveAgent(slug)
+    return
+  }
+  throw new Error(`delete agent: ${delError.message}`)
 }
 
 export async function updateBookingsAgentName(slug: string, name: string) {

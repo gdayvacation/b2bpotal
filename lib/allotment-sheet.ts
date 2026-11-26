@@ -2,7 +2,10 @@ import {
   allotmentPaidTotal,
   allotmentPayments,
   type AgentAllotment,
+  type AgentAllotmentParkFee,
 } from '@/lib/supabase/agent-allotment-db'
+import { DEFAULT_NATIONAL_PARK_FEE, excludedParkFeeRates } from '@/lib/invoice'
+import type { Program } from '@/lib/types'
 import {
   changeDateFeeForAllotment,
   extraZoneChargeFromNote,
@@ -101,8 +104,41 @@ export type AllotmentSheetBooking = {
   chargedCancel?: boolean
   dateChanged?: boolean
   noTransfer?: boolean
+  parkFee?: 'Included' | 'Not Included'
   /** Canceled when the booking was cancelled with a charge. Empty otherwise. */
   status?: string
+}
+
+export type AllotmentMoneyPool = 'combined' | 'trip' | 'prepaid'
+
+function poolIncludesTrip(pool: AllotmentMoneyPool) {
+  return pool === 'combined' || pool === 'trip'
+}
+
+function poolIncludesPrepaid(pool: AllotmentMoneyPool) {
+  return pool === 'combined' || pool === 'prepaid'
+}
+
+function isMoneyOnlyTransfer(transfer: LotTransfer) {
+  return transfer.heads === 0 && transfer.amount !== 0
+}
+
+/** National park fees for guests on Exc bookings when the lot rate is Exc. */
+function dayParkFeeCharge(
+  bookings: AllotmentSheetBooking[],
+  program: Program,
+  lotParkFee: AgentAllotmentParkFee,
+  nationalParkFee: number,
+) {
+  if (program !== 'PP' || lotParkFee === 'inc') return 0
+  const rates = excludedParkFeeRates(nationalParkFee)
+  return bookings.reduce((sum, booking) => {
+    if (booking.chargedCancel) return sum
+    if (booking.parkFee === 'Included') return sum
+    const adults = Math.max(0, booking.adults)
+    const children = Math.max(0, booking.children)
+    return sum + adults * rates.adult + children * rates.child
+  }, 0)
 }
 
 export type AllotmentSheetLine = {
@@ -243,6 +279,11 @@ type BuildAllotmentSheetInput = {
   usageUntilDay?: string
   /** Booking days that belong on this lot. An empty list shows the lot's money and heads only. */
   usageRanges?: AllotmentUsageRange[] | null
+  /** combined = one sheet; trip = heads + tour money; prepaid = cash pool + park/fees. */
+  moneyPool?: AllotmentMoneyPool
+  program?: Program
+  lotParkFee?: AgentAllotmentParkFee
+  nationalParkFee?: number
   __fullBuild?: boolean
   /** Running balance before the first visible row when the sheet starts mid-history. */
   __startingBalance?: { heads: number; money: number } | null
@@ -263,6 +304,13 @@ export function buildAllotmentSheet(input: BuildAllotmentSheetInput): AllotmentS
   }
 
   const deductChildren = input.deductChildren !== false
+  const moneyPool = input.moneyPool ?? 'combined'
+  const program = input.program ?? 'PP'
+  const lotParkFee: AgentAllotmentParkFee = input.lotParkFee ?? 'exc'
+  const nationalParkFee =
+    input.nationalParkFee != null && input.nationalParkFee > 0
+      ? input.nationalParkFee
+      : DEFAULT_NATIONAL_PARK_FEE
   const lots = sortLots(input.lots)
   if (lots.length === 0) return []
   const ledgerBacked =
@@ -287,7 +335,11 @@ export function buildAllotmentSheet(input: BuildAllotmentSheetInput): AllotmentS
   for (const lot of lots) {
     for (const transfer of lotTransfers(lot)) {
       if (transfer.heads === 0 && transfer.amount === 0) continue
-      if (transfer.date < earliest) continue
+      const moneyOnlyLine = isMoneyOnlyTransfer(transfer)
+      // On a single-lot tab, always show this lot's top-ups (even before usageFrom).
+      if (transfer.date < earliest && !fromDay) continue
+      if (moneyPool === 'trip' && moneyOnlyLine) continue
+      if (moneyPool === 'prepaid' && !moneyOnlyLine) continue
       // Same day: usage before money-only and head top-ups (green bar money left stays after tours).
       const sortPrefix =
         transfer.heads === 0 && transfer.amount !== 0 ? '3' : '6'
@@ -360,14 +412,17 @@ export function buildAllotmentSheet(input: BuildAllotmentSheetInput): AllotmentS
     const bookingHeads = booking ? (deductChildren ? dayAdults + dayChildren : dayAdults) : 0
     const childrenInvoiced = deductChildren ? 0 : dayChildren
     // A saved 0 must not hide live bookings. Charged cancels are already inside bookingHeads.
-    if (savedHeads <= 0 && bookingHeads <= 0 && childrenInvoiced <= 0) continue
+    if (savedHeads <= 0 && bookingHeads <= 0 && childrenInvoiced <= 0) {
+      const hasGuests = (booking?.bookings.length ?? 0) > 0
+      if (moneyPool !== 'prepaid' || !hasGuests) continue
+    }
     const pending = !saved
     let heads = 0
     if (ledgerBacked) {
       if (savedHeads > 0) {
         heads = Math.max(savedHeads, bookingHeads)
       } else if (bookingHeads <= 0) {
-        continue
+        if (moneyPool !== 'prepaid') continue
       } else if (fromDay && day < fromDay) {
         continue
       } else {
@@ -378,7 +433,7 @@ export function buildAllotmentSheet(input: BuildAllotmentSheetInput): AllotmentS
       // A saved daily total can be only part of the day (one invoice). Every booking on the day is still used.
       heads = Math.max(savedHeads, bookingHeads)
     }
-    if (heads <= 0 && childrenInvoiced <= 0) continue
+    if (heads <= 0 && childrenInvoiced <= 0 && moneyPool !== 'prepaid') continue
     const counted = saved ? Boolean(saved.allotmentId) || day <= input.today : day <= input.today
     const mix =
       booking && (pending || bookingHeads === heads)
@@ -407,6 +462,7 @@ export function buildAllotmentSheet(input: BuildAllotmentSheetInput): AllotmentS
       chargedCancel: item.chargedCancel,
       dateChanged: item.dateChanged,
       noTransfer: item.noTransfer,
+      parkFee: item.parkFee,
     }))
     const zoneCharge = (booking?.bookings ?? []).reduce((sum, item) => {
       if (item.chargedCancel) return sum
@@ -424,7 +480,31 @@ export function buildAllotmentSheet(input: BuildAllotmentSheetInput): AllotmentS
         }),
       0,
     )
-    if (zoneCharge > 0) {
+  const parkCharge =
+    poolIncludesPrepaid(moneyPool) && moneyPool !== 'combined'
+      ? dayParkFeeCharge(bookings, program, lotParkFee, nationalParkFee)
+      : 0
+  if (parkCharge > 0) {
+    events.push({
+      key: `park-${day}`,
+      date: day,
+      sort: `2-${day}`,
+      kind: 'charge',
+      note: 'National park fee',
+      bookings: [],
+      headsDelta: 0,
+      moneyDelta: -parkCharge,
+      value: null,
+      counted,
+      pending: false,
+      childrenInvoiced: 0,
+      lotId: null,
+      paymentId: null,
+    })
+  }
+    const showTripCharges = moneyPool === 'combined'
+    const showPrepaidCharges = poolIncludesPrepaid(moneyPool) && moneyPool !== 'combined'
+    if (zoneCharge > 0 && (showTripCharges || showPrepaidCharges)) {
       events.push({
         key: `zone-${day}`,
         date: day,
@@ -442,7 +522,7 @@ export function buildAllotmentSheet(input: BuildAllotmentSheetInput): AllotmentS
         paymentId: null,
       })
     }
-    if (changeDateFee > 0) {
+    if (changeDateFee > 0 && (showTripCharges || showPrepaidCharges)) {
       events.push({
         key: `change-${day}`,
         date: day,
@@ -460,6 +540,30 @@ export function buildAllotmentSheet(input: BuildAllotmentSheetInput): AllotmentS
         paymentId: null,
       })
     }
+    if (moneyPool === 'prepaid' && bookings.length > 0) {
+      const guestNote =
+        note ||
+        (deductChildren
+          ? `${dayAdults + dayChildren} guests`
+          : `${dayAdults} AD${dayChildren > 0 ? ` · ${dayChildren} CH` : ''}`)
+      events.push({
+        key: `prepaid-day-${day}`,
+        date: day,
+        sort: `4-${day}`,
+        kind: 'usage',
+        note: guestNote,
+        bookings,
+        headsDelta: 0,
+        moneyDelta: null,
+        value: null,
+        counted,
+        pending,
+        childrenInvoiced,
+        lotId: null,
+        paymentId: null,
+      })
+    }
+    if (!poolIncludesTrip(moneyPool)) continue
     events.push({
       key: `usage-${day}`,
       date: day,

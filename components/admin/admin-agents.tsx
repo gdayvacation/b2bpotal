@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { Check, Copy, ExternalLink, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { usePortal } from '@/components/portal-provider'
@@ -33,7 +33,9 @@ import { cn } from '@/lib/utils'
 import type { Agent } from '@/lib/types'
 
 export function AdminAgents() {
-  const { agents, bookings, setAgentStatus, addAgent, updateAgent, removeAgent } = usePortal()
+  const { agents: allAgents, bookings, setAgentStatus, addAgent, updateAgent, removeAgent } =
+    usePortal()
+  const agents = useMemo(() => allAgents.filter((agent) => !agent.archived), [allAgents])
   const [copied, setCopied] = useState<string | null>(null)
   const [keys, setKeys] = useState<Record<string, string>>({})
   const [newName, setNewName] = useState('')
@@ -128,14 +130,20 @@ export function AdminAgents() {
     setEditing(null)
   }
 
-  function handleDelete(agent: Agent) {
+  async function handleDelete(agent: Agent) {
     const count = bookings.filter((booking) => booking.agentSlug === agent.slug).length
     const message =
       count > 0
         ? `Remove ${agent.name}? Their booking link will stop working. Existing bookings stay in the list.`
         : `Remove ${agent.name}?`
     if (!window.confirm(message)) return
-    removeAgent(agent.slug)
+    const error = await removeAgent(agent.slug)
+    if (error) window.alert(error)
+    else setKeys((current) => {
+      const next = { ...current }
+      delete next[agent.slug]
+      return next
+    })
   }
 
   return (

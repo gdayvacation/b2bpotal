@@ -1,7 +1,7 @@
 'use client'
 
 import { Fragment, useEffect, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { ChevronDown, ChevronRight, Pencil, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Pencil, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { formatShortDate, todayISO } from '@/lib/format'
 import { NO_TRANSFER_DISCOUNT_PER_PERSON } from '@/lib/invoice'
@@ -74,7 +74,7 @@ function usageParts(note: string) {
     })
 }
 
-function lineTitle(line: AllotmentSheetLine, hideNote = false) {
+function lineTitle(line: AllotmentSheetLine, hideNote = false, guestLedger = false) {
   if (line.kind === 'refund') return 'No transfer refund'
   if (line.kind === 'charge') return line.note || 'Extra charge'
   if (line.kind === 'usage') {
@@ -82,8 +82,16 @@ function lineTitle(line: AllotmentSheetLine, hideNote = false) {
       hideNote && line.childrenInvoiced > 0
         ? `${line.childrenInvoiced} child${line.childrenInvoiced === 1 ? '' : 'ren'} invoiced`
         : ''
+    const title =
+      guestLedger || (line.headsDelta === 0 && (line.moneyDelta == null || line.moneyDelta === 0))
+        ? line.counted
+          ? 'Guests'
+          : 'Future guests'
+        : line.counted
+          ? 'Heads used'
+          : 'Future booking'
     return [
-      line.counted ? 'Heads used' : 'Future booking',
+      title,
       line.pending ? 'From bookings' : '',
       hideNote ? invoicedTag : line.note,
     ]
@@ -130,18 +138,24 @@ export function AllotmentSheet({
   storageKey,
   lots = [],
   onSelectLot,
+  onOpenLot,
   moveLots = [],
   moveFromDay = '',
   onMoveUsage,
   onAdd,
   onUpdate,
   onRemove,
+  moneyOnlyRows = false,
+  showLotTabs = true,
+  addDefaultDate,
 }: {
   lines: AllotmentSheetLine[]
   today: string
   storageKey: string
   lots?: { id: string; label: string; date: string; active: boolean }[]
   onSelectLot?: (lotId: string) => void
+  /** Opens a new lot tab — bookings from the handover day onward. */
+  onOpenLot?: () => void
   moveLots?: { id: string; label: string }[]
   /** Days before this date are locked. Empty means no day has been moved yet. */
   moveFromDay?: string
@@ -149,6 +163,11 @@ export function AllotmentSheet({
   onAdd: (draft: SheetLineDraft) => Promise<void>
   onUpdate: (line: AllotmentSheetLine, draft: SheetLineDraft) => Promise<void>
   onRemove: (line: AllotmentSheetLine) => Promise<void>
+  /** Prepaid cash sheet: money top-ups and daily deductions only. */
+  moneyOnlyRows?: boolean
+  showLotTabs?: boolean
+  /** Default date on the add row (e.g. lot open day when it is after today). */
+  addDefaultDate?: string
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [openUsage, setOpenUsage] = useState<Set<string>>(new Set())
@@ -159,12 +178,21 @@ export function AllotmentSheet({
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
+  const addDate =
+    addDefaultDate && /^\d{4}-\d{2}-\d{2}$/.test(addDefaultDate)
+      ? addDefaultDate > today
+        ? addDefaultDate
+        : today
+      : today
+
   useEffect(() => {
     setCollapsed(readCollapsedDays(storageKey))
     setOpenUsage(new Set())
     setEditingKey(null)
     setReadyKey(storageKey)
-  }, [storageKey])
+    setAddFields(emptyFields(addDate))
+    setError('')
+  }, [storageKey, addDate])
 
   useEffect(() => {
     if (readyKey !== storageKey) return
@@ -211,6 +239,8 @@ export function AllotmentSheet({
   const asOfToday = [...lines].reverse().find((line) => line.date <= today)
   const todayHeads = asOfToday?.headsLeft ?? 0
   const todayMoney = asOfToday?.moneyLeft ?? 0
+  const showHeads = !moneyOnlyRows
+  const colCount = showHeads ? 8 : 6
 
   type DayGroup = { date: string; lines: { line: AllotmentSheetLine; index: number }[] }
 
@@ -237,8 +267,8 @@ export function AllotmentSheet({
     setError('')
     setSaving(true)
     try {
-      await onAdd(parsed)
-      setAddFields(emptyFields(today))
+      await onAdd(moneyOnlyRows ? { ...parsed, heads: 0 } : parsed)
+      setAddFields(emptyFields(addDate))
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not save.')
     } finally {
@@ -349,26 +379,30 @@ export function AllotmentSheet({
             </span>
           ) : null}
         </td>
-        <td
-          className={cn(
-            cell,
-            'text-right font-semibold tabular-nums',
-            heads > 0 && 'text-emerald-800',
-            heads < 0 && 'text-teal-950',
-            heads === 0 && 'text-teal-900/35',
-          )}
-        >
-          {heads === 0 ? '—' : heads > 0 ? `+${heads}` : heads}
-        </td>
-        <td
-          className={cn(
-            cell,
-            'text-right font-semibold tabular-nums',
-            dayClose.headsLeft < 0 ? 'text-rose-700' : 'text-teal-950',
-          )}
-        >
-          {dayClose.headsLeft}
-        </td>
+        {showHeads ? (
+          <td
+            className={cn(
+              cell,
+              'text-right font-semibold tabular-nums',
+              heads > 0 && 'text-emerald-800',
+              heads < 0 && 'text-teal-950',
+              heads === 0 && 'text-teal-900/35',
+            )}
+          >
+            {heads === 0 ? '—' : heads > 0 ? `+${heads}` : heads}
+          </td>
+        ) : null}
+        {showHeads ? (
+          <td
+            className={cn(
+              cell,
+              'text-right font-semibold tabular-nums',
+              dayClose.headsLeft < 0 ? 'text-rose-700' : 'text-teal-950',
+            )}
+          >
+            {dayClose.headsLeft}
+          </td>
+        ) : null}
         <td
           className={cn(
             cell,
@@ -546,18 +580,20 @@ export function AllotmentSheet({
                 className={cellInputClass()}
               />
             </td>
-            <td className={cn(cell, 'p-0')}>
-              <input
-                form="allotment-sheet-edit"
-                aria-label="Heads"
-                inputMode="numeric"
-                value={editFields.heads}
-                onChange={(event) => setEditFields((current) => ({ ...current, heads: event.target.value }))}
-                placeholder="+10 or -5"
-                className={cellInputClass('right')}
-              />
-            </td>
-            <td className={cn(cell, 'px-2 text-right text-teal-900/35')}>—</td>
+            {showHeads ? (
+              <td className={cn(cell, 'p-0')}>
+                <input
+                  form="allotment-sheet-edit"
+                  aria-label="Heads"
+                  inputMode="numeric"
+                  value={editFields.heads}
+                  onChange={(event) => setEditFields((current) => ({ ...current, heads: event.target.value }))}
+                  placeholder="+10 or -5"
+                  className={cellInputClass('right')}
+                />
+              </td>
+            ) : null}
+            {showHeads ? <td className={cn(cell, 'px-2 text-right text-teal-900/35')}>—</td> : null}
             <td className={cn(cell, 'p-0')}>
               <input
                 form="allotment-sheet-edit"
@@ -589,20 +625,22 @@ export function AllotmentSheet({
           <>
             <td className={cn(cell, 'px-2 whitespace-nowrap text-teal-900/45')}>{formatShortDate(line.date)}</td>
             <td className={cn(cell, 'px-2 text-teal-950')}>
-              <span>{lineTitle(line, canOpen)}</span>
+              <span>{lineTitle(line, canOpen, moneyOnlyRows)}</span>
             </td>
-            <td
-              className={cn(
-                cell,
-                'px-2 text-right font-medium tabular-nums',
-                line.headsDelta > 0 && 'text-emerald-800',
-                line.headsDelta < 0 && 'text-teal-950',
-                line.headsDelta === 0 && 'text-teal-900/35',
-              )}
-            >
-              {line.headsDelta === 0 ? '—' : line.headsDelta > 0 ? `+${line.headsDelta}` : line.headsDelta}
-            </td>
-            <td className={cn(cell, 'px-2 text-right text-teal-900/25')}>—</td>
+            {showHeads ? (
+              <td
+                className={cn(
+                  cell,
+                  'px-2 text-right font-medium tabular-nums',
+                  line.headsDelta > 0 && 'text-emerald-800',
+                  line.headsDelta < 0 && 'text-teal-950',
+                  line.headsDelta === 0 && 'text-teal-900/35',
+                )}
+              >
+                {line.headsDelta === 0 ? '—' : line.headsDelta > 0 ? `+${line.headsDelta}` : line.headsDelta}
+              </td>
+            ) : null}
+            {showHeads ? <td className={cn(cell, 'px-2 text-right text-teal-900/25')}>—</td> : null}
             <td
               className={cn(
                 cell,
@@ -657,7 +695,7 @@ export function AllotmentSheet({
   return (
     <div>
       <div className="border-b border-teal-900/10 px-3 py-2">
-        {lots.length > 0 ? (
+        {showLotTabs && lots.length > 0 ? (
           <div className="mb-2 flex gap-2 overflow-x-auto" role="tablist" aria-label="Lots">
             {lots.map((lot) => (
               <button
@@ -679,14 +717,28 @@ export function AllotmentSheet({
                 </span>
               </button>
             ))}
+            {onOpenLot ? (
+              <button
+                type="button"
+                onClick={onOpenLot}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-dashed border-teal-700/45 bg-white px-3.5 py-2 text-sm font-semibold text-teal-800 transition hover:border-teal-700 hover:bg-teal-50"
+              >
+                <Plus className="size-4" />
+                New lot
+              </button>
+            ) : null}
           </div>
+        ) : null}
+        {error ? (
+          <p className="mb-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+            {error}
+          </p>
         ) : null}
         <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-teal-900/55">
-          Today is the top day. Older days run down the sheet. Tap a day to fold or open its rows.
-          Tap a Heads used row to see each booking’s agent reference, guest name, and hotel. Those details stay closed until you open them.
-          Cream rows can add or reduce heads and money. White rows are that day’s heads, filled in automatically,
-          and the money those heads use is taken off the balance.
+          {moneyOnlyRows
+            ? 'Prepaid cash only. Top up with money-only payments (Setup or lot payment form), then park fees, zone charges, and change-date fees deduct each day.'
+            : 'Today is the top day. Older days run down the sheet. Tap a day to fold or open its rows. Tap a Heads used row to see each booking’s agent reference, guest name, and hotel. Those details stay closed until you open them. Cream rows can add or reduce heads and money. White rows are that day’s heads, filled in automatically, and the money those heads use is taken off the balance.'}
         </p>
         <div className="flex flex-wrap items-center gap-2">
           {collapsed.size > 0 ? (
@@ -708,8 +760,12 @@ export function AllotmentSheet({
               <th className="w-10 border border-teal-900/10 px-1 py-2 text-center">#</th>
               <th className="w-[132px] border border-teal-900/10 px-2 py-2">Date</th>
               <th className="border border-teal-900/10 px-2 py-2">Detail</th>
-              <th className="w-[88px] border border-teal-900/10 px-2 py-2 text-right">Heads</th>
-              <th className="w-[88px] border border-teal-900/10 px-2 py-2 text-right">Heads left</th>
+              {showHeads ? (
+                <th className="w-[88px] border border-teal-900/10 px-2 py-2 text-right">Heads</th>
+              ) : null}
+              {showHeads ? (
+                <th className="w-[88px] border border-teal-900/10 px-2 py-2 text-right">Heads left</th>
+              ) : null}
               <th className="w-[120px] border border-teal-900/10 px-2 py-2 text-right">Money</th>
               <th className="w-[120px] border border-teal-900/10 px-2 py-2 text-right">Money left</th>
               <th className="w-24 border border-teal-900/10 px-1 py-2 text-center">
@@ -741,18 +797,22 @@ export function AllotmentSheet({
                   className={cellInputClass()}
                 />
               </td>
-              <td className="border border-teal-900/10 p-0">
-                <input
-                  form="allotment-sheet-add"
-                  aria-label="Heads for the new row"
-                  inputMode="numeric"
-                  value={addFields.heads}
-                  onChange={(event) => setAddFields((current) => ({ ...current, heads: event.target.value }))}
-                  placeholder="+heads / -heads"
-                  className={cellInputClass('right')}
-                />
-              </td>
-              <td className="border border-teal-900/10 px-2 text-right text-teal-900/35">—</td>
+              {showHeads ? (
+                <td className="border border-teal-900/10 p-0">
+                  <input
+                    form="allotment-sheet-add"
+                    aria-label="Heads for the new row"
+                    inputMode="numeric"
+                    value={addFields.heads}
+                    onChange={(event) => setAddFields((current) => ({ ...current, heads: event.target.value }))}
+                    placeholder="+heads / -heads"
+                    className={cellInputClass('right')}
+                  />
+                </td>
+              ) : null}
+              {showHeads ? (
+                <td className="border border-teal-900/10 px-2 text-right text-teal-900/35">—</td>
+              ) : null}
               <td className="border border-teal-900/10 p-0">
                 <input
                   form="allotment-sheet-add"
@@ -774,7 +834,7 @@ export function AllotmentSheet({
             </tr>
             {!hasToday ? (
               <tr aria-hidden="true">
-                <td className={dayGap} colSpan={8} />
+                <td className={dayGap} colSpan={colCount} />
               </tr>
             ) : null}
             {!hasToday ? (
@@ -785,16 +845,20 @@ export function AllotmentSheet({
                   <span className="ml-1 text-[10px] font-semibold tracking-wide text-teal-800 uppercase">Today</span>
                 </td>
                 <td className={cn(dayEdge, 'px-2 py-1.5 font-medium text-teal-900/70')}>Daily Sum</td>
-                <td className={cn(dayEdge, 'px-2 py-1.5 text-right text-teal-900/35')}>—</td>
-                <td
-                  className={cn(
-                    dayEdge,
-                    'px-2 py-1.5 text-right font-semibold tabular-nums',
-                    todayHeads < 0 ? 'text-rose-700' : 'text-teal-950',
-                  )}
-                >
-                  {todayHeads}
-                </td>
+                {showHeads ? (
+                  <td className={cn(dayEdge, 'px-2 py-1.5 text-right text-teal-900/35')}>—</td>
+                ) : null}
+                {showHeads ? (
+                  <td
+                    className={cn(
+                      dayEdge,
+                      'px-2 py-1.5 text-right font-semibold tabular-nums',
+                      todayHeads < 0 ? 'text-rose-700' : 'text-teal-950',
+                    )}
+                  >
+                    {todayHeads}
+                  </td>
+                ) : null}
                 <td className={cn(dayEdge, 'px-2 py-1.5 text-right text-teal-900/35')}>—</td>
                 <td
                   className={cn(
@@ -820,7 +884,7 @@ export function AllotmentSheet({
                       <Fragment key={item.line.key}>
                         {renderLedgerRow(item.line, item.index)}
                         {item.line.kind === 'usage' && openUsage.has(item.line.key)
-                          ? renderUsageDetails(item.line, 8)
+                          ? renderUsageDetails(item.line, colCount)
                           : null}
                       </Fragment>
                     ))}
@@ -928,7 +992,9 @@ export function AllotmentSheet({
                                   <td className="border border-teal-900/10 px-2 whitespace-nowrap text-teal-900/45">
                                     {formatShortDate(line.date)}
                                   </td>
-                                  <td className="border border-teal-900/10 px-2">{lineTitle(line, canOpen)}</td>
+                                  <td className="border border-teal-900/10 px-2">
+                                    {lineTitle(line, canOpen, moneyOnlyRows)}
+                                  </td>
                                   <td className="border border-teal-900/10 px-2 text-right font-medium tabular-nums">
                                     {line.headsDelta}
                                   </td>

@@ -30,7 +30,9 @@ import {
   PRIVATE_TRANSFER_OPTIONS,
   PRIVATE_TRANSFER_ZONE,
   privateTransferAreaName,
+  privateTransferOptionsForPax,
   privateTransferPriceFor,
+  privateTransferVehicleFitsPax,
   totalPassengers,
   type Booking,
   type BookingActor,
@@ -191,6 +193,14 @@ export function EditBookingDialog({
     setAdminFee(reduceCharge ? String(suggestedReduceFee) : '0')
   }, [open, reduceCharge, suggestedReduceFee])
   const pax = adults + children + infants + tourLeaders
+  const privateVehicleChoices = useMemo(() => privateTransferOptionsForPax(pax), [pax])
+
+  useEffect(() => {
+    if (transferKind !== 'private' || !privateVehicle) return
+    if (!privateTransferVehicleFitsPax(privateVehicle, pax)) {
+      setPrivateVehicle('')
+    }
+  }, [pax, transferKind, privateVehicle])
   const isJamesBond = booking?.program === 'James Bond'
   const noTransfer = transferKind === 'none'
   const isPrivate = transferKind === 'private'
@@ -237,7 +247,9 @@ export function EditBookingDialog({
     }
     if (kind === 'private') {
       setPickupZone(PRIVATE_TRANSFER_ZONE)
-      if (!privateVehicle) setPrivateVehicle('Car')
+      if (!privateVehicle || !privateTransferVehicleFitsPax(privateVehicle, pax)) {
+        setPrivateVehicle(privateTransferOptionsForPax(pax)[0]?.vehicle ?? '')
+      }
       return
     }
     if (isNoTransfer(pickupZone) || isPrivateTransferZoneSafe(pickupZone)) {
@@ -253,8 +265,23 @@ export function EditBookingDialog({
     if (savingRef.current) return
     if (!booking) return
     const agentKeepsPrivate = transferKind === 'private' && !canUsePrivate
+    if (transferKind === 'private' && canUsePrivate && privateVehicleChoices.length === 0) {
+      setError(
+        `No private vehicle fits ${pax} guest${pax === 1 ? '' : 's'} (max 12). Reduce guests first.`,
+      )
+      return
+    }
     if (transferKind === 'private' && canUsePrivate && !privateVehicle && privatePickupTime.trim()) {
-      setError('Choose Car / SUV or VAN.')
+      setError(`Choose a vehicle that fits ${pax} guest${pax === 1 ? '' : 's'}.`)
+      return
+    }
+    if (
+      transferKind === 'private' &&
+      canUsePrivate &&
+      privateVehicle &&
+      !privateTransferVehicleFitsPax(privateVehicle, pax)
+    ) {
+      setError('The selected vehicle does not fit this group size.')
       return
     }
 
@@ -571,27 +598,48 @@ export function EditBookingDialog({
                     </p>
                   ) : null}
                   <div>
-                    <Label className="mb-2">Vehicle &amp; price (bill agent)</Label>
-                    <div className="grid grid-cols-2 gap-3">
-                      {PRIVATE_TRANSFER_OPTIONS.map((option) => (
-                        <button
-                          key={option.vehicle}
-                          type="button"
-                          onClick={() => setPrivateVehicle(option.vehicle)}
-                          className={cn(
-                            'rounded-xl border px-3.5 py-3 text-left text-sm font-medium transition-colors',
-                            privateVehicle === option.vehicle
-                              ? 'border-teal-700 bg-teal-50 ring-1 ring-teal-700'
-                              : 'border-teal-900/10 hover:border-teal-700/30',
-                          )}
-                        >
-                          <span className="block text-teal-950">{option.label}</span>
-                          <span className="mt-0.5 block text-xs text-teal-900/55">
-                            {option.priceThb.toLocaleString('en-US')} THB
-                          </span>
-                        </button>
-                      ))}
-                    </div>
+                    <Label className="mb-1">Vehicle &amp; price (bill agent)</Label>
+                    <p className="mb-2 text-xs text-teal-900/55">
+                      Matches booking headcount:{' '}
+                      <span className="font-medium text-teal-950">
+                        {pax} guest{pax === 1 ? '' : 's'}
+                      </span>
+                    </p>
+                    {privateVehicleChoices.length === 0 ? (
+                      <p className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-sm text-amber-950">
+                        No vehicle fits {pax} guests (max 12).
+                      </p>
+                    ) : (
+                      <div
+                        className={cn(
+                          'grid gap-2',
+                          privateVehicleChoices.length >= 3
+                            ? 'grid-cols-3'
+                            : privateVehicleChoices.length === 2
+                              ? 'grid-cols-2'
+                              : 'grid-cols-1',
+                        )}
+                      >
+                        {privateVehicleChoices.map((option) => (
+                          <button
+                            key={option.vehicle}
+                            type="button"
+                            onClick={() => setPrivateVehicle(option.vehicle)}
+                            className={cn(
+                              'rounded-xl border px-3.5 py-3 text-left text-sm font-medium transition-colors',
+                              privateVehicle === option.vehicle
+                                ? 'border-teal-700 bg-teal-50 ring-1 ring-teal-700'
+                                : 'border-teal-900/10 hover:border-teal-700/30',
+                            )}
+                          >
+                            <span className="block text-teal-950">{option.label}</span>
+                            <span className="mt-0.5 block text-xs text-teal-900/55">
+                              {option.priceThb.toLocaleString('en-US')} THB
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <p className="mt-2 text-xs text-teal-900/50">
                       Back office only — not shown on agent voucher. Bill the agent separately.
                     </p>

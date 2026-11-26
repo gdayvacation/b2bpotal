@@ -113,7 +113,7 @@ create table if not exists public.bookings (
   cash_on_tour text not null default '',
   transfer_extra_charge text not null default '',
   private_transfer_vehicle text not null default ''
-    check (private_transfer_vehicle in ('', 'Car', 'Van')),
+    check (private_transfer_vehicle in ('', 'Car', 'SUV', 'Van')),
   private_transfer_price text not null default '',
   private_driver_name text not null default '',
   private_driver_phone text not null default '',
